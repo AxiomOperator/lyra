@@ -1,0 +1,3 @@
+# Copy to ~/.config/lyra/config.toml
+url = "http://localhost:11434/v1"   # any OpenAI-compatible endpoint
+model = "llama3.2"
