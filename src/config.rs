@@ -7,6 +7,14 @@ use serde::Deserialize;
 pub struct Config {
     pub url: String,
     pub model: String,
+    /// Price per million prompt tokens (0 for a free local model).
+    pub input_cost_per_mtok: f64,
+    /// Price per million cached prompt tokens; defaults to the input price.
+    pub cached_input_cost_per_mtok: Option<f64>,
+    /// Price per million generated tokens.
+    pub output_cost_per_mtok: f64,
+    /// Symbol shown before costs.
+    pub currency: String,
 }
 
 impl Default for Config {
@@ -14,6 +22,10 @@ impl Default for Config {
         Self {
             url: "http://localhost:11434/v1".into(),
             model: "llama3.2".into(),
+            input_cost_per_mtok: 0.0,
+            cached_input_cost_per_mtok: None,
+            output_cost_per_mtok: 0.0,
+            currency: "$".into(),
         }
     }
 }

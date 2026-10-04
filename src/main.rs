@@ -1,9 +1,10 @@
 mod config;
+mod stats;
 
 use std::io::{BufRead, BufReader};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout};
@@ -14,6 +15,7 @@ use ratatui::{DefaultTerminal, Frame};
 use serde::{Deserialize, Serialize};
 
 use config::Config;
+use stats::{Pricing, Stats, Totals, Usage, percent, secs, thousands};
 
 #[derive(Serialize)]
 struct Message {
@@ -22,11 +24,14 @@ struct Message {
     /// The model's thinking; shown in the UI but never sent back to the model.
     #[serde(skip)]
     reasoning: String,
+    /// Timing and token counts for an assistant reply.
+    #[serde(skip)]
+    stats: Option<Stats>,
 }
 
 impl Message {
     fn new(role: &str, content: String) -> Self {
-        Self { role: role.into(), content, reasoning: String::new() }
+        Self { role: role.into(), content, reasoning: String::new(), stats: None }
     }
 }
 
@@ -35,6 +40,8 @@ impl Message {
 struct Chunk {
     #[serde(default)]
     choices: Vec<ChunkChoice>,
+    /// Sent in the final chunk when `stream_options.include_usage` is set.
+    usage: Option<Usage>,
 }
 
 #[derive(Deserialize)]
@@ -54,13 +61,17 @@ struct Delta {
 enum StreamEvent {
     Token(String),
     Reasoning(String),
-    Done,
+    Done(Stats),
     Error(String),
 }
 
 struct App {
     base_url: String,
     model: String,
+    pricing: Pricing,
+    totals: Totals,
+    /// When the in-flight request was sent.
+    started: Option<Instant>,
     messages: Vec<Message>,
     input: String,
     waiting: bool,
@@ -75,11 +86,21 @@ struct App {
 }
 
 impl App {
-    fn new(base_url: String, model: String) -> Self {
+    fn new(config: Config) -> Self {
         let (tx, rx) = mpsc::channel();
         Self {
-            base_url,
-            model,
+            base_url: config.url,
+            model: config.model,
+            pricing: Pricing {
+                input_per_mtok: config.input_cost_per_mtok,
+                cached_per_mtok: config
+                    .cached_input_cost_per_mtok
+                    .unwrap_or(config.input_cost_per_mtok),
+                output_per_mtok: config.output_cost_per_mtok,
+                currency: config.currency,
+            },
+            totals: Totals::default(),
+            started: None,
             messages: Vec::new(),
             input: String::new(),
             waiting: false,
@@ -102,6 +123,7 @@ impl App {
         self.scroll = None;
         self.messages.push(Message::new("user", content));
         self.waiting = true;
+        self.started = Some(Instant::now());
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         // Error lines are UI-only; don't send them to the model.
@@ -110,11 +132,16 @@ impl App {
             .iter()
             .filter(|m| m.role == "user" || m.role == "assistant")
             .collect();
-        let body = serde_json::json!({ "model": self.model, "messages": history, "stream": true });
+        let body = serde_json::json!({
+            "model": self.model,
+            "messages": history,
+            "stream": true,
+            "stream_options": { "include_usage": true },
+        });
         let tx = self.tx.clone();
         thread::spawn(move || {
             let event = match stream(&url, &body, &tx) {
-                Ok(()) => StreamEvent::Done,
+                Ok(stats) => StreamEvent::Done(stats),
                 Err(e) => StreamEvent::Error(e),
             };
             let _ = tx.send(event);
@@ -125,9 +152,15 @@ impl App {
         match event {
             StreamEvent::Token(t) => self.reply().content.push_str(&t),
             StreamEvent::Reasoning(t) => self.reply().reasoning.push_str(&t),
-            StreamEvent::Done => self.waiting = false,
+            StreamEvent::Done(stats) => {
+                self.waiting = false;
+                self.started = None;
+                self.totals.add(&stats);
+                self.reply().stats = Some(stats);
+            }
             StreamEvent::Error(e) => {
                 self.waiting = false;
+                self.started = None;
                 self.messages.push(Message::new("error", e));
             }
         }
@@ -154,14 +187,18 @@ impl App {
     }
 }
 
-/// POST the request and forward each content delta as it arrives.
-fn stream(url: &str, body: &serde_json::Value, tx: &Sender<StreamEvent>) -> Result<(), String> {
+/// POST the request, forward each delta as it arrives, and measure the reply.
+fn stream(url: &str, body: &serde_json::Value, tx: &Sender<StreamEvent>) -> Result<Stats, String> {
     // No overall timeout: a long generation is fine as long as tokens keep coming.
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(None)
         .build()
         .map_err(|e| e.to_string())?;
+    let start = Instant::now();
+    let mut ttft = None;
+    let mut usage = None;
+    let mut chunks = 0;
     let resp = client.post(url).json(body).send().map_err(|e| e.to_string())?;
     let status = resp.status();
     if !status.is_success() {
@@ -175,6 +212,7 @@ fn stream(url: &str, body: &serde_json::Value, tx: &Sender<StreamEvent>) -> Resu
             break;
         }
         let chunk: Chunk = serde_json::from_str(data).map_err(|e| format!("{e}: {data}"))?;
+        usage = chunk.usage.or(usage);
         let Some(choice) = chunk.choices.into_iter().next() else { continue };
         let delta = choice.delta;
         let events = [
@@ -182,10 +220,27 @@ fn stream(url: &str, body: &serde_json::Value, tx: &Sender<StreamEvent>) -> Resu
             delta.content.map(StreamEvent::Token),
         ];
         for event in events.into_iter().flatten() {
+            if matches!(&event, StreamEvent::Token(t) | StreamEvent::Reasoning(t) if t.is_empty()) {
+                continue;
+            }
+            ttft.get_or_insert_with(|| start.elapsed());
+            chunks += 1;
             tx.send(event).map_err(|e| e.to_string())?;
         }
     }
-    Ok(())
+    let elapsed = start.elapsed();
+    Ok(match usage {
+        Some(u) => Stats {
+            ttft,
+            elapsed,
+            input: u.prompt_tokens,
+            cached: u.cached(),
+            output: u.completion_tokens,
+            estimated: false,
+        },
+        // Most servers send one token per chunk, so the chunk count is a fair guess.
+        None => Stats { ttft, elapsed, input: 0, cached: 0, output: chunks, estimated: true },
+    })
 }
 
 fn main() {
@@ -196,7 +251,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let mut app = App::new(config.url, config.model);
+    let mut app = App::new(config);
     ratatui::run(|terminal| run(terminal, &mut app)).expect("terminal error");
 }
 
@@ -237,8 +292,12 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
 }
 
 fn draw(f: &mut Frame, app: &mut App) {
-    let [chat_area, input_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(f.area());
+    let [chat_area, status_area, input_area] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(2),
+        Constraint::Length(3),
+    ])
+    .areas(f.area());
 
     // Chat history
     let mut lines: Vec<Line> = Vec::new();
@@ -265,6 +324,9 @@ fn draw(f: &mut Frame, app: &mut App) {
             }
         }
         lines.extend(m.content.lines().map(|l| Line::from(l.to_string())));
+        if let Some(stats) = &m.stats {
+            lines.push(Line::from(reply_stats(stats, &app.pricing).dark_gray()));
+        }
         lines.push(Line::default());
     }
     // Show "thinking..." until the first token arrives.
@@ -289,6 +351,12 @@ fn draw(f: &mut Frame, app: &mut App) {
     let top = app.scroll.unwrap_or(app.max_scroll);
     f.render_widget(chat.scroll((top, 0)), chat_area);
 
+    let status = vec![
+        Line::from(session_stats(app).dark_gray()),
+        Line::from(cache_stats(app).dark_gray()),
+    ];
+    f.render_widget(Paragraph::new(status), status_area);
+
     // Input box
     let input = Paragraph::new(app.input.as_str())
         .style(Style::default())
@@ -298,4 +366,65 @@ fn draw(f: &mut Frame, app: &mut App) {
         input_area.x + 1 + app.input.chars().count() as u16,
         input_area.y + 1,
     ));
+}
+
+/// One-line summary under an assistant reply.
+fn reply_stats(stats: &Stats, pricing: &Pricing) -> String {
+    let mut parts = Vec::new();
+    if let Some(ttft) = stats.ttft {
+        parts.push(format!("ttft {}", secs(ttft)));
+    }
+    if let Some(tps) = stats.tokens_per_sec() {
+        parts.push(format!("{tps:.1} tok/s"));
+    }
+    if stats.estimated {
+        parts.push(format!("in ? · out ~{}", thousands(stats.output)));
+    } else {
+        let mut input = format!("in {}", thousands(stats.input));
+        if stats.cached > 0 {
+            input += &format!(" ({} cached)", thousands(stats.cached));
+        }
+        parts.push(input);
+        parts.push(format!("out {}", thousands(stats.output)));
+        parts.push(pricing.format(pricing.cost(stats.input, stats.cached, stats.output)));
+    }
+    parts.push(format!("{} total", secs(stats.elapsed)));
+    parts.join(" · ")
+}
+
+/// Status bar: running totals for the session, plus a live timer while streaming.
+fn session_stats(app: &App) -> String {
+    let t = &app.totals;
+    // Mark totals that include chunk-count estimates.
+    let approx = if t.estimated { "~" } else { "" };
+    let mut parts = vec![
+        format!(" session: {} repl{}", t.replies, if t.replies == 1 { "y" } else { "ies" }),
+        format!("in {approx}{}", thousands(t.input)),
+        format!("out {approx}{}", thousands(t.output)),
+        format!("total {approx}{}", thousands(t.input + t.output)),
+        format!("cost {approx}{}", app.pricing.format(app.pricing.cost(t.input, t.cached, t.output))),
+    ];
+    if let Some(avg) = t.avg_ttft() {
+        parts.push(format!("avg ttft {}", secs(avg)));
+    }
+    if let Some(started) = app.started {
+        parts.push(format!("streaming {}", secs(started.elapsed())));
+    }
+    parts.join(" · ")
+}
+
+/// Status bar, second line: prompt cache usage across the session.
+fn cache_stats(app: &App) -> String {
+    let t = &app.totals;
+    let mut parts = vec![format!(
+        " cache: {} of {} prompt tokens cached",
+        thousands(t.cached),
+        thousands(t.input)
+    )];
+    if let Some(rate) = percent(t.cached, t.input) {
+        parts.push(format!("hit rate {rate:.1}%"));
+    }
+    parts.push(format!("cost {}", app.pricing.format(app.pricing.cost(t.cached, t.cached, 0))));
+    parts.push(format!("saved {}", app.pricing.format(app.pricing.savings(t.cached))));
+    parts.join(" · ")
 }
