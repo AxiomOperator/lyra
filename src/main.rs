@@ -65,6 +65,11 @@ struct App {
     input: String,
     waiting: bool,
     show_reasoning: bool,
+    /// Top line of the chat view when scrolled up; `None` follows the bottom.
+    scroll: Option<u16>,
+    /// Chat view size from the last frame, used for scroll bounds.
+    max_scroll: u16,
+    page: u16,
     tx: Sender<StreamEvent>,
     rx: Receiver<StreamEvent>,
 }
@@ -79,6 +84,9 @@ impl App {
             input: String::new(),
             waiting: false,
             show_reasoning: true,
+            scroll: None,
+            max_scroll: 0,
+            page: 1,
             tx,
             rx,
         }
@@ -91,6 +99,7 @@ impl App {
             return;
         }
         self.input.clear();
+        self.scroll = None;
         self.messages.push(Message::new("user", content));
         self.waiting = true;
 
@@ -121,6 +130,18 @@ impl App {
                 self.waiting = false;
                 self.messages.push(Message::new("error", e));
             }
+        }
+    }
+
+    fn scroll_up(&mut self, n: u16) {
+        let top = self.scroll.unwrap_or(self.max_scroll);
+        self.scroll = Some(top.saturating_sub(n));
+    }
+
+    fn scroll_down(&mut self, n: u16) {
+        if let Some(top) = self.scroll {
+            let top = top.saturating_add(n);
+            self.scroll = (top < self.max_scroll).then_some(top);
         }
     }
 
@@ -201,6 +222,10 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.show_reasoning = !app.show_reasoning;
             }
+            KeyCode::Up => app.scroll_up(1),
+            KeyCode::Down => app.scroll_down(1),
+            KeyCode::PageUp => app.scroll_up(app.page),
+            KeyCode::PageDown => app.scroll_down(app.page),
             KeyCode::Enter => app.send(),
             KeyCode::Backspace => {
                 app.input.pop();
@@ -211,7 +236,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
     }
 }
 
-fn draw(f: &mut Frame, app: &App) {
+fn draw(f: &mut Frame, app: &mut App) {
     let [chat_area, input_area] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(f.area());
 
@@ -248,19 +273,26 @@ fn draw(f: &mut Frame, app: &App) {
     }
 
     let title = format!(" lyra · {} · {} ", app.model, app.base_url);
+    let mut block = Block::bordered().title(title);
+    if app.scroll.is_some() {
+        block = block.title_bottom(Line::from(" ↓ more below · PgDn ".dark_gray()).right_aligned());
+    }
     let chat = Paragraph::new(Text::from(lines))
-        .block(Block::bordered().title(title))
+        .block(block)
         .wrap(Wrap { trim: false });
-    // Keep the view pinned to the bottom.
-    let inner_height = chat_area.height.saturating_sub(2) as usize;
+    // line_count includes the block's borders, as does the area height.
     let total = chat.line_count(chat_area.width);
-    let scroll = total.saturating_sub(inner_height + 2) as u16;
-    f.render_widget(chat.scroll((scroll, 0)), chat_area);
+    app.page = chat_area.height.saturating_sub(2).max(1);
+    app.max_scroll = total.saturating_sub(chat_area.height as usize) as u16;
+    // Clamp after resizes / reasoning toggles; reaching the bottom resumes following.
+    app.scroll = app.scroll.filter(|&top| top < app.max_scroll);
+    let top = app.scroll.unwrap_or(app.max_scroll);
+    f.render_widget(chat.scroll((top, 0)), chat_area);
 
     // Input box
     let input = Paragraph::new(app.input.as_str())
         .style(Style::default())
-        .block(Block::bordered().title(" message (Enter send · Ctrl-R reasoning · Esc quit) "));
+        .block(Block::bordered().title(" message (Enter send · ↑↓/PgUp/PgDn scroll · Ctrl-R reasoning · Esc quit) "));
     f.render_widget(input, input_area);
     f.set_cursor_position((
         input_area.x + 1 + app.input.chars().count() as u16,

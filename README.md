@@ -22,4 +22,4 @@ Both keys are optional; defaults are `http://localhost:11434/v1` and `llama3.2`.
 cargo run
 ```
 
-Keys: type, `Enter` to send, `Ctrl-R` to show/hide model reasoning, `Esc` / `Ctrl-C` to quit.
+Keys: type, `Enter` to send, `↑`/`↓`/`PgUp`/`PgDn` to scroll history, `Ctrl-R` to show/hide model reasoning, `Esc` / `Ctrl-C` to quit.
