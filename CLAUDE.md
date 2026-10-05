@@ -13,7 +13,7 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
   kinds, provenance, supersede/versions, hybrid ranking, context compiler, capture, curator,
   safety scan, working memory). `src/mem.rs` is lyra's side (embeddings, model calls, /memory).
 - `learning/` — `lyra-learning` crate: skills behind `SkillManager` (Markdown files + SQLite ledger
-  of versions, usage, relationships, proposals, audit log). Design: `docs/skill_learning.md`.
+  of versions, usage, relationships, proposals, audit log). Design: `docs/done/skill_learning.md`.
 - `execution/` — `lyra-execution` crate: goals, plans and the execution `Engine` (task graph,
   verification, retry, replanning, approvals, budgets, checkpoints, events) behind a `Runtime`
   trait; `src/plan.rs` is lyra's runtime and `/plan` text.
@@ -60,3 +60,5 @@ cargo test --workspace
      evolution) stays SQLite
    Only the user changes an established decision. If a doc's approach seems clearly better,
    say so and ask; don't switch on your own.
+4. **Move a doc to `docs/done/` once it's completely implemented**, so `docs/` only holds work
+   still to do. Update any references to its path (README, CLAUDE.md, code comments).

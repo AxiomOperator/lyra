@@ -85,11 +85,11 @@ which files were loaded. Templates are in `examples/`.
 ## Memory
 
 What lyra knows (facts), what happened (episodes) and what it's working on
-(working memory), built following `docs/memory_system.md` in the `memory/`
+(working memory), built following `docs/done/memory_system.md` in the `memory/`
 crate (`lyra-memory`). Everything goes through `MemoryManager`: the model
 proposes memories, the manager decides.
 
-**Storage is LanceDB** (`docs/lancedb_migration.md`), a local directory,
+**Storage is LanceDB** (`docs/done/lancedb_migration.md`), a local directory,
 `~/.lyra/memory/lance`, with no server. Each memory is a row with typed
 columns and its embedding (a fixed-size vector sized for the embedding model,
 with the model and generation that made it). Keyword search uses LanceDB's
@@ -208,7 +208,7 @@ configuration = 90           # facts tagged configuration or config
 For work with several steps, `/plan <request>` turns the request into a **goal**
 with explicit success criteria (plus constraints and open questions) and a
 **structured plan**: steps with dependencies, an action each, an expected outcome
-and how to verify it. Built following `docs/planning_execution_system.md` in the
+and how to verify it. Built following `docs/done/planning_execution_system.md` in the
 `execution/` crate (`lyra-execution`); plans persist in `~/.lyra/plans/plans.db`.
 
 A step's action is one of:
@@ -294,7 +294,7 @@ max_tokens = 300000
 ## Self-learning (skills)
 
 Memory holds facts; **skills** hold procedures lyra learned. They're built
-following `docs/skill_learning.md` (V1–V7) and live in their own crate
+following `docs/done/skill_learning.md` (V1–V7) and live in their own crate
 (`learning/`, `lyra-learning`):
 
 - **Skill files** in `~/.lyra/skills/<name>.md` hold each skill's current text
@@ -385,7 +385,7 @@ stale_days = 90
 
 Skills are what lyra learns; **evolution** changes *how it works*, from
 evidence about its own runs, progressively and reversibly. Built following
-`docs/self_evolution.md` in the `evolution/` crate (`lyra-evolution`).
+`docs/done/self_evolution.md` in the `evolution/` crate (`lyra-evolution`).
 
 - **Telemetry.** Every chat turn and plan run is recorded in
   `~/.lyra/evolution/evolution.db`: model and tool calls, tool errors,
@@ -496,7 +496,7 @@ safety = 0.1
 Everything lyra can do is a **capability**, described the same way whatever
 it's made of: the memory tools, composite tools evolution generated, OpenAPI
 operations, MCP tools, workflows, learned skills and helper agents. Built
-following `docs/capabilities.md` in the `capabilities/` crate
+following `docs/done/capabilities.md` in the `capabilities/` crate
 (`lyra-capabilities`).
 
 - **One registry.** It's loaded from every provider at startup and refreshed

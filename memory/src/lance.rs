@@ -1,4 +1,4 @@
-//! LanceDB storage for memories (docs/lancedb_migration.md, L2–L5, L12–L15,
+//! LanceDB storage for memories (docs/done/lancedb_migration.md, L2–L5, L12–L15,
 //! L19–L22): one local directory, no server.
 //!
 //! - `memories` holds each memory with typed columns (scope, kind, status,

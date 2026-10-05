@@ -1,4 +1,4 @@
-//! Lyra's side of capability intelligence (docs/capabilities.md): builds the
+//! Lyra's side of capability intelligence (docs/done/capabilities.md): builds the
 //! registry from every provider — the native memory tools, evolved
 //! composite tools, OpenAPI operations, MCP servers, learned skills,
 //! workflows and helper agents — and is the one way the chat and plans call

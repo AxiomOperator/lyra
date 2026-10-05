@@ -1,4 +1,4 @@
-//! Capability intelligence (docs/capabilities.md): what the agent can do
+//! Capability intelligence (docs/done/capabilities.md): what the agent can do
 //! right now, which capability fits, and whether it's allowed.
 //!
 //! - [`Capability`] (C1) describes anything the agent can do: native and
