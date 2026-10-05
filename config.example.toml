@@ -36,6 +36,11 @@ currency = "$"
 # maintenance = "propose"             # off | propose | auto
 # curate = "manual"                   # manual | daily | weekly
 # inject = true
+# project = "auto"                    # auto (git checkout name) | none | a name
+# same_wording = 0.85
+# same_meaning = 0.95
+# duplicate_wording = 0.6
+# stale_days = 180
 #
 # [memory.context]
 # max_tokens = 600
@@ -55,6 +60,9 @@ currency = "$"
 # working = 1
 # episodic = 30
 # semantic = 365
+# preference = 730
+# decision = 365
+# configuration = 90
 
 # Plans (see README): /plan <request> makes a goal and a structured plan;
 # /plan run executes it with verification, retries, replanning, approvals for
@@ -108,6 +116,7 @@ currency = "$"
 # benchmark_tasks = 3       # tasks replayed per benchmark
 # monitor_runs = 10         # judged runs before generations are compared
 # monitor_drop = 0.15       # success-rate drop that counts as a regression
+# max_problems = 3          # problems a review proposes candidates for
 # source_repo = "~/Projects/lyra"   # a lyra checkout: enables /evolve code
 #                                   # (patches go to local evolution/<id> branches only)
 #
@@ -119,6 +128,11 @@ currency = "$"
 # corrections = 3
 # sequence_runs = 3
 # replans = 2
+# plan_retries = 3
+# plan_verification_failures = 2
+# plan_runs = 2
+# skill_min_uses = 3
+# skill_reliability = 0.4
 #
 # [evolution.fitness]       # benchmark weights
 # success = 0.4

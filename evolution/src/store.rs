@@ -122,8 +122,8 @@ impl EvolutionStore {
 
     pub async fn record(&self, e: &EvolutionEvent) -> Result<()> {
         sqlx::query(
-            "INSERT INTO evolution_events (id, candidate, kind, description, old_generation, new_generation, fitness_before, fitness_after, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO evolution_events (id, candidate, kind, description, old_generation, new_generation, fitness_before, fitness_after, category, evidence, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(e.id.to_string())
         .bind(e.candidate.map(|c| c.to_string()))
@@ -133,6 +133,8 @@ impl EvolutionStore {
         .bind(e.new_generation.map(|g| g as i64))
         .bind(e.fitness_before)
         .bind(e.fitness_after)
+        .bind(e.category.map(|c| c.as_str()))
+        .bind(serde_json::to_string(&e.evidence)?)
         .bind(time(e.created_at))
         .execute(&self.pool)
         .await?;
@@ -156,6 +158,8 @@ impl EvolutionStore {
                     new_generation: r.try_get::<Option<i64>, _>("new_generation")?.map(|g| g as u32),
                     fitness_before: r.try_get("fitness_before")?,
                     fitness_after: r.try_get("fitness_after")?,
+                    category: r.try_get::<Option<&str>, _>("category")?.map(str::parse).transpose()?,
+                    evidence: serde_json::from_str(r.try_get("evidence")?)?,
                     created_at: parse_time(r.try_get("created_at")?)?,
                 })
             })
@@ -169,4 +173,33 @@ fn time(t: DateTime<Utc>) -> String {
 
 fn parse_time(text: &str) -> Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(text).map(|t| t.with_timezone(&Utc)).map_err(|e| anyhow!("bad timestamp {text:?}: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_history_is_append_only() {
+        let store = EvolutionStore::in_memory().await.unwrap();
+        let e = EvolutionEvent {
+            id: Uuid::new_v4(),
+            candidate: Some(Uuid::new_v4()),
+            kind: "proposed".into(),
+            description: "x".into(),
+            old_generation: None,
+            new_generation: Some(1),
+            fitness_before: None,
+            fitness_after: None,
+            category: Some(Category::Prompt),
+            evidence: vec![Uuid::new_v4()],
+            created_at: Utc::now(),
+        };
+        store.record(&e).await.unwrap();
+        let back = store.events(5).await.unwrap();
+        assert_eq!((back[0].category, back[0].evidence.clone()), (e.category, e.evidence.clone()));
+        let update = sqlx::query("UPDATE evolution_events SET description = 'changed'").execute(&store.pool).await;
+        assert!(update.unwrap_err().to_string().contains("append-only"));
+        assert!(sqlx::query("DELETE FROM evolution_events").execute(&store.pool).await.is_err());
+    }
 }

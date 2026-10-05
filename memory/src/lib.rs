@@ -29,6 +29,6 @@ pub use memory::{
     Episode, Memory, MemoryKind, MemorySource, MemoryStatus, NewMemory, Provenance, Relationship, Usage,
 };
 pub use sqlite::SqliteStore;
-pub use store::{ALL_SCOPES, Filter, MemoryStore};
+pub use store::{Filter, MemoryStore};
 pub use uuid::Uuid;
 pub use working::WorkingMemory;

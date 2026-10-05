@@ -7,9 +7,6 @@ use uuid::Uuid;
 
 use crate::{Episode, Memory, MemoryKind, MemoryStatus, Relationship, Usage};
 
-/// Scope value that matches every scope.
-pub const ALL_SCOPES: &str = "*";
-
 /// Which memories to list.
 #[derive(Debug, Clone, Default)]
 pub struct Filter {

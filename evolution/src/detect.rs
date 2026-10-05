@@ -33,13 +33,36 @@ pub struct Thresholds {
     pub corrections: usize,
     /// Runs sharing the same tool sequence.
     pub sequence_runs: usize,
-    /// Plan runs with this many replans.
+    /// Plan runs with this many replans...
     pub replans: u32,
+    /// ...or this many retries...
+    pub plan_retries: u32,
+    /// ...or this many failed verifications count as troubled.
+    pub plan_verification_failures: u32,
+    /// Troubled plan runs needed before it's a pattern.
+    pub plan_runs: usize,
+    /// A skill used at least this often...
+    pub skill_min_uses: u64,
+    /// ...with reliability below this is failing.
+    pub skill_reliability: f32,
 }
 
 impl Default for Thresholds {
     fn default() -> Self {
-        Self { heavy_tool_calls: 8, heavy_model_calls: 6, heavy_runs: 2, repeated_error: 3, corrections: 3, sequence_runs: 3, replans: 2 }
+        Self {
+            heavy_tool_calls: 8,
+            heavy_model_calls: 6,
+            heavy_runs: 2,
+            repeated_error: 3,
+            corrections: 3,
+            sequence_runs: 3,
+            replans: 2,
+            plan_retries: 3,
+            plan_verification_failures: 2,
+            plan_runs: 2,
+            skill_min_uses: 3,
+            skill_reliability: 0.4,
+        }
     }
 }
 
@@ -86,7 +109,8 @@ pub fn detect(runs: &[RunRecord], skills: &[SkillHealth], t: &Thresholds) -> Vec
         out.push(Opportunity {
             kind: "repeated_error".into(),
             problem: format!("the same error happened in {} runs: {error}", rs.len()),
-            categories: vec![Category::Skill, Category::Workflow, Category::Prompt],
+            // A recurring error may also be a bug in the agent itself.
+            categories: vec![Category::Skill, Category::Workflow, Category::Prompt, Category::Code],
             evidence: ids(&rs),
             details: json!({ "error": error, "tasks": tasks(&rs) }),
         });
@@ -116,7 +140,7 @@ pub fn detect(runs: &[RunRecord], skills: &[SkillHealth], t: &Thresholds) -> Vec
     }
 
     // A learned skill keeps failing: the skill, its retrieval or the workflow is wrong.
-    for s in skills.iter().filter(|s| s.uses >= 3 && s.reliability < 0.4) {
+    for s in skills.iter().filter(|s| s.uses >= t.skill_min_uses && s.reliability < t.skill_reliability) {
         let rs: Vec<&RunRecord> = runs.iter().filter(|r| r.skills_used.iter().any(|u| u.trim_end_matches(" (trial)") == s.name)).collect();
         out.push(Opportunity {
             kind: "failing_skill".into(),
@@ -128,8 +152,14 @@ pub fn detect(runs: &[RunRecord], skills: &[SkillHealth], t: &Thresholds) -> Vec
     }
 
     // Plans that needed replanning or many retries: the planning workflow could be better.
-    let troubled: Vec<&RunRecord> = runs.iter().filter(|r| r.kind == RunKind::Plan && (r.replans >= t.replans || r.retries >= 3)).collect();
-    if troubled.len() >= 2 {
+    let troubled: Vec<&RunRecord> = runs
+        .iter()
+        .filter(|r| {
+            r.kind == RunKind::Plan
+                && (r.replans >= t.replans || r.retries >= t.plan_retries || r.verification_failures >= t.plan_verification_failures)
+        })
+        .collect();
+    if troubled.len() >= t.plan_runs {
         out.push(Opportunity {
             kind: "plans_need_rework".into(),
             problem: format!("{} plans needed replanning or many retries", troubled.len()),

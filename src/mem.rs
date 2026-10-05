@@ -310,6 +310,7 @@ impl Mem {
                 }
                 Ok(format!("corrected [{}], now v{v}", m.short_id()))
             }
+            "events" => self.events_text(),
             "approve" => self.run(self.manager.approve(rest)),
             "reject" => self.run(self.manager.reject(rest)),
             "working" if rest == "clear" => {
@@ -397,7 +398,28 @@ impl Mem {
         Ok(list.iter().map(|m| format!("[{}] {} — {}", m.short_id(), m.scope, m.content)).collect::<Vec<_>>().join("\n"))
     }
 
-    fn inspect_text(&self, m: &Memory) -> Result<String, String> {
+    /// `/memory events`: what happened to memories lately, newest last.
+    fn events_text(&self) -> Result<String, String> {
+        let events = self.run(self.manager.recent_events(30))?;
+        if events.is_empty() {
+            return Ok("nothing has happened yet".into());
+        }
+        Ok(events
+            .iter()
+            .rev()
+            .map(|e| {
+                let id = e.memory_id.map_or(String::new(), |id| format!(" [{}]", &id.to_string()[..8]));
+                let states = match (&e.from_state, &e.to_state) {
+                    (Some(a), Some(b)) => format!(" ({a} → {b})"),
+                    _ => String::new(),
+                };
+                format!("{} {}{id}{states}: {}", e.created_at.with_timezone(&chrono::Local).format("%m-%d %H:%M"), e.kind, e.reason)
+            })
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+
+    pub fn inspect_text(&self, m: &Memory) -> Result<String, String> {
         let i = self.run(self.manager.inspect(m.id))?;
         let m = &i.memory;
         let fmt = |t: chrono::DateTime<chrono::Utc>| t.format("%Y-%m-%d %H:%M").to_string();

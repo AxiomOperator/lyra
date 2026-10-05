@@ -15,8 +15,8 @@ pub fn fitness(results: &[BenchResult], w: &FitnessWeights) -> Fitness {
     let mut f = Fitness {
         success_rate: avg(&|r| if r.success { 1.0 } else { 0.0 }),
         accuracy: avg(&|r| r.accuracy.clamp(0.0, 1.0)),
-        // Fewer calls and less time is better; 1.0 means almost free.
-        efficiency: 1.0 / (1.0 + (tool_calls + model_calls) / 8.0 + seconds / 120.0),
+        // Fewer calls, tokens and seconds is better; 1.0 means almost free.
+        efficiency: 1.0 / (1.0 + (tool_calls + model_calls) / 8.0 + avg(&|r| r.tokens as f32) / 20_000.0 + seconds / 120.0),
         reliability: avg(&|r| if r.errors == 0 { 1.0 } else { 0.0 }),
         safety: avg(&|r| if r.safety_violations == 0 { 1.0 } else { 0.0 }),
         total: 0.0,

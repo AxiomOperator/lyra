@@ -265,7 +265,7 @@ fn review_inner(env: &Env, done: &mut Done) -> Result<(), String> {
     let skill_list: Vec<(String, String)> = skills.into_iter().map(|(h, instructions)| (h.name, instructions)).collect();
     let ctx = evolver::Context { behavior: &behavior, workflows: &workflows, tools: &tool_list, skills: &skill_list };
     let mut created: Vec<Candidate> = Vec::new();
-    for op in ops.iter().take(3) {
+    for op in ops.iter().take(ev.manager.settings.max_problems.max(1)) {
         done.notes.push(format!("problem: {}", op.problem));
         let allowed: Vec<Category> = op
             .categories
@@ -338,6 +338,7 @@ fn auto_deploy(env: &Env, created: Vec<Candidate>, done: &mut Done) -> Result<()
         }
         let score = |c: &Candidate| c.validation.as_ref().and_then(|v| v.fitness_after.as_ref()).map_or(0.0, |f| f.total);
         if let Some(best) = tested.into_iter().max_by(|a, b| score(a).total_cmp(&score(b))) {
+            let best = ev.manager.set_status(best, CandidateStatus::Approved, "approved automatically: it beat the baseline")?;
             let note = deploy(env, best, "auto: beat the baseline", done)?;
             done.notes.push(format!("{note} (on its own)"));
         }
@@ -892,7 +893,7 @@ fn sandboxed(env: &Env, v: &Variant, name: &str, arguments: &str, r: &mut BenchR
     }
     match &env.tools {
         Some(tools) if tools::is_read_only(name) => {
-            let text = tools.run(name, arguments, CallContext { run: None, call_id: "" });
+            let text = tools.run(name, arguments, CallContext::new(None, ""));
             let value: Value = serde_json::from_str(&text).unwrap_or(Value::String(text));
             if value.get("error").is_some() {
                 r.errors += 1;
@@ -931,6 +932,9 @@ fn approve_inner(env: &Env, arg: &str, done: &mut Done) -> Result<String, String
     if matches!(c.status, CandidateStatus::Deployed | CandidateStatus::Rejected | CandidateStatus::RolledBack) {
         return Err(format!("candidate {} is {}", c.short(), c.status));
     }
+    if c.level.policy() == lyra_evolution::Policy::Never {
+        return Err(format!("{} changes are never made by evolution", c.level));
+    }
     // The validation lab comes before promotion: tested, passing, and not
     // worse than what's running (unless the user insists).
     let Some(v) = &c.validation else {
@@ -951,6 +955,7 @@ fn approve_inner(env: &Env, arg: &str, done: &mut Done) -> Result<String, String
             c.short()
         ));
     }
+    let c = ev.manager.set_status(c, CandidateStatus::Approved, if force { "approved by the user despite its benchmark" } else { "approved by the user" })?;
     if let Change::Code { base_commit, diff } = c.change.clone() {
         let lab = code_lab(ev)?;
         let message = format!("evolution: {}\n\n{}", c.problem, c.rationale);
@@ -1078,7 +1083,13 @@ fn propose_code_inner(env: &Env, problem: &str, done: &mut Done) -> Result<(), S
     let lab = code_lab(ev)?;
     let base = lab.head()?;
     let files = lab.files()?;
-    let outline = files.iter().map(|f| lab.outline(&base, f)).collect::<Vec<_>>().join("\n");
+    // Protected files (the evolution system, safety checks) aren't offered.
+    let outline = files
+        .iter()
+        .filter(|f| !lab::PROTECTED.iter().any(|p| f.starts_with(p) || **f == p.trim_end_matches('/')))
+        .map(|f| lab.outline(&base, f))
+        .collect::<Vec<_>>()
+        .join("\n");
     let errors: Vec<String> = ev.manager.runs(ev.manager.settings.window)?.into_iter().flat_map(|r| r.errors).take(10).collect();
     let mut brief = format!("Problem: {problem}\n");
     if !errors.is_empty() {
@@ -1102,6 +1113,9 @@ fn propose_code_inner(env: &Env, problem: &str, done: &mut Done) -> Result<(), S
     let diff = evolver::parse_diff(&reply)?;
     if lyra_evolution::safety_scan(&diff).is_some() {
         return Err("the patch looks like it contains a secret".into());
+    }
+    if let Some(why) = lab::refuse(&diff) {
+        return Err(why);
     }
     let c = ev.manager.propose_code(problem, &pick.plan, &base, &diff)?;
     done.notes.push(format!(

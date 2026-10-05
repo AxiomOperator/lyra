@@ -9,7 +9,11 @@ use crate::model::{FailureClass, RetryPolicy};
 /// Guess the class of a failure from its error text.
 pub fn classify(error: &str) -> FailureClass {
     let e = error.to_lowercase();
-    let any = |words: &[&str]| words.iter().any(|w| e.contains(w));
+    // Status codes must stand alone ("500", not "5000"); phrases may appear anywhere.
+    let tokens: Vec<&str> = e.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+    let any = |words: &[&str]| {
+        words.iter().any(|w| if w.chars().all(|c| c.is_ascii_digit()) { tokens.contains(w) } else { e.contains(w) })
+    };
     if any(&["timed out", "timeout", "deadline exceeded"]) {
         FailureClass::Timeout
     } else if any(&["rate limit", "429", "too many requests", "quota"]) {
@@ -22,8 +26,6 @@ pub fn classify(error: &str) -> FailureClass {
         FailureClass::Dependency
     } else if any(&["connection", "refused", "reset", "unavailable", "503", "502", "500", "temporar", "try again", "broken pipe"]) {
         FailureClass::Transient
-    } else if any(&["not verified", "verification"]) {
-        FailureClass::Verification
     } else {
         FailureClass::Unknown
     }
@@ -64,5 +66,12 @@ mod tests {
         assert_eq!(backoff(&p, 1).as_millis(), 1000);
         assert_eq!(backoff(&p, 3).as_millis(), 4000);
         assert_eq!(backoff(&RetryPolicy { backoff_ms: 50_000, ..p }, 5).as_millis(), 60_000);
+    }
+
+    #[test]
+    fn status_codes_must_stand_alone() {
+        assert_eq!(classify("HTTP 500 from upstream"), FailureClass::Transient);
+        assert_eq!(classify("wrote 5000 rows"), FailureClass::Unknown);
+        assert_eq!(classify("error 429"), FailureClass::RateLimit);
     }
 }

@@ -307,6 +307,10 @@ fn build_step(d: &StepDraft, id: Uuid, deps: Vec<Uuid>, ctx: &PlanningContext) -
         retry_policy.max_attempts = 1;
     }
     let title = if d.title.trim().is_empty() { key.clone() } else { d.title.trim().to_string() };
+    // P2: every step says what success looks like; fall back to its own words.
+    let expected_outcome = d.expected_outcome.clone().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| {
+        if d.description.trim().is_empty() { format!("{title} is done") } else { d.description.trim().to_string() }
+    });
     Ok(PlanStep {
         id,
         key,
@@ -315,7 +319,7 @@ fn build_step(d: &StepDraft, id: Uuid, deps: Vec<Uuid>, ctx: &PlanningContext) -
         status: StepStatus::Pending,
         dependencies: deps,
         action,
-        expected_outcome: d.expected_outcome.clone().filter(|s| !s.trim().is_empty()),
+        expected_outcome: Some(expected_outcome),
         verification,
         retry_policy,
         approval,

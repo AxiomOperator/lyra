@@ -25,18 +25,40 @@ impl Default for Weights {
     }
 }
 
-/// Days for a memory's recency to fall to 1/e, by kind. `[memory.half_life_days]`.
+/// Days for a memory's recency to fall to 1/e, by kind, and for facts in a
+/// few categories (by tag), which age at their own pace. `[memory.half_life_days]`.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(default)]
 pub struct HalfLives {
     pub working: f32,
     pub episodic: f32,
     pub semantic: f32,
+    /// Facts tagged `preference`: tastes change slowly.
+    pub preference: f32,
+    /// Facts tagged `decision`.
+    pub decision: f32,
+    /// Facts tagged `configuration` or `config`: setups change often.
+    pub configuration: f32,
 }
 
 impl Default for HalfLives {
     fn default() -> Self {
-        Self { working: 1.0, episodic: 30.0, semantic: 365.0 }
+        Self { working: 1.0, episodic: 30.0, semantic: 365.0, preference: 730.0, decision: 365.0, configuration: 90.0 }
+    }
+}
+
+impl HalfLives {
+    /// The half-life for a memory: its category's (by tag) for facts, else its kind's.
+    pub fn of(&self, m: &Memory) -> f32 {
+        let tagged = |names: &[&str]| m.tags.iter().any(|t| names.contains(&t.to_lowercase().as_str()));
+        match m.kind {
+            MemoryKind::Working => self.working,
+            MemoryKind::Episodic => self.episodic,
+            MemoryKind::Semantic if tagged(&["configuration", "config"]) => self.configuration,
+            MemoryKind::Semantic if tagged(&["preference"]) => self.preference,
+            MemoryKind::Semantic if tagged(&["decision"]) => self.decision,
+            MemoryKind::Semantic => self.semantic,
+        }
     }
 }
 
@@ -79,11 +101,7 @@ pub fn effective_importance(m: &Memory) -> f32 {
 /// `e^(-age / half_life)`, where age runs from the last update or use, and
 /// important or often-helpful memories decay more slowly (M10).
 pub fn recency(m: &Memory, h: &HalfLives, now: DateTime<Utc>) -> f32 {
-    let base = match m.kind {
-        MemoryKind::Working => h.working,
-        MemoryKind::Episodic => h.episodic,
-        MemoryKind::Semantic => h.semantic,
-    };
+    let base = h.of(m);
     let half_life = base * (0.5 + effective_importance(m)) * (1.0 + 0.1 * m.usage.helpful.min(10) as f32);
     let last = m.last_accessed_at.map_or(m.updated_at, |t| t.max(m.updated_at));
     let age_days = (now - last).num_seconds().max(0) as f32 / 86_400.0;
@@ -185,5 +203,16 @@ mod tests {
         let mut guess = sure.clone();
         guess.confidence = 0.5;
         assert!(score(&sure, 1.0, None, 0.5, &w, &h, now).total > score(&guess, 1.0, None, 0.5, &w, &h, now).total);
+    }
+
+    #[test]
+    fn categories_age_at_their_own_pace() {
+        let h = HalfLives::default();
+        let mut m = memory("user", "x");
+        assert_eq!(h.of(&m), 365.0);
+        m.tags = vec!["Configuration".into()];
+        assert_eq!(h.of(&m), 90.0);
+        m.tags = vec!["preference".into()];
+        assert_eq!(h.of(&m), 730.0);
     }
 }

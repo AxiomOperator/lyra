@@ -78,7 +78,6 @@ impl Plan {
 #[serde(rename_all = "snake_case")]
 pub enum PlanStatus {
     Draft,
-    Ready,
     Running,
     Paused,
     Completed,
@@ -144,7 +143,6 @@ impl PlanStep {
 #[serde(rename_all = "snake_case")]
 pub enum StepStatus {
     Pending,
-    Ready,
     Running,
     Completed,
     Failed,
@@ -261,7 +259,6 @@ pub enum ApprovalPolicy {
     #[default]
     Automatic,
     RequireApproval,
-    Forbidden,
 }
 
 /// Whether repeating a step is harmless (P15).

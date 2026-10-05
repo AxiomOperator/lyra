@@ -39,6 +39,24 @@ they aren't saved.";
 pub struct CallContext<'a> {
     pub run: Option<Uuid>,
     pub call_id: &'a str,
+    /// Scopes the caller may write (`prefix:*` patterns); `None` means any
+    /// allowed scope. Helper agents in plans are limited (M16).
+    pub write_scopes: Option<&'a [&'a str]>,
+}
+
+impl CallContext<'_> {
+    pub fn new(run: Option<Uuid>, call_id: &str) -> CallContext<'_> {
+        CallContext { run, call_id, write_scopes: None }
+    }
+
+    fn check_write(&self, scope: &str) -> Result<(), String> {
+        match self.write_scopes {
+            Some(allowed) if !allowed.iter().any(|p| p.strip_suffix('*').map_or(*p == scope, |prefix| scope.starts_with(prefix))) => {
+                Err(format!("this agent may not write to scope {scope:?} (only {})", allowed.join(", ")))
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 pub struct Tools {
@@ -55,7 +73,7 @@ pub fn is_destructive(name: &str) -> bool {
 
 /// Tools that only read.
 pub fn is_read_only(name: &str) -> bool {
-    matches!(name, "memory_recall" | "memory_list")
+    matches!(name, "memory_recall" | "memory_list" | "memory_inspect")
 }
 
 impl Tools {
@@ -162,8 +180,19 @@ impl Tools {
             function(
                 "memory_supersede",
                 "Replace a memory that is no longer true with a new one; the old one is kept as history.",
-                json!({ "id": id, "content": { "type": "string", "description": "What is true now." }, "reason": reason }),
+                json!({
+                    "id": id,
+                    "content": { "type": "string", "description": "What is true now." },
+                    "reason": reason,
+                    "source": { "type": "string", "enum": ["user", "conversation", "tool", "document", "agent"], "description": "Where the new fact comes from. Default: conversation." },
+                }),
                 &["id", "content"],
+            ),
+            function(
+                "memory_inspect",
+                "A memory's full record: versions, relationships (supersedes, contradicts, …), usage and history.",
+                json!({ "id": id }),
+                &["id"],
             ),
             function(
                 "memory_archive",
@@ -199,6 +228,7 @@ impl Tools {
             "memory_remember" => self.remember(arguments, ctx),
             "memory_recall" => self.recall(arguments, ctx),
             "memory_list" => self.list(arguments),
+            "memory_inspect" => self.inspect(arguments),
             "memory_correct" => self.correct(arguments, ctx),
             "memory_supersede" => self.supersede(arguments, ctx),
             "memory_archive" => self.set_status(arguments, ctx, true),
@@ -258,6 +288,7 @@ impl Tools {
             expires_at: a.expires_in_days.filter(|d| *d > 0.0).map(|d| Utc::now() + Duration::minutes((d * 1440.0) as i64)),
             ..NewMemory::fact("", &a.content, source)
         };
+        ctx.check_write(&new.scope)?;
         let vector = self.mem.embed_text(&a.content);
         let r = self.mem.run(self.mem.manager.remember(new, crate::mem::qv(&vector)))?;
         let (what, m) = match &r {
@@ -286,6 +317,16 @@ impl Tools {
         Ok(Value::Array(found.iter().map(|r| memory_json(&r.memory)).collect()))
     }
 
+    fn inspect(&self, arguments: &str) -> Result<Value, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            id: String,
+        }
+        let a: Args = parse(arguments)?;
+        let m = self.mem.run(self.mem.manager.find(&a.id))?;
+        Ok(json!({ "memory": self.mem.inspect_text(&m)? }))
+    }
+
     fn list(&self, arguments: &str) -> Result<Value, String> {
         #[derive(Deserialize)]
         struct Args {
@@ -310,6 +351,7 @@ impl Tools {
         }
         let a: Args = parse(arguments)?;
         let m = self.mem.run(self.mem.manager.find(&a.id))?;
+        ctx.check_write(&m.scope)?;
         let reason = a.reason.unwrap_or_else(|| "corrected".into());
         let v = self.mem.run(self.mem.manager.correct(m.id, &a.content, &reason, ctx.run))?;
         if let Some(e) = self.mem.embed_text(&a.content) {
@@ -324,15 +366,18 @@ impl Tools {
             id: String,
             content: String,
             reason: Option<String>,
+            source: Option<String>,
         }
         let a: Args = parse(arguments)?;
         let old = self.mem.run(self.mem.manager.find(&a.id))?;
+        ctx.check_write(&old.scope)?;
+        let source = a.source.as_deref().unwrap_or("conversation").parse().unwrap_or(MemorySource::Conversation);
         let new = NewMemory {
             kind: old.kind,
             tags: old.tags.clone(),
             provenance: provenance(ctx),
             importance: Some(old.importance),
-            ..NewMemory::fact(&old.scope, &a.content, MemorySource::Conversation)
+            ..NewMemory::fact(&old.scope, &a.content, source)
         };
         let vector = self.mem.embed_text(&a.content);
         let reason = a.reason.unwrap_or_else(|| "no longer true".into());
@@ -348,6 +393,7 @@ impl Tools {
         }
         let a: Args = parse(arguments)?;
         let m = self.mem.run(self.mem.manager.find(&a.id))?;
+        ctx.check_write(&m.scope)?;
         let reason = a.reason.unwrap_or_else(|| "asked by the assistant".into());
         let m = if archive {
             self.mem.run(self.mem.manager.archive(m.id, &reason, ctx.run))?
@@ -403,7 +449,7 @@ fn round2(x: f32) -> f64 {
 }
 
 fn provenance(ctx: CallContext) -> Provenance {
-    Provenance { run_id: ctx.run, tool_call_id: (!ctx.call_id.is_empty()).then(|| ctx.call_id.to_string()) }
+    Provenance { run_id: ctx.run, tool_call_id: (!ctx.call_id.is_empty()).then(|| ctx.call_id.to_string()), conversation_id: None }
 }
 
 fn function(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
@@ -451,8 +497,22 @@ mod tests {
         (rt, Tools::new(Arc::new(mem)))
     }
 
+    #[test]
+    fn helper_agents_only_write_their_scopes() {
+        let (_rt, t) = tools();
+        let scopes: &[&str] = &["agent", "project:*"];
+        let ctx = CallContext { run: None, call_id: "", write_scopes: Some(scopes) };
+        let denied: Value = serde_json::from_str(&t.run("memory_remember", r#"{"content":"The user likes tea.","scope":"user"}"#, ctx)).unwrap();
+        assert!(denied["error"].as_str().unwrap().contains("may not write"));
+        let ok: Value = serde_json::from_str(&t.run("memory_remember", r#"{"content":"Builds use cargo.","scope":"project:api"}"#, ctx)).unwrap();
+        assert_eq!(ok["result"], "remembered");
+        let id = ok["id"].as_str().unwrap();
+        let inspected = call(&t, "memory_inspect", &format!(r#"{{"id":"{id}"}}"#));
+        assert!(inspected["memory"].as_str().unwrap().contains("Builds use cargo."));
+    }
+
     fn call(t: &Tools, name: &str, args: &str) -> Value {
-        let ctx = CallContext { run: Some(Uuid::new_v4()), call_id: "call_1" };
+        let ctx = CallContext::new(Some(Uuid::new_v4()), "call_1");
         serde_json::from_str(&t.run(name, args, ctx)).unwrap()
     }
 
@@ -524,7 +584,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["memory_remember", "memory_recall", "memory_list", "memory_correct", "memory_supersede", "memory_archive", "memory_forget", "working_memory"]
+            ["memory_remember", "memory_recall", "memory_list", "memory_correct", "memory_supersede", "memory_inspect", "memory_archive", "memory_forget", "working_memory"]
         );
     }
 }

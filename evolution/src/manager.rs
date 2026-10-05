@@ -50,6 +50,8 @@ pub struct Settings {
     pub monitor_runs: usize,
     /// A drop in success rate this large counts as a regression.
     pub monitor_drop: f32,
+    /// Most problems one review proposes candidates for.
+    pub max_problems: usize,
 }
 
 impl Default for Settings {
@@ -61,6 +63,7 @@ impl Default for Settings {
             fitness: FitnessWeights::default(),
             monitor_runs: 10,
             monitor_drop: 0.15,
+            max_problems: 3,
         }
     }
 }
@@ -269,7 +272,7 @@ impl EvolutionManager {
                 updated_at: now,
             };
             self.save(&c)?;
-            self.event(Some(c.id), "proposed", format!("{} ({}): {}", c.change.summary(), c.level, c.problem), None, None, None)?;
+            self.event(Some(&c), "proposed", format!("{} ({}): {}", c.change.summary(), c.level, c.problem), None, None, None)?;
             out.push(c);
         }
         Ok(out)
@@ -293,7 +296,7 @@ impl EvolutionManager {
             updated_at: now,
         };
         self.save(&c)?;
-        self.event(Some(c.id), "proposed", format!("{} (code): {problem}", c.change.summary()), None, None, None)?;
+        self.event(Some(&c), "proposed", format!("{} (code): {problem}", c.change.summary()), None, None, None)?;
         Ok(c)
     }
 
@@ -322,7 +325,7 @@ impl EvolutionManager {
         c.status = status;
         c.updated_at = Utc::now();
         self.save(&c)?;
-        self.event(Some(c.id), status.as_str().as_str(), note.to_string(), None, None, None)?;
+        self.event(Some(&c), status.as_str().as_str(), note.to_string(), None, None, None)?;
         Ok(c)
     }
 
@@ -333,7 +336,7 @@ impl EvolutionManager {
         c.status = CandidateStatus::Testing;
         c.updated_at = Utc::now();
         self.save(&c)?;
-        self.event(Some(c.id), "tested", note, None, before, after)?;
+        self.event(Some(&c), "tested", note, None, before, after)?;
         Ok(c)
     }
 
@@ -395,7 +398,7 @@ impl EvolutionManager {
         c.status = CandidateStatus::Deployed;
         c.updated_at = Utc::now();
         self.save(&c)?;
-        self.event(Some(c.id), "deployed", format!("{} — {why}", c.change.summary()), Some(current.number), fb, fa)?;
+        self.event(Some(&c), "deployed", format!("{} — {why}", c.change.summary()), Some(current.number), fb, fa)?;
         // Other candidates for the same problem lose the selection.
         for other in self.candidates(500)?.into_iter().filter(|o| o.group == c.group && o.id != c.id) {
             if matches!(other.status, CandidateStatus::Proposed | CandidateStatus::Testing) {
@@ -435,7 +438,7 @@ impl EvolutionManager {
         c.status = CandidateStatus::Deployed;
         c.updated_at = Utc::now();
         self.save(&c)?;
-        self.event(Some(c.id), "deployed", reason, Some(current.number), fb, fa)?;
+        self.event(Some(&c), "deployed", reason, Some(current.number), fb, fa)?;
         for other in self.candidates(500)?.into_iter().filter(|o| o.group == c.group && o.id != c.id) {
             if matches!(other.status, CandidateStatus::Proposed | CandidateStatus::Testing) {
                 self.set_status(other, CandidateStatus::Rejected, &format!("{} was selected instead", c.short()))?;
@@ -531,7 +534,7 @@ impl EvolutionManager {
 
     fn event(
         &self,
-        candidate: Option<Uuid>,
+        candidate: Option<&Candidate>,
         kind: &str,
         description: String,
         old_generation: Option<u32>,
@@ -541,13 +544,15 @@ impl EvolutionManager {
         let new_generation = self.generations()?.first().map(|g| g.number);
         let e = EvolutionEvent {
             id: Uuid::new_v4(),
-            candidate,
+            candidate: candidate.map(|c| c.id),
             kind: kind.to_string(),
             description,
             old_generation,
             new_generation,
             fitness_before,
             fitness_after,
+            category: candidate.map(|c| c.change.category()),
+            evidence: candidate.map(|c| c.evidence.clone()).unwrap_or_default(),
             created_at: Utc::now(),
         };
         self.db(self.store.record(&e))

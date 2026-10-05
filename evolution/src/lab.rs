@@ -31,6 +31,40 @@ pub fn cargo_checks() -> Vec<Check> {
     ]
 }
 
+/// Paths a code patch may never touch: the evolution system itself and the
+/// safety checks, so evolution can't weaken its own guard rails.
+pub const PROTECTED: &[&str] = &["evolution/", "memory/src/safety.rs", "src/evolve.rs", "CLAUDE.md", ".git"];
+
+/// The files a unified diff touches (from its `---`/`+++` headers).
+pub fn touched(diff: &str) -> Vec<String> {
+    let mut files: Vec<String> = Vec::new();
+    for line in diff.lines() {
+        let Some(path) = line.strip_prefix("+++ ").or_else(|| line.strip_prefix("--- ")) else { continue };
+        let path = path.split('\t').next().unwrap_or("").trim();
+        if path == "/dev/null" {
+            continue;
+        }
+        let path = path.strip_prefix("a/").or_else(|| path.strip_prefix("b/")).unwrap_or(path).to_string();
+        if !files.contains(&path) {
+            files.push(path);
+        }
+    }
+    files
+}
+
+/// Why a patch may not be applied, if it touches something it mustn't.
+pub fn refuse(diff: &str) -> Option<String> {
+    for path in touched(diff) {
+        if path.starts_with('/') || path.split('/').any(|p| p == "..") {
+            return Some(format!("{path} is outside the repository"));
+        }
+        if let Some(p) = PROTECTED.iter().find(|p| path == p.trim_end_matches('/') || path.starts_with(*p)) {
+            return Some(format!("{path} is protected ({p}): evolution may not change its own guard rails"));
+        }
+    }
+    None
+}
+
 pub struct CodeLab {
     /// The source repository (a git checkout).
     pub repo: PathBuf,
@@ -102,6 +136,9 @@ impl CodeLab {
     /// Returns `(check, passed, output tail)`; the worktree is removed after.
     pub fn validate(&self, id: &str, base: &str, diff: &str, checks: &[Check]) -> Vec<(String, bool, String)> {
         let mut results = Vec::new();
+        if let Some(why) = refuse(diff) {
+            return vec![("protected paths".into(), false, why)];
+        }
         let dir = self.work.join(id);
         if let Err(e) = self.prepare(&dir, base, None) {
             return vec![("worktree".into(), false, e)];
@@ -128,6 +165,9 @@ impl CodeLab {
     /// Commit the patch on a new local branch `evolution/<id>` at `base`.
     /// The user's checkout and branches are untouched; nothing is pushed.
     pub fn branch(&self, id: &str, base: &str, diff: &str, message: &str) -> Result<String, String> {
+        if let Some(why) = refuse(diff) {
+            return Err(why);
+        }
         let name = format!("evolution/{id}");
         let dir = self.work.join(format!("{id}-branch"));
         self.prepare(&dir, base, Some(&name))?;
@@ -253,6 +293,13 @@ mod tests {
         let bad = lab.validate("c3", &head, "--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-nope\n+x\n", &pass);
         assert_eq!(bad[0].0, "git apply");
         assert!(!bad[0].1);
+
+        assert_eq!(touched(DIFF), ["lib.rs"]);
+        assert!(refuse(DIFF).is_none());
+        let guard = "--- a/evolution/src/manager.rs\n+++ b/evolution/src/manager.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        assert!(refuse(guard).unwrap().contains("protected"));
+        assert!(refuse("--- a/../x\n+++ b/../x\n@@ -1 +1 @@\n-a\n+b\n").unwrap().contains("outside"));
+        assert_eq!(lab.validate("c4", &head, guard, &pass)[0].0, "protected paths");
 
         let branch = lab.branch("c1", &head, DIFF, "evolution: rename a to b").unwrap();
         assert_eq!(branch, "evolution/c1");

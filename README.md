@@ -92,8 +92,18 @@ proposes memories, the manager decides. Storage is one SQLite file,
   Each memory records its scope, kind, source, the run it came from, importance
   and confidence (what you say outright is trusted more than what's inferred).
 - **No duplicates, no silent overwrites.** Saying something again reconfirms the
-  existing memory. A changed fact *supersedes* the old one, which is kept and
-  linked; a fixed typo is a new *version*. Nothing is overwritten without history.
+  existing memory and makes it a little more trusted. A changed fact *supersedes*
+  the old one, which is kept and linked; a fixed typo is a new *version*.
+  Nothing is overwritten without history.
+- **Relating new facts.** When the model saves a memory, similar ones are shown
+  to the model, which says how they relate: an update supersedes the old memory,
+  a contradiction is flagged (`/memory`), and support or relatedness becomes a
+  link that ranking uses (supported memories rank higher, contradicted lower).
+- **Projects.** Memories about a project live in `project:<name>`. The current
+  project (`[memory] project`; by default the git checkout lyra was started in;
+  `/memory project` to switch) decides what's recalled: your memories, the
+  agent's, and the current project's, never another project's unless asked for
+  by scope.
 - **Recall.** Before each message the *context compiler* ranks candidate memories
   by meaning (vectors from the `[embedding]` model), keywords, importance,
   confidence, recency and relationships, drops near-duplicates and anything that
@@ -102,24 +112,34 @@ proposes memories, the manager decides. Storage is one SQLite file,
   correction) marks them helpful or not, which feeds back into ranking.
   Without an embedding model, recall uses keywords only.
 - **Working memory.** The model keeps the current goal, plan and scratch values
-  with `working_memory`; identifiers you mention are tracked too. It's shown in
-  the prompt and the panel, and never saved.
-- **Episodes.** Multi-step tasks (and `/memory episode`) are summarized as
-  episodes: what happened and how it ended, linked to the run.
+  with `working_memory`; identifiers either side mentions and recent tool
+  results are tracked too. It's shown in the prompt and the panel, and never
+  saved. (The recent messages themselves are already in the prompt.)
+- **Episodes.** Multi-step tasks, finished plans and `/memory episode` are
+  summarized as episodes: what happened and how it ended, when it started,
+  linked to the run or plan. A finished plan's results also go through capture,
+  so durable facts it discovered are remembered.
 - **Upkeep.** Expired memories are archived, old ones fade in ranking
-  (half-lives per kind), and `/memory curate` (or `curate = "daily"`/`"weekly"`)
-  proposes consolidating duplicates and flags contradictions.
+  (half-lives per kind, and per category for facts tagged `preference`,
+  `decision` or `configuration`), and `/memory curate` (or `curate =
+  "daily"`/`"weekly"`, checked while lyra runs too) proposes consolidating
+  duplicates and flags contradictions.
+- **Provenance.** Each memory records its source, the run and tool call it came
+  from, and the session (conversation) it was saved in.
 - **Safety.** Passwords, tokens, keys and other credentials are refused before
-  anything is stored. `allowed_scopes` limits which scopes lyra may use.
+  anything is stored. `allowed_scopes` limits which scopes lyra may use; in
+  plans, the `archivist` helper may only write the agent and project scopes.
 
-Model tools: `memory_remember`, `memory_recall`, `memory_list`, `memory_correct`,
-`memory_supersede`, `memory_archive`, `memory_forget`, `working_memory`.
+Model tools: `memory_remember`, `memory_recall`, `memory_list`, `memory_inspect`,
+`memory_correct`, `memory_supersede`, `memory_archive`, `memory_forget`,
+`working_memory`. Ctrl-L reloads the `[memory]` settings and embedding model.
 
 Commands: `/memory` (stats and what's waiting for approval), `/memory search <q>`
 (with each ranking signal), `/memory list [scope]`, `/memory inspect <id>`
 (provenance, links, versions, history), `/memory correct <id> <text>`,
 `/memory forget|archive|restore|purge <id>`, `/memory approve|reject <id>`,
-`/memory working [clear]`, `/memory curate`, `/memory episode`.
+`/memory working [clear]`, `/memory curate`, `/memory episode`,
+`/memory events` (what happened to memories lately), `/memory project [name|none]`.
 
 ```toml
 [memory]
@@ -130,6 +150,11 @@ capture = "auto"             # auto | off
 maintenance = "propose"      # off | propose | auto
 curate = "manual"            # manual | daily | weekly
 inject = true                # add relevant memories to each prompt
+project = "auto"             # auto (the git checkout's name) | none | a name
+same_wording = 0.85          # word overlap that counts as the same memory
+same_meaning = 0.95          # vector similarity that counts as the same memory
+duplicate_wording = 0.6      # word overlap the curator flags as a duplicate pair
+stale_days = 180             # unused this long (and not important) is stale
 
 [memory.context]             # the context compiler
 max_tokens = 600
@@ -149,6 +174,9 @@ relationship = 0.05
 working = 1
 episodic = 30
 semantic = 365
+preference = 730             # facts tagged preference
+decision = 365               # facts tagged decision
+configuration = 90           # facts tagged configuration or config
 ```
 
 ## Plans (planning and execution)
@@ -166,7 +194,17 @@ A step's action is one of:
 - **reasoning**: the model works on it, using tools as needed.
 - **workflow**: follow one of your learned skills.
 - **subagent**: a helper with its own scoped task and tools (`researcher` is
-  read-only; `archivist` can also record in memory).
+  read-only; `archivist` can also record in memory, in the agent and project
+  scopes only). Its report ends with a status, so a helper that couldn't do
+  the task fails the step instead of passing it on.
+
+Every step has an expected outcome, and says whether repeating it is safe.
+A *safe* step only gets read-only tools; a step that may change things is
+*conditional* (or *unsafe*) and runs on its own. If an attempt changed
+something and then failed, it isn't simply retried: the replanner sees what
+was already done. Tool steps that change things get an operation id, and a
+completed operation is recorded, so a retry or a resume after a restart
+reuses its result instead of acting twice.
 
 `/plan run` executes it:
 
@@ -181,17 +219,23 @@ A step's action is one of:
   completed work is kept, and the plan's version goes up;
 - **destructive tools** (e.g. `memory_forget`) only run as their own tool steps
   and **pause the plan for approval** of the exact call; changed arguments need
-  approval again. Reasoning steps can't use them.
+  approval again. Reasoning steps can't use them. When the goal itself is
+  destructive or external, every step that changes things needs approval.
+- a goal with **open questions** isn't run until you answer them with a
+  clearer request, or say `/plan run anyway`;
 - **budgets** (model calls, tool calls, replans, tokens, time) are enforced;
-  running out pauses the plan;
+  a step stops within what's left, and running out pauses the plan until
+  `/plan budget raise` gives it more;
 - a **checkpoint** is saved before anything that changes things;
 - at the end the **goal** is judged against its success criteria: a plan whose
   steps all finished can still be only *partial*.
 
 If lyra stops mid-run, the plan is found on the next start; a step that was
-running is only rerun if repeating it is safe, otherwise it waits for
-`/plan retry` or `/plan skip`. A finished plan is recorded as a memory episode,
-and recoveries (retries, replans) are offered to the skill reviewer.
+running is only rerun if repeating it is safe or its operation is on record,
+otherwise it waits for `/plan retry` or `/plan skip`. A finished plan is
+recorded as a memory episode, its results go through memory capture,
+recoveries (retries, replans) are offered to the skill reviewer, and its full
+telemetry goes to evolution; your next message counts as feedback on it.
 
 Planning, verification, memory capture, skill reviews and curation all make
 internal JSON calls to the chat model. With a reasoning model these can think for
@@ -201,8 +245,13 @@ to skip thinking for them (`chat_template_kwargs.enable_thinking`, understood by
 llama.cpp and vLLM for Qwen3-style models), several times faster.
 
 Commands: `/plan <request>`, `/plan` (show), `/plans`, `/plan run|resume [id]`,
-`/plan approve <step>`, `/plan retry|skip <step>`, `/plan cancel`,
-`/plan events` (the full event log with metrics).
+`/plan run anyway`, `/plan approve <step>`, `/plan retry|skip <step>`,
+`/plan cancel`, `/plan events` (the full event log with metrics),
+`/plan budget [raise]`, `/plan checkpoints`, `/plan revisions`.
+
+Steps are stored with their plan (one JSON column) and every attempt,
+verification, revision, checkpoint, approval and operation has its own table;
+dependencies and resource locks are part of each step.
 
 ```toml
 [planning]
@@ -341,30 +390,46 @@ evidence about its own runs, progressively and reversibly. Built following
   tools exist), then **benchmarks** it: recent tasks (the evidence first) are
   replayed headless with the current agent and with the candidate. Only
   read-only tools really run (changes are simulated, destructive calls count
-  as safety violations). The model judges each answer against the task and,
-  when you corrected the original, your correction. The fitness score weighs
-  success, accuracy, efficiency, reliability and safety.
-- **Deploy and roll back.** Each deployment is a new **generation** with a
-  full snapshot of `behavior.toml`, the workflows and the tools; deploying one
-  candidate rejects its competitors. `/evolve rollback` restores any earlier
-  generation, and the rollback is itself a generation.
-- **Monitor.** Once a new generation has enough judged runs, its success rate
-  is compared with its parent's; a clear drop is flagged, or rolled back in
-  auto mode.
+  as safety violations). Changes that only affect planning (step rounds,
+  skill search, verification, workflows) are measured by planning and running
+  the tasks on a throwaway plan store instead. The model judges each answer
+  against the task and, when you corrected the original, your correction. The
+  fitness score weighs success, accuracy, efficiency (calls, tokens, time),
+  reliability and safety. `/evolve compare` tests every open candidate for a
+  problem and ranks them.
+- **Deploy and roll back.** Only a tested candidate that passed its checks
+  can be approved, and one that didn't beat the current agent needs
+  `/evolve approve <id> force`. Each deployment is a new **generation** with a
+  full snapshot of `behavior.toml`, the workflows and the tools (skill
+  revisions are generations too, recording the skill's versions); deploying
+  one candidate rejects its competitors. `/evolve rollback` restores any
+  earlier generation, skill versions included, and the rollback is itself a
+  generation.
+- **Monitor.** Once a new generation has enough runs, it's compared with its
+  parent: success rate over judged runs, and how often answers get corrected
+  and how many errors runs hit over all of them. A clear drop is flagged, or
+  rolled back in auto mode.
 - **Policy.** Each change has a level that sets what may happen without you.
-  In `auto` mode, guideline changes that beat the baseline deploy on their own.
-  Configuration, workflow, tool and skill changes always wait for
+  In `auto` mode, guideline and skill changes that beat the baseline deploy on
+  their own. Configuration, workflow and tool changes always wait for
   `/evolve approve`. Code is manual. Architecture is never touched.
+- **History.** Every proposal, test, approval, deployment, rejection and
+  rollback is an event with its category, evidence and fitness; the history
+  is append-only, enforced by the database.
 
 **Code evolution** is off unless `source_repo` points at a git checkout of
 lyra. `/evolve code <problem>` then has the model pick files and write a
 patch against the current commit. `/evolve test` applies it in a throwaway
-git worktree and runs clippy and the tests there. Approving commits it to a
-local branch `evolution/<id>`. Nothing is merged or pushed, and the running
-binary is never changed; review and merge the branch yourself.
+git worktree and runs clippy and the tests there. Patches may not touch the
+evolution system or the safety checks (`evolution/`, `src/evolve.rs`,
+`memory/src/safety.rs`) or anything outside the repository. Approving commits
+it to a local branch `evolution/<id>`. Nothing is merged or pushed, and the
+running binary is never changed; review and merge the branch yourself. A
+review suggests `/evolve code` when an error keeps recurring.
 
 Commands: `/evolve` (status), `/evolve review`, `/evolve list`,
-`/evolve show <id>`, `/evolve test <id>`, `/evolve approve|reject <id>`,
+`/evolve show <id>`, `/evolve test <id>`, `/evolve compare <id>`,
+`/evolve approve <id> [force]`, `/evolve reject <id>`,
 `/evolve rollback [generation]`, `/evolve generations`, `/evolve history`,
 `/evolve runs`, `/evolve code <problem>`.
 
@@ -377,6 +442,7 @@ window = 50                 # recent runs the detectors look at
 benchmark_tasks = 3         # tasks replayed per benchmark
 monitor_runs = 10           # judged runs needed before comparing generations
 monitor_drop = 0.15         # success-rate drop that counts as a regression
+max_problems = 3            # problems a review proposes candidates for
 # source_repo = "~/Projects/lyra"   # enables code evolution
 
 [evolution.thresholds]
@@ -386,7 +452,12 @@ heavy_runs = 2
 repeated_error = 3
 corrections = 3
 sequence_runs = 3
-replans = 2
+replans = 2                 # a plan run is troubled with this many replans,
+plan_retries = 3            # retries,
+plan_verification_failures = 2   # or failed verifications
+plan_runs = 2               # troubled plan runs before it's a problem
+skill_min_uses = 3          # a skill used this often
+skill_reliability = 0.4     # with reliability below this is failing
 
 [evolution.fitness]
 success = 0.4
@@ -421,7 +492,7 @@ The chat sits on the left; on terminals at least 100 columns wide, panels on the
 
 - **Session**: what the assistant is doing right now (idle / waiting / thinking / streaming / running a tool, with a timer), model and server, replies, last reply's TTFT and speed, tokens, cache hit rate and cost.
 - **Agent**: system prompt size, loaded SOUL/USER/AGENT files, tools, and embedding/reranker health.
-- **Memory**: active memories by kind, vector coverage, what needs approval (proposals, contradictions, duplicates, expired), working memory (goal, plan, notes), how many memories the last reply used, and the most recent memories (`?` marks unsure ones).
+- **Memory**: active memories by kind, vector coverage, the current project, what needs approval (proposals, contradictions, duplicates, expired), working memory (goal, plan, notes, the last tool result), how many memories the last reply used, and the most recent memories (`?` marks unsure ones).
 - **Skills**: learning mode, average reliability, what needs review (proposals, conflicts, duplicates, failing or stale skills), the last reply's skills, and each active skill's reliability and use count.
 - **Plan**: the current plan's goal, steps with their status (✓ ▸ ⏸ ✗ ○, ⚠ for approval), budget use and any note.
 - **Evolution**: the generation and mode, runs recorded, success rate and corrections, calls per run, what has evolved (guidelines, workflows, composite tools, changed settings), candidates waiting for review, the last review, and what evolution is doing right now.

@@ -48,6 +48,8 @@ impl Memory {
 pub struct Provenance {
     pub run_id: Option<Uuid>,
     pub tool_call_id: Option<String>,
+    /// The conversation (a lyra session) it came from.
+    pub conversation_id: Option<Uuid>,
 }
 
 /// What a new memory needs; the manager fills in the rest.

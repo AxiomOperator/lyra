@@ -290,6 +290,9 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect, width: usize) {
                 let text = format!("{} plan steps · {} notes", w.plan.len(), w.values.len());
                 lines.push(Line::from(vec![label("working"), Span::raw(text)]).cyan());
             }
+            if let Some(last) = w.recent_tools.front() {
+                lines.push(Line::from(vec![label("tool"), Span::styled(truncate(last, width.saturating_sub(8)), dim)]));
+            }
             if app.totals.replies > 0 {
                 let n = app.applied_memories.len();
                 let text = format!("last reply used {n} memor{}", if n == 1 { "y" } else { "ies" });

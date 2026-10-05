@@ -17,10 +17,14 @@ use crate::evolve::Evolution;
 use crate::learn::Learning;
 use crate::tools::{CallContext, Tools};
 
+/// Scopes each helper agent may write to (M16); unlisted agents write nowhere
+/// they couldn't anyway. Facts about the user come from the user, not agents.
+const AGENT_SCOPES: &[(&str, &[&str])] = &[("archivist", &["agent", "project:*"])];
+
 /// Helper agents for subagent steps (P13): each sees only its task and these tools.
 pub(crate) const AGENTS: &[(&str, &str, &[&str])] = &[
-    ("researcher", "looks things up in memory and reports what it finds (read-only)", &["memory_recall", "memory_list"]),
-    ("archivist", "records findings and decisions in memory", &["memory_recall", "memory_list", "memory_remember", "memory_correct", "memory_supersede"]),
+    ("researcher", "looks things up in memory and reports what it finds (read-only)", &["memory_recall", "memory_list", "memory_inspect"]),
+    ("archivist", "records findings and decisions in memory (agent and project scopes)", &["memory_recall", "memory_list", "memory_inspect", "memory_remember", "memory_correct", "memory_supersede"]),
 ];
 
 /// How risky each tool is. Declared here, by the runtime, never by the model.
@@ -63,10 +67,11 @@ impl LyraRuntime {
             .collect()
     }
 
-    fn run_tool(&self, name: &str, arguments: &str, call_id: &str) -> String {
+    fn run_tool(&self, name: &str, arguments: &str, call_id: &str, agent: Option<&str>) -> String {
+        let write_scopes = agent.and_then(|a| AGENT_SCOPES.iter().find(|(n, _)| *n == a)).map(|(_, scopes)| *scopes);
         match &self.tools {
             Some(tools) if !self.forbidden_tools.iter().any(|f| f == name) => {
-                tools.run(name, arguments, CallContext { run: None, call_id })
+                tools.run(name, arguments, CallContext { run: None, call_id, write_scopes })
             }
             _ => json!({ "error": format!("tool {name} isn't available") }).to_string(),
         }
@@ -154,7 +159,7 @@ impl Runtime for LyraRuntime {
 
     fn call_tool(&self, tool: &str, arguments: &Value, operation: Option<Uuid>) -> Result<Value, String> {
         let call_id = operation.map(|o| o.to_string()).unwrap_or_default();
-        let text = self.run_tool(tool, &arguments.to_string(), &call_id);
+        let text = self.run_tool(tool, &arguments.to_string(), &call_id, None);
         let value: Value = serde_json::from_str(&text).unwrap_or(Value::String(text));
         match value.get("error").and_then(Value::as_str) {
             Some(e) => Err(e.to_string()),
@@ -207,7 +212,7 @@ impl Runtime for LyraRuntime {
                 let result = if allowed {
                     out.tool_calls += 1;
                     out.tools_used.push(name.to_string());
-                    let result = self.run_tool(name, arguments, call["id"].as_str().unwrap_or(""));
+                    let result = self.run_tool(name, arguments, call["id"].as_str().unwrap_or(""), task.agent.as_deref());
                     // Record what changed (successfully), so a retry doesn't redo it.
                     let ok = serde_json::from_str::<Value>(&result).map_or(true, |v| v.get("error").is_none());
                     if risk(name) != Risk::ReadOnly && ok {
@@ -259,7 +264,7 @@ pub(crate) fn chat(url: &str, model: &str, messages: &[Value], tools: &[Value]) 
 
 pub fn icon(status: StepStatus) -> &'static str {
     match status {
-        StepStatus::Pending | StepStatus::Ready => "○",
+        StepStatus::Pending => "○",
         StepStatus::Running => "▸",
         StepStatus::Completed => "✓",
         StepStatus::Failed => "✗",

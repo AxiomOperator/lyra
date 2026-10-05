@@ -66,7 +66,7 @@ pub fn ready_steps(steps: &[PlanStep]) -> Vec<&PlanStep> {
     order
         .iter()
         .filter_map(|id| by_id.get(id).copied())
-        .filter(|s| matches!(s.status, StepStatus::Pending | StepStatus::Ready))
+        .filter(|s| s.status == StepStatus::Pending)
         .filter(|s| s.dependencies.iter().all(|d| by_id.get(d).is_some_and(|dep| dep.is_settled())))
         .collect()
 }
@@ -77,7 +77,7 @@ pub fn blocked_steps(steps: &[PlanStep]) -> Vec<&PlanStep> {
     let by_id: HashMap<Uuid, &PlanStep> = steps.iter().map(|s| (s.id, s)).collect();
     steps
         .iter()
-        .filter(|s| matches!(s.status, StepStatus::Pending | StepStatus::Ready))
+        .filter(|s| s.status == StepStatus::Pending)
         .filter(|s| {
             s.dependencies.iter().any(|d| {
                 by_id.get(d).is_some_and(|dep| matches!(dep.status, StepStatus::Failed | StepStatus::Cancelled | StepStatus::Blocked))

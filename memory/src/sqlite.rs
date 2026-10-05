@@ -55,8 +55,8 @@ impl MemoryStore for SqliteStore {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO memories (id, scope, kind, content, tags, source, importance, confidence, status,
-                                   created_at, updated_at, last_accessed_at, expires_at, run_id, tool_call_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                   created_at, updated_at, last_accessed_at, expires_at, run_id, tool_call_id, conversation_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(m.id.to_string())
         .bind(&m.scope)
@@ -73,6 +73,7 @@ impl MemoryStore for SqliteStore {
         .bind(m.expires_at.map(rfc3339))
         .bind(m.provenance.run_id.map(|r| r.to_string()))
         .bind(&m.provenance.tool_call_id)
+        .bind(m.provenance.conversation_id.map(|c| c.to_string()))
         .execute(&mut *tx)
         .await?;
         sqlx::query("INSERT INTO memories_fts (id, content) VALUES (?, ?)")
@@ -87,7 +88,7 @@ impl MemoryStore for SqliteStore {
     async fn get(&self, id: Uuid) -> Result<Option<Memory>> {
         let row = sqlx::query(
             "SELECT m.id, m.scope, m.kind, m.content, m.tags, m.source, m.importance, m.confidence,
-                    m.status, m.created_at, m.updated_at, m.last_accessed_at, m.expires_at, m.run_id, m.tool_call_id
+                    m.status, m.created_at, m.updated_at, m.last_accessed_at, m.expires_at, m.run_id, m.tool_call_id, m.conversation_id
              FROM memories m WHERE m.id = ?",
         )
         .bind(id.to_string())
@@ -157,7 +158,7 @@ impl MemoryStore for SqliteStore {
         let Some(fts) = fts_query(query) else { return Ok(Vec::new()) };
         let rows = sqlx::query(
             "SELECT m.id, m.scope, m.kind, m.content, m.tags, m.source, m.importance, m.confidence,
-                    m.status, m.created_at, m.updated_at, m.last_accessed_at, m.expires_at, m.run_id, m.tool_call_id,
+                    m.status, m.created_at, m.updated_at, m.last_accessed_at, m.expires_at, m.run_id, m.tool_call_id, m.conversation_id,
                     bm25(memories_fts) AS rank
              FROM memories_fts JOIN memories m ON m.id = memories_fts.id
              WHERE memories_fts MATCH ? AND (? IS NULL OR m.scope = ?)
@@ -177,7 +178,7 @@ impl MemoryStore for SqliteStore {
         let statuses: Vec<&str> = filter.statuses.iter().map(|s| s.as_str()).collect();
         let rows = sqlx::query(
             "SELECT m.id, m.scope, m.kind, m.content, m.tags, m.source, m.importance, m.confidence,
-                    m.status, m.created_at, m.updated_at, m.last_accessed_at, m.expires_at, m.run_id, m.tool_call_id
+                    m.status, m.created_at, m.updated_at, m.last_accessed_at, m.expires_at, m.run_id, m.tool_call_id, m.conversation_id
              FROM memories m
              WHERE (? IS NULL OR m.scope = ?)
                AND (? = '' OR instr(?, ',' || m.status || ',') > 0)
@@ -239,7 +240,7 @@ impl MemoryStore for SqliteStore {
     async fn missing_embeddings(&self, model: &str, limit: usize) -> Result<Vec<Memory>> {
         let rows = sqlx::query(
             "SELECT m.id, m.scope, m.kind, m.content, m.tags, m.source, m.importance, m.confidence,
-                    m.status, m.created_at, m.updated_at, m.last_accessed_at, m.expires_at, m.run_id, m.tool_call_id
+                    m.status, m.created_at, m.updated_at, m.last_accessed_at, m.expires_at, m.run_id, m.tool_call_id, m.conversation_id
              FROM memories m
              WHERE m.status = 'active'
                AND NOT EXISTS (SELECT 1 FROM memory_embeddings e WHERE e.memory_id = m.id AND e.model = ?)
@@ -550,7 +551,11 @@ fn from_row(row: &SqliteRow) -> Result<Memory> {
             None => Vec::new(),
         },
         source: source.unwrap_or(crate::MemorySource::Conversation),
-        provenance: Provenance { run_id: uuid_opt(row, "run_id")?, tool_call_id: row.try_get("tool_call_id")? },
+        provenance: Provenance {
+            run_id: uuid_opt(row, "run_id")?,
+            tool_call_id: row.try_get("tool_call_id")?,
+            conversation_id: uuid_opt(row, "conversation_id")?,
+        },
         importance: row.try_get("importance")?,
         confidence: row.try_get("confidence")?,
         status: row.try_get::<&str, _>("status")?.parse()?,
@@ -616,7 +621,7 @@ pub(crate) mod tests {
     async fn create_search_update_and_round_trip() {
         let s = SqliteStore::in_memory().await.unwrap();
         let mut m = memory("project:arcella", "The agent runtime will be written in Rust.");
-        m.provenance = Provenance { run_id: Some(Uuid::new_v4()), tool_call_id: Some("call_1".into()) };
+        m.provenance = Provenance { run_id: Some(Uuid::new_v4()), tool_call_id: Some("call_1".into()), conversation_id: Some(Uuid::new_v4()) };
         s.create(&m).await.unwrap();
         s.create(&memory("project:arcella", "Bananas are yellow.")).await.unwrap();
 

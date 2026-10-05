@@ -168,6 +168,8 @@ pub struct MemoryManager<S: MemoryStore = SqliteStore> {
     store: S,
     /// Replaceable at runtime (a config reload).
     settings: std::sync::RwLock<std::sync::Arc<Settings>>,
+    /// The conversation new memories come from, unless they say otherwise.
+    conversation: std::sync::RwLock<Option<Uuid>>,
 }
 
 /// Whether a memory in `scope` is visible while working on `project`:
@@ -193,7 +195,12 @@ pub fn approx_tokens(text: &str) -> usize {
 
 impl<S: MemoryStore> MemoryManager<S> {
     pub fn new(store: S, settings: Settings) -> Self {
-        Self { store, settings: std::sync::RwLock::new(std::sync::Arc::new(settings)) }
+        Self { store, settings: std::sync::RwLock::new(std::sync::Arc::new(settings)), conversation: Default::default() }
+    }
+
+    /// The conversation (session) memories saved from now on come from.
+    pub fn set_conversation(&self, id: Option<Uuid>) {
+        *self.conversation.write().unwrap_or_else(|e| e.into_inner()) = id;
     }
 
     pub fn settings(&self) -> std::sync::Arc<Settings> {
@@ -461,7 +468,10 @@ impl<S: MemoryStore> MemoryManager<S> {
             content,
             tags: new.tags,
             source: new.source,
-            provenance: new.provenance,
+            provenance: Provenance {
+                conversation_id: new.provenance.conversation_id.or(*self.conversation.read().unwrap_or_else(|e| e.into_inner())),
+                ..new.provenance
+            },
             importance: new.importance.unwrap_or(0.5).clamp(0.0, 1.0),
             confidence: new.confidence.unwrap_or_else(|| new.source.default_confidence()).clamp(0.0, 1.0),
             status: MemoryStatus::Active,
@@ -701,7 +711,7 @@ impl<S: MemoryStore> MemoryManager<S> {
         let new = NewMemory {
             kind: MemoryKind::Episodic,
             tags: vec!["episode".into()],
-            provenance: Provenance { run_id: run, tool_call_id: None },
+            provenance: Provenance { run_id: run, ..Default::default() },
             importance: Some(0.5),
             ..NewMemory::fact(scope, &content, MemorySource::Derived)
         };
@@ -748,7 +758,7 @@ impl<S: MemoryStore> MemoryManager<S> {
                 content: item.content.clone(),
                 tags: item.tags.clone(),
                 source: MemorySource::Conversation,
-                provenance: Provenance { run_id: run, tool_call_id: None },
+                provenance: Provenance { run_id: run, ..Default::default() },
                 importance: item.importance,
                 confidence: item.confidence,
                 expires_at: item.expires_in_days.filter(|d| *d > 0.0).map(|d| Utc::now() + Duration::minutes((d * 1440.0) as i64)),
@@ -873,7 +883,7 @@ impl<S: MemoryStore> MemoryManager<S> {
                     content: content.clone(),
                     tags: tags.clone(),
                     source: MemorySource::Derived,
-                    provenance: Provenance { run_id: run, tool_call_id: None },
+                    provenance: Provenance { run_id: run, ..Default::default() },
                     importance: sources.iter().map(|m| m.importance).fold(0.0, f32::max),
                     // Repeated observations strengthen the consolidated memory.
                     confidence: (sources.iter().map(|m| m.confidence).fold(0.0, f32::max) + 0.05).min(1.0),

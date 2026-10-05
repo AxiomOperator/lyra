@@ -515,6 +515,11 @@ impl App {
                 let skills = self.applied_skills.clone();
                 let memories = self.applied_memories.clone();
                 let evo = self.record_chat_run(&stats, None);
+                // Working memory tracks what both sides mention (M7).
+                if let Some(mem) = self.mem() {
+                    let text = self.reply().content.clone();
+                    mem.working().note_entities(&text);
+                }
                 let reply = self.reply();
                 reply.stats = Some(stats);
                 reply.skills = skills.clone();
@@ -1676,6 +1681,7 @@ const COMMANDS: &str = "\
 /memory forget|archive|restore|purge <id>
 /memory approve|reject <id>  act on a proposed consolidation or archive
 /memory working [clear]      show or clear working memory
+/memory events               what happened to memories lately (created, superseded, linked, …)
 /memory curate               consolidate duplicates, flag contradictions now
 /memory episode              record this conversation as an episode
 /memory project [name|none]  the current project (its memories are recalled, others' aren't)
@@ -1835,7 +1841,7 @@ fn converse(
             "tool_calls": round.tool_calls,
         }));
         for call in &round.tool_calls {
-            let ctx = CallContext { run: Some(run), call_id: &call.id };
+            let ctx = CallContext::new(Some(run), &call.id);
             let content = tools.run(&call.function.name, &call.function.arguments, ctx);
             history.push(json!({ "role": "tool", "tool_call_id": call.id, "content": content }));
             let (id, name) = (call.id.clone(), call.function.name.clone());
@@ -2033,6 +2039,8 @@ fn open_memory(
     };
     match runtime.block_on(lyra_memory::MemoryManager::open(&path, config.memory.settings.clone())) {
         Ok(manager) => {
+            // Memories saved in this session are traced to it (provenance).
+            manager.set_conversation(Some(Uuid::new_v4()));
             let shown = context::show(&path);
             let mem = Mem::new(manager, runtime.clone(), config.embedding.clone(), shown.clone(), config.memory.project());
             (Some(Arc::new(Tools::new(Arc::new(mem)))), Ok(shown))

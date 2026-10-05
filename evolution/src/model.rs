@@ -362,6 +362,12 @@ pub struct EvolutionEvent {
     pub new_generation: Option<u32>,
     pub fitness_before: Option<f32>,
     pub fitness_after: Option<f32>,
+    /// The kind of change the candidate makes, for candidate events.
+    #[serde(default)]
+    pub category: Option<Category>,
+    /// The runs that were the candidate's evidence.
+    #[serde(default)]
+    pub evidence: Vec<Uuid>,
     pub created_at: DateTime<Utc>,
 }
 

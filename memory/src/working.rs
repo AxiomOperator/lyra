@@ -21,7 +21,7 @@ pub struct WorkingMemory {
 
 impl WorkingMemory {
     pub fn is_empty(&self) -> bool {
-        self.goal.is_none() && self.plan.is_empty() && self.values.is_empty() && self.entities.is_empty()
+        self.goal.is_none() && self.plan.is_empty() && self.values.is_empty() && self.entities.is_empty() && self.recent_tools.is_empty()
     }
 
     pub fn clear(&mut self) {
@@ -97,6 +97,12 @@ impl WorkingMemory {
         }
         if !self.entities.is_empty() {
             out += &format!("\n\nRecently mentioned: {}", self.entities.iter().cloned().collect::<Vec<_>>().join(", "));
+        }
+        if !self.recent_tools.is_empty() {
+            out += "\n\nRecent tool results (newest first):";
+            for line in &self.recent_tools {
+                out += &format!("\n- {line}");
+            }
         }
         Some(out)
     }

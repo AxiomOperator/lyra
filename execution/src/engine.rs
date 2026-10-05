@@ -39,6 +39,8 @@ pub struct Task {
     pub may_change: bool,
     /// Model calls left in the plan's budget; the work should stop within them.
     pub max_model_calls: Option<u32>,
+    /// The helper agent doing it (subagent steps), for its permissions.
+    pub agent: Option<String>,
 }
 
 /// What focused model work produced, and what it cost.
@@ -308,9 +310,6 @@ impl Engine {
     pub fn approve(&self, plan_id: Uuid, key: &str, runtime: &dyn Runtime) -> Result<String, String> {
         let mut plan = self.plan(plan_id)?.ok_or("no such plan")?;
         let step = plan.find_step(key).ok_or(format!("no step {key}"))?.clone();
-        if step.approval == ApprovalPolicy::Forbidden {
-            return Err(format!("{} is forbidden", step.key));
-        }
         let fingerprint = step.fingerprint();
         self.db(self.store.record_approval(plan.id, step.id, &fingerprint))?;
         let s = plan.step_mut(step.id).unwrap();
@@ -334,6 +333,7 @@ impl Engine {
             return Ok("stopping after the current steps…".into());
         }
         plan.status = PlanStatus::Cancelled;
+        cancel_open_steps(&mut plan);
         self.finish_goal(&plan, GoalStatus::Cancelled, &json!({"summary": "cancelled"}))?;
         self.db(self.store.save_plan(&plan))?;
         self.event(runtime, ExecutionEvent::new(plan.id, None, EventKind::ExecutionCancelled, "cancelled"));
@@ -397,16 +397,20 @@ impl Engine {
                 } else {
                     s.status = StepStatus::Blocked;
                     s.last_error = Some("was running when lyra stopped; check whether it took effect".into());
-                    blocked.push(s.key.clone());
+                    blocked.push((s.id, s.key.clone()));
                 }
             }
             plan.status = PlanStatus::Paused;
+            let keys: Vec<String> = blocked.iter().map(|(_, k)| k.clone()).collect();
             plan.note = Some(if blocked.is_empty() {
                 "interrupted by a restart; /plan resume continues".into()
             } else {
-                format!("interrupted during {}; check them, then /plan retry or /plan skip", blocked.join(", "))
+                format!("interrupted during {}; check them, then /plan retry or /plan skip", keys.join(", "))
             });
             self.db(self.store.save_plan(&plan))?;
+            for (id, key) in &blocked {
+                self.event(runtime, ExecutionEvent::new(plan.id, Some(*id), EventKind::StepBlocked, format!("{key} needs checking after a restart")));
+            }
             self.event(runtime, ExecutionEvent::new(plan.id, None, EventKind::PlanPaused, plan.note.clone().unwrap()));
             notes.push(format!("plan {} {}", short(plan.id), plan.note.clone().unwrap()));
         }
@@ -439,6 +443,7 @@ impl Engine {
             plan.usage.seconds = base_seconds + clock.elapsed().as_secs();
             if self.cancelled.lock().unwrap().remove(&plan.id) {
                 plan.status = PlanStatus::Cancelled;
+                cancel_open_steps(&mut plan);
                 self.save(&plan)?;
                 self.finish_goal(&plan, GoalStatus::Cancelled, &json!({"summary": "cancelled while running"}))?;
                 self.event(runtime, ExecutionEvent::new(plan.id, None, EventKind::ExecutionCancelled, "cancelled"));
@@ -458,7 +463,9 @@ impl Engine {
                         plan.steps.iter().filter(|s| s.status == StepStatus::Blocked).map(|s| s.key.clone()).collect();
                     return self.pause(plan, runtime, EventKind::PlanPaused, format!("waiting on {}", waiting.join(", ")));
                 }
-                return self.fail(plan, &goal, runtime, "no step can run".into());
+                let stuck: Vec<String> = graph::blocked_steps(&plan.steps).iter().map(|s| s.key.clone()).collect();
+                let why = if stuck.is_empty() { "no step can run".to_string() } else { format!("{} can't run: something they depend on failed", stuck.join(", ")) };
+                return self.fail(plan, &goal, runtime, why);
             }
 
             // Fill in arguments that come from earlier results, so that
@@ -489,9 +496,6 @@ impl Engine {
             // P14: steps that need approval wait for it.
             let mut runnable: Vec<&PlanStep> = Vec::new();
             for s in &ready {
-                if s.approval == ApprovalPolicy::Forbidden {
-                    return self.fail(plan, &goal, runtime, format!("{} is forbidden", s.key));
-                }
                 if s.needs_approval() {
                     let st = plan.step_mut(s.id).unwrap();
                     if st.status != StepStatus::Blocked {
@@ -622,26 +626,33 @@ impl Engine {
                 self.call_once(plan, step, tool, arguments, runtime)
             }
             StepAction::Reasoning { instruction } => {
-                reasoned(Task { instruction: instruction.clone(), context, tools: None, may_change, max_model_calls }, &mut usage)
+                reasoned(Task { instruction: instruction.clone(), context, tools: None, may_change, max_model_calls, agent: None }, &mut usage)
             }
             StepAction::Workflow { workflow, input } => match runtime.workflow(workflow) {
                 Some(procedure) => {
                     let instruction = format!("Follow this procedure:\n{procedure}\n\nInput: {input}");
-                    reasoned(Task { instruction, context, tools: None, may_change, max_model_calls }, &mut usage)
+                    reasoned(Task { instruction, context, tools: None, may_change, max_model_calls, agent: None }, &mut usage)
                 }
                 None => Err(format!("no workflow named {workflow}")),
             },
             StepAction::Subagent { agent, task } => match runtime.agent_tools(agent) {
                 // P13: a scoped task, not the parent's whole context.
                 Some(tools) => {
-                    let mut scoped = format!("You are the {agent} agent. Do this task and report what you found.\nGoal it serves: {}", goal.description);
+                    let mut scoped = format!(
+                        "You are the {agent} agent. Do this task and report what you found, with the evidence for it.\n\
+                         End your report with a line `STATUS: done`, or `STATUS: failed — <why>` if you couldn't do it.\n\
+                         Goal it serves: {}",
+                        goal.description
+                    );
                     if let Some(expected) = &step.expected_outcome {
                         scoped += &format!("\nExpected outcome: {expected}");
                     }
                     if !done_before.is_empty() {
                         scoped += &format!("\n\nAlready done by an earlier attempt (don't repeat these):\n- {}", done_before.join("\n- "));
                     }
-                    reasoned(Task { instruction: task.clone(), context: scoped, tools: Some(tools), may_change, max_model_calls }, &mut usage)
+                    // P13: the subagent's report says whether it succeeded.
+                    reasoned(Task { instruction: task.clone(), context: scoped, tools: Some(tools), may_change, max_model_calls, agent: Some(agent.clone()) }, &mut usage)
+                        .and_then(subagent_status)
                 }
                 None => Err(format!("no agent named {agent}")),
             },
@@ -941,6 +952,28 @@ fn guard(goal: &Goal, steps: &mut [PlanStep]) {
         for s in steps.iter_mut().filter(|s| s.idempotency != Idempotency::Safe && s.approval == ApprovalPolicy::Automatic) {
             s.approval = ApprovalPolicy::RequireApproval;
         }
+    }
+}
+
+/// A subagent's report: failed when its status line says so; the status line
+/// itself is dropped from the output.
+fn subagent_status(report: Value) -> Result<Value, String> {
+    let text = report.as_str().unwrap_or_default();
+    let status = text.lines().rev().find(|l| l.trim().to_lowercase().starts_with("status:"));
+    let body = text.lines().filter(|l| Some(*l) != status).collect::<Vec<_>>().join("\n").trim().to_string();
+    match status.map(|l| l.trim()["status:".len()..].trim().to_string()) {
+        Some(s) if s.to_lowercase().starts_with("failed") => {
+            let why = s["failed".len()..].trim_start_matches(|c: char| c == '—' || c == '-' || c == ':' || c.is_whitespace());
+            Err(format!("the subagent couldn't do it: {}", if why.is_empty() { body.as_str() } else { why }))
+        }
+        _ => Ok(Value::String(body)),
+    }
+}
+
+/// Steps that hadn't finished when a plan was cancelled.
+fn cancel_open_steps(plan: &mut Plan) {
+    for s in plan.steps.iter_mut().filter(|s| matches!(s.status, StepStatus::Pending | StepStatus::Blocked)) {
+        s.status = StepStatus::Cancelled;
     }
 }
 
@@ -1407,5 +1440,12 @@ mod tests {
         let plan = prepare(&e, &s);
         let ready: Vec<&PlanStep> = plan.steps.iter().collect();
         assert_eq!(graph::schedule(&ready, 3).len(), 1, "a mutating step doesn't share its batch");
+    }
+
+    #[test]
+    fn subagent_reports_carry_their_status() {
+        assert_eq!(subagent_status(json!("found 3 hosts\nSTATUS: done")).unwrap(), json!("found 3 hosts"));
+        assert!(subagent_status(json!("nothing\nSTATUS: failed — no access")).unwrap_err().contains("no access"));
+        assert_eq!(subagent_status(json!("plain report")).unwrap(), json!("plain report"));
     }
 }
