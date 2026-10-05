@@ -801,8 +801,11 @@ output tokens are estimated from the stream and marked `~`.
 ## Run
 
 ```sh
-cargo run
+cargo install --path .   # installs the `lyra` command into ~/.cargo/bin (run again after updating)
+lyra
 ```
+
+Or straight from the checkout without installing: `cargo run -- [options]`.
 
 Every conversation is saved in `~/.lyra/sessions/` after each reply and when
 you quit, so you can pick it up again:
