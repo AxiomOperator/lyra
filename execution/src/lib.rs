@@ -8,6 +8,7 @@
 //! (model calls, tools, memory and skills context). Plans persist in SQLite.
 
 pub mod budget;
+pub mod check;
 mod engine;
 pub mod graph;
 pub mod model;

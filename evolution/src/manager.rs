@@ -239,9 +239,12 @@ impl EvolutionManager {
 
     // ---- E2: detection
 
-    pub fn detect(&self, skills: &[SkillHealth]) -> Result<Vec<Opportunity>, String> {
+    /// Problems in recent runs, skills, and capabilities' track records (C12).
+    pub fn detect(&self, skills: &[SkillHealth], capabilities: &[detect::CapabilityRecord]) -> Result<Vec<Opportunity>, String> {
         let runs = self.runs(self.settings.window)?;
-        Ok(detect::detect(&runs, skills, &self.settings.thresholds))
+        let mut ops = detect::detect(&runs, skills, &self.settings.thresholds);
+        ops.extend(detect::detect_capabilities(&runs, capabilities, &self.settings.thresholds));
+        Ok(ops)
     }
 
     pub fn evidence(&self, op: &Opportunity) -> Result<Vec<RunRecord>, String> {

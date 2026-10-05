@@ -61,6 +61,7 @@ pub struct Env {
     pub evolution: Arc<Evolution>,
     pub tools: Option<Arc<Tools>>,
     pub learning: Option<Arc<Learning>>,
+    pub caps: Option<Arc<crate::caps::Caps>>,
     /// The chat's system prompt (context files and tool instructions), for benchmarks.
     pub system_prompt: Option<String>,
 }
@@ -252,7 +253,27 @@ pub fn review(env: &Env) -> Done {
 fn review_inner(env: &Env, done: &mut Done) -> Result<(), String> {
     let ev = &env.evolution;
     let skills = skill_health(env.learning.as_deref())?;
-    let ops = ev.manager.detect(&skills.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>())?;
+    // C12: capabilities' track records feed evolution too.
+    let records: Vec<lyra_evolution::detect::CapabilityRecord> = env
+        .caps
+        .as_ref()
+        .map(|caps| {
+            caps.manager
+                .all_stats()
+                .into_iter()
+                .filter_map(|(id, s)| {
+                    Some(lyra_evolution::detect::CapabilityRecord {
+                        name: caps.manager.get(&id).map_or(id, |c| c.name),
+                        uses: s.uses,
+                        success_rate: s.success_rate()?,
+                        average_latency_ms: s.average_latency_ms.unwrap_or(0),
+                        common_error: s.common_error,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let ops = ev.manager.detect(&skills.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>(), &records)?;
     if ops.is_empty() {
         let note = format!("no problems found in the last {} runs", ev.manager.settings.window);
         ev.manager.note_review(&note)?;
@@ -788,12 +809,12 @@ impl lyra_execution::Runtime for BenchRuntime<'_> {
             .iter()
             .map(|d| {
                 let name = d["function"]["name"].as_str().unwrap_or("").to_string();
-                lyra_execution::ToolInfo {
-                    risk: crate::plan::risk(&name),
-                    description: d["function"]["description"].as_str().unwrap_or("").into(),
-                    parameters: d["function"]["parameters"].clone(),
-                    name,
-                }
+                lyra_execution::ToolInfo::new(
+                    &name,
+                    d["function"]["description"].as_str().unwrap_or(""),
+                    crate::plan::risk(&name),
+                    d["function"]["parameters"].clone(),
+                )
             })
             .collect()
     }
@@ -1363,7 +1384,7 @@ mod tests {
         };
         let change = Change::Configuration { key: "verify_reasoning_steps".into(), from: json!(false), to: json!(true) };
         let c = ev.manager.propose(&op, vec![evolver::Proposal { change, rationale: "verify".into(), confidence: 0.6 }]).unwrap().remove(0);
-        let env = Env { url: format!("{}/chat/completions", url.trim_end_matches('/')), model, evolution: ev, tools: None, learning: None, system_prompt: None };
+        let env = Env { url: format!("{}/chat/completions", url.trim_end_matches('/')), model, evolution: ev, tools: None, learning: None, caps: None, system_prompt: None };
         let t = test(&env, c);
         for n in &t.notes {
             println!("{n}");

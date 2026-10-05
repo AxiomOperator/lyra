@@ -3780,6 +3780,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "lyra-capabilities",
  "lyra-evolution",
  "lyra-execution",
  "lyra-learning",
@@ -3791,6 +3792,27 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "lyra-capabilities"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "chrono",
+ "futures",
+ "lancedb",
+ "lyra-memory",
+ "reqwest 0.13.5",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sqlx",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

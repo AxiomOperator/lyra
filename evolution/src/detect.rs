@@ -10,6 +10,17 @@ use uuid::Uuid;
 use crate::model::{Category, Opportunity, RunKind, RunRecord};
 
 /// How a learned skill is doing, from the skills system.
+/// A capability's track record, for spotting tools that fail or crawl (C12).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CapabilityRecord {
+    pub name: String,
+    pub uses: u64,
+    pub success_rate: f32,
+    pub average_latency_ms: u64,
+    /// The most common error kind.
+    pub common_error: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SkillHealth {
     pub name: String,
@@ -45,6 +56,12 @@ pub struct Thresholds {
     pub skill_min_uses: u64,
     /// ...with reliability below this is failing.
     pub skill_reliability: f32,
+    /// A capability used at least this often...
+    pub capability_min_uses: u64,
+    /// ...that succeeds less than this share of the time is failing...
+    pub capability_success: f32,
+    /// ...and one this slow on average (milliseconds) is slow.
+    pub capability_slow_ms: u64,
 }
 
 impl Default for Thresholds {
@@ -62,6 +79,9 @@ impl Default for Thresholds {
             plan_runs: 2,
             skill_min_uses: 3,
             skill_reliability: 0.4,
+            capability_min_uses: 5,
+            capability_success: 0.6,
+            capability_slow_ms: 15_000,
         }
     }
 }
@@ -167,6 +187,40 @@ pub fn detect(runs: &[RunRecord], skills: &[SkillHealth], t: &Thresholds) -> Vec
             evidence: ids(&troubled),
             details: json!({ "goals": tasks(&troubled) }),
         });
+    }
+    out
+}
+
+/// C12: capabilities that keep failing or crawl, with the runs that used
+/// them as evidence. Better tools, workflows around them, or guidance on
+/// when (not) to use them can fix that.
+pub fn detect_capabilities(runs: &[RunRecord], caps: &[CapabilityRecord], t: &Thresholds) -> Vec<Opportunity> {
+    let mut out = Vec::new();
+    for c in caps.iter().filter(|c| c.uses >= t.capability_min_uses) {
+        let used: Vec<Uuid> = runs.iter().filter(|r| r.tools_used.contains(&c.name)).map(|r| r.id).collect();
+        if c.success_rate < t.capability_success {
+            out.push(Opportunity {
+                kind: "failing_capability".into(),
+                problem: format!(
+                    "capability {} succeeds only {:.0}% of the time over {} uses{}",
+                    c.name,
+                    c.success_rate * 100.0,
+                    c.uses,
+                    c.common_error.as_ref().map_or(String::new(), |e| format!(" (mostly {e} errors)"))
+                ),
+                categories: vec![Category::Prompt, Category::Workflow, Category::Tool, Category::Code],
+                evidence: used.clone(),
+                details: json!({ "capability": c.name, "success_rate": c.success_rate, "common_error": c.common_error }),
+            });
+        } else if c.average_latency_ms >= t.capability_slow_ms {
+            out.push(Opportunity {
+                kind: "slow_capability".into(),
+                problem: format!("capability {} takes {:.1}s on average over {} uses", c.name, c.average_latency_ms as f32 / 1000.0, c.uses),
+                categories: vec![Category::Prompt, Category::Workflow, Category::Tool],
+                evidence: used,
+                details: json!({ "capability": c.name, "average_latency_ms": c.average_latency_ms }),
+            });
+        }
     }
     out
 }

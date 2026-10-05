@@ -225,13 +225,34 @@ fn agent_panel(app: &App, width: usize) -> Vec<Line<'static>> {
     for (name, path) in &app.context_files {
         lines.push(Line::from(vec![label(name), Span::raw(truncate_start(path, width.saturating_sub(8)))]));
     }
-    let composites = app.tools.as_ref().map(|t| t.composite_names()).unwrap_or_default();
-    let tools = match app.tool_count - composites.len().min(app.tool_count) {
-        0 => "none".dark_gray(),
-        n if composites.is_empty() => format!("memory ×{n}").into(),
-        n => Span::raw(truncate(&format!("memory ×{n} + {}", composites.join(", ")), width.saturating_sub(8))),
-    };
-    lines.push(Line::from(vec![label("tools"), tools]));
+    // Capabilities: how many of each kind, what's offered, what's unwell.
+    if let Some(caps) = &app.caps {
+        let all = caps.manager.all();
+        let mut kinds: Vec<(String, usize)> = Vec::new();
+        for c in &all {
+            match kinds.iter_mut().find(|(k, _)| k == c.kind.as_str()) {
+                Some((_, n)) => *n += 1,
+                None => kinds.push((c.kind.as_str().to_string(), 1)),
+            }
+        }
+        let summary = kinds.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(" · ");
+        lines.push(Line::from(vec![label("caps"), Span::raw(truncate(&format!("{} · {summary}", all.len()), width.saturating_sub(8)))]));
+        let unwell: Vec<String> = all
+            .iter()
+            .filter_map(|c| {
+                let h = caps.manager.health(c);
+                (h != lyra_capabilities::CapabilityHealth::Healthy).then(|| format!("{} {}", c.id, h.as_str()))
+            })
+            .collect();
+        let offered = format!("{} offered per message", app.tool_count);
+        lines.push(Line::from(vec![label(""), Span::styled(truncate(&offered, width.saturating_sub(8)), dim)]));
+        if !unwell.is_empty() {
+            lines.push(Line::from(truncate(&unwell.join(" · "), width).yellow()));
+        }
+    } else {
+        let tools = if app.tool_count == 0 { "none".dark_gray() } else { format!("{}", app.tool_count).into() };
+        lines.push(Line::from(vec![label("tools"), tools]));
+    }
     match &app.model_status {
         None => lines.push(Line::from(vec![label("models"), "checking…".dark_gray()])),
         Some(results) if results.is_empty() => {

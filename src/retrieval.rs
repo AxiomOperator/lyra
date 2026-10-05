@@ -82,9 +82,12 @@ pub fn embed(endpoint: &Endpoint, texts: &[&str]) -> Result<Embeddings, String> 
 /// a search query, but not the stored text, says what it's looking for.
 const QUERY_INSTRUCTION: &str = "Instruct: Given a user message, retrieve stored memories that are relevant to it\nQuery: ";
 
-/// Embed a search query (with the retrieval instruction).
-pub fn embed_query(endpoint: &Endpoint, query: &str) -> Result<Vec<f32>, String> {
-    let text = format!("{QUERY_INSTRUCTION}{query}");
+/// Instruction for finding capabilities (tools, workflows) for a task.
+pub const CAPABILITY_INSTRUCTION: &str = "Instruct: Given a task to do, retrieve the tools and procedures that can do it\nQuery: ";
+
+/// Embed a search query with a given retrieval instruction.
+pub fn embed_query_with(endpoint: &Endpoint, instruction: &str, query: &str) -> Result<Vec<f32>, String> {
+    let text = format!("{instruction}{query}");
     let mut e = embed(endpoint, &[&text])?;
     e.vectors.pop().ok_or_else(|| "no embedding returned".into())
 }
@@ -94,6 +97,8 @@ pub fn embed_query(endpoint: &Endpoint, query: &str) -> Result<Vec<f32>, String>
 pub struct EndpointEmbedder {
     endpoint: Endpoint,
     dimensions: usize,
+    /// What queries are looking for (memories by default).
+    instruction: &'static str,
 }
 
 impl EndpointEmbedder {
@@ -107,7 +112,13 @@ impl EndpointEmbedder {
         if dimensions == 0 {
             return Err(format!("{} returned an empty vector", endpoint.model));
         }
-        Ok(Self { endpoint, dimensions })
+        Ok(Self { endpoint, dimensions, instruction: QUERY_INSTRUCTION })
+    }
+
+    /// Queries look for something else (e.g. capabilities).
+    pub fn with_instruction(mut self, instruction: &'static str) -> Self {
+        self.instruction = instruction;
+        self
     }
 }
 
@@ -131,8 +142,8 @@ impl lyra_memory::EmbeddingProvider for EndpointEmbedder {
     }
 
     async fn embed_query(&self, text: &str) -> anyhow::Result<Vec<f32>> {
-        let (endpoint, text) = (self.endpoint.clone(), text.to_string());
-        tokio::task::spawn_blocking(move || embed_query(&endpoint, &text).map_err(anyhow::Error::msg)).await?
+        let (endpoint, text, instruction) = (self.endpoint.clone(), text.to_string(), self.instruction);
+        tokio::task::spawn_blocking(move || embed_query_with(&endpoint, instruction, &text).map_err(anyhow::Error::msg)).await?
     }
 }
 

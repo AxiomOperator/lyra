@@ -37,6 +37,25 @@ pub struct Config {
     pub planning: PlanningConfig,
     /// `[evolution]` table: self-evolution from run telemetry.
     pub evolution: EvolutionConfig,
+    /// `[capabilities]` table: discovery, policy and external tool providers.
+    pub capabilities: CapabilitiesConfig,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct CapabilitiesConfig {
+    /// `[[capabilities.openapi]]`: OpenAPI specs whose operations become capabilities.
+    pub openapi: Vec<lyra_capabilities::openapi::OpenApiConfig>,
+    /// `[[capabilities.mcp]]`: MCP servers (stdio) whose tools become capabilities.
+    pub mcp: Vec<lyra_capabilities::mcp::McpConfig>,
+    /// `max_tools`, `discovery_limit`, `[capabilities.policy]` and `[capabilities.scoring]`.
+    #[serde(flatten)]
+    pub settings: lyra_capabilities::Settings,
+}
+
+/// A configured path with `~/` expanded (for capability specs).
+pub fn expand_path(path: &str) -> PathBuf {
+    expand(path).unwrap_or_else(|| PathBuf::from(path))
 }
 
 #[derive(Deserialize)]
@@ -255,6 +274,7 @@ impl Default for Config {
             learning: LearningConfig::default(),
             planning: PlanningConfig::default(),
             evolution: EvolutionConfig::default(),
+            capabilities: CapabilitiesConfig::default(),
         }
     }
 }

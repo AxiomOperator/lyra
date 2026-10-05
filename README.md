@@ -12,6 +12,7 @@ Everything lyra keeps lives in one folder, `~/.lyra` (set `LYRA_HOME` to use ano
 ~/.lyra/
 ├── config/    config.toml, behavior.toml (evolved behavior)
 ├── context/   SOUL.md, USER.md, AGENT.md
+├── capabilities/ capabilities.db (usage), index/ (discovery, LanceDB)
 ├── evolution/ evolution.db (runs, candidates, generations)
 ├── memory/    lance/ (LanceDB: memories, vectors, history)
 ├── plans/     plans.db
@@ -490,6 +491,98 @@ reliability = 0.1
 safety = 0.1
 ```
 
+## Capabilities
+
+Everything lyra can do is a **capability**, described the same way whatever
+it's made of: the memory tools, composite tools evolution generated, OpenAPI
+operations, MCP tools, workflows, learned skills and helper agents. Built
+following `docs/capabilities.md` in the `capabilities/` crate
+(`lyra-capabilities`).
+
+- **One registry.** It's loaded from every provider at startup and refreshed
+  when skills, workflows or tools change. Each capability has an input schema,
+  a risk level (read-only, low write, write, destructive, privileged),
+  permissions, tags, the identifiers it needs and what finds them (a task
+  needs a `projectId`, which `projects.list` provides), and how to check its
+  effect.
+- **Discovery, not everything at once.** With more than `max_tools` callable
+  capabilities, the model is offered only the ones that fit the message,
+  found by keywords (full-text search) and meaning (vectors from the
+  `[embedding]` model, kept in LanceDB in `~/.lyra/capabilities/index`), plus
+  a `capability_search` tool to find more. Plans get the capabilities their
+  goal needs, with their track record, prerequisites, approval and checks.
+- **Scored by evidence.** Candidates rank by relevance, reliability (their
+  success rate), whether policy lets them run, speed and how much they've been
+  used, so a tool that usually works beats one that often fails.
+- **Policy in Rust.** `[capabilities.policy]` sets what each risk level may
+  do: `auto`, `approval` or `deny`. Denied capabilities are never offered.
+  Ones that need approval run as approved plan steps, or after
+  `/caps allow <name>` for the session; otherwise the
+  model is told to ask.
+- **Tracked and verified.** Every call is recorded in
+  `~/.lyra/capabilities/capabilities.db`: success, time, retries and the kind
+  of error. A successful write is checked by its verification rule (a memory
+  is read back after it's saved; a created OpenAPI resource is fetched), and
+  the result says whether it was verified. In plans, tool steps use the rule
+  as their verification by default.
+- **Health.** Providers are checked at startup, on `Ctrl-L` and with
+  `/caps health`. An unreachable one is left out of discovery and planning,
+  and one that keeps failing is marked degraded and ranked lower.
+- **Evolution.** Capabilities that keep failing or are slow become
+  evolution problems with the runs as evidence. Composite tools and workflows
+  that evolution deploys become capabilities automatically.
+
+**OpenAPI.** Each operation in a spec (JSON or YAML) becomes a capability
+named `<name>.<operationId>`. Its risk comes from the method (GET read-only,
+DELETE destructive, the rest write) or `x-lyra-risk`. Path identifiers become
+requirements resolved by a listing operation, and creates and updates are
+verified by fetching the result. Credentials are never stored: `auth_env`
+names the environment variable that holds one.
+
+**MCP.** Each server is started over stdio. Its tools become capabilities
+named `<name>.<tool>`, with risk from their `readOnlyHint` and
+`destructiveHint` annotations. Values in `env` that start with `$` are read
+from lyra's environment.
+
+Commands: `/caps` (everything, by kind, with health, policy and track
+record), `/caps search <what>` (discovery with each score), `/caps show
+<name>`, `/caps allow <name>`, `/caps health`.
+
+```toml
+[capabilities]
+max_tools = 16              # offer all callable capabilities up to this many
+discovery_limit = 8         # otherwise, this many per message (plus search)
+
+[capabilities.policy]       # auto | approval | deny
+read_only = "auto"
+low_write = "auto"
+write = "auto"
+destructive = "approval"
+privileged = "deny"
+# overrides = { "pm.tasks.delete" = "deny", "fs.*" = "approval" }
+
+[capabilities.scoring]
+relevance = 0.55
+reliability = 0.2
+permission = 0.1
+efficiency = 0.1
+history = 0.05
+
+[[capabilities.openapi]]
+name = "pm"
+spec = "~/.lyra/capabilities/pm.yaml"
+# base_url = "https://pm.example.com/api"   # default: the spec's first server
+auth_env = "PM_TOKEN"       # the environment variable with the credential
+auth_header = "Authorization"
+auth_scheme = "Bearer"
+
+[[capabilities.mcp]]
+name = "fs"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/notes"]
+# env = { API_KEY = "$MY_API_KEY" }
+```
+
 ## Metrics
 
 Each reply shows time to first token, generation speed, tokens in/out, cost and
@@ -521,7 +614,7 @@ language), nested and numbered lists, task lists, quotes, links (with their
 address), rules and aligned tables, also while a reply is still streaming; on terminals at least 100 columns wide, panels on the right show:
 
 - **Session**: what the assistant is doing right now (idle / waiting / thinking / streaming / running a tool, with a timer), model and server, replies, last reply's TTFT and speed, tokens, cache hit rate and cost.
-- **Agent**: system prompt size, loaded SOUL/USER/AGENT files, tools, and embedding/reranker health.
+- **Agent**: system prompt size, loaded SOUL/USER/AGENT files, capabilities by kind, how many are offered per message and any that are degraded or unavailable, and embedding/reranker health.
 - **Memory**: active memories by kind, vector coverage, the store (backend, size, search latency; red when operations fail), the current project, what needs approval (proposals, contradictions, duplicates, expired), working memory (goal, plan, notes, the last tool result), how many memories the last reply used, and the most recent memories (`?` marks unsure ones).
 - **Skills**: learning mode, average reliability, what needs review (proposals, conflicts, duplicates, failing or stale skills), the last reply's skills, and each active skill's reliability and use count.
 - **Plan**: the current plan's goal, steps with their status (✓ ▸ ⏸ ✗ ○, ⚠ for approval), budget use and any note.

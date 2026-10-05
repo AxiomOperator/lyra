@@ -143,3 +143,35 @@ currency = "$"
 # efficiency = 0.15
 # reliability = 0.1
 # safety = 0.1
+
+# Capabilities (see README): everything lyra can do — memory tools, composite
+# tools, OpenAPI operations, MCP tools, workflows, skills, helper agents —
+# discovered per message, scored by track record, behind a policy.
+# [capabilities]
+# max_tools = 16            # offer all callable capabilities up to this many
+# discovery_limit = 8       # otherwise this many per message, plus search
+#
+# [capabilities.policy]     # auto | approval | deny, per risk level
+# read_only = "auto"
+# low_write = "auto"
+# write = "auto"
+# destructive = "approval"
+# privileged = "deny"
+# overrides = { "pm.tasks.delete" = "deny" }
+#
+# [capabilities.scoring]
+# relevance = 0.55
+# reliability = 0.2
+# permission = 0.1
+# efficiency = 0.1
+# history = 0.05
+#
+# [[capabilities.openapi]]
+# name = "pm"
+# spec = "~/.lyra/capabilities/pm.yaml"
+# auth_env = "PM_TOKEN"     # the environment variable holding the credential
+#
+# [[capabilities.mcp]]
+# name = "fs"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/notes"]

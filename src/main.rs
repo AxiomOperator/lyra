@@ -1,3 +1,4 @@
+mod caps;
 mod config;
 mod context;
 mod evolve;
@@ -33,6 +34,7 @@ use lyra_memory::capture;
 use lyra_execution::{Engine, ExecutionEvent, Goal, GoalStatus, Plan, PlanStatus, RunOutcome};
 use evolve::{Evolution, EvolutionSnapshot};
 use mem::{Mem, MemorySnapshot};
+use caps::Caps;
 use plan::LyraRuntime;
 use tools::{CallContext, Tools};
 
@@ -194,6 +196,8 @@ enum StreamEvent {
     Evolved { done: evolve::Done, show: bool },
     /// Fresh numbers for the evolution panel.
     Evolution(Result<EvolutionSnapshot, String>),
+    /// Notes from capability work (registry refresh, health checks).
+    CapNotes(Vec<String>),
 }
 
 /// What `main` opened before the UI starts.
@@ -210,6 +214,7 @@ struct Services {
     evolution: Option<Arc<Evolution>>,
     /// Where evolution keeps its records, or why it's off.
     evolution_status: Result<String, String>,
+    caps: Option<Arc<Caps>>,
 }
 
 /// What the assistant is doing right now, for the session panel.
@@ -312,6 +317,8 @@ struct App {
     evolution: Option<Arc<Evolution>>,
     evolution_status: Result<String, String>,
     evolution_panel: Option<Result<EvolutionSnapshot, String>>,
+    /// Every capability, behind policy (`[capabilities]`).
+    caps: Option<Arc<Caps>>,
     /// The evolution work running in the background, if any.
     evolving: Option<&'static str>,
     /// Days between automatic evolution reviews, if scheduled.
@@ -348,7 +355,7 @@ struct App {
 
 impl App {
     fn new(config: Config, context: Context, services: Services) -> Self {
-        let Services { tools, memory_status, learning, learning_status, engine, planning_status, evolution, evolution_status } =
+        let Services { tools, memory_status, learning, learning_status, engine, planning_status, evolution, evolution_status, caps } =
             services;
         let definitions = tools.as_ref().map(|t| t.definitions());
         let tools_tokens = definitions.as_ref().map_or(0, |d| learn::approx_tokens(&d.to_string()));
@@ -394,6 +401,7 @@ impl App {
             evolution,
             evolution_status,
             evolution_panel: None,
+            caps,
             evolving: None,
             evolution_review_every: config.evolution.review.every_days(),
             session_started: chrono::Utc::now(),
@@ -447,7 +455,7 @@ impl App {
             .map(|m| serde_json::to_value(m).expect("message serializes"))
             .collect();
         let (model, tools, tx) = (self.model.clone(), self.tools.clone(), self.tx.clone());
-        let (learning, evolution) = (self.learning.clone(), self.evolution.clone());
+        let (learning, evolution, caps) = (self.learning.clone(), self.evolution.clone(), self.caps.clone());
         thread::spawn(move || {
             let mut history = history;
             // Evolved behavior: guidelines, the matching workflow, the round limit.
@@ -464,7 +472,7 @@ impl App {
             if let Some(learning) = learning {
                 apply_skills(&learning, &content, run, &mut history, &tx);
             }
-            let event = match converse(&url, &model, history, tools.as_deref(), max_rounds, run, &tx) {
+            let event = match converse(&url, &model, history, caps.as_deref(), &content, max_rounds, run, &tx) {
                 Ok(stats) => StreamEvent::Done(stats),
                 Err(e) => StreamEvent::Error(e),
             };
@@ -633,6 +641,12 @@ impl App {
                 self.refresh_skills();
             }
             StreamEvent::Skills(snapshot) => {
+                // Skills are capabilities too.
+                if let (Ok(s), Some(caps)) = (&snapshot, &self.caps)
+                    && s.active.len() != caps.manager.all().iter().filter(|c| c.kind == lyra_capabilities::CapabilityKind::Skill).count()
+                {
+                    self.refresh_caps(false);
+                }
                 if let Err(e) = &snapshot {
                     self.log(Level::Error, format!("skills: {e}"));
                 }
@@ -745,6 +759,12 @@ impl App {
                 self.refresh_evolution();
                 self.refresh_skills();
             }
+            StreamEvent::CapNotes(notes) => {
+                for note in notes {
+                    self.log(Level::Tool, note);
+                }
+                self.tools_changed();
+            }
             StreamEvent::Evolution(snapshot) => {
                 if let Err(e) = &snapshot {
                     self.log(Level::Error, format!("evolution: {e}"));
@@ -797,6 +817,7 @@ impl App {
         }
         self.reload_evolution();
         self.check_models();
+        self.refresh_caps(true);
         self.memory_upkeep();
         self.recover_plans();
         self.sync_skills();
@@ -963,7 +984,7 @@ impl App {
         };
         let last_run = self.last_run.clone();
         let result = match name {
-            "/help" => Ok(format!("{COMMANDS}\n{}\n{HELP_END}", evolve::COMMANDS)),
+            "/help" => Ok(format!("{COMMANDS}\n{}\n{}\n{HELP_END}", evolve::COMMANDS, caps::COMMANDS)),
             "/skills" => need().and_then(|l| l.describe()),
             "/approve" => need().and_then(|l| l.approve(arg)),
             "/reject" => need().and_then(|l| l.reject(arg)),
@@ -1009,6 +1030,7 @@ impl App {
             }),
             "/plan" | "/plans" => self.plan_command(name, arg),
             "/evolve" => self.evolve_command(arg),
+            "/caps" => self.caps_command(arg),
             "/memory" => {
                 let mem = self.mem().ok_or_else(|| match &self.memory_status {
                     Err(why) => why.clone(),
@@ -1166,6 +1188,7 @@ impl App {
             learning: self.learning.clone(),
             forbidden_tools: self.forbidden_tools.clone(),
             evolution: self.evolution.clone(),
+            caps: self.caps.clone(),
             tx: self.tx.clone(),
         }
     }
@@ -1391,6 +1414,7 @@ impl App {
             evolution: self.evolution.clone()?,
             tools: self.tools.clone(),
             learning: self.learning.clone(),
+            caps: self.caps.clone(),
             system_prompt: self.system_prompt.clone(),
         })
     }
@@ -1411,15 +1435,58 @@ impl App {
         for note in evolution.reload(self.tools.as_deref()) {
             self.log(Level::Error, format!("evolution: {note}"));
         }
+        // Evolved workflows and composite tools are capabilities (C11).
+        self.refresh_caps(false);
         self.tools_changed();
         self.refresh_evolution();
     }
 
     /// The tool list may have changed (composite tools): recount it.
     fn tools_changed(&mut self) {
-        let definitions = self.tools.as_ref().map(|t| t.definitions());
+        // What the model is offered for an empty query: everything when few,
+        // otherwise memory_recall and the search tool (discovery adds the rest).
+        let definitions = match (&self.caps, &self.tools) {
+            (Some(caps), _) => Some(Value::Array(caps.definitions("", &Default::default()))),
+            (None, Some(tools)) => Some(tools.definitions()),
+            _ => None,
+        };
         self.tools_tokens = definitions.as_ref().map_or(0, |d| learn::approx_tokens(&d.to_string()));
         self.tool_count = definitions.as_ref().and_then(|d| d.as_array().map(Vec::len)).unwrap_or(0);
+    }
+
+    /// Rebuild the capability registry (skills, workflows or tools changed)
+    /// and, with `health`, check every provider. In the background.
+    fn refresh_caps(&self, health: bool) {
+        let Some(caps) = self.caps.clone() else { return };
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let mut notes = caps.refresh();
+            if health {
+                notes.extend(caps.check_health());
+            }
+            let _ = tx.send(StreamEvent::CapNotes(notes));
+        });
+    }
+
+    /// `/caps …`
+    fn caps_command(&mut self, arg: &str) -> Result<String, String> {
+        let caps = self.caps.clone().ok_or("capabilities are off")?;
+        let (sub, rest) = arg.trim().split_once(' ').unwrap_or((arg.trim(), ""));
+        match sub {
+            "" | "list" => Ok(caps::list(&caps)),
+            "search" => caps::search(&caps, rest),
+            "show" => caps::show(&caps, rest),
+            "allow" => {
+                let c = caps.manager.allow(rest.trim())?;
+                self.log(Level::Tool, format!("allowed {} for this session", c.id));
+                Ok(format!("{} may run without approval for the rest of this session", c.id))
+            }
+            "health" => {
+                self.refresh_caps(true);
+                Ok("checking every provider…".into())
+            }
+            _ => Err(format!("unknown /caps command {sub:?}\n{}", caps::COMMANDS)),
+        }
     }
 
     fn refresh_evolution(&self) {
@@ -1634,6 +1701,9 @@ impl App {
                     mem.set_vector_index_threshold(config.memory.vector_index_threshold);
                 }
                 self.memory_curate_every = config.memory.curate.every_days();
+                if let Some(caps) = &self.caps {
+                    caps.manager.set_settings(config.capabilities.settings.clone());
+                }
                 self.curate_every = config.learning.curate.every_days();
                 self.evolution_review_every = config.evolution.review.every_days();
                 self.embedding = config.embedding;
@@ -1648,6 +1718,7 @@ impl App {
         }
         self.scroll = None;
         self.reload_evolution();
+        self.refresh_caps(true);
         self.check_models();
         self.refresh_memory();
         self.refresh_skills();
@@ -1718,6 +1789,7 @@ const COMMANDS: &str = "\
 /plan run anyway             run despite the goal's open questions
 /plan budget [raise]         the plan's budget · add the configured budget again
 /plan checkpoints|revisions  recovery points · how the plan changed
+/caps [search|show|allow|health]  what lyra can do, which capability fits, what's allowed
 /outcome good|bad|partial    (also) how the last reply went, for evolution";
 
 const HELP_END: &str = "/help                        this list";
@@ -1823,17 +1895,21 @@ fn pricing(config: &Config) -> Pricing {
 
 /// One user turn: stream a reply; if the model calls tools, run them, add the
 /// results to the history and stream again. Stats cover the whole turn.
+#[allow(clippy::too_many_arguments)]
 fn converse(
     url: &str,
     model: &str,
     mut history: Vec<Value>,
-    tools: Option<&Tools>,
+    caps: Option<&Caps>,
+    request: &str,
     max_rounds: usize,
     run: Uuid,
     tx: &Sender<StreamEvent>,
 ) -> Result<Stats, String> {
     let start = Instant::now();
     let mut total: Option<Stats> = None;
+    // Capabilities the model found with the search tool, offered from then on.
+    let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
     for round in 1..=max_rounds.max(1) {
         let n = history.len();
         let note = format!("round {round} · sending {n} message{}", if n == 1 { "" } else { "s" });
@@ -1844,15 +1920,18 @@ fn converse(
             "stream": true,
             "stream_options": { "include_usage": true },
         });
-        if let Some(tools) = tools {
-            body["tools"] = tools.definitions();
+        if let Some(caps) = caps {
+            let definitions = caps.definitions(request, &found);
+            if !definitions.is_empty() {
+                body["tools"] = Value::Array(definitions);
+            }
         }
         let round = stream(url, &body, tx)?;
         match &mut total {
             Some(total) => total.absorb(round.stats),
             None => total = Some(round.stats),
         }
-        let Some(tools) = tools.filter(|_| !round.tool_calls.is_empty()) else {
+        let Some(caps) = caps.filter(|_| !round.tool_calls.is_empty()) else {
             let mut stats = total.expect("at least one round");
             stats.elapsed = start.elapsed();
             return Ok(stats);
@@ -1866,7 +1945,14 @@ fn converse(
         }));
         for call in &round.tool_calls {
             let ctx = CallContext::new(Some(run), &call.id);
-            let content = tools.run(&call.function.name, &call.function.arguments, ctx);
+            // Policy, usage tracking and verification happen in there.
+            let content = if call.function.name == caps::SEARCH_TOOL {
+                let (text, names) = caps.search(&call.function.arguments);
+                found.extend(names);
+                text
+            } else {
+                caps.invoke(&call.function.name, &call.function.arguments, ctx, false, true)
+            };
             history.push(json!({ "role": "tool", "tool_call_id": call.id, "content": content }));
             let (id, name) = (call.id.clone(), call.function.name.clone());
             tx.send(StreamEvent::ToolResult { id, name, content }).map_err(|e| e.to_string())?;
@@ -1995,8 +2081,9 @@ fn main() {
     let (learning, learning_status) = open_learning(&config, runtime.handle());
     let (engine, planning_status) = open_planning(&config, runtime.handle());
     let (evolution, evolution_status) = open_evolution(&config, runtime.handle());
+    let (caps, caps_notes) = open_capabilities(&config, runtime.handle(), &tools, &learning, &evolution);
     let services =
-        Services { tools, memory_status, learning, learning_status, engine, planning_status, evolution, evolution_status };
+        Services { tools, memory_status, learning, learning_status, engine, planning_status, evolution, evolution_status, caps };
     learn::configure(learn::Structured {
         max_tokens: config.structured_max_tokens,
         thinking: config.structured_thinking,
@@ -2007,6 +2094,9 @@ fn main() {
     }
     for note in memory_notes {
         app.log(Level::Memory, note);
+    }
+    for note in caps_notes {
+        app.log(Level::Tool, note);
     }
     app.start();
     ratatui::run(|terminal| run(terminal, &mut app)).expect("terminal error");
@@ -2107,6 +2197,39 @@ fn open_memory(
         }
         Err(e) => (None, Err(format!("memory off: {e:#}")), Vec::new()),
     }
+}
+
+/// Open the capability registry: usage history and discovery index in
+/// `~/.lyra/capabilities`, providers from `[capabilities]`, plus the memory
+/// tools, skills, workflows and helper agents. Returns notes for the log.
+fn open_capabilities(
+    config: &Config,
+    runtime: &tokio::runtime::Handle,
+    tools: &Option<Arc<Tools>>,
+    learning: &Option<Arc<Learning>>,
+    evolution: &Option<Arc<Evolution>>,
+) -> (Option<Arc<Caps>>, Vec<String>) {
+    let c = &config.capabilities;
+    let Some(dir) = config::home().map(|h| h.join("capabilities")) else {
+        return (None, vec!["capabilities off: no home directory".into()]);
+    };
+    let manager = match runtime.block_on(lyra_capabilities::CapabilityManager::open(&dir, c.settings.clone())) {
+        Ok(m) => m,
+        Err(e) => return (None, vec![format!("capabilities off: {e:#}")]),
+    };
+    let (openapi, mcp, mut notes) = Caps::connect(&c.openapi, &c.mcp, config::expand_path);
+    if let Some(endpoint) = config.embedding.clone()
+        && let Ok(provider) = retrieval::EndpointEmbedder::connect(endpoint)
+    {
+        manager.set_embedder(Some(Arc::new(provider.with_instruction(retrieval::CAPABILITY_INSTRUCTION))));
+    }
+    let mut caps = Caps::new(manager, runtime.clone(), openapi, mcp);
+    caps.tools = tools.clone();
+    caps.learning = learning.clone();
+    caps.evolution = evolution.clone();
+    notes.extend(caps.refresh());
+    notes.push(format!("capabilities · {} ({} callable)", caps.manager.all().len(), caps.manager.all().iter().filter(|c| c.kind.callable()).count()));
+    (Some(Arc::new(caps)), notes)
 }
 
 /// `lyra --restore-memory <backup>`: put a memory backup in place before

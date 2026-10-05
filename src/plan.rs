@@ -48,18 +48,19 @@ pub struct LyraRuntime {
     pub forbidden_tools: Vec<String>,
     /// Evolved behavior settings and workflows.
     pub evolution: Option<Arc<Evolution>>,
+    /// Every capability, behind policy; plans call tools through it.
+    pub caps: Option<Arc<crate::caps::Caps>>,
     pub tx: Sender<StreamEvent>,
 }
 
 impl LyraRuntime {
     fn definitions(&self, allowed: Option<&[String]>) -> Vec<Value> {
-        let Some(tools) = &self.tools else { return Vec::new() };
-        tools
-            .definitions()
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
+        let all = match (&self.caps, &self.tools) {
+            (Some(caps), _) => caps.tool_definitions(),
+            (None, Some(tools)) => tools.definitions().as_array().cloned().unwrap_or_default(),
+            _ => return Vec::new(),
+        };
+        all.into_iter()
             .filter(|d| {
                 let name = d["function"]["name"].as_str().unwrap_or("");
                 !self.forbidden_tools.iter().any(|f| f == name) && allowed.is_none_or(|a| a.iter().any(|t| t == name))
@@ -67,14 +68,23 @@ impl LyraRuntime {
             .collect()
     }
 
-    fn run_tool(&self, name: &str, arguments: &str, call_id: &str, agent: Option<&str>) -> String {
+    /// `approved`: a person approved this call (an approved tool step).
+    /// `verify`: check writes here (off for tool steps; the engine verifies those).
+    fn run_tool(&self, name: &str, arguments: &str, call_id: &str, agent: Option<&str>, approved: bool, verify: bool) -> String {
         let write_scopes = agent.and_then(|a| AGENT_SCOPES.iter().find(|(n, _)| *n == a)).map(|(_, scopes)| *scopes);
-        match &self.tools {
-            Some(tools) if !self.forbidden_tools.iter().any(|f| f == name) => {
-                tools.run(name, arguments, CallContext { run: None, call_id, write_scopes })
-            }
+        if self.forbidden_tools.iter().any(|f| f == name) {
+            return json!({ "error": format!("tool {name} isn't available") }).to_string();
+        }
+        let ctx = CallContext { run: None, call_id, write_scopes };
+        match (&self.caps, &self.tools) {
+            (Some(caps), _) => caps.invoke(name, arguments, ctx, approved, verify),
+            (None, Some(tools)) => tools.run(name, arguments, ctx),
             _ => json!({ "error": format!("tool {name} isn't available") }).to_string(),
         }
+    }
+
+    fn risk_of(&self, name: &str) -> Risk {
+        self.caps.as_ref().map_or_else(|| risk(name), |c| c.risk_of(name))
     }
 }
 
@@ -134,7 +144,12 @@ impl Runtime for LyraRuntime {
             memories,
             skills,
             workflows,
-            tools: self.tools(),
+            // C3: the capabilities this goal needs, with their track record,
+            // prerequisites, approval and verification.
+            tools: match &self.caps {
+                Some(caps) => caps.plan_tools(goal).into_iter().filter(|t| !self.forbidden_tools.contains(&t.name)).collect(),
+                None => self.tools(),
+            },
             agents,
             forbidden_tools: self.forbidden_tools.clone(),
             budget_note: None,
@@ -143,23 +158,22 @@ impl Runtime for LyraRuntime {
     }
 
     fn tools(&self) -> Vec<ToolInfo> {
+        if let Some(caps) = &self.caps {
+            return caps.all_tools().into_iter().filter(|t| !self.forbidden_tools.contains(&t.name)).collect();
+        }
         self.definitions(None)
             .iter()
             .map(|d| {
                 let name = d["function"]["name"].as_str().unwrap_or("").to_string();
-                ToolInfo {
-                    risk: risk(&name),
-                    description: d["function"]["description"].as_str().unwrap_or("").into(),
-                    parameters: d["function"]["parameters"].clone(),
-                    name,
-                }
+                ToolInfo::new(&name, d["function"]["description"].as_str().unwrap_or(""), risk(&name), d["function"]["parameters"].clone())
             })
             .collect()
     }
 
     fn call_tool(&self, tool: &str, arguments: &Value, operation: Option<Uuid>) -> Result<Value, String> {
         let call_id = operation.map(|o| o.to_string()).unwrap_or_default();
-        let text = self.run_tool(tool, &arguments.to_string(), &call_id, None);
+        // A tool step runs only after any approval it needs (P14).
+        let text = self.run_tool(tool, &arguments.to_string(), &call_id, None, true, false);
         let value: Value = serde_json::from_str(&text).unwrap_or(Value::String(text));
         match value.get("error").and_then(Value::as_str) {
             Some(e) => Err(e.to_string()),
@@ -173,7 +187,7 @@ impl Runtime for LyraRuntime {
         let tools: Vec<Value> = self
             .definitions(task.tools.as_deref())
             .into_iter()
-            .filter(|d| match risk(d["function"]["name"].as_str().unwrap_or("")) {
+            .filter(|d| match self.risk_of(d["function"]["name"].as_str().unwrap_or("")) {
                 Risk::ReadOnly => true,
                 Risk::Mutating => task.may_change,
                 Risk::Destructive => false,
@@ -212,10 +226,10 @@ impl Runtime for LyraRuntime {
                 let result = if allowed {
                     out.tool_calls += 1;
                     out.tools_used.push(name.to_string());
-                    let result = self.run_tool(name, arguments, call["id"].as_str().unwrap_or(""), task.agent.as_deref());
+                    let result = self.run_tool(name, arguments, call["id"].as_str().unwrap_or(""), task.agent.as_deref(), false, true);
                     // Record what changed (successfully), so a retry doesn't redo it.
                     let ok = serde_json::from_str::<Value>(&result).map_or(true, |v| v.get("error").is_none());
-                    if risk(name) != Risk::ReadOnly && ok {
+                    if self.risk_of(name) != Risk::ReadOnly && ok {
                         out.changes.push(format!("{name} {}", arguments.chars().take(300).collect::<String>()));
                     }
                     result

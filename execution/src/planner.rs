@@ -29,6 +29,27 @@ pub struct ToolInfo {
     pub risk: Risk,
     /// The tool's JSON-schema parameters.
     pub parameters: Value,
+    /// Policy says a person approves each use (C4).
+    pub requires_approval: bool,
+    /// How to check its effect, used when the planner gives none (C9).
+    pub verification: Option<Verification>,
+    /// Track record and prerequisites for the planner, e.g.
+    /// `98% success · ~120ms · needs projectId (from pmi.projects.list)`.
+    pub notes: String,
+}
+
+impl ToolInfo {
+    pub fn new(name: &str, description: &str, risk: Risk, parameters: Value) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            risk,
+            parameters,
+            requires_approval: false,
+            verification: None,
+            notes: String::new(),
+        }
+    }
 }
 
 impl ToolInfo {
@@ -84,7 +105,9 @@ impl PlanningContext {
                 Risk::Mutating => "changes things",
                 Risk::Destructive => "destructive: only as its own tool step, which needs approval",
             };
-            out += &format!("- {} ({risk}): {} Parameters: {}\n", t.name, t.description, t.parameter_list());
+            let approval = if t.requires_approval { ", needs approval" } else { "" };
+            let notes = if t.notes.is_empty() { String::new() } else { format!(" [{}]", t.notes) };
+            out += &format!("- {} ({risk}{approval}): {} Parameters: {}{notes}\n", t.name, t.description, t.parameter_list());
         }
         out += "\nHelper agents for subagent steps:\n";
         for a in &self.agents {
@@ -267,6 +290,9 @@ fn build_step(d: &StepDraft, id: Uuid, deps: Vec<Uuid>, ctx: &PlanningContext) -
                 return Err(format!("{key} uses {tool}, which plans may not use"));
             }
             let info = ctx.tool(tool).ok_or(format!("{key} uses unknown tool {tool}"))?;
+            if info.requires_approval {
+                approval = ApprovalPolicy::RequireApproval;
+            }
             match info.risk {
                 Risk::Destructive => {
                     approval = ApprovalPolicy::RequireApproval;
@@ -293,7 +319,12 @@ fn build_step(d: &StepDraft, id: Uuid, deps: Vec<Uuid>, ctx: &PlanningContext) -
         }
         StepAction::Reasoning { .. } => {}
     }
-    let verification = d.verification.clone().unwrap_or_default();
+    // A tool's own verification rule applies when the planner gives none (C9).
+    let default_check = match &action {
+        StepAction::Tool { tool, .. } => ctx.tool(tool).and_then(|t| t.verification.clone()),
+        _ => None,
+    };
+    let verification = d.verification.clone().or(default_check).unwrap_or_default();
     if verification.strategy == VerificationStrategy::FollowUpTool {
         let tool = verification.tool.as_deref().ok_or(format!("{key}: follow_up_tool needs a tool"))?;
         let info = ctx.tool(tool).ok_or(format!("{key} verifies with unknown tool {tool}"))?;
@@ -657,7 +688,7 @@ pub(crate) mod tests {
 
     pub(crate) fn tool(name: &str, risk: Risk) -> ToolInfo {
         let parameters = serde_json::json!({"type": "object", "properties": {"id": {"type": "string"}, "query": {"type": "string"}}, "required": ["id"]});
-        ToolInfo { name: name.into(), description: format!("{name}."), risk, parameters }
+        ToolInfo::new(name, &format!("{name}."), risk, parameters)
     }
 
     #[test]

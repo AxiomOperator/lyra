@@ -771,15 +771,18 @@ impl Engine {
             VerificationStrategy::FollowUpTool => {
                 let tool = v.tool.clone().unwrap_or_default();
                 usage.tool_calls += 1;
-                match runtime.call_tool(&tool, v.arguments.as_ref().unwrap_or(&json!({})), None) {
+                // `{{result.x}}` / `{{args.x}}` come from the step being checked.
+                let step_args = match &step.action {
+                    StepAction::Tool { arguments, .. } => arguments.clone(),
+                    _ => json!({}),
+                };
+                let arguments = crate::check::fill(v.arguments.as_ref().unwrap_or(&json!({})), &result.output, &step_args);
+                match runtime.call_tool(&tool, &arguments, None) {
                     Ok(out) => {
                         let text = output_text(&out);
-                        let verified = v.check.as_deref().is_none_or(|c| contains(&text, c));
-                        VerificationResult {
-                            verified,
-                            evidence: vec![format!("{tool}: {}", truncate(&text, 300))],
-                            reason: v.check.as_ref().map(|c| format!("looked for {c:?}")),
-                        }
+                        let expression = v.check.as_deref().map(|c| crate::check::fill(&json!(c), &result.output, &step_args));
+                        let (verified, reason) = crate::check::check(&out, expression.as_ref().and_then(Value::as_str).unwrap_or(""));
+                        VerificationResult { verified, evidence: vec![format!("{tool}: {}", truncate(&text, 300))], reason: Some(reason) }
                     }
                     Err(e) => VerificationResult { verified: false, evidence: vec![], reason: Some(format!("{tool} failed: {e}")) },
                 }
