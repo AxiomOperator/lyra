@@ -10,14 +10,16 @@ Everything lyra keeps lives in one folder, `~/.lyra` (set `LYRA_HOME` to use ano
 
 ```text
 ~/.lyra/
-├── config/   config.toml, SOUL.md, USER.md, AGENT.md
-├── memory/   memory.db
-└── skills/   skills.db
+├── config/    config.toml
+├── context/   SOUL.md, USER.md, AGENT.md
+├── memory/    memory.db
+└── skills/    <name>.md, one file per skill
 ```
 
 Upgrading from an older version moves things here automatically: on first run,
 files from `~/.config/lyra` and `~/.local/share/lyra/data` are copied in (the
-originals are left in place, so delete them once you're happy).
+originals are left in place, so delete them once you're happy), and context
+files in `~/.lyra/config` move to `~/.lyra/context`.
 
 ## Config
 
@@ -67,7 +69,7 @@ Three Markdown files make up the system prompt sent with every request:
 | `USER.md` | Who you are, your projects and preferences | nearest file wins |
 | `AGENT.md` | Operating rules, purpose, codebase instructions | all files stack, general to specific |
 
-Each is looked up in `~/.lyra/config/`, then in every directory from `/` down to
+Each is looked up in `~/.lyra/context/`, then in every directory from `/` down to
 the one lyra is started in. So a project can override the global `SOUL.md`, and
 a project `AGENT.md` adds to the global one. The first line in the chat shows
 which files were loaded. Templates are in `examples/`.
@@ -103,7 +105,27 @@ default_scope = "user"
 ## Self-learning (skills)
 
 Memory holds facts; **skills** hold procedures lyra learned. They live in their
-own crate (`learning/`, `lyra-learning`) and database (`~/.lyra/skills/skills.db`).
+own crate (`learning/`, `lyra-learning`) and are plain Markdown files, one per
+skill, in `~/.lyra/skills/`:
+
+```markdown
+---
+description: When checking a Rust project before committing
+status: active
+confidence: 0.90
+source: conversation
+created: 2026-10-05T00:06:24Z
+updated: 2026-10-05T00:06:40Z
+id: 2c9ca857-1f0e-4d0e-9a51-6f4c0f3e8a11
+---
+1. cargo fmt --check
+2. cargo clippy -- -D warnings
+3. cargo test
+```
+
+The file name is the skill name and the body is the instructions. Edit them
+freely, or drop in your own: every header line is optional, and a file without
+one is an active skill. Files are re-read on every message.
 
 1. **Spot a lesson.** After each reply a cheap check looks for a reason to learn:
    you corrected the assistant, asked it to remember how something was done
@@ -125,6 +147,7 @@ Commands: `/skills`, `/approve <id>`, `/reject <id>`, `/forget-skill <id>`,
 ```toml
 [learning]
 mode = "propose"      # off | propose | auto
+dir = "~/.lyra/skills"
 min_confidence = 0.6
 max_skills = 3
 ```

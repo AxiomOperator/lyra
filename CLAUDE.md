@@ -10,9 +10,9 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
 - `memory/` — `lyra-memory` crate: SQLite + FTS5 notebook behind `MemoryManager`.
 - `learning/` — `lyra-learning` crate: learned skills behind `LearningManager`.
 - `docs/` — design notes.
-- Runtime files live in `~/.lyra` (`$LYRA_HOME`): `config/` (config.toml, SOUL/USER/AGENT.md),
-  `memory/memory.db`, `skills/skills.db`. `src/migrate.rs` copies an old
-  `~/.config/lyra` + `~/.local/share/lyra/data` install there on first run.
+- Runtime files live in `~/.lyra` (`$LYRA_HOME`): `config/config.toml`, `context/`
+  (SOUL/USER/AGENT.md), `memory/memory.db`, `skills/<name>.md` (one Markdown file per skill).
+  `src/migrate.rs` brings older layouts up to date on startup.
 
 ## Checks
 

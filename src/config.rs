@@ -32,8 +32,8 @@ pub struct Config {
 pub struct LearningConfig {
     /// `off`, `propose` (lessons wait for /approve) or `auto` (used straight away).
     pub mode: String,
-    /// SQLite file; defaults to `~/.lyra/skills/skills.db`.
-    pub path: Option<String>,
+    /// Folder of skill files (`<name>.md`); defaults to `~/.lyra/skills`.
+    pub dir: Option<String>,
     /// Lessons the reviewer is less sure of than this are dropped.
     pub min_confidence: f32,
     /// Most skills added to the system prompt per message.
@@ -42,13 +42,16 @@ pub struct LearningConfig {
 
 impl Default for LearningConfig {
     fn default() -> Self {
-        Self { mode: "propose".into(), path: None, min_confidence: 0.6, max_skills: 3 }
+        Self { mode: "propose".into(), dir: None, min_confidence: 0.6, max_skills: 3 }
     }
 }
 
 impl LearningConfig {
-    pub fn path(&self) -> Option<PathBuf> {
-        data_file(self.path.as_deref(), "skills", "skills.db")
+    pub fn dir(&self) -> Option<PathBuf> {
+        match self.dir.as_deref() {
+            Some(dir) => expand(dir),
+            None => Some(home()?.join("skills")),
+        }
     }
 }
 
@@ -78,11 +81,16 @@ impl MemoryConfig {
 /// `custom` with a leading `~/` expanded, or `<lyra home>/<folder>/<name>`.
 fn data_file(custom: Option<&str>, folder: &str, name: &str) -> Option<PathBuf> {
     match custom {
-        Some(p) => match p.strip_prefix("~/") {
-            Some(rest) => Some(user_home()?.join(rest)),
-            None => Some(PathBuf::from(p)),
-        },
+        Some(p) => expand(p),
         None => Some(home()?.join(folder).join(name)),
+    }
+}
+
+/// A configured path, with a leading `~/` expanded.
+fn expand(path: &str) -> Option<PathBuf> {
+    match path.strip_prefix("~/") {
+        Some(rest) => Some(user_home()?.join(rest)),
+        None => Some(PathBuf::from(path)),
     }
 }
 
@@ -133,9 +141,10 @@ fn user_home() -> Option<PathBuf> {
 ///
 /// ```text
 /// ~/.lyra/
-/// ├── config/   config.toml, SOUL.md, USER.md, AGENT.md
-/// ├── memory/   memory.db
-/// └── skills/   skills.db
+/// ├── config/    config.toml
+/// ├── context/   SOUL.md, USER.md, AGENT.md
+/// ├── memory/    memory.db
+/// └── skills/    <name>.md, one per skill
 /// ```
 pub fn home() -> Option<PathBuf> {
     match std::env::var_os("LYRA_HOME") {
@@ -144,9 +153,14 @@ pub fn home() -> Option<PathBuf> {
     }
 }
 
-/// `<lyra home>/config`: config.toml and the global SOUL/USER/AGENT.md.
+/// `<lyra home>/config`: config.toml.
 pub fn dir() -> Option<PathBuf> {
     Some(home()?.join("config"))
+}
+
+/// `<lyra home>/context`: the global SOUL.md, USER.md and AGENT.md.
+pub fn context_dir() -> Option<PathBuf> {
+    Some(home()?.join("context"))
 }
 
 /// `<config dir>/config.toml`.

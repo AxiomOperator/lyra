@@ -6,7 +6,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::evaluator::Candidate;
-use crate::{Skill, SkillStatus, SkillStore, SqliteSkillStore};
+use crate::{FileSkillStore, Skill, SkillStatus, SkillStore};
 
 /// `list` limit meaning "everything"; V1 expects skills in the tens, not thousands.
 const ALL: usize = 100_000;
@@ -43,14 +43,19 @@ pub enum Learned {
 }
 
 /// The agent's interface to learned skills.
-pub struct LearningManager<S: SkillStore = SqliteSkillStore> {
+pub struct LearningManager<S: SkillStore = FileSkillStore> {
     store: S,
 }
 
-impl LearningManager<SqliteSkillStore> {
-    /// Open the SQLite-backed skills at `path`, creating them if needed.
-    pub async fn open(path: &Path) -> Result<Self> {
-        Ok(Self::new(SqliteSkillStore::open(path).await?))
+impl LearningManager<FileSkillStore> {
+    /// Use the skill files in `dir`, creating it if needed.
+    pub fn open(dir: &Path) -> Result<Self> {
+        Ok(Self::new(FileSkillStore::open(dir)?))
+    }
+
+    /// Skill files that couldn't be read, with the reason.
+    pub fn load_errors(&self) -> Vec<String> {
+        self.store.load_errors()
     }
 }
 
@@ -125,7 +130,7 @@ mod tests {
     }
 
     async fn manager() -> LearningManager {
-        LearningManager::new(SqliteSkillStore::in_memory().await.unwrap())
+        LearningManager::open(&crate::files::tests::temp_dir("manager")).unwrap()
     }
 
     #[tokio::test]

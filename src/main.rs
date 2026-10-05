@@ -604,6 +604,7 @@ impl App {
         self.scroll = None;
         self.check_models();
         self.refresh_memory();
+        self.refresh_skills();
     }
 
     /// Ping the embedding and reranker models in the background.
@@ -825,7 +826,7 @@ fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>) -> Result<Round, St
 fn main() {
     // Before loading config: an old install's files may need moving into ~/.lyra.
     let migrated = match migrate::run() {
-        Ok(note) => note,
+        Ok(notes) => notes,
         Err(e) => {
             eprintln!("lyra: couldn't move files into the lyra home: {e}");
             std::process::exit(1);
@@ -844,7 +845,7 @@ fn main() {
     let (learning, learning_status) = open_learning(&config, runtime.handle());
     let services = Services { tools, memory_status, learning, learning_status };
     let mut app = App::new(config, Context::load(), services);
-    if let Some(note) = migrated {
+    for note in migrated {
         app.log(Level::Info, note);
     }
     app.start();
@@ -859,14 +860,21 @@ fn open_learning(
     let c = &config.learning;
     // Config::load already checked the mode parses.
     let mode: Mode = c.mode.parse().unwrap_or(Mode::Propose);
-    let Some(path) = c.path() else {
-        return (None, Err("learning off: no data directory (set [learning] path)".into()));
+    let Some(dir) = c.dir() else {
+        return (None, Err("learning off: no home directory (set [learning] dir)".into()));
     };
-    match runtime.block_on(lyra_learning::LearningManager::open(&path)) {
+    match lyra_learning::LearningManager::open(&dir) {
         Ok(manager) => {
-            let learning =
-                Learning::new(Arc::new(manager), runtime.clone(), mode, c.min_confidence, c.max_skills);
-            let status = format!("skills · {} · mode {}", context::show(&path), c.mode);
+            let shown = context::show(&dir);
+            let status = format!("skills · {shown} · mode {}", c.mode);
+            let learning = Learning::new(
+                Arc::new(manager),
+                runtime.clone(),
+                shown,
+                mode,
+                c.min_confidence,
+                c.max_skills,
+            );
             (Some(Arc::new(learning)), Ok(status))
         }
         Err(e) => (None, Err(format!("learning off: {e:#}"))),

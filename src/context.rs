@@ -4,7 +4,7 @@
 //! - `USER.md`  — profile of the person being helped.
 //! - `AGENT.md` — operating rules and instructions.
 //!
-//! Each is looked up in the global config dir (`~/.lyra/config`), then in every
+//! Each is looked up in the global context dir (`~/.lyra/context`), then in every
 //! directory from `/` down to the working directory. The nearest `SOUL.md` and
 //! `USER.md` replace any further out; every `AGENT.md` found is stacked, outermost
 //! first, so more specific instructions come last and take precedence.
@@ -24,10 +24,10 @@ pub struct Context {
 }
 
 impl Context {
-    /// Load from the global config dir and the working directory's ancestors.
+    /// Load from the global context dir and the working directory's ancestors.
     pub fn load() -> Self {
         let mut dirs: Vec<PathBuf> = Vec::new();
-        dirs.extend(crate::config::dir());
+        dirs.extend(crate::config::context_dir());
         if let Ok(cwd) = std::env::current_dir() {
             let mut chain: Vec<PathBuf> = cwd.ancestors().map(Path::to_path_buf).collect();
             chain.reverse();

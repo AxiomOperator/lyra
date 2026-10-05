@@ -280,6 +280,11 @@ fn skills_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
         summary += &format!(" · {} rejected", snapshot.rejected);
     }
     lines.push(Line::styled(truncate(&summary, width), dim));
+    if !snapshot.errors.is_empty() {
+        let n = snapshot.errors.len();
+        let text = format!("{n} unreadable skill file{} (/skills)", if n == 1 { "" } else { "s" });
+        lines.push(Line::from(truncate(&text, width).red()));
+    }
     if app.totals.replies > 0 {
         let used = if app.applied_skills.is_empty() {
             "last reply used no skills".to_string()

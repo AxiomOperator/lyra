@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::{Skill, SkillStatus};
 
-/// Storage backend for skills. SQLite today.
+/// Storage backend for skills: Markdown files today.
 #[async_trait::async_trait]
 pub trait SkillStore: Send + Sync {
     /// Save a skill as given (status included). Errors if the name is taken.

@@ -18,11 +18,15 @@ pub struct SkillsSnapshot {
     pub active: Vec<Skill>,
     pub proposed: Vec<Skill>,
     pub rejected: usize,
+    /// Skill files that couldn't be read.
+    pub errors: Vec<String>,
 }
 
 pub struct Learning {
     manager: Arc<LearningManager>,
     runtime: Handle,
+    /// The skills folder, for messages.
+    dir: String,
     pub mode: Mode,
     min_confidence: f32,
     max_skills: usize,
@@ -32,11 +36,12 @@ impl Learning {
     pub fn new(
         manager: Arc<LearningManager>,
         runtime: Handle,
+        dir: String,
         mode: Mode,
         min_confidence: f32,
         max_skills: usize,
     ) -> Self {
-        Self { manager, runtime, mode, min_confidence, max_skills }
+        Self { manager, runtime, dir, mode, min_confidence, max_skills }
     }
 
     /// Active skills that match `message`, best first.
@@ -86,18 +91,28 @@ impl Learning {
             active: of(SkillStatus::Active),
             proposed: of(SkillStatus::Proposed),
             rejected: all.iter().filter(|s| s.status == SkillStatus::Rejected).count(),
+            errors: self.manager.load_errors(),
         })
     }
 
     /// Text for `/skills`: proposals in full (to review), the rest briefly.
     pub fn describe(&self) -> Result<String, String> {
         let all = self.all()?;
-        if all.is_empty() {
-            return Ok("No skills yet. Lessons from corrections and multi-step work show up \
-                       here as proposals; /learn reviews the conversation now."
-                .into());
+        let mut out = vec![format!(
+            "Skill files: {} (one <name>.md per skill; edit them or add your own)",
+            self.dir
+        )];
+        for error in self.manager.load_errors() {
+            out.push(format!("  unreadable: {error}"));
         }
-        let mut out = Vec::new();
+        if all.is_empty() {
+            out.push(
+                "No skills yet. Lessons from corrections and multi-step work show up here as \
+                 proposals; /learn reviews the conversation now."
+                    .into(),
+            );
+            return Ok(out.join("\n"));
+        }
         for status in [SkillStatus::Proposed, SkillStatus::Active, SkillStatus::Rejected] {
             let group: Vec<&Skill> = all.iter().filter(|s| s.status == status).collect();
             if group.is_empty() {

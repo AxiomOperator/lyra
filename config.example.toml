@@ -28,8 +28,9 @@ currency = "$"
 # Self-learning: after a correction or a multi-step success, lyra asks the model
 # whether there's a reusable lesson and saves it as a skill. Active skills that
 # match a message are added to the system prompt.
+# Skills are Markdown files, one per skill: edit them or add your own.
 # [learning]
 # mode = "propose"          # off | propose (approve with /approve) | auto
-# path = "~/.lyra/skills/skills.db"     # default
+# dir = "~/.lyra/skills"    # default
 # min_confidence = 0.6      # drop lessons the reviewer is less sure of
 # max_skills = 3            # skills added to the prompt per message
