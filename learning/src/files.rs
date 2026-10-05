@@ -80,7 +80,7 @@ impl FileSkillStore {
         self.load()?.into_iter().find(|s| s.id == id).ok_or_else(|| anyhow!("no skill with id {id}"))
     }
 
-    fn save(&self, skill: &Skill) -> Result<()> {
+    fn write(&self, skill: &Skill) -> Result<()> {
         // Write then rename, so a crash never leaves a half-written skill.
         let path = self.path(&skill.name);
         let tmp = self.dir.join(format!(".{}.md.tmp", skill.name));
@@ -92,48 +92,43 @@ impl FileSkillStore {
 
 #[async_trait::async_trait]
 impl SkillStore for FileSkillStore {
-    async fn learn(&self, skill: Skill) -> Result<Skill> {
+    async fn create(&self, skill: Skill) -> Result<Skill> {
         check_name(&skill.name)?;
         if self.path(&skill.name).exists() {
             bail!("a skill named {:?} already exists", skill.name);
         }
-        self.save(&skill)?;
+        self.write(&skill)?;
         Ok(skill)
     }
 
-    async fn search(&self, query: &str, limit: usize) -> Result<Vec<Skill>> {
-        let active: Vec<Skill> =
-            self.load()?.into_iter().filter(|s| s.status == SkillStatus::Active).collect();
-        Ok(rank(query, active, limit))
+    async fn get(&self, id: Uuid) -> Result<Option<Skill>> {
+        Ok(self.load()?.into_iter().find(|s| s.id == id))
     }
 
-    async fn update(&self, id: Uuid, instructions: &str) -> Result<()> {
-        let mut skill = self.find(id)?;
-        skill.instructions = instructions.trim().to_string();
-        skill.updated_at = Utc::now();
-        self.save(&skill)
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<(Skill, f32)>> {
+        Ok(rank(query, self.load()?, limit))
     }
 
-    async fn forget(&self, id: Uuid) -> Result<()> {
-        let skill = self.find(id)?;
-        let path = self.path(&skill.name);
-        std::fs::remove_file(&path).with_context(|| format!("deleting {}", path.display()))
-    }
-
-    async fn list(&self, status: Option<SkillStatus>, limit: usize) -> Result<Vec<Skill>> {
+    async fn list(&self, status: Option<SkillStatus>) -> Result<Vec<Skill>> {
         Ok(self
             .load()?
             .into_iter()
             .filter(|s| status.is_none_or(|status| s.status == status))
-            .take(limit)
             .collect())
     }
 
-    async fn set_status(&self, id: Uuid, status: SkillStatus) -> Result<()> {
-        let mut skill = self.find(id)?;
-        skill.status = status;
-        skill.updated_at = Utc::now();
-        self.save(&skill)
+    async fn save(&self, skill: &Skill) -> Result<()> {
+        let existing = self.find(skill.id)?;
+        if existing.name != skill.name {
+            bail!("skills can't be renamed ({} → {})", existing.name, skill.name);
+        }
+        self.write(skill)
+    }
+
+    async fn delete(&self, id: Uuid) -> Result<()> {
+        let skill = self.find(id)?;
+        let path = self.path(&skill.name);
+        std::fs::remove_file(&path).with_context(|| format!("deleting {}", path.display()))
     }
 }
 
@@ -155,11 +150,14 @@ fn read(path: &Path) -> Result<Skill> {
         .and_then(|s| s.to_str())
         .ok_or_else(|| anyhow!("file name isn't UTF-8"))?
         .to_string();
-    parse(&name, &text)
+    // A hand-written file has no `created:`; when it was written is the next best thing.
+    let modified = std::fs::metadata(path)?.modified().map(DateTime::<Utc>::from).unwrap_or_else(|_| Utc::now());
+    parse(&name, &text, modified)
 }
 
 /// Parse a skill file. Header lines are `key: value`; all are optional.
-fn parse(name: &str, text: &str) -> Result<Skill> {
+/// `fallback_time` stands in for a missing `created:`.
+fn parse(name: &str, text: &str, fallback_time: DateTime<Utc>) -> Result<Skill> {
     let (header, body) = match text.strip_prefix("---\n") {
         Some(rest) => match rest.split_once("\n---") {
             Some((header, body)) => (header, body.strip_prefix('\n').unwrap_or(body)),
@@ -186,7 +184,7 @@ fn parse(name: &str, text: &str) -> Result<Skill> {
     if instructions.is_empty() {
         bail!("no instructions");
     }
-    let created_at = time("created")?.unwrap_or(DateTime::UNIX_EPOCH);
+    let created_at = time("created")?.unwrap_or(fallback_time);
     Ok(Skill {
         // Hand-written files have no id; derive a stable one from the name.
         id: match field("id") {
@@ -211,6 +209,7 @@ fn parse(name: &str, text: &str) -> Result<Skill> {
         },
         created_at,
         updated_at: time("updated")?.unwrap_or(created_at),
+        usage: Default::default(),
     })
 }
 
@@ -247,7 +246,7 @@ const STOPWORDS: &[&str] = &[
     "we", "what", "when", "where", "which", "will", "with", "would", "you", "your",
 ];
 
-fn words(text: &str) -> Vec<String> {
+pub(crate) fn words(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .map(str::to_lowercase)
         .filter(|w| !w.is_empty() && !STOPWORDS.contains(&w.as_str()))
@@ -260,9 +259,9 @@ fn matches(a: &str, b: &str) -> bool {
     short == long || (short.len() >= 4 && long.starts_with(short))
 }
 
-/// Order skills by how well they match the query: each query word found in a
+/// Score skills by how well they match the query: each query word found in a
 /// skill scores by its rarity across skills (idf), double in the name.
-fn rank(query: &str, skills: Vec<Skill>, limit: usize) -> Vec<Skill> {
+fn rank(query: &str, skills: Vec<Skill>, limit: usize) -> Vec<(Skill, f32)> {
     let terms: HashSet<String> = words(query).into_iter().collect();
     if terms.is_empty() || skills.is_empty() {
         return Vec::new();
@@ -296,7 +295,7 @@ fn rank(query: &str, skills: Vec<Skill>, limit: usize) -> Vec<Skill> {
         .filter(|(score, _)| *score > 0.0)
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-    scored.into_iter().take(limit).map(|(_, s)| s).collect()
+    scored.into_iter().take(limit).map(|(score, s)| (s, score as f32)).collect()
 }
 
 #[cfg(test)]
@@ -310,7 +309,7 @@ pub(crate) mod tests {
         dir
     }
 
-    fn skill(name: &str, instructions: &str, status: SkillStatus) -> Skill {
+    pub(crate) fn skill(name: &str, instructions: &str, status: SkillStatus) -> Skill {
         let now = Utc::now();
         Skill {
             id: Uuid::new_v4(),
@@ -322,24 +321,28 @@ pub(crate) mod tests {
             status,
             created_at: now,
             updated_at: now,
+            usage: Default::default(),
         }
     }
 
+    fn names(found: &[(Skill, f32)]) -> Vec<&str> {
+        found.iter().map(|(s, _)| s.name.as_str()).collect()
+    }
+
     #[tokio::test]
-    async fn learn_writes_a_readable_markdown_file() {
+    async fn create_writes_a_readable_markdown_file() {
         let dir = temp_dir("write");
         let store = FileSkillStore::open(&dir).unwrap();
         let s = skill("deploy-steps", "1. build\n2. ship", SkillStatus::Proposed);
-        store.learn(s.clone()).await.unwrap();
+        store.create(s.clone()).await.unwrap();
 
         let text = std::fs::read_to_string(dir.join("deploy-steps.md")).unwrap();
         assert!(text.starts_with("---\ndescription: about deploy-steps\nstatus: proposed\n"), "{text}");
         assert!(text.ends_with("---\n1. build\n2. ship\n"), "{text}");
 
-        let back = store.list(None, 10).await.unwrap();
-        assert_eq!(back.len(), 1);
-        assert_eq!((back[0].id, back[0].instructions.as_str()), (s.id, "1. build\n2. ship"));
-        assert_eq!(back[0].status, SkillStatus::Proposed);
+        let back = store.get(s.id).await.unwrap().unwrap();
+        assert_eq!(back.instructions, "1. build\n2. ship");
+        assert_eq!(back.status, SkillStatus::Proposed);
     }
 
     #[tokio::test]
@@ -348,68 +351,76 @@ pub(crate) mod tests {
         std::fs::write(dir.join("tea.md"), "Brew green tea at 80°C for 2 minutes.\n").unwrap();
         let store = FileSkillStore::open(&dir).unwrap();
         let found = store.search("how do I brew green tea", 5).await.unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].status, SkillStatus::Active);
-        assert_eq!(found[0].confidence, 1.0);
-        assert_eq!(found[0].description, "Brew green tea at 80°C for 2 minutes.");
-        let again = store.list(None, 5).await.unwrap();
-        assert_eq!(found[0].id, again[0].id, "id is derived from the name, so it's stable");
+        assert_eq!(names(&found), ["tea"]);
+        let tea = &found[0].0;
+        assert_eq!((tea.status, tea.confidence), (SkillStatus::Active, 1.0));
+        let age = Utc::now() - tea.created_at;
+        assert!(age.num_minutes() < 5, "created defaults to when the file was written, not 1970");
+        assert_eq!(tea.description, "Brew green tea at 80°C for 2 minutes.");
+        let again = store.list(None).await.unwrap();
+        assert_eq!(tea.id, again[0].id, "id is derived from the name, so it's stable");
 
-        // It can be approved/rejected like any other: the file gains a header.
-        store.set_status(found[0].id, SkillStatus::Rejected).await.unwrap();
-        assert!(store.search("tea", 5).await.unwrap().is_empty());
+        // Saving gives the file a header.
+        let mut tea = tea.clone();
+        tea.status = SkillStatus::Rejected;
+        store.save(&tea).await.unwrap();
         let text = std::fs::read_to_string(dir.join("tea.md")).unwrap();
         assert!(text.contains("status: rejected"), "{text}");
     }
 
     #[tokio::test]
-    async fn search_ranks_and_ignores_inactive_and_unrelated() {
+    async fn search_scores_matches_of_any_status() {
         let dir = temp_dir("search");
         let store = FileSkillStore::open(&dir).unwrap();
         let steps = "Implement ModelProvider, register it with ModelRouter, add config validation.";
-        store.learn(skill("add-model-provider", steps, SkillStatus::Active)).await.unwrap();
-        store.learn(skill("provider-draft", steps, SkillStatus::Proposed)).await.unwrap();
-        store.learn(skill("rust-commit-checks", "Run cargo fmt, clippy and test before committing.", SkillStatus::Active)).await.unwrap();
+        store.create(skill("add-model-provider", steps, SkillStatus::Active)).await.unwrap();
+        store.create(skill("provider-draft", steps, SkillStatus::Proposed)).await.unwrap();
+        store
+            .create(skill("rust-commit-checks", "Run cargo fmt, clippy and test before committing.", SkillStatus::Active))
+            .await
+            .unwrap();
 
         let found = store.search("Add another model provider please", 5).await.unwrap();
-        assert_eq!(found[0].name, "add-model-provider");
-        assert!(found.iter().all(|s| s.status == SkillStatus::Active));
+        assert_eq!(names(&found)[0], "add-model-provider");
+        assert!(names(&found).contains(&"provider-draft"));
+        assert!(found[0].1 > 0.0);
 
         let found = store.search("I'm committing my changes", 5).await.unwrap();
-        assert_eq!(found[0].name, "rust-commit-checks", "commit matches committing");
+        assert_eq!(names(&found), ["rust-commit-checks"], "commit matches committing");
 
         assert!(store.search("what is the capital of France", 5).await.unwrap().is_empty());
         assert!(store.search("what is the", 5).await.unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn update_status_and_forget() {
+    async fn save_and_delete() {
         let dir = temp_dir("lifecycle");
         let store = FileSkillStore::open(&dir).unwrap();
-        let s = store.learn(skill("deploy", "run deploy.sh", SkillStatus::Proposed)).await.unwrap();
-        assert!(store.search("deploy", 5).await.unwrap().is_empty());
+        let mut s = store.create(skill("deploy", "run deploy.sh", SkillStatus::Proposed)).await.unwrap();
+        s.instructions = "run deploy.sh --dry-run first".into();
+        store.save(&s).await.unwrap();
+        assert_eq!(store.get(s.id).await.unwrap().unwrap().instructions, "run deploy.sh --dry-run first");
 
-        store.set_status(s.id, SkillStatus::Active).await.unwrap();
-        store.update(s.id, "run deploy.sh --dry-run first, then for real").await.unwrap();
-        let found = store.search("deploy", 5).await.unwrap();
-        assert_eq!(found[0].instructions, "run deploy.sh --dry-run first, then for real");
-        assert!(found[0].updated_at >= found[0].created_at);
+        let mut renamed = s.clone();
+        renamed.name = "other".into();
+        assert!(store.save(&renamed).await.is_err());
 
-        store.forget(s.id).await.unwrap();
+        store.delete(s.id).await.unwrap();
         assert!(!dir.join("deploy.md").exists());
-        assert!(store.forget(s.id).await.is_err());
-        assert!(store.set_status(s.id, SkillStatus::Active).await.is_err());
+        assert!(store.get(s.id).await.unwrap().is_none());
+        assert!(store.delete(s.id).await.is_err());
+        assert!(store.save(&s).await.is_err(), "can't save a skill that doesn't exist");
     }
 
     #[tokio::test]
     async fn names_are_unique_and_safe() {
         let dir = temp_dir("names");
         let store = FileSkillStore::open(&dir).unwrap();
-        store.learn(skill("dup", "a", SkillStatus::Proposed)).await.unwrap();
-        let err = store.learn(skill("dup", "b", SkillStatus::Proposed)).await.unwrap_err();
+        store.create(skill("dup", "a", SkillStatus::Proposed)).await.unwrap();
+        let err = store.create(skill("dup", "b", SkillStatus::Proposed)).await.unwrap_err();
         assert!(err.to_string().contains("already exists"), "{err}");
         for bad in ["../escape", "Upper", "", "a/b", "-x"] {
-            assert!(store.learn(skill(bad, "x", SkillStatus::Proposed)).await.is_err(), "{bad}");
+            assert!(store.create(skill(bad, "x", SkillStatus::Proposed)).await.is_err(), "{bad}");
         }
     }
 
@@ -421,7 +432,7 @@ pub(crate) mod tests {
         std::fs::write(dir.join("empty.md"), "---\nstatus: active\n---\n").unwrap();
         std::fs::write(dir.join("notes.txt"), "not a skill").unwrap();
         let store = FileSkillStore::open(&dir).unwrap();
-        assert_eq!(store.list(None, 10).await.unwrap().len(), 1);
+        assert_eq!(store.list(None).await.unwrap().len(), 1);
         assert_eq!(store.load_errors().len(), 2);
     }
 }

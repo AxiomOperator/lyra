@@ -258,11 +258,10 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect, width: usize) {
 }
 
 /// Most skill lines shown; /skills lists everything.
-const MAX_SKILL_LINES: usize = 6;
+const MAX_SKILL_LINES: usize = 8;
 
 fn skills_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
     let dim = Style::default().fg(Color::DarkGray);
-    let reviewing = if app.reviewing { " · reviewing…" } else { "" };
     let mut lines = Vec::new();
     let snapshot = match (&app.learning_status, &app.skills) {
         (Err(e), _) => return (" Skills ".into(), vec![Line::from(truncate(e, width).red())]),
@@ -270,16 +269,42 @@ fn skills_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
         (Ok(_), Some(Err(e))) => return (" Skills ".into(), vec![Line::from(truncate(e, width).red())]),
         (Ok(_), Some(Ok(snapshot))) => snapshot,
     };
-    let title = format!(" Skills · {} active{reviewing} ", snapshot.active.len());
-    let mode = format!("{:?}", snapshot.mode).to_lowercase();
-    let mut summary = format!("mode {mode}");
-    if !snapshot.proposed.is_empty() {
-        summary += &format!(" · {} to review (/skills)", snapshot.proposed.len());
+    let h = &snapshot.health;
+    let busy = match (app.reviewing, app.curating) {
+        (true, _) => " · reviewing…",
+        (_, true) => " · curating…",
+        _ => "",
+    };
+    let title = format!(" Skills · {} active{busy} ", h.active);
+
+    let mut summary = format!("mode {}", snapshot.mode.as_str());
+    if let Some(r) = h.average_reliability {
+        summary += &format!(" · avg reliability {r:.2}");
     }
-    if snapshot.rejected > 0 {
-        summary += &format!(" · {} rejected", snapshot.rejected);
+    if h.deprecated > 0 {
+        summary += &format!(" · {} deprecated", h.deprecated);
     }
     lines.push(Line::styled(truncate(&summary, width), dim));
+
+    // Things that need a person's attention.
+    let mut attention = Vec::new();
+    let to_review = h.pending_proposals + h.proposed;
+    if to_review > 0 {
+        attention.push(format!("{to_review} to review"));
+    }
+    for (n, what) in [
+        (h.conflicts, "conflict"),
+        (h.duplicate_candidates, "duplicate pair"),
+        (h.failing, "failing"),
+        (h.stale, "stale"),
+    ] {
+        if n > 0 {
+            attention.push(format!("{n} {what}{}", if n == 1 || what == "failing" || what == "stale" { "" } else { "s" }));
+        }
+    }
+    if !attention.is_empty() {
+        lines.push(Line::from(truncate(&format!("{} (/skills)", attention.join(" · ")), width).yellow()));
+    }
     if !snapshot.errors.is_empty() {
         let n = snapshot.errors.len();
         let text = format!("{n} unreadable skill file{} (/skills)", if n == 1 { "" } else { "s" });
@@ -293,12 +318,22 @@ fn skills_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
         };
         lines.push(Line::from(truncate(&used, width).magenta()));
     }
+    for proposal in &snapshot.proposals {
+        lines.push(Line::from(vec!["~ ".yellow(), Span::raw(truncate(proposal, width.saturating_sub(2)))]));
+    }
     for skill in &snapshot.proposed {
-        let text = format!("{} {}", crate::learn::short(skill), skill.name);
+        let text = format!("{} {}", crate::learn::short_id(skill.id), skill.name);
         lines.push(Line::from(vec!["? ".yellow(), Span::raw(truncate(&text, width.saturating_sub(2)))]));
     }
     for skill in &snapshot.active {
-        lines.push(Line::from(vec!["✓ ".green(), Span::raw(truncate(&skill.name, width.saturating_sub(2)))]));
+        // Reliability and number of uses, so weak skills stand out.
+        let record = format!(" {:.2}·{}", skill.usage.reliability(), skill.usage.use_count);
+        let name_width = width.saturating_sub(2 + record.chars().count());
+        lines.push(Line::from(vec![
+            "✓ ".green(),
+            Span::raw(truncate(&skill.name, name_width)),
+            Span::styled(record, dim),
+        ]));
     }
     if snapshot.proposed.is_empty() && snapshot.active.is_empty() {
         lines.push(Line::styled("none yet — corrections become proposals", dim));

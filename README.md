@@ -104,9 +104,17 @@ default_scope = "user"
 
 ## Self-learning (skills)
 
-Memory holds facts; **skills** hold procedures lyra learned. They live in their
-own crate (`learning/`, `lyra-learning`) and are plain Markdown files, one per
-skill, in `~/.lyra/skills/`:
+Memory holds facts; **skills** hold procedures lyra learned. They're built
+following `docs/skill_learning.md` (V1–V7) and live in their own crate
+(`learning/`, `lyra-learning`):
+
+- **Skill files** in `~/.lyra/skills/<name>.md` hold each skill's current text
+  and status. Edit them freely, or drop in your own (every header line is
+  optional; a file without one is an active skill).
+- **The ledger** (`~/.lyra/skills/ledger.db`) holds the evidence and history:
+  every version, which replies used which skills and how that went,
+  relationships (supersedes, conflicts with, …), pending proposals and an
+  audit log of every change.
 
 ```markdown
 ---
@@ -123,33 +131,65 @@ id: 2c9ca857-1f0e-4d0e-9a51-6f4c0f3e8a11
 3. cargo test
 ```
 
-The file name is the skill name and the body is the instructions. Edit them
-freely, or drop in your own: every header line is optional, and a file without
-one is an active skill. Files are re-read on every message.
+How it works:
 
-1. **Spot a lesson.** After each reply a cheap check looks for a reason to learn:
-   you corrected the assistant, asked it to remember how something was done
-   ("next time…", "remember how…"), a failed tool step was followed by a working
-   one, or a multi-step tool run succeeded. Ordinary turns are skipped.
-2. **Review it.** When the check fires, lyra asks the chat model in the background
-   whether the conversation taught a reusable procedure. It must not learn facts
-   about you (that's memory), one-offs, failures or anything resembling a
-   credential; lessons below `min_confidence` are dropped.
-3. **Approve it.** In `propose` mode (the default) a lesson becomes a *proposed*
-   skill and shows up in the chat and the Skills panel. `/approve <id>` makes it
-   active; `/reject <id>` discards it for good.
-4. **Use it.** Before each message, active skills matching it (keyword search)
-   are added to the system prompt; the Activity panel logs `applying skills: …`.
+1. **Use.** Before each message, matching skills are ranked by relevance,
+   observed reliability, learned confidence and freshness (weights in
+   `[learning.scoring]`) and the best are added to the prompt. Each reply is a
+   *run*; the skills it used are recorded and shown under the reply.
+2. **Outcomes.** Your next message is read as feedback on those skills: thanks
+   or "that worked" is a success, a correction a failure, anything else no
+   signal. `/outcome good|bad|partial` says so explicitly. Reliability is
+   smoothed, `(successes + 1) / (outcomes + 2)`, so new skills start at 0.5.
+3. **Learning.** After a correction, a failed step that was fixed, a multi-step
+   success or "remember how we did this", the model reviews the turn, seeing
+   the existing skills most like it, and decides to *ignore*, *create* a new
+   skill or *update* an existing one. New skills start proposed. Updates
+   snapshot the old text first, so `/rollback` can undo them.
+4. **Lifecycle.** Evidence moves skills along: a confident proposal with
+   2 successes and no failures is promoted; an active skill whose reliability
+   falls below 0.4 after 5 outcomes is deprecated (never deleted). Thresholds
+   are in `[learning.lifecycle]`.
+5. **Curation.** `/curate` (or `curate = "daily"`/`"weekly"`) looks for
+   near-duplicates, stale skills and, with the model's help, merges, splits and
+   contradictions. Merges and splits are proposed; conflicts are flagged.
 
-Commands: `/skills`, `/approve <id>`, `/reject <id>`, `/forget-skill <id>`,
-`/learn` (review the conversation now), `/help`.
+`mode` decides how much happens on its own:
+
+| | `propose` (default) | `auto` |
+|---|---|---|
+| new skills | proposed; `/approve` to use | proposed; confident ones used on trial |
+| refinements | proposed | applied (versioned) |
+| promotion / deprecation | proposed | applied (audited) |
+| merges / splits | proposed | proposed |
+
+`off` turns reviews and automatic changes off.
+
+Commands: `/skills` (what to review, and every skill's track record),
+`/approve <id>`, `/reject <id>`, `/deprecate <id>`, `/forget-skill <id>`,
+`/history <id>`, `/rollback <id> [version]`, `/outcome good|bad|partial`,
+`/learn`, `/curate`, `/help`. Ids are skill names or id prefixes.
 
 ```toml
 [learning]
-mode = "propose"      # off | propose | auto
-dir = "~/.lyra/skills"
+mode = "propose"          # off | propose | auto
+curate = "manual"         # manual | daily | weekly
 min_confidence = 0.6
 max_skills = 3
+
+[learning.scoring]
+relevance = 0.50
+reliability = 0.25
+confidence = 0.15
+freshness = 0.10
+half_life_days = 90
+
+[learning.lifecycle]
+promote_confidence = 0.85
+promote_successes = 2
+deprecate_reliability = 0.4
+deprecate_min_uses = 5
+stale_days = 90
 ```
 
 ## Metrics
@@ -178,7 +218,7 @@ The chat sits on the left; on terminals at least 100 columns wide, panels on the
 - **Session**: what the assistant is doing right now (idle / waiting / thinking / streaming / running a tool, with a timer), model and server, replies, last reply's TTFT and speed, tokens, cache hit rate and cost.
 - **Agent**: system prompt size, loaded SOUL/USER/AGENT files, tools, and embedding/reranker health.
 - **Memory**: total memories, counts per scope and the most recent ones; updates as the model uses its memory tools.
-- **Skills**: learning mode, skills waiting for review and active skills.
+- **Skills**: learning mode, average reliability, what needs review (proposals, conflicts, duplicates, failing or stale skills), the last reply's skills, and each active skill's reliability and use count.
 - **Activity**: a timestamped log of requests, first tokens, tool calls and results, reloads and errors.
 
 When the panels are hidden or don't fit, a one-line status bar shows the session totals instead.

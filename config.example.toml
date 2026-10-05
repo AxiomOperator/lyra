@@ -25,12 +25,26 @@ currency = "$"
 # path = "~/.lyra/memory/memory.db"            # default
 # default_scope = "user"                        # scope when the model doesn't pick one
 
-# Self-learning: after a correction or a multi-step success, lyra asks the model
-# whether there's a reusable lesson and saves it as a skill. Active skills that
-# match a message are added to the system prompt.
-# Skills are Markdown files, one per skill: edit them or add your own.
+# Self-learning skills (see README): reviews after corrections and multi-step
+# work create or refine skills; outcomes and evidence drive their lifecycle.
+# Skills are Markdown files in dir; their history is in dir/ledger.db.
 # [learning]
-# mode = "propose"          # off | propose (approve with /approve) | auto
+# mode = "propose"          # off | propose (changes wait for /approve) | auto
+# curate = "manual"         # manual | daily | weekly
 # dir = "~/.lyra/skills"    # default
 # min_confidence = 0.6      # drop lessons the reviewer is less sure of
 # max_skills = 3            # skills added to the prompt per message
+#
+# [learning.scoring]        # how skills are ranked for a message
+# relevance = 0.50
+# reliability = 0.25
+# confidence = 0.15
+# freshness = 0.10
+# half_life_days = 90
+#
+# [learning.lifecycle]      # evidence needed to promote or deprecate
+# promote_confidence = 0.85
+# promote_successes = 2
+# deprecate_reliability = 0.4
+# deprecate_min_uses = 5
+# stale_days = 90

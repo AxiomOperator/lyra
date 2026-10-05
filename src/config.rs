@@ -27,22 +27,36 @@ pub struct Config {
     pub learning: LearningConfig,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct LearningConfig {
-    /// `off`, `propose` (lessons wait for /approve) or `auto` (used straight away).
-    pub mode: String,
     /// Folder of skill files (`<name>.md`); defaults to `~/.lyra/skills`.
     pub dir: Option<String>,
-    /// Lessons the reviewer is less sure of than this are dropped.
-    pub min_confidence: f32,
-    /// Most skills added to the system prompt per message.
-    pub max_skills: usize,
+    /// When to curate the collection on its own: `manual`, `daily` or `weekly`.
+    pub curate: Schedule,
+    /// `mode`, `min_confidence`, `max_skills`, `duplicate_threshold` and the
+    /// `[learning.scoring]` and `[learning.lifecycle]` tables.
+    #[serde(flatten)]
+    pub settings: lyra_learning::Settings,
 }
 
-impl Default for LearningConfig {
-    fn default() -> Self {
-        Self { mode: "propose".into(), dir: None, min_confidence: 0.6, max_skills: 3 }
+#[derive(Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Schedule {
+    #[default]
+    Manual,
+    Daily,
+    Weekly,
+}
+
+impl Schedule {
+    /// Days between automatic runs, or `None` for manual only.
+    pub fn every_days(self) -> Option<i64> {
+        match self {
+            Schedule::Manual => None,
+            Schedule::Daily => Some(1),
+            Schedule::Weekly => Some(7),
+        }
     }
 }
 
@@ -128,7 +142,6 @@ impl Config {
         if let Ok(model) = std::env::var("LYRA_MODEL") {
             config.model = model;
         }
-        config.learning.mode.parse::<lyra_learning::Mode>()?;
         Ok(config)
     }
 }

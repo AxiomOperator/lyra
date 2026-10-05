@@ -20,8 +20,8 @@ use serde_json::{Value, json};
 
 use config::Config;
 use context::Context;
-use learn::{Learning, Outcome, Review, SkillsSnapshot};
-use lyra_learning::{Mode, SkillStatus, evaluator};
+use learn::{Learning, Review, SkillsSnapshot};
+use lyra_learning::{Applied, Mode, SkillOutcome, Uuid, evaluator};
 use retrieval::Endpoint;
 use stats::{Pricing, Stats, Totals, Usage, secs};
 use tools::{MemorySnapshot, Tools};
@@ -147,7 +147,11 @@ enum StreamEvent {
     /// Fresh numbers for the memory panel.
     Memory(Result<MemorySnapshot, String>),
     /// A finished learning review.
-    Reviewed(Review),
+    Reviewed(Review<Applied>),
+    /// A finished curation of the skill collection.
+    Curated(Review<Vec<String>>),
+    /// Notes from background learning work (outcomes, lifecycle changes, sync).
+    LearnNotes(Vec<String>),
     /// Skills added to the system prompt for the message being answered,
     /// with their approximate size in tokens.
     SkillsApplied { names: Vec<String>, tokens: u64 },
@@ -230,6 +234,16 @@ struct App {
     skills: Option<Result<SkillsSnapshot, String>>,
     /// A learning review is running in the background.
     reviewing: bool,
+    /// A curation is running in the background.
+    curating: bool,
+    /// Days between automatic curations (`[learning] curate`), if scheduled.
+    curate_every: Option<i64>,
+    /// The run (user turn) being answered.
+    run: Option<Uuid>,
+    /// The last finished run and the skills it used, awaiting the user's reaction.
+    last_run: Option<(Uuid, Vec<String>)>,
+    /// Skills used by a reply the user just corrected (feeds the review trigger).
+    corrected_skills: Vec<String>,
     /// Skills applied to the message being answered (or last answered).
     applied_skills: Vec<String>,
     /// Their approximate size in the prompt.
@@ -277,6 +291,11 @@ impl App {
             learning_status,
             skills: None,
             reviewing: false,
+            curating: false,
+            curate_every: config.learning.curate.every_days(),
+            run: None,
+            last_run: None,
+            corrected_skills: Vec::new(),
             applied_skills: Vec::new(),
             applied_skills_tokens: 0,
             tools_tokens,
@@ -300,9 +319,12 @@ impl App {
             self.command(&content);
             return;
         }
+        self.judge_last_run(&content);
         self.messages.push(Message::new("user", content.clone()));
         self.applied_skills.clear();
         self.applied_skills_tokens = 0;
+        let run = Uuid::new_v4();
+        self.run = Some(run);
         self.waiting = true;
         self.started = Some(Instant::now());
         self.set_phase(Phase::Waiting);
@@ -319,7 +341,7 @@ impl App {
         thread::spawn(move || {
             let mut history = history;
             if let Some(learning) = learning {
-                apply_skills(&learning, &content, &mut history, &tx);
+                apply_skills(&learning, &content, run, &mut history, &tx);
             }
             let event = match converse(&url, &model, history, tools.as_deref(), &tx) {
                 Ok(stats) => StreamEvent::Done(stats),
@@ -370,12 +392,15 @@ impl App {
                 let skills = self.applied_skills.clone();
                 let reply = self.reply();
                 reply.stats = Some(stats);
-                reply.skills = skills;
+                reply.skills = skills.clone();
+                self.last_run = self.run.take().map(|run| (run, skills));
                 self.review(false);
             }
             StreamEvent::Error(e) => {
                 self.waiting = false;
                 self.started = None;
+                self.run = None;
+                self.last_run = None;
                 self.set_phase(Phase::Idle);
                 self.log(Level::Error, e.clone());
                 self.messages.push(Message::new("error", e));
@@ -398,30 +423,67 @@ impl App {
             StreamEvent::Reviewed(Review { outcome, usage }) => {
                 self.reviewing = false;
                 self.totals.add_review(usage.as_ref());
-                let tokens = usage.map_or("usage unknown".into(), |u| {
-                    format!("{} tokens", u.prompt_tokens + u.completion_tokens)
-                });
+                let tokens = usage_text(usage.as_ref());
                 match outcome {
-                    Ok(Outcome::Learned(skill)) => {
-                        let id = learn::short(&skill);
-                        self.log(Level::Learn, format!("learned {} ({}) · {tokens}", skill.name, skill.status));
-                        let next = if skill.status == SkillStatus::Proposed {
-                            format!("\n/approve {id} to start using it · /reject {id} to discard it")
-                        } else {
-                            String::new()
-                        };
+                    Ok(Applied::Created(skill)) => {
+                        let id = learn::short_id(skill.id);
+                        self.log(Level::Learn, format!("learned {} (proposed) · {tokens}", skill.name));
                         let text = format!(
-                            "💡 learned a skill ({}): {} — {}\n{}{next}",
-                            skill.status, skill.name, skill.description, skill.instructions
+                            "💡 learned a new skill (proposed): {} — {}\n{}\n/approve {id} to start using it · /reject {id} to discard it",
+                            skill.name, skill.description, skill.instructions
                         );
                         self.messages.push(Message::new("info", text));
-                        self.refresh_skills();
                     }
-                    Ok(Outcome::Nothing(why)) => {
-                        self.log(Level::Learn, format!("no lesson: {why} · {tokens}"));
+                    Ok(Applied::Updated { skill, version }) => {
+                        self.log(Level::Learn, format!("refined {} to v{version} · {tokens}", skill.name));
+                        let text = format!(
+                            "🔧 refined skill {} (v{version}):\n{}\n/history {} · /rollback {}",
+                            skill.name, skill.instructions, skill.name, skill.name
+                        );
+                        self.messages.push(Message::new("info", text));
                     }
+                    Ok(Applied::Proposed(p)) => {
+                        let id = learn::short_id(p.id);
+                        self.log(Level::Learn, format!("proposal: {} · {tokens}", p.change.kind()));
+                        let detail = match &p.change {
+                            lyra_learning::proposal::Change::Update { instructions, .. } => instructions.clone(),
+                            _ => String::new(),
+                        };
+                        let text = format!(
+                            "🔧 proposed a refinement: {}\n{detail}\n/approve {id} to apply it · /reject {id} to discard it",
+                            p.reason
+                        );
+                        self.messages.push(Message::new("info", text));
+                    }
+                    Ok(Applied::Ignored(why)) => self.log(Level::Learn, format!("no lesson: {why} · {tokens}")),
                     Err(e) => self.log(Level::Error, format!("learning review failed: {e} · {tokens}")),
                 }
+                self.refresh_skills();
+            }
+            StreamEvent::Curated(Review { outcome, usage }) => {
+                self.curating = false;
+                self.totals.add_review(usage.as_ref());
+                match outcome {
+                    Ok(notes) => {
+                        for note in &notes {
+                            self.log(Level::Learn, format!("curator: {note}"));
+                        }
+                        let summary = if notes.is_empty() {
+                            "🧹 curated the skills: nothing to change".to_string()
+                        } else {
+                            format!("🧹 curated the skills:\n{}\n/skills to review", notes.join("\n"))
+                        };
+                        self.messages.push(Message::new("info", summary));
+                    }
+                    Err(e) => self.log(Level::Error, format!("curation failed: {e} · {}", usage_text(usage.as_ref()))),
+                }
+                self.refresh_skills();
+            }
+            StreamEvent::LearnNotes(notes) => {
+                for note in notes {
+                    self.log(Level::Learn, note);
+                }
+                self.refresh_skills();
             }
             StreamEvent::Skills(snapshot) => {
                 if let Err(e) = &snapshot {
@@ -467,7 +529,60 @@ impl App {
         }
         self.check_models();
         self.refresh_memory();
-        self.refresh_skills();
+        self.sync_skills();
+        if let Some(learning) = &self.learning
+            && learning.mode() != Mode::Off
+            && learning.curation_due(self.curate_every)
+        {
+            self.log(Level::Learn, "scheduled curation is due".into());
+            self.curate();
+        }
+    }
+
+    /// Version skill files that are new or were edited by hand, then refresh the panel.
+    fn sync_skills(&self) {
+        let Some(learning) = self.learning.clone() else { return };
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let notes = learning.sync().unwrap_or_else(|e| vec![format!("skill sync failed: {e}")]);
+            let _ = tx.send(StreamEvent::LearnNotes(notes));
+        });
+    }
+
+    /// Read the user's new message as feedback on the skills the last reply
+    /// used: a correction is a failure, thanks a success.
+    fn judge_last_run(&mut self, message: &str) {
+        self.corrected_skills.clear();
+        let Some((run, skills)) = self.last_run.take() else { return };
+        let Some(learning) = self.learning.clone() else { return };
+        if skills.is_empty() {
+            return;
+        }
+        let Some(outcome) = evaluator::outcome_signal(message) else { return };
+        if outcome == SkillOutcome::Failure {
+            self.corrected_skills = skills;
+        }
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let notes = learning
+                .record_outcome(run, outcome, false)
+                .unwrap_or_else(|e| vec![format!("recording outcome failed: {e}")]);
+            let _ = tx.send(StreamEvent::LearnNotes(notes));
+        });
+    }
+
+    /// Curate the skill collection in the background.
+    fn curate(&mut self) {
+        let Some(learning) = self.learning.clone() else { return };
+        if self.curating {
+            return;
+        }
+        self.curating = true;
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let (model, tx) = (self.model.clone(), self.tx.clone());
+        thread::spawn(move || {
+            let _ = tx.send(StreamEvent::Curated(learning.curate(&url, &model, None)));
+        });
     }
 
     /// Re-read the skills panel's contents in the background.
@@ -498,7 +613,7 @@ impl App {
     /// every turn when a trigger fires, or on /learn (`forced`).
     fn review(&mut self, forced: bool) {
         let Some(learning) = self.learning.clone() else { return };
-        if learning.mode == Mode::Off || self.reviewing {
+        if learning.mode() == Mode::Off || self.reviewing {
             return;
         }
         let owned = self.history_text();
@@ -506,17 +621,24 @@ impl App {
         let trigger = if forced {
             Some("the user asked to review this conversation for a lesson")
         } else {
-            learn::last_turn(&history).and_then(|turn| evaluator::trigger(&turn))
+            learn::last_turn(&history, self.corrected_skills.len()).and_then(|turn| evaluator::trigger(&turn))
         };
         let Some(trigger) = trigger else { return };
-        let transcript = learn::transcript(&history, 16);
+        let mut transcript = learn::transcript(&history, 16);
+        if !self.corrected_skills.is_empty() {
+            transcript += &format!(
+                "\n\n[skills that were in the prompt for the corrected answer] {}",
+                self.corrected_skills.join(", ")
+            );
+        }
         self.log(Level::Learn, format!("reviewing for a lesson: {trigger}"));
         self.reviewing = true;
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let (model, tx) = (self.model.clone(), self.tx.clone());
+        let (model, tx, run) = (self.model.clone(), self.tx.clone(), self.last_run.as_ref().map(|r| r.0));
         thread::spawn(move || {
-            let _ = tx.send(StreamEvent::Reviewed(learning.review(&url, &model, trigger, &transcript)));
+            let review = learning.review(&url, &model, trigger, &transcript, run);
+            let _ = tx.send(StreamEvent::Reviewed(review));
         });
     }
 
@@ -530,19 +652,40 @@ impl App {
                 Ok(_) => "learning is off".into(),
             })
         };
+        let last_run = self.last_run.clone();
         let result = match name {
             "/help" => Ok(COMMANDS.to_string()),
             "/skills" => need().and_then(|l| l.describe()),
             "/approve" => need().and_then(|l| l.approve(arg)),
             "/reject" => need().and_then(|l| l.reject(arg)),
+            "/deprecate" => need().and_then(|l| l.deprecate(arg)),
             "/forget-skill" => need().and_then(|l| l.forget(arg)),
-            "/learn" => need().and_then(|l| {
-                if l.mode == Mode::Off {
+            "/history" => need().and_then(|l| l.history(arg)),
+            "/rollback" => need().and_then(|l| l.rollback(arg)),
+            "/outcome" => need().and_then(|l| {
+                let outcome = match arg.trim() {
+                    "good" | "success" => SkillOutcome::Success,
+                    "bad" | "failure" => SkillOutcome::Failure,
+                    "partial" => SkillOutcome::Partial,
+                    _ => return Err("usage: /outcome good|bad|partial".into()),
+                };
+                let Some((run, skills)) = last_run.filter(|(_, s)| !s.is_empty()) else {
+                    return Err("the last reply didn't use any skills".into());
+                };
+                let notes = l.record_outcome(run, outcome, true)?;
+                Ok(format!("recorded {outcome} for {}\n{}", skills.join(", "), notes.join("\n")))
+            }),
+            "/learn" | "/curate" => need().and_then(|l| {
+                if l.mode() == Mode::Off {
                     Err("learning mode is off ([learning] mode in config.toml)".into())
-                } else if self.reviewing {
+                } else if name == "/learn" && self.reviewing {
                     Err("a review is already running".into())
-                } else {
+                } else if name == "/curate" && self.curating {
+                    Err("a curation is already running".into())
+                } else if name == "/learn" {
                     Ok("reviewing the conversation for a lesson…".into())
+                } else {
+                    Ok("curating the skill collection…".into())
                 }
             }),
             _ => Err(format!("unknown command {name} — try /help")),
@@ -553,12 +696,14 @@ impl App {
             Err(e) => ("error", e),
         };
         self.messages.push(Message::new(role, format!("> {line}\n{text}")));
-        if ok && name == "/learn" {
-            self.review(true);
-        }
-        if ok && matches!(name, "/approve" | "/reject" | "/forget-skill") {
-            self.log(Level::Learn, line.to_string());
-            self.refresh_skills();
+        match name {
+            "/learn" if ok => self.review(true),
+            "/curate" if ok => self.curate(),
+            "/approve" | "/reject" | "/deprecate" | "/forget-skill" | "/rollback" | "/outcome" if ok => {
+                self.log(Level::Learn, line.to_string());
+                self.refresh_skills();
+            }
+            _ => {}
         }
     }
 
@@ -640,19 +785,43 @@ impl App {
 }
 
 const COMMANDS: &str = "\
-/skills              list learned skills (proposals in full)
-/approve <id>        start using a proposed skill
-/reject <id>         discard a proposed skill for good
-/forget-skill <id>   delete a skill
-/learn               review the conversation for a lesson now
-/help                this list";
+/skills                      skills and changes waiting for review
+/approve <id>                apply a proposal, or (re)activate a skill
+/reject <id>                 discard a proposal or proposed skill for good
+/deprecate <id>              stop using a skill without deleting it
+/forget-skill <id>           delete a skill's file (its history is kept)
+/history <id>                a skill's versions and audit trail
+/rollback <id> [version]     restore an earlier version (the previous one by default)
+/outcome good|bad|partial    how the last reply's skills worked out
+/learn                       review the conversation for a lesson now
+/curate                      look for duplicates, conflicts and stale skills now
+/help                        this list";
 
-/// Add the active skills that match the user's message to the system prompt.
-fn apply_skills(learning: &Learning, message: &str, history: &mut Vec<Value>, tx: &Sender<StreamEvent>) {
+/// `1,234 tokens`, or that the server didn't say.
+fn usage_text(usage: Option<&stats::Usage>) -> String {
+    usage.map_or("usage unknown".into(), |u| format!("{} tokens", u.prompt_tokens + u.completion_tokens))
+}
+
+/// Add the skills that match the user's message to the system prompt, and
+/// record their use for this run.
+fn apply_skills(
+    learning: &Learning,
+    message: &str,
+    run: Uuid,
+    history: &mut Vec<Value>,
+    tx: &Sender<StreamEvent>,
+) {
     match learning.relevant(message) {
         Ok(skills) if !skills.is_empty() => {
             let section = learn::prompt_section(&skills);
-            let names = skills.into_iter().map(|s| s.name).collect();
+            let ids: Vec<Uuid> = skills.iter().map(|r| r.skill.id).collect();
+            if let Err(e) = learning.record_usage(run, &ids) {
+                let _ = tx.send(StreamEvent::Log(format!("recording skill use failed: {e}")));
+            }
+            let names = skills
+                .into_iter()
+                .map(|r| if r.trial { format!("{} (trial)", r.skill.name) } else { r.skill.name })
+                .collect();
             let tokens = learn::approx_tokens(&section);
             let _ = tx.send(StreamEvent::SkillsApplied { names, tokens });
             match history.first_mut() {
@@ -852,29 +1021,20 @@ fn main() {
     ratatui::run(|terminal| run(terminal, &mut app)).expect("terminal error");
 }
 
-/// Open the skills database, unless learning is off.
+/// Open the skill files and their ledger.
 fn open_learning(
     config: &Config,
     runtime: &tokio::runtime::Handle,
 ) -> (Option<Arc<Learning>>, Result<String, String>) {
     let c = &config.learning;
-    // Config::load already checked the mode parses.
-    let mode: Mode = c.mode.parse().unwrap_or(Mode::Propose);
     let Some(dir) = c.dir() else {
         return (None, Err("learning off: no home directory (set [learning] dir)".into()));
     };
-    match lyra_learning::LearningManager::open(&dir) {
+    match runtime.block_on(lyra_learning::SkillManager::open(&dir, c.settings.clone())) {
         Ok(manager) => {
             let shown = context::show(&dir);
-            let status = format!("skills · {shown} · mode {}", c.mode);
-            let learning = Learning::new(
-                Arc::new(manager),
-                runtime.clone(),
-                shown,
-                mode,
-                c.min_confidence,
-                c.max_skills,
-            );
+            let status = format!("skills · {shown} · mode {}", c.settings.mode.as_str());
+            let learning = Learning::new(Arc::new(manager), runtime.clone(), shown);
             (Some(Arc::new(learning)), Ok(status))
         }
         Err(e) => (None, Err(format!("learning off: {e:#}"))),
