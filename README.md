@@ -19,6 +19,7 @@ Everything lyra keeps lives in one folder, `~/.lyra` (set `LYRA_HOME` to use ano
 ├── memory/    lance/ (LanceDB: memories, vectors, history)
 ├── plans/     plans.db
 ├── sessions/  <id>.json, saved conversations (lyra -c / -r)
+├── web/       devices.json (paired devices), vapid.key (push identity)
 ├── skills/    <name>.md, one file per skill
 ├── tools/     <name>.toml, composite tools
 └── workflows/ <name>.toml
@@ -584,6 +585,64 @@ write_roots = []             # e.g. ["~/lyra-work"]
 ssh_hosts = []               # e.g. ["web1", "deploy@10.0.0.5"]
 approval_timeout_seconds = 300
 ```
+
+## Phones and browsers (`lyra serve`)
+
+`lyra serve` runs the same lyra (memory, skills, agents, plans, goals) without
+the terminal UI and serves a web app you can install on a phone (a PWA). It's
+real time: replies stream in as they're written, you see agents and tools at
+work, and approvals show up as a card with **Allow once / Deny / Allow for
+session**. Push notifications tell you when a reply is ready, an agent needs
+your OK, a plan stops, or something fails, but only when no device has lyra
+open. The web side is the `web/` crate (`lyra-web`).
+
+**1. Run it behind your TLS proxy.** lyra speaks plain HTTP on `[web] listen`
+(default `127.0.0.1:8484`); installing the app and notifications need HTTPS,
+which your reverse proxy provides. In **Zoraxy**: add an HTTP proxy rule for
+your hostname (e.g. `lyra.example.com`) with upstream `127.0.0.1:8484` (or the
+LAN IP and port if Zoraxy runs on another machine or in a container), turn on
+its TLS certificate, and keep **WebSocket** proxying on (the default). Don't
+cache or buffer responses for that host. Then set:
+
+```toml
+[web]
+listen = "127.0.0.1:8484"
+public_url = "https://lyra.example.com"
+```
+
+**2. Keep it running.** `lyra service` writes a systemd user service; then
+`systemctl --user daemon-reload && systemctl --user enable --now lyra` (and
+`loginctl enable-linger $USER` so it runs while you're logged out). Logs:
+`journalctl --user -u lyra -f`. Or just run `lyra serve` in a terminal.
+
+**3. Pair each device.** Run `lyra pair` on the computer; it prints a code
+valid for 10 minutes, once. Open `public_url` on the phone and enter it. Only
+paired devices get in (each gets its own token; lyra keeps only its hash), and
+`lyra devices` / `lyra devices remove <name>` manage them. Five wrong codes
+cancel a code.
+
+**4. Install and turn on notifications.**
+- **Android (Chrome):** menu → *Install app* (or *Add to Home screen*). Open
+  it, tap ⋯ → *Turn on notifications*, then *Send a test notification*.
+  Approval notifications have **Allow** and **Deny** buttons that answer
+  without opening the app.
+- **iPhone (iOS 16.4+):** in Safari, Share → *Add to Home Screen*, open lyra
+  from the Home Screen (notifications only work there), then ⋯ → *Turn on
+  notifications*. iOS doesn't show buttons on web notifications, so tapping
+  an approval notification opens lyra at the approval card.
+
+Notifications go through your phone's push service (Google's or Apple's),
+end-to-end encrypted (RFC 8291) and signed with lyra's own VAPID key
+(`~/.lyra/web/vapid.key`); the push service sees only that something arrived.
+That needs outbound internet from the computer, not inbound.
+
+The server keeps one conversation going for every device and carries on the
+latest one after a restart. `/new`, `/sessions` and `/resume <id>` work from
+the phone (⋯ has New conversation and Saved conversations), and so do all
+the other commands (type `/`). `lyra -c` at the desk continues the same saved
+conversations, but don't run the TUI and `lyra serve` on the same
+conversation at the same time: each keeps its own copy and the last to save
+wins.
 
 ## Self-evolution
 

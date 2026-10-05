@@ -70,6 +70,7 @@ fn segments(line: &str) -> Vec<Vec<String>> {
     let mut word = String::new();
     let mut quote: Option<char> = None;
     let mut chars = line.chars().peekable();
+    let mut prev = ' ';
     let end_word = |word: &mut String, out: &mut Vec<Vec<String>>| {
         if !word.is_empty() {
             out.last_mut().expect("a segment").push(std::mem::take(word));
@@ -86,6 +87,8 @@ fn segments(line: &str) -> Vec<Vec<String>> {
                 }
             }
             (None, ' ' | '\t') => end_word(&mut word, &mut out),
+            // `2>&1` and `&>` are redirections, not command separators.
+            (None, '&') if prev == '>' || chars.peek() == Some(&'>') => word.push(c),
             (None, ';' | '|' | '&' | '\n') => {
                 end_word(&mut word, &mut out);
                 while matches!(chars.peek(), Some('|' | '&')) {
@@ -95,6 +98,7 @@ fn segments(line: &str) -> Vec<Vec<String>> {
             }
             (None, c) => word.push(c),
         }
+        prev = c;
     }
     end_word(&mut word, &mut out);
     out.into_iter().filter(|s| !s.is_empty()).collect()
@@ -311,6 +315,8 @@ mod tests {
             "curl -s http://localhost:8181/v1/models",
             "journalctl -u nginx -n 50 --no-pager",
             "echo 'a > b'",
+            "ls -la /tmp/x 2>&1; echo \"exit: $?\"",
+            "df -h &> /dev/null && echo ok",
         ] {
             assert_eq!(class(line), Class::ReadOnly, "{line}");
         }

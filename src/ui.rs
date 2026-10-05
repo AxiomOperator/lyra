@@ -786,7 +786,7 @@ fn phase_span(app: &App) -> Span<'static> {
     }
 }
 
-fn phase_text(app: &App) -> String {
+pub(crate) fn phase_text(app: &App) -> String {
     let since = secs(app.phase_since.elapsed());
     match &app.phase {
         Phase::Idle => "● idle".into(),
@@ -814,7 +814,7 @@ fn session_line(app: &App) -> String {
 }
 
 /// One-line summary under an assistant reply.
-fn reply_stats(stats: &Stats, pricing: &Pricing) -> String {
+pub(crate) fn reply_stats(stats: &Stats, pricing: &Pricing) -> String {
     let mut parts = Vec::new();
     if let Some(ttft) = stats.ttft {
         parts.push(format!("ttft {}", secs(ttft)));

@@ -77,6 +77,8 @@ pub enum Answer {
 
 /// An agent waiting for the user's yes before it changes something.
 pub struct ApprovalRequest {
+    /// Unique in this run (a notification's Allow button names it).
+    pub id: u64,
     pub agent: String,
     /// What kind of thing ("run a command on this machine").
     pub what: String,
@@ -97,7 +99,9 @@ pub fn approve(env: &Env, profile: &AgentProfile, tool: &str, ask: crate::caps::
     }
     let timeout = env.caps.as_ref().and_then(|c| c.system.as_ref()).map_or(300, |s| s.settings.approval_timeout_seconds).max(10);
     let (reply, answer) = std::sync::mpsc::channel();
-    let request = ApprovalRequest { agent: profile.title.clone(), what: ask.what, detail: ask.detail, why: ask.why, dangerous: ask.dangerous, reply };
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let request = ApprovalRequest { id, agent: profile.title.clone(), what: ask.what, detail: ask.detail, why: ask.why, dangerous: ask.dangerous, reply };
     env.tx.send(StreamEvent::Approval(request)).map_err(|_| "lyra is closing".to_string())?;
     match answer.recv_timeout(std::time::Duration::from_secs(timeout)) {
         Ok(Answer::Yes) => Ok(()),
@@ -804,7 +808,16 @@ impl crate::App {
 
     /// The user's answer to the oldest pending approval.
     pub(crate) fn answer_approval(&mut self, text: &str) {
+        if let Some(id) = self.approvals.first().map(|r| r.id) {
+            self.answer_approval_id(id, text);
+        }
+    }
+
+    /// Answer a particular approval (from a phone or a notification button).
+    /// One that was already answered is ignored.
+    pub(crate) fn answer_approval_id(&mut self, id: u64, text: &str) {
         use crate::{Level, Message, Phase};
+        let Some(i) = self.approvals.iter().position(|r| r.id == id) else { return };
         let answer = match text.trim().to_lowercase().as_str() {
             "y" | "yes" | "ok" | "approve" => Answer::Yes,
             "n" | "no" | "deny" | "stop" => Answer::No,
@@ -812,7 +825,7 @@ impl crate::App {
             // Anything else leaves the question open (the box stays up).
             _ => return,
         };
-        let r = self.approvals.remove(0);
+        let r = self.approvals.remove(i);
         let said = match answer {
             Answer::Yes => "allowed",
             Answer::No => "denied",

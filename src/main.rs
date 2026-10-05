@@ -11,6 +11,7 @@ mod mem;
 mod plan;
 mod migrate;
 mod retrieval;
+mod serve;
 mod sessions;
 mod stats;
 mod tools;
@@ -366,6 +367,8 @@ struct App {
     pending_input: Option<String>,
     /// This conversation's id (`~/.lyra/sessions/<id>.json`).
     session_id: String,
+    /// Activity lines logged so far (`lyra serve` prints the new ones).
+    logged: u64,
     /// Agents' actions waiting for the user's y / n / a, oldest first.
     approvals: Vec<agents::ApprovalRequest>,
     /// The highlighted entry in the command palette, and whether Esc closed it.
@@ -486,6 +489,7 @@ impl App {
             wizard_busy: false,
             pending_input: None,
             session_id: sessions::new_id(),
+            logged: 0,
             approvals: Vec::new(),
             palette: 0,
             palette_hidden: false,
@@ -952,6 +956,7 @@ impl App {
     fn log(&mut self, level: Level, text: String) {
         let time = chrono::Local::now().format("%H:%M:%S").to_string();
         self.activity.push(Activity { time, level, text });
+        self.logged += 1;
         if self.activity.len() > MAX_ACTIVITY {
             self.activity.remove(0);
         }
@@ -1214,6 +1219,7 @@ impl App {
                 format!("this one: {}\n{}\n\nlyra -c continues the latest here · /resume <id> or lyra -r <id> resumes one", self.session_id, sessions::describe(&sessions::list(&d), 20))
             }),
             "/resume" => self.resume(arg),
+            "/new" => self.new_session(),
             "/memory" => {
                 let mem = self.mem().ok_or_else(|| match &self.memory_status {
                     Err(why) => why.clone(),
@@ -1250,7 +1256,7 @@ impl App {
             Err(e) => ("error", e),
         };
         // A resumed conversation already says so.
-        if !(ok && name == "/resume" && text.is_empty()) {
+        if !(ok && matches!(name, "/resume" | "/new") && text.is_empty()) {
             self.messages.push(Message::new(role, format!("> {line}\n{text}")));
         }
         let memory_sub = arg.split_whitespace().next().unwrap_or("");
@@ -2300,6 +2306,21 @@ impl App {
         self.log(Level::Info, format!("resumed session {id} ({turns} turns)"));
     }
 
+    /// `/new`: start a fresh conversation (this one is saved first).
+    fn new_session(&mut self) -> Result<String, String> {
+        if self.waiting {
+            return Err("wait for the reply to finish".into());
+        }
+        self.save_session();
+        self.session_id = sessions::new_id();
+        self.session_started = chrono::Utc::now();
+        self.messages.clear();
+        self.last_run = None;
+        self.scroll = None;
+        self.log(Level::Info, format!("new session {}", self.session_id));
+        Ok(String::new())
+    }
+
     /// `/resume <id>`: switch to a saved conversation (this one is saved first).
     fn resume(&mut self, arg: &str) -> Result<String, String> {
         if self.waiting {
@@ -2348,6 +2369,7 @@ pub(crate) const COMMANDS: &str = "\
 /reject <id>                 discard a proposal or proposed skill for good
 /deprecate <id>              stop using a skill without deleting it
 /forget-skill <id>           delete a skill's file (its history is kept)
+/new                         start a new conversation (this one is saved)
 /sessions                    saved conversations (lyra -c continues the latest)
 /resume <id>                 switch to a saved conversation
 /history <id>                a skill's versions and audit trail
@@ -2645,7 +2667,12 @@ fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>) -> Result<Round, St
 const USAGE: &str = "\
 lyra — a terminal chat client for a local LLM
 
-usage: lyra [options]
+usage: lyra [command] [options]
+
+  serve                   run for phones and browsers (no terminal UI; see [web] in the config)
+  pair                    a code to pair a phone or browser with `lyra serve`
+  devices [remove <name>] paired devices
+  service                 install a systemd user service that runs `lyra serve`
 
   -c, --continue          continue the latest conversation (started in this folder, else any)
   -r, --resume [id]       resume a saved conversation; without an id, list them
@@ -2660,6 +2687,14 @@ fn main() {
         println!("{USAGE}");
         return;
     }
+    let sub = args.get(1).map(String::as_str);
+    match sub {
+        Some("pair") => return pair_command(),
+        Some("devices") => return devices_command(&args[2..]),
+        Some("service") => return service_command(),
+        _ => {}
+    }
+    let serving = sub == Some("serve");
     // -c / --continue: the latest conversation (here); -r / --resume <id>: that one.
     let resume = match args.iter().position(|a| a == "-r" || a == "--resume") {
         Some(i) => {
@@ -2756,6 +2791,7 @@ fn main() {
         max_tokens: config.structured_max_tokens,
         thinking: config.structured_thinking,
     });
+    let web = config.web.clone();
     let mut app = App::new(config, Context::load(), services);
     for note in migrated {
         app.log(Level::Info, note);
@@ -2766,12 +2802,116 @@ fn main() {
     for note in caps_notes {
         app.log(Level::Tool, note);
     }
+    // The server carries on the latest conversation, so a phone finds it after a restart.
+    let resume = resume.or_else(|| serving.then(|| sessions::dir().and_then(|d| sessions::list(&d).into_iter().next())).flatten());
     if let Some(s) = resume {
         app.resume_session(s);
     }
     app.start();
+    if serving {
+        return serve_main(&mut app, &web, runtime.handle());
+    }
     ratatui::run(|terminal| run(terminal, &mut app)).expect("terminal error");
     app.save_session();
+}
+
+/// `lyra serve`: no terminal UI; phones and browsers connect over the web.
+fn serve_main(app: &mut App, web: &lyra_web::Settings, rt: &tokio::runtime::Handle) {
+    let Some(dir) = config::home().map(|h| h.join("web")) else {
+        eprintln!("lyra: no home directory");
+        std::process::exit(1);
+    };
+    let (tx, rx) = mpsc::channel();
+    let hub = match lyra_web::Hub::start(rt, web, &dir, tx) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("lyra: {e}");
+            std::process::exit(1);
+        }
+    };
+    println!("lyra serve · listening on http://{} ({} paired devices)", hub.address, hub.devices().list().len());
+    match web.public_url.as_str() {
+        "" => println!("set [web] public_url to the https:// address your reverse proxy serves (needed for install and notifications)"),
+        url => println!("open {url} on your phone · pair it with `lyra pair`"),
+    }
+    if !hub.address.ip().is_loopback() && hub.address.ip().is_unspecified() {
+        println!("note: listening on every interface; prefer the proxy's address or 127.0.0.1");
+    }
+    serve::run(app, &hub, rx, web.notify);
+}
+
+/// `lyra pair`: a code for pairing a phone or browser (valid 10 minutes).
+fn pair_command() {
+    let dir = config::home().map(|h| h.join("web")).expect("a home directory");
+    match lyra_web::Devices::open(&dir).and_then(|d| d.new_code(10)) {
+        Ok(code) => {
+            let url = Config::load().map(|c| c.web.public_url).unwrap_or_default();
+            println!("Pairing code: {}-{}", &code[..4], &code[4..]);
+            println!("Valid for 10 minutes, once. Open {} on the device and enter it.", if url.is_empty() { "lyra's address" } else { &url });
+        }
+        Err(e) => {
+            eprintln!("lyra: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `lyra devices [remove <name|id>]`.
+fn devices_command(args: &[String]) {
+    let dir = config::home().map(|h| h.join("web")).expect("a home directory");
+    let devices = match lyra_web::Devices::open(&dir) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("lyra: {e}");
+            std::process::exit(1);
+        }
+    };
+    match args.first().map(String::as_str) {
+        Some("remove") => match args.get(1).map(|k| devices.remove(k)) {
+            Some(Ok(d)) => println!("removed {} ({}); it has to pair again", d.name, d.id),
+            Some(Err(e)) => {
+                eprintln!("lyra: {e}");
+                std::process::exit(1);
+            }
+            None => eprintln!("usage: lyra devices remove <name|id>"),
+        },
+        _ => {
+            let all = devices.list();
+            if all.is_empty() {
+                println!("no paired devices — `lyra pair` makes a code");
+            }
+            for d in all {
+                println!(
+                    "{}  {:<16} paired {} · last seen {} · notifications {}",
+                    d.id,
+                    d.name,
+                    d.created.with_timezone(&chrono::Local).format("%Y-%m-%d"),
+                    d.last_seen.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M"),
+                    if d.push.is_some() { "on" } else { "off" }
+                );
+            }
+        }
+    }
+}
+
+/// `lyra service`: install a systemd user service that runs `lyra serve`.
+fn service_command() {
+    let binary = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "lyra".into());
+    let Some(dir) = std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config/systemd/user")) else {
+        eprintln!("lyra: no home directory");
+        std::process::exit(1);
+    };
+    let path = dir.join("lyra.service");
+    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, serve::service_unit(&binary))) {
+        eprintln!("lyra: couldn't write {}: {e}", path.display());
+        std::process::exit(1);
+    }
+    println!("wrote {}", path.display());
+    println!("start it now and at every boot:");
+    println!("  systemctl --user daemon-reload");
+    println!("  systemctl --user enable --now lyra");
+    println!("  loginctl enable-linger $USER     # keep it running when you're logged out");
+    println!("logs: journalctl --user -u lyra -f");
 }
 
 /// Open the evolution records and make sure there's a first generation.

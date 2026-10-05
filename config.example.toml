@@ -239,3 +239,12 @@ currency = "$"
 # ssh_hosts = []                # servers ssh_run may use (~/.ssh/config names or user@host; keys only)
 # http_timeout_seconds = 30
 # approval_timeout_seconds = 300   # an unanswered approval counts as no
+
+# Phones and browsers (see README): `lyra serve` runs lyra without the terminal
+# UI and serves the web app. It speaks plain HTTP on `listen`; put a TLS reverse
+# proxy (Zoraxy, Caddy, nginx) in front and open public_url on the phone. Pair a
+# device with `lyra pair`.
+# [web]
+# listen = "127.0.0.1:8484"     # the proxy's upstream; use the LAN IP if the proxy runs elsewhere
+# public_url = ""               # e.g. "https://lyra.example.com" (needed to install the app and for notifications)
+# notify = true                 # push notifications when no device has lyra open

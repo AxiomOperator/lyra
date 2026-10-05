@@ -45,6 +45,8 @@ pub struct Config {
     pub agents: crate::agents::Settings,
     /// `[system]` table: shell, files, network and servers for agents.
     pub system: lyra_system::Settings,
+    /// `[web]` table: `lyra serve` for phones and browsers.
+    pub web: lyra_web::Settings,
 }
 
 #[derive(Deserialize)]
@@ -301,6 +303,7 @@ impl Default for Config {
             goals: GoalsConfig::default(),
             agents: crate::agents::Settings::default(),
             system: lyra_system::Settings::default(),
+            web: lyra_web::Settings::default(),
         }
     }
 }
