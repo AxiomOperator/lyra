@@ -59,6 +59,21 @@ impl Learning {
         self.run(self.manager.search(message, self.manager.settings().max_skills))
     }
 
+    pub fn active_skills(&self) -> Result<Vec<Skill>, String> {
+        self.run(self.manager.list(Some(SkillStatus::Active)))
+    }
+
+    /// A skill by name or id prefix.
+    pub fn find(&self, key: &str) -> Result<Skill, String> {
+        self.run(self.manager.find(key))
+    }
+
+    /// Replace a skill's instructions (a new version, so it can be rolled back).
+    pub fn refine(&self, key: &str, instructions: &str, reason: &str) -> Result<i64, String> {
+        let skill = self.find(key)?;
+        self.run(self.manager.update(skill.id, &skill.description, instructions, reason, None))
+    }
+
     pub fn record_usage(&self, run: Uuid, skills: &[Uuid]) -> Result<(), String> {
         self.run(self.manager.record_usage(run, skills))
     }

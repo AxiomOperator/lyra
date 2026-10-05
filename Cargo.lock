@@ -1180,6 +1180,7 @@ name = "lyra"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "lyra-evolution",
  "lyra-execution",
  "lyra-learning",
  "lyra-memory",
@@ -1189,6 +1190,21 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "lyra-evolution"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "lyra-memory",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "toml",
+ "uuid",
 ]
 
 [[package]]

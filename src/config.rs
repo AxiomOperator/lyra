@@ -35,6 +35,38 @@ pub struct Config {
     pub learning: LearningConfig,
     /// `[planning]` table: goals, plans and their execution.
     pub planning: PlanningConfig,
+    /// `[evolution]` table: self-evolution from run telemetry.
+    pub evolution: EvolutionConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(default)]
+pub struct EvolutionConfig {
+    pub enabled: bool,
+    /// When to look for improvements on its own: `manual`, `daily` or `weekly`.
+    pub review: Schedule,
+    /// Recent tasks replayed (sandboxed) to compare a candidate with the baseline.
+    pub benchmark_tasks: usize,
+    /// A git checkout of lyra's source. Only with this set can evolution
+    /// propose code changes, which are tried in a throwaway worktree and, when
+    /// approved, committed to a local `evolution/<id>` branch (never merged or pushed).
+    pub source_repo: Option<String>,
+    /// `mode`, `window`, `monitor_runs`, `monitor_drop` and the
+    /// `[evolution.thresholds]` and `[evolution.fitness]` tables.
+    #[serde(flatten)]
+    pub settings: lyra_evolution::Settings,
+}
+
+impl Default for EvolutionConfig {
+    fn default() -> Self {
+        Self { enabled: true, review: Schedule::Manual, benchmark_tasks: 3, source_repo: None, settings: Default::default() }
+    }
+}
+
+impl EvolutionConfig {
+    pub fn source_repo(&self) -> Option<PathBuf> {
+        self.source_repo.as_deref().and_then(expand)
+    }
 }
 
 #[derive(Deserialize)]
@@ -164,6 +196,7 @@ impl Default for Config {
             memory: MemoryConfig::default(),
             learning: LearningConfig::default(),
             planning: PlanningConfig::default(),
+            evolution: EvolutionConfig::default(),
         }
     }
 }
@@ -197,11 +230,14 @@ fn user_home() -> Option<PathBuf> {
 ///
 /// ```text
 /// ~/.lyra/
-/// ├── config/    config.toml
+/// ├── config/    config.toml, behavior.toml (evolved behavior)
 /// ├── context/   SOUL.md, USER.md, AGENT.md
+/// ├── evolution/ evolution.db (runs, candidates, generations)
 /// ├── memory/    memory.db
 /// ├── plans/     plans.db
-/// └── skills/    <name>.md, one per skill
+/// ├── skills/    <name>.md, one per skill
+/// ├── tools/     <name>.toml, composite tools
+/// └── workflows/ <name>.toml
 /// ```
 pub fn home() -> Option<PathBuf> {
     match std::env::var_os("LYRA_HOME") {

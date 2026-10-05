@@ -1,5 +1,6 @@
 mod config;
 mod context;
+mod evolve;
 mod learn;
 mod mem;
 mod plan;
@@ -29,12 +30,10 @@ use stats::{Pricing, Stats, Totals, Usage, secs};
 use lyra_memory::CaptureMode;
 use lyra_memory::capture;
 use lyra_execution::{Engine, ExecutionEvent, Goal, GoalStatus, Plan, PlanStatus, RunOutcome};
+use evolve::{Evolution, EvolutionSnapshot};
 use mem::{Mem, MemorySnapshot};
 use plan::LyraRuntime;
 use tools::{CallContext, Tools};
-
-/// Cap on model → tools → model round trips in one turn.
-const MAX_TOOL_ROUNDS: usize = 8;
 
 #[derive(Serialize)]
 struct Message {
@@ -182,6 +181,11 @@ enum StreamEvent {
     SkillsApplied { names: Vec<String>, tokens: u64 },
     /// Fresh contents for the skills panel.
     Skills(Result<SkillsSnapshot, String>),
+    /// Background evolution work finished (`/evolve …`, a review, the monitor);
+    /// `show` puts its notes in the chat as well as the activity log.
+    Evolved { done: evolve::Done, show: bool },
+    /// Fresh numbers for the evolution panel.
+    Evolution(Result<EvolutionSnapshot, String>),
 }
 
 /// What `main` opened before the UI starts.
@@ -195,6 +199,9 @@ struct Services {
     engine: Option<Arc<Engine>>,
     /// Where plans live, or why planning is off.
     planning_status: Result<String, String>,
+    evolution: Option<Arc<Evolution>>,
+    /// Where evolution keeps its records, or why it's off.
+    evolution_status: Result<String, String>,
 }
 
 /// What the assistant is doing right now, for the session panel.
@@ -216,6 +223,7 @@ enum Level {
     Learn,
     Memory,
     Plan,
+    Evolve,
     Error,
 }
 
@@ -225,6 +233,8 @@ struct LastRun {
     id: Uuid,
     skills: Vec<String>,
     memories: usize,
+    /// Its evolution telemetry record.
+    evo: Option<Uuid>,
 }
 
 /// One line in the activity log.
@@ -291,6 +301,13 @@ struct App {
     memory_curate_every: Option<i64>,
     engine: Option<Arc<Engine>>,
     planning_status: Result<String, String>,
+    evolution: Option<Arc<Evolution>>,
+    evolution_status: Result<String, String>,
+    evolution_panel: Option<Result<EvolutionSnapshot, String>>,
+    /// The evolution work running in the background, if any.
+    evolving: Option<&'static str>,
+    /// Days between automatic evolution reviews, if scheduled.
+    evolution_review_every: Option<i64>,
     /// Tools plan steps may never use (`[planning] forbidden_tools`).
     forbidden_tools: Vec<String>,
     /// A plan is being created or run in the background.
@@ -319,7 +336,8 @@ struct App {
 
 impl App {
     fn new(config: Config, context: Context, services: Services) -> Self {
-        let Services { tools, memory_status, learning, learning_status, engine, planning_status } = services;
+        let Services { tools, memory_status, learning, learning_status, engine, planning_status, evolution, evolution_status } =
+            services;
         let definitions = tools.as_ref().map(|t| t.definitions());
         let tools_tokens = definitions.as_ref().map_or(0, |d| learn::approx_tokens(&d.to_string()));
         let tool_count = definitions.as_ref().and_then(|d| d.as_array().map(Vec::len)).unwrap_or(0);
@@ -361,6 +379,11 @@ impl App {
             memory_curate_every: config.memory.curate.every_days(),
             engine,
             planning_status,
+            evolution,
+            evolution_status,
+            evolution_panel: None,
+            evolving: None,
+            evolution_review_every: config.evolution.review.every_days(),
             forbidden_tools: config.planning.forbidden_tools.clone(),
             plan_busy: false,
             current_plan: None,
@@ -410,16 +433,24 @@ impl App {
             .map(|m| serde_json::to_value(m).expect("message serializes"))
             .collect();
         let (model, tools, tx) = (self.model.clone(), self.tools.clone(), self.tx.clone());
-        let learning = self.learning.clone();
+        let (learning, evolution) = (self.learning.clone(), self.evolution.clone());
         thread::spawn(move || {
             let mut history = history;
+            // Evolved behavior: guidelines, the matching workflow, the round limit.
+            let mut max_rounds = 8;
+            if let Some(evolution) = &evolution {
+                max_rounds = evolution.behavior().max_tool_rounds as usize;
+                if let Some(section) = evolution.chat_section(&content) {
+                    add_to_system(&mut history, &section);
+                }
+            }
             if let Some(tools) = &tools {
                 apply_memories(&tools.mem, &content, run, &mut history, &tx);
             }
             if let Some(learning) = learning {
                 apply_skills(&learning, &content, run, &mut history, &tx);
             }
-            let event = match converse(&url, &model, history, tools.as_deref(), run, &tx) {
+            let event = match converse(&url, &model, history, tools.as_deref(), max_rounds, run, &tx) {
                 Ok(stats) => StreamEvent::Done(stats),
                 Err(e) => StreamEvent::Error(e),
             };
@@ -467,15 +498,25 @@ impl App {
                 self.totals.add(&stats);
                 let skills = self.applied_skills.clone();
                 let memories = self.applied_memories.clone();
+                let evo = self.record_chat_run(&stats, None);
                 let reply = self.reply();
                 reply.stats = Some(stats);
                 reply.skills = skills.clone();
                 reply.memories = memories.clone();
-                self.last_run = self.run.take().map(|id| LastRun { id, skills, memories: memories.len() });
+                self.last_run = self.run.take().map(|id| LastRun { id, skills, memories: memories.len(), evo });
                 self.review(false);
                 self.capture(false);
             }
             StreamEvent::Error(e) => {
+                let stats = Stats {
+                    ttft: None,
+                    elapsed: self.started.map(|s| s.elapsed()).unwrap_or_default(),
+                    input: 0,
+                    cached: 0,
+                    output: 0,
+                    estimated: true,
+                };
+                self.record_chat_run(&stats, Some(&e));
                 self.waiting = false;
                 self.started = None;
                 self.run = None;
@@ -647,6 +688,28 @@ impl App {
                 }
                 self.refresh_memory();
             }
+            StreamEvent::Evolved { done, show } => {
+                self.evolving = None;
+                for usage in &done.usage {
+                    self.totals.add_review(Some(usage));
+                }
+                for note in &done.notes {
+                    let level = if note.starts_with('✗') || note.contains("failed") { Level::Error } else { Level::Evolve };
+                    self.log(level, note.clone());
+                }
+                if show && !done.notes.is_empty() {
+                    self.messages.push(Message::new("info", format!("🧬 {}", done.notes.join("\n"))));
+                }
+                self.tools_changed();
+                self.refresh_evolution();
+                self.refresh_skills();
+            }
+            StreamEvent::Evolution(snapshot) => {
+                if let Err(e) = &snapshot {
+                    self.log(Level::Error, format!("evolution: {e}"));
+                }
+                self.evolution_panel = Some(snapshot);
+            }
             StreamEvent::Memory(snapshot) => {
                 if let Err(e) = &snapshot {
                     self.log(Level::Error, format!("memory: {e}"));
@@ -687,6 +750,17 @@ impl App {
             Ok(line) => self.log(Level::Info, line),
             Err(line) => self.log(Level::Error, line),
         }
+        match self.evolution_status.clone() {
+            Ok(line) => self.log(Level::Info, line),
+            Err(line) => self.log(Level::Error, line),
+        }
+        self.reload_evolution();
+        if let Some(evolution) = &self.evolution
+            && evolution.review_due(self.evolution_review_every)
+        {
+            self.log(Level::Evolve, "scheduled evolution review is due".into());
+            self.evolve_in_background("reviewing", false, evolve::review);
+        }
         self.check_models();
         self.memory_upkeep();
         self.recover_plans();
@@ -723,6 +797,9 @@ impl App {
         self.corrected_skills.clear();
         let Some(last) = self.last_run.take() else { return };
         let Some(outcome) = evaluator::outcome_signal(message) else { return };
+        if let Some(evo) = last.evo {
+            self.record_evolution_outcome(evo, outcome, Some(message));
+        }
         // Were the memories in that reply's prompt helpful? (M13)
         if last.memories > 0
             && let Some(mem) = self.mem()
@@ -836,7 +913,7 @@ impl App {
         };
         let last_run = self.last_run.clone();
         let result = match name {
-            "/help" => Ok(COMMANDS.to_string()),
+            "/help" => Ok(format!("{COMMANDS}\n{}\n{HELP_END}", evolve::COMMANDS)),
             "/skills" => need().and_then(|l| l.describe()),
             "/approve" => need().and_then(|l| l.approve(arg)),
             "/reject" => need().and_then(|l| l.reject(arg)),
@@ -844,19 +921,29 @@ impl App {
             "/forget-skill" => need().and_then(|l| l.forget(arg)),
             "/history" => need().and_then(|l| l.history(arg)),
             "/rollback" => need().and_then(|l| l.rollback(arg)),
-            "/outcome" => need().and_then(|l| {
+            "/outcome" => (|| {
                 let outcome = match arg.trim() {
                     "good" | "success" => SkillOutcome::Success,
                     "bad" | "failure" => SkillOutcome::Failure,
                     "partial" => SkillOutcome::Partial,
                     _ => return Err("usage: /outcome good|bad|partial".into()),
                 };
-                let Some(LastRun { id: run, skills, .. }) = last_run.filter(|r| !r.skills.is_empty()) else {
-                    return Err("the last reply didn't use any skills".into());
-                };
-                let notes = l.record_outcome(run, outcome, true)?;
-                Ok(format!("recorded {outcome} for {}\n{}", skills.join(", "), notes.join("\n")))
-            }),
+                let last = last_run.ok_or("no reply to rate yet")?;
+                let mut out = Vec::new();
+                if let Some(evo) = last.evo {
+                    self.record_evolution_outcome(evo, outcome, None);
+                    out.push(format!("recorded {outcome} for the last run"));
+                }
+                if let (Some(l), false) = (&learning, last.skills.is_empty()) {
+                    let notes = l.record_outcome(last.id, outcome, true)?;
+                    out.push(format!("recorded {outcome} for {}", last.skills.join(", ")));
+                    out.extend(notes);
+                }
+                if out.is_empty() {
+                    return Err("nothing to record it for: the last reply used no skills and evolution is off".into());
+                }
+                Ok(out.join("\n"))
+            })(),
             "/learn" | "/curate" => need().and_then(|l| {
                 if l.mode() == Mode::Off {
                     Err("learning mode is off ([learning] mode in config.toml)".into())
@@ -871,6 +958,7 @@ impl App {
                 }
             }),
             "/plan" | "/plans" => self.plan_command(name, arg),
+            "/evolve" => self.evolve_command(arg),
             "/memory" => {
                 let mem = self.mem().ok_or_else(|| match &self.memory_status {
                     Err(why) => why.clone(),
@@ -903,6 +991,7 @@ impl App {
             "/learn" if ok => self.review(true),
             "/curate" if ok => self.curate(),
             "/approve" | "/reject" | "/deprecate" | "/forget-skill" | "/rollback" | "/outcome" if ok => {
+                self.refresh_evolution();
                 self.log(Level::Learn, line.to_string());
                 self.refresh_skills();
             }
@@ -984,6 +1073,7 @@ impl App {
             tools: self.tools.clone(),
             learning: self.learning.clone(),
             forbidden_tools: self.forbidden_tools.clone(),
+            evolution: self.evolution.clone(),
             tx: self.tx.clone(),
         }
     }
@@ -1127,6 +1217,7 @@ impl App {
         }
         let Some(engine) = self.engine.clone() else { return };
         let goal_text = goal.as_ref().map_or(String::new(), |g| g.description.clone());
+        self.record_plan_run(&engine, &plan, &goal_text, outcome.goal_status);
         // P18: the outcome becomes an episode, through the memory manager.
         if let Some(mem) = self.mem() {
             let tx = self.tx.clone();
@@ -1157,6 +1248,205 @@ impl App {
                 let review = learning.review(&url, &model, "a failed step was replaced by a working one (plan execution)", &transcript, None);
                 let _ = tx.send(StreamEvent::Reviewed(review));
             });
+        }
+    }
+
+    // ---- evolution
+
+    fn evolution_env(&self) -> Option<evolve::Env> {
+        Some(evolve::Env {
+            url: format!("{}/chat/completions", self.base_url.trim_end_matches('/')),
+            model: self.model.clone(),
+            evolution: self.evolution.clone()?,
+            tools: self.tools.clone(),
+            learning: self.learning.clone(),
+            system_prompt: self.system_prompt.clone(),
+        })
+    }
+
+    /// Run evolution work on a background thread; one piece at a time.
+    fn evolve_in_background(&mut self, what: &'static str, show: bool, work: impl FnOnce(&evolve::Env) -> evolve::Done + Send + 'static) {
+        let Some(env) = self.evolution_env() else { return };
+        self.evolving = Some(what);
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(StreamEvent::Evolved { done: work(&env), show });
+        });
+    }
+
+    /// Re-read the evolved state (behavior, workflows, composite tools).
+    fn reload_evolution(&mut self) {
+        let Some(evolution) = self.evolution.clone() else { return };
+        for note in evolution.reload(self.tools.as_deref()) {
+            self.log(Level::Error, format!("evolution: {note}"));
+        }
+        self.tools_changed();
+        self.refresh_evolution();
+    }
+
+    /// The tool list may have changed (composite tools): recount it.
+    fn tools_changed(&mut self) {
+        let definitions = self.tools.as_ref().map(|t| t.definitions());
+        self.tools_tokens = definitions.as_ref().map_or(0, |d| learn::approx_tokens(&d.to_string()));
+        self.tool_count = definitions.as_ref().and_then(|d| d.as_array().map(Vec::len)).unwrap_or(0);
+    }
+
+    fn refresh_evolution(&self) {
+        let Some(evolution) = self.evolution.clone() else { return };
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(StreamEvent::Evolution(evolution.snapshot()));
+        });
+    }
+
+    /// E1: record the turn just answered (or failed) for evolution. Returns its id.
+    fn record_chat_run(&mut self, stats: &Stats, error: Option<&str>) -> Option<Uuid> {
+        let evolution = self.evolution.clone()?;
+        let start = self.messages.iter().rposition(|m| m.role == "user")?;
+        let turn = &self.messages[start..];
+        let mut run = lyra_evolution::RunRecord::new(lyra_evolution::RunKind::Chat, &turn[0].content, 0);
+        run.model_calls = turn.iter().filter(|m| m.role == "assistant").count().max(1) as u32;
+        run.tools_used = turn.iter().flat_map(|m| m.tool_calls.iter().map(|c| c.function.name.clone())).collect();
+        run.tool_calls = run.tools_used.len() as u32;
+        run.errors = turn
+            .iter()
+            .filter(|m| m.role == "tool")
+            .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok()?.get("error")?.as_str().map(str::to_string))
+            .collect();
+        run.retries = run.errors.len() as u32;
+        run.tokens = stats.input + stats.output;
+        run.duration_ms = stats.elapsed.as_millis() as u64;
+        run.skills_used = self.applied_skills.iter().map(|s| s.trim_end_matches(" (trial)").to_string()).collect();
+        if let Some(e) = error {
+            run.errors.push(e.chars().take(300).collect());
+            run.outcome = lyra_evolution::RunOutcome::Failure;
+        }
+        let id = run.id;
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            if let Err(e) = evolution.record(run) {
+                let _ = tx.send(StreamEvent::Log(format!("recording the run failed: {e}")));
+            }
+            let _ = tx.send(StreamEvent::Evolution(evolution.snapshot()));
+        });
+        Some(id)
+    }
+
+    /// The user's reaction tells how a run went; then check for a regression.
+    fn record_evolution_outcome(&self, id: Uuid, outcome: SkillOutcome, feedback: Option<&str>) {
+        let Some(env) = self.evolution_env() else { return };
+        let (outcome, corrected) = match outcome {
+            SkillOutcome::Success => (lyra_evolution::RunOutcome::Success, false),
+            SkillOutcome::Partial => (lyra_evolution::RunOutcome::Partial, false),
+            SkillOutcome::Failure => (lyra_evolution::RunOutcome::Failure, true),
+            SkillOutcome::Unknown => return,
+        };
+        let (tx, feedback) = (self.tx.clone(), feedback.map(str::to_string));
+        thread::spawn(move || {
+            let mut notes = Vec::new();
+            if let Err(e) = env.evolution.manager.set_outcome(id, outcome, corrected, feedback.as_deref()) {
+                notes.push(format!("recording the outcome failed: {e}"));
+            }
+            notes.extend(env.evolution.monitor(env.tools.as_deref()));
+            let show = notes.iter().any(|n| n.starts_with('⚠') || n.starts_with('↩'));
+            let _ = tx.send(StreamEvent::Evolved { done: evolve::Done { notes, usage: Vec::new() }, show });
+        });
+    }
+
+    /// E1: record a finished plan run, its outcome being the goal's status.
+    fn record_plan_run(&self, engine: &Engine, plan: &Plan, goal: &str, status: Option<GoalStatus>) {
+        let Some(evolution) = self.evolution.clone() else { return };
+        let m = engine.metrics(plan).unwrap_or_default();
+        let mut run = lyra_evolution::RunRecord::new(lyra_evolution::RunKind::Plan, goal, 0);
+        run.model_calls = m.model_calls;
+        run.tool_calls = m.tool_calls;
+        run.tokens = m.tokens;
+        run.retries = m.retries;
+        run.replans = m.replans;
+        run.duration_ms = m.seconds * 1000;
+        run.tools_used = plan
+            .steps
+            .iter()
+            .filter_map(|s| match &s.action {
+                lyra_execution::StepAction::Tool { tool, .. } => Some(tool.clone()),
+                _ => None,
+            })
+            .collect();
+        run.errors = plan.steps.iter().filter(|s| s.status == lyra_execution::StepStatus::Failed).filter_map(|s| s.last_error.clone()).collect();
+        run.outcome = match status {
+            Some(GoalStatus::Completed) => lyra_evolution::RunOutcome::Success,
+            Some(GoalStatus::Partial) => lyra_evolution::RunOutcome::Partial,
+            Some(_) => lyra_evolution::RunOutcome::Failure,
+            None => lyra_evolution::RunOutcome::Unknown,
+        };
+        let env = self.evolution_env();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let mut notes = Vec::new();
+            if let Err(e) = evolution.record(run) {
+                notes.push(format!("recording the plan run failed: {e}"));
+            }
+            if let Some(env) = env {
+                notes.extend(env.evolution.monitor(env.tools.as_deref()));
+            }
+            let show = notes.iter().any(|n| n.starts_with('⚠') || n.starts_with('↩'));
+            let _ = tx.send(StreamEvent::Evolved { done: evolve::Done { notes, usage: Vec::new() }, show });
+        });
+    }
+
+    /// `/evolve …`
+    fn evolve_command(&mut self, arg: &str) -> Result<String, String> {
+        let evolution = self.evolution.clone().ok_or_else(|| match &self.evolution_status {
+            Err(why) => why.clone(),
+            Ok(_) => "evolution is off".to_string(),
+        })?;
+        let (sub, rest) = arg.trim().split_once(' ').unwrap_or((arg.trim(), ""));
+        let rest = rest.trim().to_string();
+        let background = matches!(sub, "review" | "test" | "approve" | "rollback" | "code");
+        if background && let Some(what) = self.evolving {
+            return Err(format!("evolution is busy ({what}); try again when it's done"));
+        }
+        match sub {
+            "" | "status" => evolve::status(&evolution),
+            "list" | "candidates" => evolve::list(&evolution),
+            "show" => evolve::show(&evolution, &rest),
+            "reject" => {
+                let note = evolve::reject(&evolution, &rest)?;
+                self.refresh_evolution();
+                Ok(note)
+            }
+            "generations" => evolve::generations(&evolution),
+            "history" => evolve::history(&evolution),
+            "runs" => evolve::runs(&evolution),
+            "review" => {
+                if evolution.mode() == lyra_evolution::Mode::Off {
+                    return Err("evolution mode is off ([evolution] mode in config.toml); runs are still recorded".into());
+                }
+                self.evolve_in_background("reviewing", true, evolve::review);
+                Ok("looking for problems in recent runs…".into())
+            }
+            "test" => {
+                let c = evolution.manager.find(&rest)?;
+                self.evolve_in_background("testing", true, move |env| evolve::test(env, c).into());
+                Ok("testing the candidate (static checks, then a sandboxed benchmark)…".into())
+            }
+            "approve" => {
+                evolution.manager.find(&rest)?;
+                self.evolve_in_background("deploying", true, move |env| evolve::approve(env, &rest));
+                Ok("applying the change…".into())
+            }
+            "rollback" => {
+                self.evolve_in_background("rolling back", true, move |env| evolve::rollback(env, &rest));
+                Ok("rolling back…".into())
+            }
+            "code" => {
+                if rest.is_empty() {
+                    return Err("usage: /evolve code <the problem to fix>".into());
+                }
+                self.evolve_in_background("writing a patch", true, move |env| evolve::propose_code(env, &rest));
+                Ok("asking the model for a source patch (it only becomes a candidate)…".into())
+            }
+            _ => Err(format!("unknown /evolve command {sub:?}\n{}", evolve::COMMANDS)),
         }
     }
 
@@ -1202,6 +1492,7 @@ impl App {
             }
         }
         self.scroll = None;
+        self.reload_evolution();
         self.check_models();
         self.refresh_memory();
         self.refresh_skills();
@@ -1265,7 +1556,9 @@ const COMMANDS: &str = "\
 /plan approve <step>         approve a step's action (needed again if it changes)
 /plan retry|skip <step>      after a failure or an interrupted step
 /plan cancel · /plan events  stop it · what happened, with metrics
-/help                        this list";
+/outcome good|bad|partial    (also) how the last reply went, for evolution";
+
+const HELP_END: &str = "/help                        this list";
 
 /// `1,234 tokens`, or that the server didn't say.
 fn usage_text(usage: Option<&stats::Usage>) -> String {
@@ -1363,12 +1656,13 @@ fn converse(
     model: &str,
     mut history: Vec<Value>,
     tools: Option<&Tools>,
+    max_rounds: usize,
     run: Uuid,
     tx: &Sender<StreamEvent>,
 ) -> Result<Stats, String> {
     let start = Instant::now();
     let mut total: Option<Stats> = None;
-    for round in 1..=MAX_TOOL_ROUNDS {
+    for round in 1..=max_rounds.max(1) {
         let n = history.len();
         let note = format!("round {round} · sending {n} message{}", if n == 1 { "" } else { "s" });
         tx.send(StreamEvent::Log(note)).map_err(|e| e.to_string())?;
@@ -1406,7 +1700,7 @@ fn converse(
             tx.send(StreamEvent::ToolResult { id, name, content }).map_err(|e| e.to_string())?;
         }
     }
-    Err(format!("stopped after {MAX_TOOL_ROUNDS} rounds of tool calls"))
+    Err(format!("stopped after {max_rounds} rounds of tool calls"))
 }
 
 /// POST the request, forward each delta as it arrives, and measure the reply.
@@ -1513,7 +1807,9 @@ fn main() {
     let (tools, memory_status) = open_memory(&config, runtime.handle());
     let (learning, learning_status) = open_learning(&config, runtime.handle());
     let (engine, planning_status) = open_planning(&config, runtime.handle());
-    let services = Services { tools, memory_status, learning, learning_status, engine, planning_status };
+    let (evolution, evolution_status) = open_evolution(&config, runtime.handle());
+    let services =
+        Services { tools, memory_status, learning, learning_status, engine, planning_status, evolution, evolution_status };
     learn::configure(learn::Structured {
         max_tokens: config.structured_max_tokens,
         thinking: config.structured_thinking,
@@ -1524,6 +1820,26 @@ fn main() {
     }
     app.start();
     ratatui::run(|terminal| run(terminal, &mut app)).expect("terminal error");
+}
+
+/// Open the evolution records and make sure there's a first generation.
+fn open_evolution(config: &Config, runtime: &tokio::runtime::Handle) -> (Option<Arc<Evolution>>, Result<String, String>) {
+    let c = &config.evolution;
+    if !c.enabled {
+        return (None, Ok("evolution off".into()));
+    }
+    let Some(home) = config::home() else {
+        return (None, Err("evolution off: no home directory".into()));
+    };
+    match lyra_evolution::EvolutionManager::open(&home, runtime.clone(), c.settings.clone()) {
+        Ok(manager) => {
+            let code = if c.source_repo().is_some() { " · code lab on" } else { "" };
+            let status = format!("evolution · {} · mode {:?}{code}", context::show(&home.join("evolution")), c.settings.mode);
+            let evolution = Evolution::new(manager, c.source_repo(), c.benchmark_tasks.max(1));
+            (Some(Arc::new(evolution)), Ok(status))
+        }
+        Err(e) => (None, Err(format!("evolution off: {e:#}"))),
+    }
 }
 
 /// Open the plan store and engine, unless planning is off.

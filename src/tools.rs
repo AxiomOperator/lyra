@@ -4,7 +4,7 @@
 //! Tool names use `_` (`memory_remember`) because OpenAI-style function names
 //! can't contain dots.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use chrono::{Duration, Utc};
 use lyra_memory::{MemorySource, NewMemory, Provenance, Remembered, Uuid};
@@ -12,6 +12,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::mem::{Mem, parse_kind};
+use lyra_evolution::CompositeTool;
+use lyra_evolution::composite::Available;
 
 /// Appended to the system prompt when memory is enabled.
 pub const MEMORY_PROMPT: &str = "\
@@ -41,15 +43,75 @@ pub struct CallContext<'a> {
 
 pub struct Tools {
     pub mem: Arc<Mem>,
+    /// Evolved tools built from the ones below (`~/.lyra/tools`).
+    composites: RwLock<Vec<CompositeTool>>,
+}
+
+/// Tools that destroy something: only run as approved plan steps, never
+/// inside a composite.
+pub fn is_destructive(name: &str) -> bool {
+    name == "memory_forget"
+}
+
+/// Tools that only read.
+pub fn is_read_only(name: &str) -> bool {
+    matches!(name, "memory_recall" | "memory_list")
 }
 
 impl Tools {
     pub fn new(mem: Arc<Mem>) -> Self {
-        Self { mem }
+        Self { mem, composites: RwLock::new(Vec::new()) }
     }
 
-    /// The `tools` array for a chat completions request.
+    /// The built-in tools as `(name, destructive)`.
+    pub fn base_tools(&self) -> Vec<(String, bool)> {
+        self.base_definitions()
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|d| d["function"]["name"].as_str())
+            .map(|n| (n.to_string(), is_destructive(n)))
+            .collect()
+    }
+
+    /// Replace the composite tools, keeping only valid ones; returns why the rest were dropped.
+    pub fn set_composites(&self, composites: Vec<CompositeTool>) -> Vec<String> {
+        let base = self.base_tools();
+        let available = Available { tools: &base };
+        let mut notes = Vec::new();
+        let valid = composites
+            .into_iter()
+            .filter(|c| match c.validate(&available) {
+                Ok(()) => true,
+                Err(e) => {
+                    notes.push(format!("tool {} not loaded: {e}", c.name));
+                    false
+                }
+            })
+            .collect();
+        *self.composites.write().unwrap_or_else(|e| e.into_inner()) = valid;
+        notes
+    }
+
+    pub fn composite_names(&self) -> Vec<String> {
+        self.composites.read().unwrap_or_else(|e| e.into_inner()).iter().map(|c| c.name.clone()).collect()
+    }
+
+    fn composite(&self, name: &str) -> Option<CompositeTool> {
+        self.composites.read().unwrap_or_else(|e| e.into_inner()).iter().find(|c| c.name == name).cloned()
+    }
+
+    /// The `tools` array for a chat completions request: the built-in tools
+    /// and the composite ones.
     pub fn definitions(&self) -> Value {
+        let mut all = self.base_definitions();
+        if let Some(list) = all.as_array_mut() {
+            list.extend(self.composites.read().unwrap_or_else(|e| e.into_inner()).iter().map(CompositeTool::definition));
+        }
+        all
+    }
+
+    fn base_definitions(&self) -> Value {
         let default_scope = &self.mem.manager.settings().default_scope;
         let scope = |default: &str| {
             json!({ "type": "string", "description": format!("\"user\", \"agent\" or \"project:<name>\". Default: {default}.") })
@@ -142,12 +204,35 @@ impl Tools {
             "memory_archive" => self.set_status(arguments, ctx, true),
             "memory_forget" => self.set_status(arguments, ctx, false),
             "working_memory" => self.working(arguments),
-            _ => Err(format!("unknown tool {name}")),
+            _ => match self.composite(name) {
+                Some(c) => self.run_composite(&c, arguments, ctx),
+                None => Err(format!("unknown tool {name}")),
+            },
         };
         let result = result.unwrap_or_else(|e| json!({ "error": e }));
         let text = result.to_string();
         self.mem.working().note_tool(name, &text);
         text
+    }
+
+    /// A composite runs its steps in order and stops at the first error.
+    fn run_composite(&self, c: &CompositeTool, arguments: &str, ctx: CallContext) -> Result<Value, String> {
+        let inputs: Value = serde_json::from_str(if arguments.trim().is_empty() { "{}" } else { arguments }).map_err(|e| format!("bad arguments: {e}"))?;
+        let mut steps = Vec::new();
+        for (tool, args) in c.calls(&inputs)? {
+            // Composites only use built-in, non-destructive tools (checked when loaded).
+            if is_destructive(&tool) || self.composite(&tool).is_some() {
+                return Err(format!("{tool} can't be used inside a composite"));
+            }
+            let text = self.run(&tool, &args.to_string(), ctx);
+            let result: Value = serde_json::from_str(&text).unwrap_or(Value::String(text));
+            let failed = result.get("error").is_some();
+            steps.push(json!({ "tool": tool, "result": result }));
+            if failed {
+                return Ok(json!({ "error": format!("step {tool} failed"), "steps": steps }));
+            }
+        }
+        Ok(json!({ "steps": steps }))
     }
 
     fn remember(&self, arguments: &str, ctx: CallContext) -> Result<Value, String> {

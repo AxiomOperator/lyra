@@ -10,11 +10,14 @@ Everything lyra keeps lives in one folder, `~/.lyra` (set `LYRA_HOME` to use ano
 
 ```text
 ~/.lyra/
-├── config/    config.toml
+├── config/    config.toml, behavior.toml (evolved behavior)
 ├── context/   SOUL.md, USER.md, AGENT.md
+├── evolution/ evolution.db (runs, candidates, generations)
 ├── memory/    memory.db
 ├── plans/     plans.db
-└── skills/    <name>.md, one file per skill
+├── skills/    <name>.md, one file per skill
+├── tools/     <name>.toml, composite tools
+└── workflows/ <name>.toml
 ```
 
 Upgrading from an older version moves things here automatically: on first run,
@@ -305,6 +308,94 @@ deprecate_min_uses = 5
 stale_days = 90
 ```
 
+## Self-evolution
+
+Skills are what lyra learns; **evolution** changes *how it works*, from
+evidence about its own runs, progressively and reversibly. Built following
+`docs/self_evolution.md` in the `evolution/` crate (`lyra-evolution`).
+
+- **Telemetry.** Every chat turn and plan run is recorded in
+  `~/.lyra/evolution/evolution.db`: model and tool calls, tool errors,
+  retries and replans, tokens, time, the skills used and the generation that
+  did the work. Your next message (a correction or thanks, or `/outcome`)
+  becomes its outcome, and what you said is kept with it; a plan's outcome is
+  its goal status.
+- **Review.** Deterministic detectors look at recent runs for problems with
+  evidence: heavy runs, the same error again and again, frequent corrections,
+  the same chain of tools in many runs, failing skills, plans that need rework.
+- **Evolve.** For each problem the model, as a separate evolver, proposes 1–3
+  competing **candidates**, each a small, structured change:
+  - *prompt*: a behavior guideline added to the system prompt (no rewrites,
+    nothing that weakens safety, no secrets);
+  - *configuration*: one behavior setting (`max_tool_rounds`,
+    `plan_step_rounds`, `recall_before_answering`,
+    `search_skills_before_planning`, `verify_reasoning_steps`);
+  - *workflow*: phases the planner (and the chat) follows for requests with
+    certain trigger words, in `~/.lyra/workflows/<name>.toml`;
+  - *tool*: a composite tool that calls existing, non-destructive tools in
+    order (`{{input}}` placeholders), in `~/.lyra/tools/<name>.toml`. It's
+    data, not code;
+  - *skill*: revised instructions for a learned skill, applied as a new
+    skill version.
+- **Validate.** `/evolve test` checks a candidate (it applies, is safe, its
+  tools exist), then **benchmarks** it: recent tasks (the evidence first) are
+  replayed headless with the current agent and with the candidate. Only
+  read-only tools really run (changes are simulated, destructive calls count
+  as safety violations). The model judges each answer against the task and,
+  when you corrected the original, your correction. The fitness score weighs
+  success, accuracy, efficiency, reliability and safety.
+- **Deploy and roll back.** Each deployment is a new **generation** with a
+  full snapshot of `behavior.toml`, the workflows and the tools; deploying one
+  candidate rejects its competitors. `/evolve rollback` restores any earlier
+  generation, and the rollback is itself a generation.
+- **Monitor.** Once a new generation has enough judged runs, its success rate
+  is compared with its parent's; a clear drop is flagged, or rolled back in
+  auto mode.
+- **Policy.** Each change has a level that sets what may happen without you.
+  In `auto` mode, guideline changes that beat the baseline deploy on their own.
+  Configuration, workflow, tool and skill changes always wait for
+  `/evolve approve`. Code is manual. Architecture is never touched.
+
+**Code evolution** is off unless `source_repo` points at a git checkout of
+lyra. `/evolve code <problem>` then has the model pick files and write a
+patch against the current commit. `/evolve test` applies it in a throwaway
+git worktree and runs clippy and the tests there. Approving commits it to a
+local branch `evolution/<id>`. Nothing is merged or pushed, and the running
+binary is never changed; review and merge the branch yourself.
+
+Commands: `/evolve` (status), `/evolve review`, `/evolve list`,
+`/evolve show <id>`, `/evolve test <id>`, `/evolve approve|reject <id>`,
+`/evolve rollback [generation]`, `/evolve generations`, `/evolve history`,
+`/evolve runs`, `/evolve code <problem>`.
+
+```toml
+[evolution]
+enabled = true
+mode = "propose"            # off (record runs only) | propose | auto
+review = "manual"           # manual | daily | weekly
+window = 50                 # recent runs the detectors look at
+benchmark_tasks = 3         # tasks replayed per benchmark
+monitor_runs = 10           # judged runs needed before comparing generations
+monitor_drop = 0.15         # success-rate drop that counts as a regression
+# source_repo = "~/Projects/lyra"   # enables code evolution
+
+[evolution.thresholds]
+heavy_tool_calls = 8
+heavy_model_calls = 6
+heavy_runs = 2
+repeated_error = 3
+corrections = 3
+sequence_runs = 3
+replans = 2
+
+[evolution.fitness]
+success = 0.4
+accuracy = 0.25
+efficiency = 0.15
+reliability = 0.1
+safety = 0.1
+```
+
 ## Metrics
 
 Each reply shows time to first token, generation speed, tokens in/out, cost and
@@ -333,6 +424,7 @@ The chat sits on the left; on terminals at least 100 columns wide, panels on the
 - **Memory**: active memories by kind, vector coverage, what needs approval (proposals, contradictions, duplicates, expired), working memory (goal, plan, notes), how many memories the last reply used, and the most recent memories (`?` marks unsure ones).
 - **Skills**: learning mode, average reliability, what needs review (proposals, conflicts, duplicates, failing or stale skills), the last reply's skills, and each active skill's reliability and use count.
 - **Plan**: the current plan's goal, steps with their status (✓ ▸ ⏸ ✗ ○, ⚠ for approval), budget use and any note.
-- **Activity**: a timestamped log of requests, first tokens, tool calls and results, memory, skill and plan events, reloads and errors.
+- **Evolution**: the generation and mode, runs recorded, success rate and corrections, calls per run, what has evolved (guidelines, workflows, composite tools, changed settings), candidates waiting for review, the last review, and what evolution is doing right now.
+- **Activity**: a timestamped log of requests, first tokens, tool calls and results, memory, skill, plan and evolution events, reloads and errors.
 
 When the panels are hidden or don't fit, a one-line status bar shows the session totals instead.

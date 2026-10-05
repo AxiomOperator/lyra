@@ -13,11 +13,9 @@ use lyra_execution::{
 use serde_json::{Value, json};
 
 use crate::StreamEvent;
+use crate::evolve::Evolution;
 use crate::learn::Learning;
 use crate::tools::{CallContext, Tools};
-
-/// Steps get a few rounds of tool use, not an open-ended conversation.
-const MAX_STEP_ROUNDS: usize = 6;
 
 /// Helper agents for subagent steps (P13): each sees only its task and these tools.
 const AGENTS: &[(&str, &str, &[&str])] = &[
@@ -26,11 +24,15 @@ const AGENTS: &[(&str, &str, &[&str])] = &[
 ];
 
 /// How risky each tool is. Declared here, by the runtime, never by the model.
+/// Composite tools are `Mutating` unless they're only reads: they never
+/// contain destructive steps.
 fn risk(tool: &str) -> Risk {
-    match tool {
-        "memory_recall" | "memory_list" => Risk::ReadOnly,
-        "memory_forget" => Risk::Destructive,
-        _ => Risk::Mutating,
+    if crate::tools::is_read_only(tool) {
+        Risk::ReadOnly
+    } else if crate::tools::is_destructive(tool) {
+        Risk::Destructive
+    } else {
+        Risk::Mutating
     }
 }
 
@@ -40,6 +42,8 @@ pub struct LyraRuntime {
     pub tools: Option<Arc<Tools>>,
     pub learning: Option<Arc<Learning>>,
     pub forbidden_tools: Vec<String>,
+    /// Evolved behavior settings and workflows.
+    pub evolution: Option<Arc<Evolution>>,
     pub tx: Sender<StreamEvent>,
 }
 
@@ -97,9 +101,11 @@ impl Runtime for LyraRuntime {
             .and_then(|t| t.mem.recall(None, goal, 6, false).ok())
             .map(|found| found.into_iter().map(|r| r.memory.content).collect())
             .unwrap_or_default();
+        let behavior = self.evolution.as_ref().map(|e| e.behavior()).unwrap_or_default();
         let skills = self
             .learning
             .as_ref()
+            .filter(|_| behavior.search_skills_before_planning)
             .and_then(|l| l.relevant(goal).ok())
             .map(|found| found.into_iter().map(|r| (r.skill.name, r.skill.description)).collect())
             .unwrap_or_default();
@@ -117,7 +123,10 @@ impl Runtime for LyraRuntime {
             })
             .collect();
         let agents = AGENTS.iter().map(|(n, d, _)| AgentInfo { name: n.to_string(), description: d.to_string() }).collect();
-        PlanningContext { memories, skills, tools, agents, forbidden_tools: self.forbidden_tools.clone(), budget_note: None }
+        PlanningContext { memories, skills, tools, agents, forbidden_tools: self.forbidden_tools.clone(),
+            budget_note: None,
+            guidance: self.evolution.as_ref().and_then(|e| e.planning_guidance(goal)),
+        }
     }
 
     fn call_tool(&self, tool: &str, arguments: &Value, operation: Option<Uuid>) -> Result<Value, String> {
@@ -145,7 +154,9 @@ impl Runtime for LyraRuntime {
         );
         let mut messages = vec![json!({ "role": "system", "content": system }), json!({ "role": "user", "content": task.instruction })];
         let mut out = Reasoned::default();
-        for _ in 0..MAX_STEP_ROUNDS {
+        // Steps get a few rounds of tool use, not an open-ended conversation.
+        let rounds = self.evolution.as_ref().map_or(6, |e| e.behavior().plan_step_rounds) as usize;
+        for _ in 0..rounds {
             let (message, tokens) = chat(&self.url, &self.model, &messages, &tools)?;
             out.model_calls += 1;
             out.tokens += tokens;
@@ -170,7 +181,7 @@ impl Runtime for LyraRuntime {
                 messages.push(json!({ "role": "tool", "tool_call_id": call["id"], "content": result }));
             }
         }
-        Err(format!("the step didn't finish within {MAX_STEP_ROUNDS} rounds"))
+        Err(format!("the step didn't finish within {rounds} rounds"))
     }
 
     fn workflow(&self, name: &str) -> Option<String> {
@@ -187,7 +198,7 @@ impl Runtime for LyraRuntime {
 }
 
 /// One non-streaming chat completion with tools; returns the message and tokens used.
-fn chat(url: &str, model: &str, messages: &[Value], tools: &[Value]) -> Result<(Value, u64), String> {
+pub(crate) fn chat(url: &str, model: &str, messages: &[Value], tools: &[Value]) -> Result<(Value, u64), String> {
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(600))

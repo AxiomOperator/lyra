@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["execution","learning","memory"]
+members = ["evolution","execution","learning","memory"]
 
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+lyra-evolution = { version = "0.1.0", path = "evolution" }
 lyra-execution = { version = "0.1.0", path = "execution" }
 lyra-learning = { version = "0.1.0", path = "learning" }
 lyra-memory = { version = "0.1.0", path = "memory" }

@@ -118,15 +118,18 @@ fn draw_panels(f: &mut Frame, app: &App, area: Rect) {
     let agent = agent_panel(app, width);
     let (skills_title, skills) = skills_panel(app, width);
     let (plan_title, plan) = plan_panel(app, width);
-    let [session_area, agent_area, memory_area, skills_area, plan_area, activity_area] = Layout::vertical([
+    let (evolution_title, evolution) = evolution_panel(app, width);
+    let [session_area, agent_area, memory_area, skills_area, plan_area, evolution_area, activity_area] = Layout::vertical([
         Constraint::Length(session.len() as u16 + 2),
         Constraint::Length(agent.len() as u16 + 2),
         Constraint::Fill(1),
         Constraint::Length(skills.len() as u16 + 2),
         Constraint::Length(if plan.is_empty() { 0 } else { plan.len() as u16 + 2 }),
+        Constraint::Length(evolution.len() as u16 + 2),
         Constraint::Fill(1),
     ])
     .areas(area);
+    f.render_widget(Paragraph::new(evolution).block(Block::bordered().title(evolution_title)), evolution_area);
     if !plan.is_empty() {
         f.render_widget(Paragraph::new(plan).block(Block::bordered().title(plan_title)), plan_area);
     }
@@ -211,7 +214,12 @@ fn agent_panel(app: &App, width: usize) -> Vec<Line<'static>> {
     for (name, path) in &app.context_files {
         lines.push(Line::from(vec![label(name), Span::raw(truncate_start(path, width.saturating_sub(8)))]));
     }
-    let tools = if app.tool_count > 0 { format!("memory ×{}", app.tool_count).into() } else { "none".dark_gray() };
+    let composites = app.tools.as_ref().map(|t| t.composite_names()).unwrap_or_default();
+    let tools = match app.tool_count - composites.len().min(app.tool_count) {
+        0 => "none".dark_gray(),
+        n if composites.is_empty() => format!("memory ×{n}").into(),
+        n => Span::raw(truncate(&format!("memory ×{n} + {}", composites.join(", ")), width.saturating_sub(8))),
+    };
     lines.push(Line::from(vec![label("tools"), tools]));
     match &app.model_status {
         None => lines.push(Line::from(vec![label("models"), "checking…".dark_gray()])),
@@ -345,6 +353,48 @@ fn plan_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
     (title, lines)
 }
 
+fn evolution_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
+    let dim = Style::default().fg(Color::DarkGray);
+    let snapshot = match (&app.evolution_status, &app.evolution_panel) {
+        (Err(e), _) => return (" Evolution ".into(), vec![Line::from(truncate(e, width).red())]),
+        (Ok(off), _) if app.evolution.is_none() => return (" Evolution ".into(), vec![Line::styled(truncate(off, width), dim)]),
+        (Ok(_), None) => return (" Evolution ".into(), vec![Line::styled("loading…", dim)]),
+        (Ok(_), Some(Err(e))) => return (" Evolution ".into(), vec![Line::from(truncate(e, width).red())]),
+        (Ok(_), Some(Ok(snapshot))) => snapshot,
+    };
+    let st = &snapshot.stats;
+    let busy = app.evolving.map(|w| format!(" · {w}…")).unwrap_or_default();
+    let title = format!(" Evolution · gen {}{busy} ", st.generation);
+    let mut lines = Vec::new();
+    let mode = format!("{:?}", snapshot.mode).to_lowercase();
+    lines.push(Line::styled(truncate(&format!("mode {mode} · {} runs", st.runs), width), dim));
+    let success = st.success_rate.map_or("—".into(), |r| format!("{:.0}%", r * 100.0));
+    lines.push(Line::from(vec![
+        label("success"),
+        Span::raw(truncate(&format!("{success} of {} judged · {} corr.", st.judged, st.corrections), width.saturating_sub(8))),
+    ]));
+    lines.push(Line::from(vec![
+        label("per run"),
+        Span::raw(format!("{:.1} model · {:.1} tool calls", st.avg_model_calls, st.avg_tool_calls)),
+    ]));
+    let mut evolved = Vec::new();
+    for (n, what) in [(snapshot.guidelines, "guideline"), (snapshot.workflows, "workflow"), (snapshot.tools, "tool")] {
+        if n > 0 {
+            evolved.push(format!("{n} {what}{}", if n == 1 { "" } else { "s" }));
+        }
+    }
+    evolved.extend(snapshot.settings.iter().cloned());
+    if !evolved.is_empty() {
+        lines.push(Line::from(vec![label("evolved"), Span::raw(truncate(&evolved.join(" · "), width.saturating_sub(8)))]));
+    }
+    if st.pending > 0 {
+        lines.push(Line::from(truncate(&format!("{} candidate(s) to review (/evolve list)", st.pending), width).yellow()));
+    }
+    let review = snapshot.last_review.map_or("never".into(), |t| t.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string());
+    lines.push(Line::styled(truncate(&format!("last review {review}"), width), dim));
+    (title, lines)
+}
+
 /// Most skill lines shown; /skills lists everything.
 const MAX_SKILL_LINES: usize = 8;
 
@@ -446,6 +496,7 @@ fn draw_activity(f: &mut Frame, app: &App, area: Rect, width: usize) {
                 Level::Learn => Style::default().fg(Color::Magenta),
                 Level::Memory => Style::default().fg(Color::Cyan),
                 Level::Plan => Style::default().fg(Color::Blue),
+                Level::Evolve => Style::default().fg(Color::Green),
                 Level::Error => Style::default().fg(Color::Red),
             };
             Line::from(vec![

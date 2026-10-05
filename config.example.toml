@@ -95,3 +95,34 @@ currency = "$"
 # deprecate_reliability = 0.4
 # deprecate_min_uses = 5
 # stale_days = 90
+
+# Self-evolution (see README): runs are recorded; reviews find problems and
+# propose small, reversible changes (guidelines, behavior settings, workflows,
+# composite tools, skill revisions) that are benchmarked before deploying.
+# Every deployment is a generation that can be rolled back.
+# [evolution]
+# enabled = true
+# mode = "propose"          # off (record runs only) | propose | auto
+# review = "manual"         # manual | daily | weekly
+# window = 50               # recent runs the detectors look at
+# benchmark_tasks = 3       # tasks replayed per benchmark
+# monitor_runs = 10         # judged runs before generations are compared
+# monitor_drop = 0.15       # success-rate drop that counts as a regression
+# source_repo = "~/Projects/lyra"   # a lyra checkout: enables /evolve code
+#                                   # (patches go to local evolution/<id> branches only)
+#
+# [evolution.thresholds]    # when something counts as a problem
+# heavy_tool_calls = 8
+# heavy_model_calls = 6
+# heavy_runs = 2
+# repeated_error = 3
+# corrections = 3
+# sequence_runs = 3
+# replans = 2
+#
+# [evolution.fitness]       # benchmark weights
+# success = 0.4
+# accuracy = 0.25
+# efficiency = 0.15
+# reliability = 0.1
+# safety = 0.1

@@ -62,6 +62,8 @@ pub struct PlanningContext {
     pub forbidden_tools: Vec<String>,
     /// Set when the budget is running low, so plans stay short.
     pub budget_note: Option<String>,
+    /// How to plan this kind of request (a workflow), if one applies.
+    pub guidance: Option<String>,
 }
 
 impl PlanningContext {
@@ -94,6 +96,9 @@ impl PlanningContext {
             for m in &self.memories {
                 out += &format!("- {m}\n");
             }
+        }
+        if let Some(guidance) = &self.guidance {
+            out += &format!("\n{guidance}\n");
         }
         if let Some(note) = &self.budget_note {
             out += &format!("\nNote: {note}\n");
