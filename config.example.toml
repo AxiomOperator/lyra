@@ -2,6 +2,12 @@
 url = "http://localhost:11434/v1"   # any OpenAI-compatible endpoint
 model = "llama3.2"
 
+# lyra's internal JSON calls (planning, verification, memory capture, skill
+# reviews, curation): cap their tokens, and optionally skip the model's thinking
+# for them (much faster with reasoning models on llama.cpp / vLLM).
+# structured_max_tokens = 8192
+# structured_thinking = true
+
 # Cost tracking: price per million tokens (leave at 0 for a free local model).
 input_cost_per_mtok = 0.0
 cached_input_cost_per_mtok = 0.0    # prompt tokens served from cache; defaults to the input price
@@ -49,6 +55,22 @@ currency = "$"
 # working = 1
 # episodic = 30
 # semantic = 365
+
+# Plans (see README): /plan <request> makes a goal and a structured plan;
+# /plan run executes it with verification, retries, replanning, approvals for
+# destructive steps, budgets and checkpoints.
+# [planning]
+# enabled = true
+# path = "~/.lyra/plans/plans.db"   # default
+# max_parallel = 3
+# forbidden_tools = []
+#
+# [planning.budget]
+# max_model_calls = 40
+# max_tool_calls = 100
+# max_replans = 3
+# max_minutes = 30
+# max_tokens = 300000
 
 # Self-learning skills (see README): reviews after corrections and multi-step
 # work create or refine skills; outcomes and evidence drive their lifecycle.

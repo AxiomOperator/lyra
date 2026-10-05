@@ -275,6 +275,13 @@ impl Learning {
         Ok(format!("rolled {} back; now at v{v} (see /history {})", skill.name, skill.name))
     }
 
+    /// A skill's procedure, for workflow steps in plans. Only active or
+    /// proposed skills; rejected and deprecated ones aren't offered.
+    pub fn instructions(&self, name: &str) -> Option<String> {
+        let skill = self.run(self.manager.find(name)).ok()?;
+        matches!(skill.status, SkillStatus::Active | SkillStatus::Proposed).then_some(skill.instructions)
+    }
+
     pub fn approve(&self, key: &str) -> Result<String, String> {
         self.run(self.manager.approve(key))
     }
@@ -360,6 +367,20 @@ pub fn transcript(history: &[(&str, &str)], max_messages: usize) -> String {
         .join("\n\n")
 }
 
+/// How lyra's internal JSON calls are made (from the config).
+#[derive(Clone, Copy)]
+pub struct Structured {
+    pub max_tokens: u32,
+    pub thinking: bool,
+}
+
+static STRUCTURED: std::sync::RwLock<Structured> = std::sync::RwLock::new(Structured { max_tokens: 8192, thinking: true });
+
+/// Set at startup and on reload.
+pub fn configure(s: Structured) {
+    *STRUCTURED.write().unwrap_or_else(|e| e.into_inner()) = s;
+}
+
 /// One non-streaming chat completion; returns the reply text and its usage.
 pub(crate) fn complete(
     url: &str,
@@ -372,13 +393,20 @@ pub(crate) fn complete(
         .timeout(Duration::from_secs(600))
         .build()
         .map_err(|e| e.to_string())?;
-    let body = json!({
+    let mut body = json!({
         "model": model,
         "messages": [
             { "role": "system", "content": system },
             { "role": "user", "content": user },
         ],
     });
+    let s = *STRUCTURED.read().unwrap_or_else(|e| e.into_inner());
+    if s.max_tokens > 0 {
+        body["max_tokens"] = json!(s.max_tokens);
+    }
+    if !s.thinking {
+        body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    }
     let resp = client.post(url).json(&body).send().map_err(|e| e.to_string())?;
     let status = resp.status();
     if !status.is_success() {

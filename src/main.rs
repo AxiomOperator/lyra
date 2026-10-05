@@ -2,6 +2,7 @@ mod config;
 mod context;
 mod learn;
 mod mem;
+mod plan;
 mod migrate;
 mod retrieval;
 mod stats;
@@ -27,7 +28,9 @@ use retrieval::Endpoint;
 use stats::{Pricing, Stats, Totals, Usage, secs};
 use lyra_memory::CaptureMode;
 use lyra_memory::capture;
+use lyra_execution::{Engine, ExecutionEvent, Goal, GoalStatus, Plan, PlanStatus, RunOutcome};
 use mem::{Mem, MemorySnapshot};
+use plan::LyraRuntime;
 use tools::{CallContext, Tools};
 
 /// Cap on model → tools → model round trips in one turn.
@@ -160,6 +163,14 @@ enum StreamEvent {
     MemoryReview { curation: bool, review: Review<Vec<String>> },
     /// Notes from background memory work (upkeep, feedback).
     MemoryNotes(Vec<String>),
+    /// Something happened in a running plan.
+    PlanEvent(ExecutionEvent),
+    /// A request was turned into a goal and plan (or couldn't be).
+    PlanCreated(Result<(Goal, Plan), String>),
+    /// A plan run ended: finished, paused or failed.
+    PlanFinished(Result<RunOutcome, String>),
+    /// Notes from planning upkeep (recovery after a restart).
+    PlanNotes(Vec<String>),
     /// A finished learning review.
     Reviewed(Review<Applied>),
     /// A finished curation of the skill collection.
@@ -181,6 +192,9 @@ struct Services {
     learning: Option<Arc<Learning>>,
     /// Where skills live, or why learning is off.
     learning_status: Result<String, String>,
+    engine: Option<Arc<Engine>>,
+    /// Where plans live, or why planning is off.
+    planning_status: Result<String, String>,
 }
 
 /// What the assistant is doing right now, for the session panel.
@@ -201,6 +215,7 @@ enum Level {
     Tool,
     Learn,
     Memory,
+    Plan,
     Error,
 }
 
@@ -274,6 +289,15 @@ struct App {
     memory_curating: bool,
     /// Days between automatic memory curations, if scheduled.
     memory_curate_every: Option<i64>,
+    engine: Option<Arc<Engine>>,
+    planning_status: Result<String, String>,
+    /// Tools plan steps may never use (`[planning] forbidden_tools`).
+    forbidden_tools: Vec<String>,
+    /// A plan is being created or run in the background.
+    plan_busy: bool,
+    /// The plan shown in the Plan panel (the latest one), and its goal.
+    current_plan: Option<Plan>,
+    current_goal: Option<Goal>,
     /// Skills used by a reply the user just corrected (feeds the review trigger).
     corrected_skills: Vec<String>,
     /// Skills applied to the message being answered (or last answered).
@@ -295,7 +319,7 @@ struct App {
 
 impl App {
     fn new(config: Config, context: Context, services: Services) -> Self {
-        let Services { tools, memory_status, learning, learning_status } = services;
+        let Services { tools, memory_status, learning, learning_status, engine, planning_status } = services;
         let definitions = tools.as_ref().map(|t| t.definitions());
         let tools_tokens = definitions.as_ref().map_or(0, |d| learn::approx_tokens(&d.to_string()));
         let tool_count = definitions.as_ref().and_then(|d| d.as_array().map(Vec::len)).unwrap_or(0);
@@ -335,6 +359,12 @@ impl App {
             capturing: false,
             memory_curating: false,
             memory_curate_every: config.memory.curate.every_days(),
+            engine,
+            planning_status,
+            forbidden_tools: config.planning.forbidden_tools.clone(),
+            plan_busy: false,
+            current_plan: None,
+            current_goal: None,
             corrected_skills: Vec::new(),
             applied_skills: Vec::new(),
             applied_skills_tokens: 0,
@@ -574,6 +604,43 @@ impl App {
                 }
                 self.refresh_memory();
             }
+            StreamEvent::PlanEvent(e) => {
+                self.log(Level::Plan, format!("{}: {}", e.kind, e.message));
+                self.reload_plan(e.plan_id);
+            }
+            StreamEvent::PlanCreated(result) => {
+                self.plan_busy = false;
+                match result {
+                    Ok((goal, plan)) => {
+                        let mut text = plan::describe(Some(&goal), &plan);
+                        text += "\n/plan run to start · /plan cancel to drop it";
+                        self.log(Level::Plan, format!("planned {} steps for: {}", plan.steps.len(), goal.description));
+                        self.messages.push(Message::new("info", text));
+                        self.current_goal = Some(goal);
+                        self.current_plan = Some(plan);
+                    }
+                    Err(e) => {
+                        self.log(Level::Error, format!("planning failed: {e}"));
+                        self.messages.push(Message::new("error", format!("couldn't plan that: {e}")));
+                    }
+                }
+            }
+            StreamEvent::PlanFinished(result) => {
+                self.plan_busy = false;
+                self.set_phase(Phase::Idle);
+                match result {
+                    Ok(outcome) => self.plan_finished(outcome),
+                    Err(e) => {
+                        self.log(Level::Error, format!("plan run failed: {e}"));
+                        self.messages.push(Message::new("error", format!("plan run failed: {e}")));
+                    }
+                }
+            }
+            StreamEvent::PlanNotes(notes) => {
+                for note in notes {
+                    self.log(Level::Plan, note);
+                }
+            }
             StreamEvent::MemoryNotes(notes) => {
                 for note in notes {
                     self.log(Level::Memory, note);
@@ -616,8 +683,13 @@ impl App {
             Ok(line) => self.log(Level::Info, line),
             Err(line) => self.log(Level::Error, line),
         }
+        match self.planning_status.clone() {
+            Ok(line) => self.log(Level::Info, line),
+            Err(line) => self.log(Level::Error, line),
+        }
         self.check_models();
         self.memory_upkeep();
+        self.recover_plans();
         self.sync_skills();
         if let Some(mem) = self.mem()
             && mem.manager.settings().maintenance != lyra_memory::MaintenanceMode::Off
@@ -798,6 +870,7 @@ impl App {
                     Ok("curating the skill collection…".into())
                 }
             }),
+            "/plan" | "/plans" => self.plan_command(name, arg),
             "/memory" => {
                 let mem = self.mem().ok_or_else(|| match &self.memory_status {
                     Err(why) => why.clone(),
@@ -904,6 +977,189 @@ impl App {
         });
     }
 
+    fn runtime(&self) -> LyraRuntime {
+        LyraRuntime {
+            url: format!("{}/chat/completions", self.base_url.trim_end_matches('/')),
+            model: self.model.clone(),
+            tools: self.tools.clone(),
+            learning: self.learning.clone(),
+            forbidden_tools: self.forbidden_tools.clone(),
+            tx: self.tx.clone(),
+        }
+    }
+
+    fn reload_plan(&mut self, id: Uuid) {
+        let Some(engine) = &self.engine else { return };
+        if let Ok(Some(plan)) = engine.plan(id) {
+            // The goal's status changes as the plan runs, so read it each time.
+            self.current_goal = engine.goal(plan.goal_id).ok().flatten().map(|(g, _)| g);
+            self.current_plan = Some(plan);
+        }
+    }
+
+    /// Find plans interrupted by a restart (P8) and show the latest plan.
+    fn recover_plans(&mut self) {
+        let Some(engine) = self.engine.clone() else { return };
+        if let Ok(Some(latest)) = engine.plans(1).map(|p| p.into_iter().next()) {
+            self.reload_plan(latest.id);
+        }
+        let (rt, tx) = (self.runtime(), self.tx.clone());
+        thread::spawn(move || {
+            let notes = engine.recover(&rt).unwrap_or_else(|e| vec![format!("plan recovery failed: {e}")]);
+            let _ = tx.send(StreamEvent::PlanNotes(notes));
+        });
+    }
+
+    /// `/plan …` and `/plans`.
+    fn plan_command(&mut self, name: &str, arg: &str) -> Result<String, String> {
+        let engine = self.engine.clone().ok_or_else(|| match &self.planning_status {
+            Err(why) => why.clone(),
+            Ok(_) => "planning is off".to_string(),
+        })?;
+        if name == "/plans" {
+            return plan::list(&engine);
+        }
+        let words: Vec<&str> = arg.split_whitespace().collect();
+        let is_id = |w: &str| w.len() >= 4 && w.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+        // `/plan run` etc. are commands; anything else is a new request.
+        let target = |rest: &[&str]| -> Result<Plan, String> {
+            match rest.iter().find(|w| is_id(w)) {
+                Some(id) => engine.find(id),
+                None => self.current_plan.clone().ok_or_else(|| "no plan yet — /plan <what you want done>".to_string()),
+            }
+        };
+        let command = match words.first().copied() {
+            None => Some("show"),
+            Some(w @ ("show" | "run" | "resume" | "cancel" | "events")) if words.len() <= 2 && words[1..].iter().all(|x| is_id(x)) => Some(w),
+            Some(w @ ("approve" | "retry" | "skip")) if (2..=3).contains(&words.len()) => Some(w),
+            _ => None,
+        };
+        match command {
+            Some("show") => {
+                let plan = target(&words)?;
+                let goal = engine.goal(plan.goal_id)?.map(|(g, _)| g);
+                Ok(plan::describe(goal.as_ref(), &plan))
+            }
+            Some("events") => plan::events(&engine, &target(&words[1..])?),
+            Some("run" | "resume") => {
+                if self.plan_busy {
+                    return Err("a plan is already being created or run".into());
+                }
+                let plan = target(&words[1..])?;
+                if plan.status.is_finished() {
+                    return Err(format!("plan {} is already {}", lyra_execution::short(plan.id), plan.status));
+                }
+                self.plan_busy = true;
+                self.set_phase(Phase::Tools(format!("plan {}", lyra_execution::short(plan.id))));
+                let (rt, tx, id) = (self.runtime(), self.tx.clone(), plan.id);
+                thread::spawn(move || {
+                    let _ = tx.send(StreamEvent::PlanFinished(engine.run(id, &rt)));
+                });
+                Ok(format!("running plan {}…", lyra_execution::short(id)))
+            }
+            Some("cancel") => {
+                let plan = target(&words[1..])?;
+                let note = engine.cancel(plan.id, &self.runtime())?;
+                self.reload_plan(plan.id);
+                Ok(note)
+            }
+            Some(w @ ("approve" | "retry" | "skip")) => {
+                let plan = target(&words[2..])?;
+                let note = match w {
+                    "approve" => engine.approve(plan.id, words[1], &self.runtime())?,
+                    "retry" => engine.retry_step(plan.id, words[1])?,
+                    _ => engine.skip_step(plan.id, words[1])?,
+                };
+                self.reload_plan(plan.id);
+                Ok(format!("{note} — /plan resume to continue"))
+            }
+            _ => {
+                if self.plan_busy {
+                    return Err("a plan is already being created or run".into());
+                }
+                self.plan_busy = true;
+                let (rt, tx, request) = (self.runtime(), self.tx.clone(), arg.trim().to_string());
+                thread::spawn(move || {
+                    let _ = tx.send(StreamEvent::PlanCreated(engine.create(&request, &rt)));
+                });
+                Ok("working out the goal and a plan…".into())
+            }
+        }
+    }
+
+    /// A plan run ended. Report it, and when it finished, hand the evidence to
+    /// memory (P18) and skills (P19): the planner never writes either directly.
+    fn plan_finished(&mut self, outcome: RunOutcome) {
+        let plan = outcome.plan;
+        self.reload_plan(plan.id);
+        let goal = self.current_goal.clone();
+        let summary = outcome.evaluation.as_ref().map(|e| e.summary.clone()).unwrap_or_default();
+        let answer = outcome.evaluation.as_ref().map(|e| e.answer.clone()).filter(|a| !a.trim().is_empty());
+        let mut text = match (plan.status, outcome.goal_status) {
+            (PlanStatus::Paused, _) => format!("⏸ plan paused: {}", plan.note.clone().unwrap_or_default()),
+            (_, Some(status)) => {
+                let icon = match status {
+                    GoalStatus::Completed => "🎯",
+                    GoalStatus::Partial => "◐",
+                    _ => "✗",
+                };
+                let mut t = format!("{icon} goal {status}");
+                if !summary.is_empty() {
+                    t += &format!(": {summary}");
+                }
+                if let Some(e) = &outcome.evaluation {
+                    for c in &e.criteria {
+                        t += &format!("\n  {} {}", if c.met { "✓" } else { "✗" }, c.criterion);
+                    }
+                }
+                if let Some(a) = &answer {
+                    t += &format!("\n\n{a}");
+                }
+                t
+            }
+            _ => format!("plan {}", plan.status),
+        };
+        text += &format!("\n\n{}", plan::describe(None, &plan));
+        self.messages.push(Message::new("info", text));
+        self.log(Level::Plan, format!("plan {} {}", lyra_execution::short(plan.id), plan.status));
+        if !plan.status.is_finished() {
+            return;
+        }
+        let Some(engine) = self.engine.clone() else { return };
+        let goal_text = goal.as_ref().map_or(String::new(), |g| g.description.clone());
+        // P18: the outcome becomes an episode, through the memory manager.
+        if let Some(mem) = self.mem() {
+            let tx = self.tx.clone();
+            let (scope, status) = (mem.manager.settings().default_scope.clone(), outcome.goal_status);
+            let episode_summary = format!("Plan: {goal_text}. {summary}");
+            let episode_outcome = format!("goal {}{}", status.map_or("unknown".into(), |s| s.to_string()), answer.map_or(String::new(), |a| format!(": {}", a.chars().take(300).collect::<String>())));
+            thread::spawn(move || {
+                let note = match mem.run(mem.manager.add_episode(&scope, &episode_summary, &episode_outcome, Vec::new(), None)) {
+                    Ok(m) => format!("recorded plan episode [{}]", m.short_id()),
+                    Err(e) => format!("plan episode not recorded: {e}"),
+                };
+                let _ = tx.send(StreamEvent::MemoryNotes(vec![note]));
+            });
+        }
+        // P19: recoveries are lessons; let the skill reviewer look at them.
+        let metrics = engine.metrics(&plan).unwrap_or_default();
+        if (metrics.recoveries > 0 || metrics.replans > 0)
+            && let Some(learning) = self.learning.clone()
+            && learning.mode() != Mode::Off
+            && !self.reviewing
+        {
+            self.reviewing = true;
+            let transcript = format!("Goal: {goal_text}\n\n{}", plan::events(&engine, &plan).unwrap_or_default());
+            let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+            let (model, tx) = (self.model.clone(), self.tx.clone());
+            self.log(Level::Learn, "reviewing the plan's recoveries for a lesson".into());
+            thread::spawn(move || {
+                let review = learning.review(&url, &model, "a failed step was replaced by a working one (plan execution)", &transcript, None);
+                let _ = tx.send(StreamEvent::Reviewed(review));
+            });
+        }
+    }
+
     /// Curate the memory collection in the background (M9, M18).
     fn memory_curate(&mut self) {
         let Some(mem) = self.mem() else { return };
@@ -930,6 +1186,10 @@ impl App {
             Ok(config) => {
                 self.base_url = config.url.clone();
                 self.model = config.model.clone();
+                learn::configure(learn::Structured {
+                    max_tokens: config.structured_max_tokens,
+                    thinking: config.structured_thinking,
+                });
                 self.pricing = pricing(&config);
                 self.embedding = config.embedding;
                 self.reranker = config.reranker;
@@ -999,6 +1259,12 @@ const COMMANDS: &str = "\
 /memory working [clear]      show or clear working memory
 /memory curate               consolidate duplicates, flag contradictions now
 /memory episode              record this conversation as an episode
+/plan <request>              turn a request into a goal and a structured plan
+/plan [id] · /plans          show the current (or a) plan · list plans
+/plan run|resume [id]        execute it (pauses for approvals and budgets)
+/plan approve <step>         approve a step's action (needed again if it changes)
+/plan retry|skip <step>      after a failure or an interrupted step
+/plan cancel · /plan events  stop it · what happened, with metrics
 /help                        this list";
 
 /// `1,234 tokens`, or that the server didn't say.
@@ -1246,13 +1512,34 @@ fn main() {
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     let (tools, memory_status) = open_memory(&config, runtime.handle());
     let (learning, learning_status) = open_learning(&config, runtime.handle());
-    let services = Services { tools, memory_status, learning, learning_status };
+    let (engine, planning_status) = open_planning(&config, runtime.handle());
+    let services = Services { tools, memory_status, learning, learning_status, engine, planning_status };
+    learn::configure(learn::Structured {
+        max_tokens: config.structured_max_tokens,
+        thinking: config.structured_thinking,
+    });
     let mut app = App::new(config, Context::load(), services);
     for note in migrated {
         app.log(Level::Info, note);
     }
     app.start();
     ratatui::run(|terminal| run(terminal, &mut app)).expect("terminal error");
+}
+
+/// Open the plan store and engine, unless planning is off.
+fn open_planning(config: &Config, runtime: &tokio::runtime::Handle) -> (Option<Arc<Engine>>, Result<String, String>) {
+    let c = &config.planning;
+    if !c.enabled {
+        return (None, Ok("planning off".into()));
+    }
+    let Some(path) = c.path() else {
+        return (None, Err("planning off: no home directory (set [planning] path)".into()));
+    };
+    let settings = lyra_execution::Settings { budget: c.budget, max_parallel: c.max_parallel };
+    match Engine::open(&path, runtime.clone(), settings) {
+        Ok(engine) => (Some(Arc::new(engine)), Ok(format!("plans · {}", context::show(&path)))),
+        Err(e) => (None, Err(format!("planning off: {e:#}"))),
+    }
 }
 
 /// Open the skill files and their ledger.

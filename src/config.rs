@@ -17,6 +17,14 @@ pub struct Config {
     pub output_cost_per_mtok: f64,
     /// Symbol shown before costs.
     pub currency: String,
+    /// Most tokens (reasoning included) for lyra's internal JSON calls: planning,
+    /// verification, memory capture, skill reviews, curation. Bounds how long a
+    /// reasoning model can think about them. 0 means no limit.
+    pub structured_max_tokens: u32,
+    /// Let the model think before answering those calls. `false` asks the server
+    /// to skip thinking (`chat_template_kwargs.enable_thinking`, understood by
+    /// llama.cpp and vLLM for Qwen3-style models), which is much faster.
+    pub structured_thinking: bool,
     /// `[embedding]` table: embedding model endpoint.
     pub embedding: Option<Endpoint>,
     /// `[reranker]` table: reranker model endpoint.
@@ -25,6 +33,34 @@ pub struct Config {
     pub memory: MemoryConfig,
     /// `[learning]` table: self-learned skills.
     pub learning: LearningConfig,
+    /// `[planning]` table: goals, plans and their execution.
+    pub planning: PlanningConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(default)]
+pub struct PlanningConfig {
+    pub enabled: bool,
+    /// SQLite file; defaults to `~/.lyra/plans/plans.db`.
+    pub path: Option<String>,
+    /// Most plan steps run at once.
+    pub max_parallel: usize,
+    /// Tools plan steps may never use.
+    pub forbidden_tools: Vec<String>,
+    /// `[planning.budget]`: limits per plan.
+    pub budget: lyra_execution::Budget,
+}
+
+impl Default for PlanningConfig {
+    fn default() -> Self {
+        Self { enabled: true, path: None, max_parallel: 3, forbidden_tools: Vec::new(), budget: Default::default() }
+    }
+}
+
+impl PlanningConfig {
+    pub fn path(&self) -> Option<PathBuf> {
+        data_file(self.path.as_deref(), "plans", "plans.db")
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -121,10 +157,13 @@ impl Default for Config {
             cached_input_cost_per_mtok: None,
             output_cost_per_mtok: 0.0,
             currency: "$".into(),
+            structured_max_tokens: 8192,
+            structured_thinking: true,
             embedding: None,
             reranker: None,
             memory: MemoryConfig::default(),
             learning: LearningConfig::default(),
+            planning: PlanningConfig::default(),
         }
     }
 }
@@ -161,6 +200,7 @@ fn user_home() -> Option<PathBuf> {
 /// ├── config/    config.toml
 /// ├── context/   SOUL.md, USER.md, AGENT.md
 /// ├── memory/    memory.db
+/// ├── plans/     plans.db
 /// └── skills/    <name>.md, one per skill
 /// ```
 pub fn home() -> Option<PathBuf> {

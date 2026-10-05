@@ -5,16 +5,19 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
 ## Layout
 
 - `src/` — the TUI binary: `main.rs` (app state, streaming, tool loop), `ui.rs` (all drawing),
-  `config.rs`, `context.rs` (SOUL/USER/AGENT.md), `tools.rs` (memory tools), `mem.rs` (memory glue), `learn.rs`
+  `config.rs`, `context.rs` (SOUL/USER/AGENT.md), `tools.rs` (memory tools), `mem.rs` (memory glue), `plan.rs` (planning glue), `learn.rs`
   (self-learning glue), `retrieval.rs` (embedding/reranker clients), `stats.rs`.
 - `memory/` — `lyra-memory` crate: memory behind `MemoryManager` (SQLite + FTS5, vectors in a table;
   kinds, provenance, supersede/versions, hybrid ranking, context compiler, capture, curator,
   safety scan, working memory). `src/mem.rs` is lyra's side (embeddings, model calls, /memory).
 - `learning/` — `lyra-learning` crate: skills behind `SkillManager` (Markdown files + SQLite ledger
   of versions, usage, relationships, proposals, audit log). Design: `docs/skill_learning.md`.
+- `execution/` — `lyra-execution` crate: goals, plans and the execution `Engine` (task graph,
+  verification, retry, replanning, approvals, budgets, checkpoints, events) behind a `Runtime`
+  trait; `src/plan.rs` is lyra's runtime and `/plan` text.
 - `docs/` — design guides and examples (not binding; see rule 3).
 - Runtime files live in `~/.lyra` (`$LYRA_HOME`): `config/config.toml`, `context/`
-  (SOUL/USER/AGENT.md), `memory/memory.db`, `skills/<name>.md` (one Markdown file per skill) + `skills/ledger.db`.
+  (SOUL/USER/AGENT.md), `memory/memory.db`, `plans/plans.db`, `skills/<name>.md` (one Markdown file per skill) + `skills/ledger.db`.
   `src/migrate.rs` brings older layouts up to date on startup.
 
 ## Checks

@@ -117,14 +117,19 @@ fn draw_panels(f: &mut Frame, app: &App, area: Rect) {
     let session = session_panel(app, width);
     let agent = agent_panel(app, width);
     let (skills_title, skills) = skills_panel(app, width);
-    let [session_area, agent_area, memory_area, skills_area, activity_area] = Layout::vertical([
+    let (plan_title, plan) = plan_panel(app, width);
+    let [session_area, agent_area, memory_area, skills_area, plan_area, activity_area] = Layout::vertical([
         Constraint::Length(session.len() as u16 + 2),
         Constraint::Length(agent.len() as u16 + 2),
         Constraint::Fill(1),
         Constraint::Length(skills.len() as u16 + 2),
+        Constraint::Length(if plan.is_empty() { 0 } else { plan.len() as u16 + 2 }),
         Constraint::Fill(1),
     ])
     .areas(area);
+    if !plan.is_empty() {
+        f.render_widget(Paragraph::new(plan).block(Block::bordered().title(plan_title)), plan_area);
+    }
 
     f.render_widget(Paragraph::new(session).block(Block::bordered().title(" Session ")), session_area);
     f.render_widget(Paragraph::new(agent).block(Block::bordered().title(" Agent ")), agent_area);
@@ -299,6 +304,47 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect, width: usize) {
     f.render_widget(Paragraph::new(lines).block(Block::bordered().title(title)), area);
 }
 
+/// Most step lines shown in the Plan panel; `/plan` shows them all.
+const MAX_PLAN_STEPS: usize = 8;
+
+/// The current plan: goal, steps with their status, budget use and any note.
+/// Empty when there's no plan.
+fn plan_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
+    let Some(plan) = &app.current_plan else { return (String::new(), Vec::new()) };
+    let dim = Style::default().fg(Color::DarkGray);
+    let busy = if app.plan_busy { " · working…" } else { "" };
+    let title = format!(" Plan {} · v{} · {}{busy} ", lyra_execution::short(plan.id), plan.version, plan.status);
+    let mut lines = Vec::new();
+    if let Some(goal) = &app.current_goal {
+        let status = format!("goal {} · ", goal.status);
+        lines.push(Line::from(vec![
+            Span::styled(status.clone(), dim),
+            Span::raw(truncate(&goal.description, width.saturating_sub(status.chars().count()))),
+        ]));
+    }
+    for s in plan.steps.iter().take(MAX_PLAN_STEPS) {
+        let icon = crate::plan::icon(s.status);
+        let style = match s.status {
+            lyra_execution::StepStatus::Completed => Style::default().fg(Color::Green),
+            lyra_execution::StepStatus::Failed => Style::default().fg(Color::Red),
+            lyra_execution::StepStatus::Running => Style::default().fg(Color::Blue),
+            lyra_execution::StepStatus::Blocked => Style::default().fg(Color::Yellow),
+            _ => dim,
+        };
+        let flag = if s.needs_approval() { " ⚠" } else { "" };
+        let text = format!("{} {}{flag}", s.key, s.title);
+        lines.push(Line::from(vec![Span::styled(format!("{icon} "), style), Span::raw(truncate(&text, width.saturating_sub(2)))]));
+    }
+    if plan.steps.len() > MAX_PLAN_STEPS {
+        lines.push(Line::styled(format!("… {} more (/plan)", plan.steps.len() - MAX_PLAN_STEPS), dim));
+    }
+    lines.push(Line::styled(truncate(&lyra_execution::budget::describe(&plan.budget, &plan.usage), width), dim));
+    if let Some(note) = &plan.note {
+        lines.push(Line::from(truncate(note, width).yellow()));
+    }
+    (title, lines)
+}
+
 /// Most skill lines shown; /skills lists everything.
 const MAX_SKILL_LINES: usize = 8;
 
@@ -399,6 +445,7 @@ fn draw_activity(f: &mut Frame, app: &App, area: Rect, width: usize) {
                 Level::Tool => Style::default().fg(Color::Yellow),
                 Level::Learn => Style::default().fg(Color::Magenta),
                 Level::Memory => Style::default().fg(Color::Cyan),
+                Level::Plan => Style::default().fg(Color::Blue),
                 Level::Error => Style::default().fg(Color::Red),
             };
             Line::from(vec![

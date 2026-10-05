@@ -13,6 +13,7 @@ Everything lyra keeps lives in one folder, `~/.lyra` (set `LYRA_HOME` to use ano
 ├── config/    config.toml
 ├── context/   SOUL.md, USER.md, AGENT.md
 ├── memory/    memory.db
+├── plans/     plans.db
 └── skills/    <name>.md, one file per skill
 ```
 
@@ -147,6 +148,73 @@ episodic = 30
 semantic = 365
 ```
 
+## Plans (planning and execution)
+
+For work with several steps, `/plan <request>` turns the request into a **goal**
+with explicit success criteria (plus constraints and open questions) and a
+**structured plan**: steps with dependencies, an action each, an expected outcome
+and how to verify it. Built following `docs/planning_execution_system.md` in the
+`execution/` crate (`lyra-execution`); plans persist in `~/.lyra/plans/plans.db`.
+
+A step's action is one of:
+
+- **tool**: one tool call. Arguments that depend on an earlier result are
+  written as `{{s3}}` and filled in from that result just before the step runs.
+- **reasoning**: the model works on it, using tools as needed.
+- **workflow**: follow one of your learned skills.
+- **subagent**: a helper with its own scoped task and tools (`researcher` is
+  read-only; `archivist` can also record in memory).
+
+`/plan run` executes it:
+
+- independent steps run in parallel; steps that share a resource, or that are
+  unsafe to repeat, don't;
+- every attempt and result is stored; each step is **verified** (tool result,
+  a follow-up read-only tool, a deterministic text check, or the model judging
+  the evidence), so "it ran" isn't taken for "it worked";
+- transient failures (timeouts, rate limits, connection errors) are **retried**
+  with backoff; permission and input errors aren't;
+- a step that still fails is **replanned**: only the broken part changes,
+  completed work is kept, and the plan's version goes up;
+- **destructive tools** (e.g. `memory_forget`) only run as their own tool steps
+  and **pause the plan for approval** of the exact call; changed arguments need
+  approval again. Reasoning steps can't use them.
+- **budgets** (model calls, tool calls, replans, tokens, time) are enforced;
+  running out pauses the plan;
+- a **checkpoint** is saved before anything that changes things;
+- at the end the **goal** is judged against its success criteria: a plan whose
+  steps all finished can still be only *partial*.
+
+If lyra stops mid-run, the plan is found on the next start; a step that was
+running is only rerun if repeating it is safe, otherwise it waits for
+`/plan retry` or `/plan skip`. A finished plan is recorded as a memory episode,
+and recoveries (retries, replans) are offered to the skill reviewer.
+
+Planning, verification, memory capture, skill reviews and curation all make
+internal JSON calls to the chat model. With a reasoning model these can think for
+a long time, so two top-level settings bound them: `structured_max_tokens`
+(default 8192) caps each call, and `structured_thinking = false` asks the server
+to skip thinking for them (`chat_template_kwargs.enable_thinking`, understood by
+llama.cpp and vLLM for Qwen3-style models), several times faster.
+
+Commands: `/plan <request>`, `/plan` (show), `/plans`, `/plan run|resume [id]`,
+`/plan approve <step>`, `/plan retry|skip <step>`, `/plan cancel`,
+`/plan events` (the full event log with metrics).
+
+```toml
+[planning]
+enabled = true
+max_parallel = 3
+forbidden_tools = []        # tools plan steps may never use
+
+[planning.budget]
+max_model_calls = 40
+max_tool_calls = 100
+max_replans = 3
+max_minutes = 30
+max_tokens = 300000
+```
+
 ## Self-learning (skills)
 
 Memory holds facts; **skills** hold procedures lyra learned. They're built
@@ -264,6 +332,7 @@ The chat sits on the left; on terminals at least 100 columns wide, panels on the
 - **Agent**: system prompt size, loaded SOUL/USER/AGENT files, tools, and embedding/reranker health.
 - **Memory**: active memories by kind, vector coverage, what needs approval (proposals, contradictions, duplicates, expired), working memory (goal, plan, notes), how many memories the last reply used, and the most recent memories (`?` marks unsure ones).
 - **Skills**: learning mode, average reliability, what needs review (proposals, conflicts, duplicates, failing or stale skills), the last reply's skills, and each active skill's reliability and use count.
-- **Activity**: a timestamped log of requests, first tokens, tool calls and results, reloads and errors.
+- **Plan**: the current plan's goal, steps with their status (✓ ▸ ⏸ ✗ ○, ⚠ for approval), budget use and any note.
+- **Activity**: a timestamped log of requests, first tokens, tool calls and results, memory, skill and plan events, reloads and errors.
 
 When the panels are hidden or don't fit, a one-line status bar shows the session totals instead.
