@@ -74,6 +74,17 @@ pub fn embed(endpoint: &Endpoint, texts: &[&str]) -> Result<Embeddings, String> 
     Ok(resp.into_embeddings())
 }
 
+/// Qwen3-Embedding (and similar instruction-tuned embedders) match better when
+/// a search query, but not the stored text, says what it's looking for.
+const QUERY_INSTRUCTION: &str = "Instruct: Given a user message, retrieve stored memories that are relevant to it\nQuery: ";
+
+/// Embed a search query (with the retrieval instruction).
+pub fn embed_query(endpoint: &Endpoint, query: &str) -> Result<Vec<f32>, String> {
+    let text = format!("{QUERY_INSTRUCTION}{query}");
+    let mut e = embed(endpoint, &[&text])?;
+    e.vectors.pop().ok_or_else(|| "no embedding returned".into())
+}
+
 /// A document's position in the input and its relevance to the query.
 pub struct Ranked {
     pub index: usize,

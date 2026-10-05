@@ -1,6 +1,7 @@
 mod config;
 mod context;
 mod learn;
+mod mem;
 mod migrate;
 mod retrieval;
 mod stats;
@@ -24,7 +25,10 @@ use learn::{Learning, Review, SkillsSnapshot};
 use lyra_learning::{Applied, Mode, SkillOutcome, Uuid, evaluator};
 use retrieval::Endpoint;
 use stats::{Pricing, Stats, Totals, Usage, secs};
-use tools::{MemorySnapshot, Tools};
+use lyra_memory::CaptureMode;
+use lyra_memory::capture;
+use mem::{Mem, MemorySnapshot};
+use tools::{CallContext, Tools};
 
 /// Cap on model → tools → model round trips in one turn.
 const MAX_TOOL_ROUNDS: usize = 8;
@@ -45,6 +49,9 @@ struct Message {
     /// Timing and token counts for an assistant reply.
     #[serde(skip)]
     stats: Option<Stats>,
+    /// Memories that were in the prompt for this reply (short ids).
+    #[serde(skip)]
+    memories: Vec<String>,
     /// Learned skills that were in the prompt for this reply.
     #[serde(skip)]
     skills: Vec<String>,
@@ -59,6 +66,7 @@ impl Message {
             tool_call_id: None,
             reasoning: String::new(),
             stats: None,
+            memories: Vec::new(),
             skills: Vec::new(),
         }
     }
@@ -146,6 +154,12 @@ enum StreamEvent {
     Models(Vec<Result<String, String>>),
     /// Fresh numbers for the memory panel.
     Memory(Result<MemorySnapshot, String>),
+    /// Memories the context compiler put in the prompt (short ids) and their size.
+    MemoriesApplied { ids: Vec<String>, tokens: u64 },
+    /// A finished memory capture or curation.
+    MemoryReview { curation: bool, review: Review<Vec<String>> },
+    /// Notes from background memory work (upkeep, feedback).
+    MemoryNotes(Vec<String>),
     /// A finished learning review.
     Reviewed(Review<Applied>),
     /// A finished curation of the skill collection.
@@ -186,7 +200,16 @@ enum Level {
     Info,
     Tool,
     Learn,
+    Memory,
     Error,
+}
+
+/// A finished run, awaiting the user's reaction.
+#[derive(Clone)]
+struct LastRun {
+    id: Uuid,
+    skills: Vec<String>,
+    memories: usize,
 }
 
 /// One line in the activity log.
@@ -240,8 +263,17 @@ struct App {
     curate_every: Option<i64>,
     /// The run (user turn) being answered.
     run: Option<Uuid>,
-    /// The last finished run and the skills it used, awaiting the user's reaction.
-    last_run: Option<(Uuid, Vec<String>)>,
+    /// The last finished run, awaiting the user's reaction.
+    last_run: Option<LastRun>,
+    /// Memories the context compiler chose for the current (or last) reply.
+    applied_memories: Vec<String>,
+    applied_memories_tokens: u64,
+    /// A memory capture is running in the background.
+    capturing: bool,
+    /// A memory curation is running in the background.
+    memory_curating: bool,
+    /// Days between automatic memory curations, if scheduled.
+    memory_curate_every: Option<i64>,
     /// Skills used by a reply the user just corrected (feeds the review trigger).
     corrected_skills: Vec<String>,
     /// Skills applied to the message being answered (or last answered).
@@ -250,6 +282,8 @@ struct App {
     applied_skills_tokens: u64,
     /// Approximate size of the tool definitions sent with every request.
     tools_tokens: u64,
+    /// How many tools the model is offered.
+    tool_count: usize,
     /// Top line of the chat view when scrolled up; `None` follows the bottom.
     scroll: Option<u16>,
     /// Chat view size from the last frame, used for scroll bounds.
@@ -262,8 +296,9 @@ struct App {
 impl App {
     fn new(config: Config, context: Context, services: Services) -> Self {
         let Services { tools, memory_status, learning, learning_status } = services;
-        let tools_tokens =
-            tools.as_ref().map_or(0, |t| learn::approx_tokens(&t.definitions().to_string()));
+        let definitions = tools.as_ref().map(|t| t.definitions());
+        let tools_tokens = definitions.as_ref().map_or(0, |d| learn::approx_tokens(&d.to_string()));
+        let tool_count = definitions.as_ref().and_then(|d| d.as_array().map(Vec::len)).unwrap_or(0);
         let (tx, rx) = mpsc::channel();
         Self {
             base_url: config.url.clone(),
@@ -295,10 +330,16 @@ impl App {
             curate_every: config.learning.curate.every_days(),
             run: None,
             last_run: None,
+            applied_memories: Vec::new(),
+            applied_memories_tokens: 0,
+            capturing: false,
+            memory_curating: false,
+            memory_curate_every: config.memory.curate.every_days(),
             corrected_skills: Vec::new(),
             applied_skills: Vec::new(),
             applied_skills_tokens: 0,
             tools_tokens,
+            tool_count,
             scroll: None,
             max_scroll: 0,
             page: 1,
@@ -323,6 +364,8 @@ impl App {
         self.messages.push(Message::new("user", content.clone()));
         self.applied_skills.clear();
         self.applied_skills_tokens = 0;
+        self.applied_memories.clear();
+        self.applied_memories_tokens = 0;
         let run = Uuid::new_v4();
         self.run = Some(run);
         self.waiting = true;
@@ -340,10 +383,13 @@ impl App {
         let learning = self.learning.clone();
         thread::spawn(move || {
             let mut history = history;
+            if let Some(tools) = &tools {
+                apply_memories(&tools.mem, &content, run, &mut history, &tx);
+            }
             if let Some(learning) = learning {
                 apply_skills(&learning, &content, run, &mut history, &tx);
             }
-            let event = match converse(&url, &model, history, tools.as_deref(), &tx) {
+            let event = match converse(&url, &model, history, tools.as_deref(), run, &tx) {
                 Ok(stats) => StreamEvent::Done(stats),
                 Err(e) => StreamEvent::Error(e),
             };
@@ -373,7 +419,7 @@ impl App {
             StreamEvent::ToolResult { id, name, content } => {
                 self.log(Level::Tool, format!("↳ {content}"));
                 self.set_phase(Phase::Waiting);
-                if name.starts_with("memory_") {
+                if name.starts_with("memory_") || name == "working_memory" {
                     self.refresh_memory();
                 }
                 let mut result = Message::new("tool", content);
@@ -390,11 +436,14 @@ impl App {
                 );
                 self.totals.add(&stats);
                 let skills = self.applied_skills.clone();
+                let memories = self.applied_memories.clone();
                 let reply = self.reply();
                 reply.stats = Some(stats);
                 reply.skills = skills.clone();
-                self.last_run = self.run.take().map(|run| (run, skills));
+                reply.memories = memories.clone();
+                self.last_run = self.run.take().map(|id| LastRun { id, skills, memories: memories.len() });
                 self.review(false);
+                self.capture(false);
             }
             StreamEvent::Error(e) => {
                 self.waiting = false;
@@ -491,6 +540,46 @@ impl App {
                 }
                 self.skills = Some(snapshot);
             }
+            StreamEvent::MemoriesApplied { ids, tokens } => {
+                self.log(Level::Memory, format!("recalled {} memor{}: {}", ids.len(), if ids.len() == 1 { "y" } else { "ies" }, ids.join(" ")));
+                self.applied_memories = ids;
+                self.applied_memories_tokens = tokens;
+            }
+            StreamEvent::MemoryReview { curation, review: Review { outcome, usage } } => {
+                if curation {
+                    self.memory_curating = false;
+                } else {
+                    self.capturing = false;
+                }
+                self.totals.add_review(usage.as_ref());
+                let what = if curation { "memory curation" } else { "memory capture" };
+                match outcome {
+                    Ok(notes) => {
+                        if notes.is_empty() {
+                            self.log(Level::Memory, format!("{what}: nothing to change · {}", usage_text(usage.as_ref())));
+                        }
+                        for note in &notes {
+                            self.log(Level::Memory, note.clone());
+                        }
+                        if curation {
+                            let text = if notes.is_empty() {
+                                "🧠 curated memories: nothing to change".to_string()
+                            } else {
+                                format!("🧠 curated memories:\n{}\n/memory to review", notes.join("\n"))
+                            };
+                            self.messages.push(Message::new("info", text));
+                        }
+                    }
+                    Err(e) => self.log(Level::Error, format!("{what} failed: {e} · {}", usage_text(usage.as_ref()))),
+                }
+                self.refresh_memory();
+            }
+            StreamEvent::MemoryNotes(notes) => {
+                for note in notes {
+                    self.log(Level::Memory, note);
+                }
+                self.refresh_memory();
+            }
             StreamEvent::Memory(snapshot) => {
                 if let Err(e) = &snapshot {
                     self.log(Level::Error, format!("memory: {e}"));
@@ -528,8 +617,15 @@ impl App {
             Err(line) => self.log(Level::Error, line),
         }
         self.check_models();
-        self.refresh_memory();
+        self.memory_upkeep();
         self.sync_skills();
+        if let Some(mem) = self.mem()
+            && mem.manager.settings().maintenance != lyra_memory::MaintenanceMode::Off
+            && mem.curation_due(self.memory_curate_every)
+        {
+            self.log(Level::Memory, "scheduled memory curation is due".into());
+            self.memory_curate();
+        }
         if let Some(learning) = &self.learning
             && learning.mode() != Mode::Off
             && learning.curation_due(self.curate_every)
@@ -553,12 +649,26 @@ impl App {
     /// used: a correction is a failure, thanks a success.
     fn judge_last_run(&mut self, message: &str) {
         self.corrected_skills.clear();
-        let Some((run, skills)) = self.last_run.take() else { return };
+        let Some(last) = self.last_run.take() else { return };
+        let Some(outcome) = evaluator::outcome_signal(message) else { return };
+        // Were the memories in that reply's prompt helpful? (M13)
+        if last.memories > 0
+            && let Some(mem) = self.mem()
+        {
+            let (tx, helpful) = (self.tx.clone(), outcome == SkillOutcome::Success);
+            thread::spawn(move || {
+                let note = match mem.feedback(last.id, helpful) {
+                    Ok(n) => format!("{n} memor{} marked {}", if n == 1 { "y" } else { "ies" }, if helpful { "helpful" } else { "not helpful" }),
+                    Err(e) => format!("memory feedback failed: {e}"),
+                };
+                let _ = tx.send(StreamEvent::MemoryNotes(vec![note]));
+            });
+        }
+        let (run, skills) = (last.id, last.skills);
         let Some(learning) = self.learning.clone() else { return };
         if skills.is_empty() {
             return;
         }
-        let Some(outcome) = evaluator::outcome_signal(message) else { return };
         if outcome == SkillOutcome::Failure {
             self.corrected_skills = skills;
         }
@@ -635,7 +745,7 @@ impl App {
         self.reviewing = true;
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let (model, tx, run) = (self.model.clone(), self.tx.clone(), self.last_run.as_ref().map(|r| r.0));
+        let (model, tx, run) = (self.model.clone(), self.tx.clone(), self.last_run.as_ref().map(|r| r.id));
         thread::spawn(move || {
             let review = learning.review(&url, &model, trigger, &transcript, run);
             let _ = tx.send(StreamEvent::Reviewed(review));
@@ -669,7 +779,7 @@ impl App {
                     "partial" => SkillOutcome::Partial,
                     _ => return Err("usage: /outcome good|bad|partial".into()),
                 };
-                let Some((run, skills)) = last_run.filter(|(_, s)| !s.is_empty()) else {
+                let Some(LastRun { id: run, skills, .. }) = last_run.filter(|r| !r.skills.is_empty()) else {
                     return Err("the last reply didn't use any skills".into());
                 };
                 let notes = l.record_outcome(run, outcome, true)?;
@@ -688,6 +798,19 @@ impl App {
                     Ok("curating the skill collection…".into())
                 }
             }),
+            "/memory" => {
+                let mem = self.mem().ok_or_else(|| match &self.memory_status {
+                    Err(why) => why.clone(),
+                    Ok(_) => "memory is off".to_string(),
+                });
+                mem.and_then(|m| match arg.split_whitespace().next().unwrap_or("") {
+                    "curate" if self.memory_curating => Err("a memory curation is already running".into()),
+                    "curate" => Ok("curating memories…".into()),
+                    "episode" if self.capturing => Err("a memory capture is already running".into()),
+                    "episode" => Ok("recording this conversation as an episode…".into()),
+                    _ => m.command(arg),
+                })
+            }
             _ => Err(format!("unknown command {name} — try /help")),
         };
         let ok = result.is_ok();
@@ -696,7 +819,14 @@ impl App {
             Err(e) => ("error", e),
         };
         self.messages.push(Message::new(role, format!("> {line}\n{text}")));
+        let memory_sub = arg.split_whitespace().next().unwrap_or("");
         match name {
+            "/memory" if ok && memory_sub == "curate" => self.memory_curate(),
+            "/memory" if ok && memory_sub == "episode" => self.capture(true),
+            "/memory" if ok && matches!(memory_sub, "forget" | "archive" | "restore" | "purge" | "correct" | "approve" | "reject" | "working") => {
+                self.log(Level::Memory, line.to_string());
+                self.refresh_memory();
+            }
             "/learn" if ok => self.review(true),
             "/curate" if ok => self.curate(),
             "/approve" | "/reject" | "/deprecate" | "/forget-skill" | "/rollback" | "/outcome" if ok => {
@@ -717,10 +847,75 @@ impl App {
 
     /// Re-read the memory panel's numbers in the background.
     fn refresh_memory(&self) {
-        let Some(tools) = self.tools.clone() else { return };
+        let Some(mem) = self.mem() else { return };
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let _ = tx.send(StreamEvent::Memory(tools.snapshot(50)));
+            let _ = tx.send(StreamEvent::Memory(mem.snapshot()));
+        });
+    }
+
+    fn mem(&self) -> Option<Arc<Mem>> {
+        self.tools.as_ref().map(|t| t.mem.clone())
+    }
+
+    /// Archive expired memories and add missing vectors, in the background.
+    fn memory_upkeep(&self) {
+        let Some(mem) = self.mem() else { return };
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(StreamEvent::MemoryNotes(mem.upkeep()));
+        });
+    }
+
+    /// Review the turn just finished for things worth remembering (M2, M8):
+    /// after every turn when the capture trigger fires, or on `/memory episode`.
+    fn capture(&mut self, episode: bool) {
+        let Some(mem) = self.mem() else { return };
+        if self.capturing || (!episode && mem.manager.settings().capture == CaptureMode::Off) {
+            return;
+        }
+        let Some(start) = self.messages.iter().rposition(|m| m.role == "user") else { return };
+        let calls: Vec<&str> =
+            self.messages[start..].iter().flat_map(|m| m.tool_calls.iter().map(|c| c.function.name.as_str())).collect();
+        let user = self.messages[start].content.clone();
+        let turn = capture::Turn {
+            user: &user,
+            task_tool_calls: calls.iter().filter(|n| !n.starts_with("memory_") && **n != "working_memory").count(),
+            model_saved: calls.iter().any(|n| matches!(*n, "memory_remember" | "memory_correct" | "memory_supersede")),
+        };
+        let reason = if episode {
+            Some("the user asked to record this conversation as an episode; summarize it in \"episode\"")
+        } else {
+            capture::trigger(&turn)
+        };
+        let Some(reason) = reason else { return };
+        let owned = self.history_text();
+        let history: Vec<(&str, &str)> = owned.iter().map(|(r, c)| (*r, c.as_str())).collect();
+        let transcript = learn::transcript(&history, if episode { 30 } else { 8 });
+        let reply = self.messages.iter().rev().find(|m| m.role == "assistant").map_or("", |m| m.content.as_str());
+        let query = format!("{user}\n{reply}");
+        self.log(Level::Memory, format!("capturing: {reason}"));
+        self.capturing = true;
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let (model, tx, run) = (self.model.clone(), self.tx.clone(), self.last_run.as_ref().map(|r| r.id));
+        thread::spawn(move || {
+            let review = mem.capture(&url, &model, reason, &transcript, &query, run);
+            let _ = tx.send(StreamEvent::MemoryReview { curation: false, review });
+        });
+    }
+
+    /// Curate the memory collection in the background (M9, M18).
+    fn memory_curate(&mut self) {
+        let Some(mem) = self.mem() else { return };
+        if self.memory_curating {
+            return;
+        }
+        self.memory_curating = true;
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let (model, tx) = (self.model.clone(), self.tx.clone());
+        thread::spawn(move || {
+            let review = mem.curate(&url, &model);
+            let _ = tx.send(StreamEvent::MemoryReview { curation: true, review });
         });
     }
 
@@ -795,6 +990,15 @@ const COMMANDS: &str = "\
 /outcome good|bad|partial    how the last reply's skills worked out
 /learn                       review the conversation for a lesson now
 /curate                      look for duplicates, conflicts and stale skills now
+/memory                      memory stats and what's waiting for approval
+/memory search <query>       recall with scores · /memory list [scope]
+/memory inspect <id>         a memory's details, versions, links and history
+/memory correct <id> <text>  fix a memory (keeps the old version)
+/memory forget|archive|restore|purge <id>
+/memory approve|reject <id>  act on a proposed consolidation or archive
+/memory working [clear]      show or clear working memory
+/memory curate               consolidate duplicates, flag contradictions now
+/memory episode              record this conversation as an episode
 /help                        this list";
 
 /// `1,234 tokens`, or that the server didn't say.
@@ -824,18 +1028,46 @@ fn apply_skills(
                 .collect();
             let tokens = learn::approx_tokens(&section);
             let _ = tx.send(StreamEvent::SkillsApplied { names, tokens });
-            match history.first_mut() {
-                Some(first) if first["role"] == "system" => {
-                    let prompt = format!("{}\n\n{section}", first["content"].as_str().unwrap_or(""));
-                    first["content"] = Value::String(prompt);
-                }
-                _ => history.insert(0, json!({ "role": "system", "content": section })),
-            }
+            add_to_system(history, &section);
         }
         Ok(_) => {}
         Err(e) => {
             let _ = tx.send(StreamEvent::Log(format!("skill search failed: {e}")));
         }
+    }
+}
+
+/// Append a section to the system message, adding one if there isn't one.
+fn add_to_system(history: &mut Vec<Value>, section: &str) {
+    match history.first_mut() {
+        Some(first) if first["role"] == "system" => {
+            let prompt = format!("{}\n\n{section}", first["content"].as_str().unwrap_or(""));
+            first["content"] = Value::String(prompt);
+        }
+        _ => history.insert(0, json!({ "role": "system", "content": section })),
+    }
+}
+
+/// Add the memories worth this message's prompt space (the context compiler)
+/// and the working memory to the system prompt.
+fn apply_memories(mem: &Mem, message: &str, run: Uuid, history: &mut Vec<Value>, tx: &Sender<StreamEvent>) {
+    mem.working().note_entities(message);
+    let mut sections = Vec::new();
+    match mem.compile(message, run) {
+        Ok(compiled) => {
+            if let Some(section) = compiled.section {
+                let ids = compiled.used.iter().map(|r| r.memory.short_id()).collect();
+                let _ = tx.send(StreamEvent::MemoriesApplied { ids, tokens: compiled.tokens as u64 });
+                sections.push(section);
+            }
+        }
+        Err(e) => {
+            let _ = tx.send(StreamEvent::Log(format!("memory recall failed: {e}")));
+        }
+    }
+    sections.extend(mem.working().render());
+    if !sections.is_empty() {
+        add_to_system(history, &sections.join("\n\n"));
     }
 }
 
@@ -865,6 +1097,7 @@ fn converse(
     model: &str,
     mut history: Vec<Value>,
     tools: Option<&Tools>,
+    run: Uuid,
     tx: &Sender<StreamEvent>,
 ) -> Result<Stats, String> {
     let start = Instant::now();
@@ -900,7 +1133,8 @@ fn converse(
             "tool_calls": round.tool_calls,
         }));
         for call in &round.tool_calls {
-            let content = tools.run(&call.function.name, &call.function.arguments);
+            let ctx = CallContext { run: Some(run), call_id: &call.id };
+            let content = tools.run(&call.function.name, &call.function.arguments, ctx);
             history.push(json!({ "role": "tool", "tool_call_id": call.id, "content": content }));
             let (id, name) = (call.id.clone(), call.function.name.clone());
             tx.send(StreamEvent::ToolResult { id, name, content }).map_err(|e| e.to_string())?;
@@ -1052,14 +1286,11 @@ fn open_memory(
     let Some(path) = config.memory.path() else {
         return (None, Err("memory off: no data directory (set [memory] path)".into()));
     };
-    match runtime.block_on(lyra_memory::MemoryManager::open(&path)) {
+    match runtime.block_on(lyra_memory::MemoryManager::open(&path, config.memory.settings.clone())) {
         Ok(manager) => {
-            let tools = Tools::new(
-                Arc::new(manager),
-                runtime.clone(),
-                config.memory.default_scope.clone(),
-            );
-            (Some(Arc::new(tools)), Ok(context::show(&path)))
+            let shown = context::show(&path);
+            let mem = Mem::new(manager, runtime.clone(), config.embedding.clone(), shown.clone());
+            (Some(Arc::new(Tools::new(Arc::new(mem)))), Ok(shown))
         }
         Err(e) => (None, Err(format!("memory off: {e:#}"))),
     }

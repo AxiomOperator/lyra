@@ -18,12 +18,37 @@ currency = "$"
 # url = "http://localhost:8081/v1"
 # model = "reranker"
 
-# Persistent memory (on by default). The model gets memory_remember / recall /
-# forget / list tools; needs a server with tool calling (llama.cpp: --jinja).
+# Memory (see README): facts, episodes and working memory, with automatic
+# capture, superseding, hybrid recall (keywords + [embedding] vectors) and a
+# context compiler that adds the relevant few memories to each prompt.
 # [memory]
 # enabled = true
-# path = "~/.lyra/memory/memory.db"            # default
-# default_scope = "user"                        # scope when the model doesn't pick one
+# path = "~/.lyra/memory/memory.db"   # default
+# default_scope = "user"
+# allowed_scopes = ["*"]              # e.g. ["user", "agent", "project:*"]
+# capture = "auto"                    # auto | off
+# maintenance = "propose"             # off | propose | auto
+# curate = "manual"                   # manual | daily | weekly
+# inject = true
+#
+# [memory.context]
+# max_tokens = 600
+# max_memories = 8
+# min_score = 0.35
+# min_relevance = 0.45
+#
+# [memory.ranking]
+# semantic = 0.40
+# lexical = 0.20
+# importance = 0.15
+# confidence = 0.10
+# recency = 0.10
+# relationship = 0.05
+#
+# [memory.half_life_days]
+# working = 1
+# episodic = 30
+# semantic = 365
 
 # Self-learning skills (see README): reviews after corrections and multi-step
 # work create or refine skills; outcomes and evidence drive their lifecycle.

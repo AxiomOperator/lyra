@@ -76,13 +76,17 @@ pub struct MemoryConfig {
     pub enabled: bool,
     /// SQLite file; defaults to `~/.lyra/memory/memory.db`. A leading `~/` is expanded.
     pub path: Option<String>,
-    /// Scope for `memory_remember` when the model doesn't give one.
-    pub default_scope: String,
+    /// When to curate the collection on its own: `manual`, `daily` or `weekly`.
+    pub curate: Schedule,
+    /// `default_scope`, `allowed_scopes`, `capture`, `maintenance`, `inject`, the
+    /// `[memory.context]`, `[memory.ranking]` and `[memory.half_life_days]` tables, ...
+    #[serde(flatten)]
+    pub settings: lyra_memory::Settings,
 }
 
 impl Default for MemoryConfig {
     fn default() -> Self {
-        Self { enabled: true, path: None, default_scope: "user".into() }
+        Self { enabled: true, path: None, curate: Schedule::Manual, settings: Default::default() }
     }
 }
 

@@ -76,30 +76,75 @@ which files were loaded. Templates are in `examples/`.
 
 ## Memory
 
-lyra has a persistent notebook (V1): facts in a single SQLite file with FTS5
-keyword search, at `~/.lyra/memory/memory.db` by default. The model gets
-four tools and decides when to use them:
+What lyra knows (facts), what happened (episodes) and what it's working on
+(working memory), built following `docs/memory_system.md` in the `memory/`
+crate (`lyra-memory`). Everything goes through `MemoryManager`: the model
+proposes memories, the manager decides. Storage is one SQLite file,
+`~/.lyra/memory/memory.db` (FTS5 keyword search, vectors in a table).
 
-| Tool | Does |
-|---|---|
-| `memory_remember` | save one fact: `content`, optional `scope`, `tags`, `source` |
-| `memory_recall` | keyword search (words OR-ed, ranked by bm25, stemmed), optional `scope`, `limit` |
-| `memory_forget` | delete by `id` |
-| `memory_list` | most recent first, optional `scope`, `limit` |
+- **Remembering.** The model saves facts with `memory_remember`. After a turn
+  where you shared something that sounds durable ("we use…", "I prefer…", "we
+  moved to…"), lyra also asks the model to review it and capture what it missed.
+  Each memory records its scope, kind, source, the run it came from, importance
+  and confidence (what you say outright is trusted more than what's inferred).
+- **No duplicates, no silent overwrites.** Saying something again reconfirms the
+  existing memory. A changed fact *supersedes* the old one, which is kept and
+  linked; a fixed typo is a new *version*. Nothing is overwritten without history.
+- **Recall.** Before each message the *context compiler* ranks candidate memories
+  by meaning (vectors from the `[embedding]` model), keywords, importance,
+  confidence, recency and relationships, drops near-duplicates and anything that
+  doesn't actually match the message, and adds the best few within a token
+  budget. Replies show `used memories: …`; your reaction (thanks, or a
+  correction) marks them helpful or not, which feeds back into ranking.
+  Without an embedding model, recall uses keywords only.
+- **Working memory.** The model keeps the current goal, plan and scratch values
+  with `working_memory`; identifiers you mention are tracked too. It's shown in
+  the prompt and the panel, and never saved.
+- **Episodes.** Multi-step tasks (and `/memory episode`) are summarized as
+  episodes: what happened and how it ended, linked to the run.
+- **Upkeep.** Expired memories are archived, old ones fade in ranking
+  (half-lives per kind), and `/memory curate` (or `curate = "daily"`/`"weekly"`)
+  proposes consolidating duplicates and flags contradictions.
+- **Safety.** Passwords, tokens, keys and other credentials are refused before
+  anything is stored. `allowed_scopes` limits which scopes lyra may use.
 
-Scopes keep memories apart: `user`, `agent`, `project:<name>`, ... Recall and list
-search all scopes unless one is given. Tool calls and their results show as dim
-`→` / `↳` lines in the chat.
+Model tools: `memory_remember`, `memory_recall`, `memory_list`, `memory_correct`,
+`memory_supersede`, `memory_archive`, `memory_forget`, `working_memory`.
 
-The store lives in the `memory/` crate (`lyra-memory`): `MemoryManager` over a
-`MemoryStore` trait, with `SqliteStore` as the one backend. lyra only talks to
-`MemoryManager`, so the backend can be swapped later.
+Commands: `/memory` (stats and what's waiting for approval), `/memory search <q>`
+(with each ranking signal), `/memory list [scope]`, `/memory inspect <id>`
+(provenance, links, versions, history), `/memory correct <id> <text>`,
+`/memory forget|archive|restore|purge <id>`, `/memory approve|reject <id>`,
+`/memory working [clear]`, `/memory curate`, `/memory episode`.
 
 ```toml
 [memory]
-enabled = true            # needs a server with tool calling
-path = "~/notes/memory.db"
+enabled = true
 default_scope = "user"
+allowed_scopes = ["*"]       # e.g. ["user", "agent", "project:*"]
+capture = "auto"             # auto | off
+maintenance = "propose"      # off | propose | auto
+curate = "manual"            # manual | daily | weekly
+inject = true                # add relevant memories to each prompt
+
+[memory.context]             # the context compiler
+max_tokens = 600
+max_memories = 8
+min_score = 0.35
+min_relevance = 0.45
+
+[memory.ranking]
+semantic = 0.40
+lexical = 0.20
+importance = 0.15
+confidence = 0.10
+recency = 0.10
+relationship = 0.05
+
+[memory.half_life_days]
+working = 1
+episodic = 30
+semantic = 365
 ```
 
 ## Self-learning (skills)
@@ -217,7 +262,7 @@ The chat sits on the left; on terminals at least 100 columns wide, panels on the
 
 - **Session**: what the assistant is doing right now (idle / waiting / thinking / streaming / running a tool, with a timer), model and server, replies, last reply's TTFT and speed, tokens, cache hit rate and cost.
 - **Agent**: system prompt size, loaded SOUL/USER/AGENT files, tools, and embedding/reranker health.
-- **Memory**: total memories, counts per scope and the most recent ones; updates as the model uses its memory tools.
+- **Memory**: active memories by kind, vector coverage, what needs approval (proposals, contradictions, duplicates, expired), working memory (goal, plan, notes), how many memories the last reply used, and the most recent memories (`?` marks unsure ones).
 - **Skills**: learning mode, average reliability, what needs review (proposals, conflicts, duplicates, failing or stale skills), the last reply's skills, and each active skill's reliability and use count.
 - **Activity**: a timestamped log of requests, first tokens, tool calls and results, reloads and errors.
 

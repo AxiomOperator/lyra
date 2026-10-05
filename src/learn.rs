@@ -361,7 +361,7 @@ pub fn transcript(history: &[(&str, &str)], max_messages: usize) -> String {
 }
 
 /// One non-streaming chat completion; returns the reply text and its usage.
-fn complete(
+pub(crate) fn complete(
     url: &str,
     model: &str,
     system: &str,

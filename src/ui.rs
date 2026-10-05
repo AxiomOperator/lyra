@@ -80,6 +80,10 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         if let Some(stats) = &m.stats {
             lines.push(Line::styled(reply_stats(stats, &app.pricing), dim));
         }
+        if !m.memories.is_empty() {
+            let text = format!("used memories: {}", m.memories.join(" "));
+            lines.push(Line::styled(text, Style::default().fg(Color::Cyan)));
+        }
         if !m.skills.is_empty() {
             let text = format!("used skills: {}", m.skills.join(", "));
             lines.push(Line::styled(text, Style::default().fg(Color::Magenta)));
@@ -185,25 +189,24 @@ fn agent_panel(app: &App, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let home = crate::config::home().map_or("—".into(), |h| crate::context::show(&h));
     lines.push(Line::from(vec![label("home"), Span::raw(truncate_start(&home, width.saturating_sub(8)))]));
-    // Everything sent ahead of the conversation: system prompt, tool definitions
-    // and the skills added for the latest message.
+    // Everything sent ahead of the conversation: system prompt, tool definitions,
+    // and the skills and memories added for the latest message.
     let system = app.system_prompt.as_deref().map_or(0, crate::learn::approx_tokens);
-    let total = system + app.tools_tokens + app.applied_skills_tokens;
+    let total = system + app.tools_tokens + app.applied_skills_tokens + app.applied_memories_tokens;
     lines.push(Line::from(vec![label("prompt"), Span::raw(format!("~{} tokens/request", thousands(total)))]));
-    let parts = format!(
-        "system {} · tools {} · skills {}",
-        thousands(system),
-        thousands(app.tools_tokens),
-        thousands(app.applied_skills_tokens)
-    );
-    lines.push(Line::from(vec![label(""), Span::styled(truncate(&parts, width.saturating_sub(8)), dim)]));
+    for parts in [
+        format!("system {} · tools {}", thousands(system), thousands(app.tools_tokens)),
+        format!("skills {} · memories {}", thousands(app.applied_skills_tokens), thousands(app.applied_memories_tokens)),
+    ] {
+        lines.push(Line::from(vec![label(""), Span::styled(truncate(&parts, width.saturating_sub(8)), dim)]));
+    }
     if app.context_files.is_empty() {
         lines.push(Line::from(vec![label("context"), "no SOUL/USER/AGENT.md".dark_gray()]));
     }
     for (name, path) in &app.context_files {
         lines.push(Line::from(vec![label(name), Span::raw(truncate_start(path, width.saturating_sub(8)))]));
     }
-    let tools = if app.tools.is_some() { "memory ×4".into() } else { "none".dark_gray() };
+    let tools = if app.tool_count > 0 { format!("memory ×{}", app.tool_count).into() } else { "none".dark_gray() };
     lines.push(Line::from(vec![label("tools"), tools]));
     match &app.model_status {
         None => lines.push(Line::from(vec![label("models"), "checking…".dark_gray()])),
@@ -233,24 +236,63 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect, width: usize) {
         (Ok(off), None) if app.tools.is_none() => lines.push(Line::styled(truncate(off, width), dim)),
         (Ok(_), None) => lines.push(Line::styled("loading…", dim)),
         (Ok(_), Some(Err(e))) => lines.push(Line::from(truncate(e, width).red())),
-        (Ok(path), Some(Ok(snapshot))) => {
-            title = format!(" Memory · {} ", thousands(snapshot.total));
+        (Ok(path), Some(Ok(snap))) => {
+            let s = &snap.stats;
+            let busy = match (app.capturing, app.memory_curating) {
+                (true, _) => " · capturing…",
+                (_, true) => " · curating…",
+                _ => "",
+            };
+            title = format!(" Memory · {} active{busy} ", thousands(s.active as u64));
             lines.push(Line::styled(truncate_start(path, width), dim));
-            if snapshot.total == 0 {
-                lines.push(Line::styled("empty — ask lyra to remember something", dim));
-            } else {
-                let scopes: Vec<String> =
-                    snapshot.scopes.iter().map(|(s, n)| format!("{s} {n}")).collect();
-                lines.push(Line::from(truncate(&scopes.join(" · "), width).cyan()));
-                for m in &snapshot.recent {
-                    let scope = format!("[{}] ", m.scope);
-                    let rest = width.saturating_sub(scope.chars().count() + 2);
-                    lines.push(Line::from(vec![
-                        "• ".dark_gray(),
-                        Span::styled(scope, dim),
-                        Span::raw(truncate(&m.content, rest)),
-                    ]));
+
+            let mut summary: Vec<String> = s.by_kind.iter().map(|(k, n)| format!("{k} {n}")).collect();
+            summary.push(if snap.vectors { format!("vectors {}/{}", s.embedded, s.active) } else { "keywords only".into() });
+            lines.push(Line::styled(truncate(&summary.join(" · "), width), dim));
+
+            let mut attention = Vec::new();
+            for (n, what) in [
+                (snap.proposals.len(), "to approve"),
+                (s.contradictions, "contradiction"),
+                (s.duplicate_candidates, "duplicate pair"),
+                (s.expired, "expired"),
+            ] {
+                if n > 0 {
+                    let plural = if n > 1 && matches!(what, "contradiction" | "duplicate pair") { "s" } else { "" };
+                    attention.push(format!("{n} {what}{plural}"));
                 }
+            }
+            if !attention.is_empty() {
+                lines.push(Line::from(truncate(&format!("{} (/memory)", attention.join(" · ")), width).yellow()));
+            }
+
+            // Working memory: what the current task is about.
+            let w = &snap.working;
+            if let Some(goal) = &w.goal {
+                lines.push(Line::from(vec![label("goal"), Span::raw(truncate(goal, width.saturating_sub(8)))]).cyan());
+            }
+            if !w.plan.is_empty() || !w.values.is_empty() {
+                let text = format!("{} plan steps · {} notes", w.plan.len(), w.values.len());
+                lines.push(Line::from(vec![label("working"), Span::raw(text)]).cyan());
+            }
+            if app.totals.replies > 0 {
+                let n = app.applied_memories.len();
+                let text = format!("last reply used {n} memor{}", if n == 1 { "y" } else { "ies" });
+                lines.push(Line::from(truncate(&text, width).cyan()));
+            }
+
+            if s.active == 0 {
+                lines.push(Line::styled("empty — tell lyra something worth remembering", dim));
+            }
+            for m in &snap.recent {
+                let scope = format!("[{}] ", m.scope);
+                let rest = width.saturating_sub(scope.chars().count() + 2);
+                let unsure = m.confidence < 0.7;
+                lines.push(Line::from(vec![
+                    if unsure { "? ".yellow() } else { "• ".dark_gray() },
+                    Span::styled(scope, dim),
+                    Span::raw(truncate(&m.content, rest)),
+                ]));
             }
         }
     }
@@ -356,6 +398,7 @@ fn draw_activity(f: &mut Frame, app: &App, area: Rect, width: usize) {
                 Level::Info => Style::default(),
                 Level::Tool => Style::default().fg(Color::Yellow),
                 Level::Learn => Style::default().fg(Color::Magenta),
+                Level::Memory => Style::default().fg(Color::Cyan),
                 Level::Error => Style::default().fg(Color::Red),
             };
             Line::from(vec![

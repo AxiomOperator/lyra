@@ -1,62 +1,33 @@
-//! Persistent memory for the agent (V1): a notebook of facts in SQLite with
-//! FTS5 keyword search, behind four operations: remember, recall, forget, list.
+//! The agent's memory: what it knows (facts), what happened (episodes) and
+//! what it's working on (working memory). Procedures are skills, not memories.
 //!
-//! The agent talks to [`MemoryManager`] only; [`SqliteStore`] is one
-//! [`MemoryStore`] behind it and can be swapped without touching the agent.
+//! - [`MemoryManager`] is the only way in. The model proposes memories (via
+//!   tools and the [`capture`] review); the manager owns policy: [`safety`],
+//!   scopes, deduplication, superseding, ranking ([`rank`]), the context
+//!   compiler and maintenance ([`curator`]).
+//! - [`SqliteStore`] (SQLite + FTS5, vectors in a table) is the one
+//!   [`MemoryStore`] behind it; it can be replaced without touching the agent.
+//! - [`WorkingMemory`] is short-term state that's never persisted.
 
+pub mod capture;
+pub mod curator;
+mod manager;
 mod memory;
+pub mod rank;
+pub mod safety;
 mod sqlite;
-mod store;
+pub mod store;
+pub mod text;
+mod working;
 
-use std::path::Path;
-
-use anyhow::Result;
-
-pub use memory::Memory;
-pub use uuid::Uuid;
+pub use manager::{
+    Budget, CaptureMode, Compiled, Inspection, MaintenanceMode, MemoryManager, QueryVector, Recalled, Remembered,
+    Report, Settings, approx_tokens,
+};
+pub use memory::{
+    Episode, Memory, MemoryKind, MemorySource, MemoryStatus, NewMemory, Provenance, Relationship, Usage,
+};
 pub use sqlite::SqliteStore;
-pub use store::{ALL_SCOPES, MemoryStore};
-
-pub struct MemoryManager<S: MemoryStore = SqliteStore> {
-    store: S,
-}
-
-impl MemoryManager<SqliteStore> {
-    /// Open the SQLite-backed memory at `path`, creating it if needed.
-    pub async fn open(path: &Path) -> Result<Self> {
-        Ok(Self::new(SqliteStore::open(path).await?))
-    }
-}
-
-impl<S: MemoryStore> MemoryManager<S> {
-    pub fn new(store: S) -> Self {
-        Self { store }
-    }
-
-    pub async fn remember(
-        &self,
-        scope: &str,
-        content: &str,
-        tags: &[String],
-        source: Option<&str>,
-    ) -> Result<Memory> {
-        self.store.remember(scope, content, tags, source).await
-    }
-
-    pub async fn recall(&self, scope: &str, query: &str, limit: usize) -> Result<Vec<Memory>> {
-        self.store.recall(scope, query, limit).await
-    }
-
-    pub async fn forget(&self, id: Uuid) -> Result<()> {
-        self.store.forget(id).await
-    }
-
-    pub async fn list(&self, scope: &str, limit: usize) -> Result<Vec<Memory>> {
-        self.store.list(scope, limit).await
-    }
-
-    /// Number of memories per scope, largest first.
-    pub async fn scopes(&self) -> Result<Vec<(String, u64)>> {
-        self.store.scopes().await
-    }
-}
+pub use store::{ALL_SCOPES, Filter, MemoryStore};
+pub use uuid::Uuid;
+pub use working::WorkingMemory;
