@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 
 use config::Config;
 use context::Context;
-use learn::{Learning, Review, SkillsSnapshot};
+use learn::{Learning, Outcome, Review, SkillsSnapshot};
 use lyra_learning::{Mode, SkillStatus, evaluator};
 use retrieval::Endpoint;
 use stats::{Pricing, Stats, Totals, Usage, secs};
@@ -44,6 +44,9 @@ struct Message {
     /// Timing and token counts for an assistant reply.
     #[serde(skip)]
     stats: Option<Stats>,
+    /// Learned skills that were in the prompt for this reply.
+    #[serde(skip)]
+    skills: Vec<String>,
 }
 
 impl Message {
@@ -55,6 +58,7 @@ impl Message {
             tool_call_id: None,
             reasoning: String::new(),
             stats: None,
+            skills: Vec::new(),
         }
     }
 
@@ -142,7 +146,10 @@ enum StreamEvent {
     /// Fresh numbers for the memory panel.
     Memory(Result<MemorySnapshot, String>),
     /// A finished learning review.
-    Reviewed(Result<Review, String>),
+    Reviewed(Review),
+    /// Skills added to the system prompt for the message being answered,
+    /// with their approximate size in tokens.
+    SkillsApplied { names: Vec<String>, tokens: u64 },
     /// Fresh contents for the skills panel.
     Skills(Result<SkillsSnapshot, String>),
 }
@@ -222,6 +229,12 @@ struct App {
     skills: Option<Result<SkillsSnapshot, String>>,
     /// A learning review is running in the background.
     reviewing: bool,
+    /// Skills applied to the message being answered (or last answered).
+    applied_skills: Vec<String>,
+    /// Their approximate size in the prompt.
+    applied_skills_tokens: u64,
+    /// Approximate size of the tool definitions sent with every request.
+    tools_tokens: u64,
     /// Top line of the chat view when scrolled up; `None` follows the bottom.
     scroll: Option<u16>,
     /// Chat view size from the last frame, used for scroll bounds.
@@ -234,6 +247,8 @@ struct App {
 impl App {
     fn new(config: Config, context: Context, services: Services) -> Self {
         let Services { tools, memory_status, learning, learning_status } = services;
+        let tools_tokens =
+            tools.as_ref().map_or(0, |t| learn::approx_tokens(&t.definitions().to_string()));
         let (tx, rx) = mpsc::channel();
         Self {
             base_url: config.url.clone(),
@@ -261,6 +276,9 @@ impl App {
             learning_status,
             skills: None,
             reviewing: false,
+            applied_skills: Vec::new(),
+            applied_skills_tokens: 0,
+            tools_tokens,
             scroll: None,
             max_scroll: 0,
             page: 1,
@@ -282,6 +300,8 @@ impl App {
             return;
         }
         self.messages.push(Message::new("user", content.clone()));
+        self.applied_skills.clear();
+        self.applied_skills_tokens = 0;
         self.waiting = true;
         self.started = Some(Instant::now());
         self.set_phase(Phase::Waiting);
@@ -346,7 +366,10 @@ impl App {
                     format!("done · {} out tokens · {}", stats.output, secs(stats.elapsed)),
                 );
                 self.totals.add(&stats);
-                self.reply().stats = Some(stats);
+                let skills = self.applied_skills.clone();
+                let reply = self.reply();
+                reply.stats = Some(stats);
+                reply.skills = skills;
                 self.review(false);
             }
             StreamEvent::Error(e) => {
@@ -366,12 +389,21 @@ impl App {
                 }
                 self.model_status = Some(results);
             }
-            StreamEvent::Reviewed(result) => {
+            StreamEvent::SkillsApplied { names, tokens } => {
+                self.log(Level::Learn, format!("applying skills: {}", names.join(", ")));
+                self.applied_skills = names;
+                self.applied_skills_tokens = tokens;
+            }
+            StreamEvent::Reviewed(Review { outcome, usage }) => {
                 self.reviewing = false;
-                match result {
-                    Ok(Review::Learned { skill, tokens }) => {
+                self.totals.add_review(usage.as_ref());
+                let tokens = usage.map_or("usage unknown".into(), |u| {
+                    format!("{} tokens", u.prompt_tokens + u.completion_tokens)
+                });
+                match outcome {
+                    Ok(Outcome::Learned(skill)) => {
                         let id = learn::short(&skill);
-                        self.log(Level::Learn, format!("learned {} ({}) · {tokens} tokens", skill.name, skill.status));
+                        self.log(Level::Learn, format!("learned {} ({}) · {tokens}", skill.name, skill.status));
                         let next = if skill.status == SkillStatus::Proposed {
                             format!("\n/approve {id} to start using it · /reject {id} to discard it")
                         } else {
@@ -384,10 +416,10 @@ impl App {
                         self.messages.push(Message::new("info", text));
                         self.refresh_skills();
                     }
-                    Ok(Review::Nothing { why, tokens }) => {
-                        self.log(Level::Learn, format!("no lesson: {why} · {tokens} tokens"));
+                    Ok(Outcome::Nothing(why)) => {
+                        self.log(Level::Learn, format!("no lesson: {why} · {tokens}"));
                     }
-                    Err(e) => self.log(Level::Error, format!("learning review failed: {e}")),
+                    Err(e) => self.log(Level::Error, format!("learning review failed: {e} · {tokens}")),
                 }
             }
             StreamEvent::Skills(snapshot) => {
@@ -617,9 +649,10 @@ const COMMANDS: &str = "\
 fn apply_skills(learning: &Learning, message: &str, history: &mut Vec<Value>, tx: &Sender<StreamEvent>) {
     match learning.relevant(message) {
         Ok(skills) if !skills.is_empty() => {
-            let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-            let _ = tx.send(StreamEvent::Log(format!("applying skills: {}", names.join(", "))));
             let section = learn::prompt_section(&skills);
+            let names = skills.into_iter().map(|s| s.name).collect();
+            let tokens = learn::approx_tokens(&section);
+            let _ = tx.send(StreamEvent::SkillsApplied { names, tokens });
             match history.first_mut() {
                 Some(first) if first["role"] == "system" => {
                     let prompt = format!("{}\n\n{section}", first["content"].as_str().unwrap_or(""));

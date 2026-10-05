@@ -80,6 +80,10 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         if let Some(stats) = &m.stats {
             lines.push(Line::styled(reply_stats(stats, &app.pricing), dim));
         }
+        if !m.skills.is_empty() {
+            let text = format!("used skills: {}", m.skills.join(", "));
+            lines.push(Line::styled(text, Style::default().fg(Color::Magenta)));
+        }
         lines.push(Line::default());
     }
     // Show "thinking..." until the first token arrives, and while waiting on a tool.
@@ -164,13 +168,33 @@ fn session_panel(app: &App, width: usize) -> Vec<Line<'static>> {
         label("cost"),
         Span::raw(format!("{approx}{}", p.format(p.cost(t.input, t.cached, t.output)))),
     ]));
+    // Learning reviews are extra requests; their share of the totals above.
+    if t.reviews > 0 {
+        let tokens = thousands(t.review_input + t.review_output);
+        let cost = p.format(p.cost(t.review_input, t.review_cached, t.review_output));
+        lines.push(Line::from(vec![
+            label("reviews"),
+            Span::raw(format!("{} · {tokens} tok · {cost}", t.reviews)),
+        ]));
+    }
     lines
 }
 
 fn agent_panel(app: &App, width: usize) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(Color::DarkGray);
     let mut lines = Vec::new();
-    let prompt = app.system_prompt.as_ref().map_or(0, |p| p.len() / 4);
-    lines.push(Line::from(vec![label("prompt"), Span::raw(format!("~{} tokens", thousands(prompt as u64)))]));
+    // Everything sent ahead of the conversation: system prompt, tool definitions
+    // and the skills added for the latest message.
+    let system = app.system_prompt.as_deref().map_or(0, crate::learn::approx_tokens);
+    let total = system + app.tools_tokens + app.applied_skills_tokens;
+    lines.push(Line::from(vec![label("prompt"), Span::raw(format!("~{} tokens/request", thousands(total)))]));
+    let parts = format!(
+        "system {} · tools {} · skills {}",
+        thousands(system),
+        thousands(app.tools_tokens),
+        thousands(app.applied_skills_tokens)
+    );
+    lines.push(Line::from(vec![label(""), Span::styled(truncate(&parts, width.saturating_sub(8)), dim)]));
     if app.context_files.is_empty() {
         lines.push(Line::from(vec![label("context"), "no SOUL/USER/AGENT.md".dark_gray()]));
     }
@@ -254,6 +278,14 @@ fn skills_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
         summary += &format!(" · {} rejected", snapshot.rejected);
     }
     lines.push(Line::styled(truncate(&summary, width), dim));
+    if app.totals.replies > 0 {
+        let used = if app.applied_skills.is_empty() {
+            "last reply used no skills".to_string()
+        } else {
+            format!("last reply used {}", app.applied_skills.join(", "))
+        };
+        lines.push(Line::from(truncate(&used, width).magenta()));
+    }
     for skill in &snapshot.proposed {
         let text = format!("{} {}", crate::learn::short(skill), skill.name);
         lines.push(Line::from(vec!["? ".yellow(), Span::raw(truncate(&text, width.saturating_sub(2)))]));

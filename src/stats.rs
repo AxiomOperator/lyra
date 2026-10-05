@@ -95,6 +95,12 @@ pub struct Totals {
     pub output: u64,
     /// At least one reply had no server-reported usage.
     pub estimated: bool,
+    /// Learning reviews: their tokens are included in the totals above, and
+    /// tracked here too so their share can be shown.
+    pub reviews: u64,
+    pub review_input: u64,
+    pub review_cached: u64,
+    pub review_output: u64,
     ttft_sum: Duration,
     ttft_count: u32,
 }
@@ -109,6 +115,19 @@ impl Totals {
         if let Some(ttft) = stats.ttft {
             self.ttft_sum += ttft;
             self.ttft_count += 1;
+        }
+    }
+
+    /// Count a learning review's request (not a reply, so no TTFT or reply count).
+    pub fn add_review(&mut self, usage: Option<&Usage>) {
+        self.reviews += 1;
+        if let Some(u) = usage {
+            self.input += u.prompt_tokens;
+            self.cached += u.cached();
+            self.output += u.completion_tokens;
+            self.review_input += u.prompt_tokens;
+            self.review_cached += u.cached();
+            self.review_output += u.completion_tokens;
         }
     }
 
@@ -183,6 +202,21 @@ mod tests {
         let without: Usage =
             serde_json::from_str(r#"{"prompt_tokens":5,"completion_tokens":1}"#).unwrap();
         assert_eq!(without.cached(), 0);
+    }
+
+    #[test]
+    fn reviews_count_toward_totals_but_not_replies() {
+        let mut totals = Totals::default();
+        let usage: Usage = serde_json::from_str(
+            r#"{"prompt_tokens":900,"completion_tokens":100,"prompt_tokens_details":{"cached_tokens":600}}"#,
+        )
+        .unwrap();
+        totals.add_review(Some(&usage));
+        totals.add_review(None);
+        assert_eq!((totals.replies, totals.reviews), (0, 2));
+        assert_eq!((totals.input, totals.cached, totals.output), (900, 600, 100));
+        assert_eq!((totals.review_input, totals.review_output), (900, 100));
+        assert!(totals.avg_ttft().is_none());
     }
 
     #[test]

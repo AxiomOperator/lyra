@@ -10,6 +10,8 @@ use lyra_learning::{Learned, LearningManager, Mode, Skill, SkillStatus};
 use serde_json::{Value, json};
 use tokio::runtime::Handle;
 
+use crate::stats::Usage;
+
 /// What the skills panel shows.
 pub struct SkillsSnapshot {
     pub mode: Mode,
@@ -45,32 +47,34 @@ impl Learning {
     }
 
     /// Review the conversation for a reusable lesson with the chat model, and
-    /// save one if found. Returns a line for the activity log.
-    pub fn review(
-        &self,
-        url: &str,
-        model: &str,
-        trigger: &str,
-        transcript: &str,
-    ) -> Result<Review, String> {
-        let existing: Vec<String> = self.all()?.into_iter().map(|s| s.name).collect();
+    /// save one if found. The usage is kept even if the reply can't be used.
+    pub fn review(&self, url: &str, model: &str, trigger: &str, transcript: &str) -> Review {
+        let existing = match self.all() {
+            Ok(all) => all.into_iter().map(|s| s.name).collect::<Vec<_>>(),
+            Err(e) => return Review { outcome: Err(e), usage: None },
+        };
         let user = evaluator::prompt(trigger, transcript, &existing);
-        let (reply, tokens) = complete(url, model, evaluator::SYSTEM_PROMPT, &user)?;
-        let verdict = evaluator::parse(&reply)?;
-        let candidate = match verdict.into_candidate(self.min_confidence) {
+        match complete(url, model, evaluator::SYSTEM_PROMPT, &user) {
+            Ok((reply, usage)) => Review { outcome: self.judge(&reply), usage },
+            Err(e) => Review { outcome: Err(e), usage: None },
+        }
+    }
+
+    /// Validate the reviewer's reply and save the skill it describes, if any.
+    fn judge(&self, reply: &str) -> Result<Outcome, String> {
+        let candidate = match evaluator::parse(reply)?.into_candidate(self.min_confidence) {
             Ok(c) => c,
-            Err(why) => return Ok(Review::Nothing { why, tokens }),
+            Err(why) => return Ok(Outcome::Nothing(why)),
         };
         let learned = self
             .runtime
             .block_on(self.manager.learn(candidate, "conversation", self.mode))
             .map_err(|e| e.to_string())?;
         Ok(match learned {
-            Learned::Saved(skill) => Review::Learned { skill, tokens },
-            Learned::Duplicate(skill) => Review::Nothing {
-                why: format!("{} already exists ({})", skill.name, skill.status),
-                tokens,
-            },
+            Learned::Saved(skill) => Outcome::Learned(skill),
+            Learned::Duplicate(skill) => {
+                Outcome::Nothing(format!("{} already exists ({})", skill.name, skill.status))
+            }
         })
     }
 
@@ -152,14 +156,25 @@ impl Learning {
     }
 }
 
-pub enum Review {
-    Learned { skill: Skill, tokens: u64 },
-    Nothing { why: String, tokens: u64 },
+/// A finished review: what came of it, and the tokens the request used.
+pub struct Review {
+    pub outcome: Result<Outcome, String>,
+    pub usage: Option<Usage>,
+}
+
+pub enum Outcome {
+    Learned(Skill),
+    Nothing(String),
 }
 
 /// Short id shown in the UI and accepted by the commands.
 pub fn short(skill: &Skill) -> String {
     skill.id.to_string()[..8].to_string()
+}
+
+/// Rough token count (about 4 characters per token), for display.
+pub fn approx_tokens(text: &str) -> u64 {
+    text.len() as u64 / 4
 }
 
 /// System prompt section listing the skills that apply to this message.
@@ -201,8 +216,13 @@ pub fn transcript(history: &[(&str, &str)], max_messages: usize) -> String {
         .join("\n\n")
 }
 
-/// One non-streaming chat completion; returns the reply text and tokens used.
-fn complete(url: &str, model: &str, system: &str, user: &str) -> Result<(String, u64), String> {
+/// One non-streaming chat completion; returns the reply text and its usage.
+fn complete(
+    url: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+) -> Result<(String, Option<Usage>), String> {
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(600))
@@ -225,7 +245,7 @@ fn complete(url: &str, model: &str, system: &str, user: &str) -> Result<(String,
         .as_str()
         .ok_or("reviewer returned no content")?
         .to_string();
-    Ok((text, reply["usage"]["total_tokens"].as_u64().unwrap_or(0)))
+    Ok((text, serde_json::from_value(reply["usage"].clone()).ok()))
 }
 
 #[cfg(test)]
