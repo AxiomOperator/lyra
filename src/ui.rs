@@ -42,6 +42,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     let dim = Style::default().fg(Color::DarkGray);
     let mut lines: Vec<Line> = Vec::new();
+    // Replies are Markdown: render each once per change, not every frame.
+    for m in app.messages.iter_mut().filter(|m| m.role == "assistant") {
+        if m.rendered.as_ref().is_none_or(|(len, _)| *len != m.content.len()) {
+            m.rendered = Some((m.content.len(), crate::markdown::render(&m.content, Style::default())));
+        }
+    }
     for m in &app.messages {
         if m.role == "tool" {
             // Tool results: one dim line, under the call that produced them.
@@ -71,8 +77,13 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
                 lines.push(Line::default());
             }
         }
-        let body = if m.role == "info" { dim } else { Style::default() };
-        lines.extend(m.content.lines().map(|l| Line::styled(l.to_string(), body)));
+        match &m.rendered {
+            Some((_, rendered)) if m.role == "assistant" => lines.extend(rendered.iter().cloned()),
+            _ => {
+                let body = if m.role == "info" { dim } else { Style::default() };
+                lines.extend(m.content.lines().map(|l| Line::styled(l.to_string(), body)));
+            }
+        }
         for call in &m.tool_calls {
             let text = format!("→ {} {}", call.function.name, truncate(&call.function.arguments, 160));
             lines.push(Line::styled(text, dim));

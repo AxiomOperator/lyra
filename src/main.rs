@@ -1,6 +1,7 @@
 mod config;
 mod context;
 mod evolve;
+mod markdown;
 mod learn;
 mod mem;
 mod plan;
@@ -57,6 +58,10 @@ struct Message {
     /// Learned skills that were in the prompt for this reply.
     #[serde(skip)]
     skills: Vec<String>,
+    /// The content rendered as Markdown, and the content length it was
+    /// rendered from (re-rendered when a streaming reply grows).
+    #[serde(skip)]
+    rendered: Option<(usize, Vec<ratatui::text::Line<'static>>)>,
 }
 
 impl Message {
@@ -70,6 +75,7 @@ impl Message {
             stats: None,
             memories: Vec::new(),
             skills: Vec::new(),
+            rendered: None,
         }
     }
 

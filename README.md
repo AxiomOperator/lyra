@@ -515,7 +515,10 @@ Keys: type, `Enter` to send, `↑`/`↓`/`PgUp`/`PgDn` to scroll history, `Ctrl-
 
 ## Layout
 
-The chat sits on the left; on terminals at least 100 columns wide, panels on the right show:
+The chat sits on the left. Replies are rendered as Markdown: headings,
+bold/italic/strikethrough, inline code and fenced code blocks (with their
+language), nested and numbered lists, task lists, quotes, links (with their
+address), rules and aligned tables, also while a reply is still streaming; on terminals at least 100 columns wide, panels on the right show:
 
 - **Session**: what the assistant is doing right now (idle / waiting / thinking / streaming / running a tool, with a timer), model and server, replies, last reply's TTFT and speed, tokens, cache hit rate and cost.
 - **Agent**: system prompt size, loaded SOUL/USER/AGENT files, tools, and embedding/reranker health.

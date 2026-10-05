@@ -14,6 +14,7 @@ lyra-evolution = { version = "0.1.0", path = "evolution" }
 lyra-execution = { version = "0.1.0", path = "execution" }
 lyra-learning = { version = "0.1.0", path = "learning" }
 lyra-memory = { version = "0.1.0", path = "memory" }
+pulldown-cmark = { version = "0.13", default-features = false }
 ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json"] }
 serde = { version = "1.0.229", features = ["derive"] }
