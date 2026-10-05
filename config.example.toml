@@ -136,6 +136,12 @@ currency = "$"
 # plan_runs = 2
 # skill_min_uses = 3
 # skill_reliability = 0.4
+# capability_min_uses = 5
+# capability_success = 0.6
+# capability_slow_ms = 15000
+# goal_blocks = 3
+# agent_min_delegations = 4
+# agent_trouble_share = 0.4
 #
 # [evolution.fitness]       # benchmark weights
 # success = 0.4
@@ -203,18 +209,18 @@ currency = "$"
 # cost = 0.05
 
 # Specialist subagents (~/.lyra/agents/<name>.toml). /agent new creates one.
-[agents]
-enabled = true
-auto_delegate = true        # hand matching requests over without being asked
-max_depth = 2               # main → agent → agent, no further
-show_handled_by = true      # "handled with: Writer" under replies
-
-[agents.routing]
-rule_threshold = 0.75
-semantic_threshold = 0.85
-semantic_floor = 0.5
-model_fallback = true       # ask the model when routing is unsure
-
-[agents.budget]
-max_model_calls = 6         # per delegation
-max_tool_calls = 12
+# [agents]
+# enabled = true
+# auto_delegate = true        # hand matching requests over without being asked
+# max_depth = 2               # main → agent → agent, no further
+# show_handled_by = true      # "handled with: Writer" under replies
+#
+# [agents.routing]
+# rule_threshold = 0.75
+# semantic_threshold = 0.85
+# semantic_floor = 0.5
+# model_fallback = true       # ask the model when routing is unsure
+#
+# [agents.budget]
+# max_model_calls = 6         # per delegation
+# max_tool_calls = 12
