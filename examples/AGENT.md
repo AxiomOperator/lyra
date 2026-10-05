@@ -1,6 +1,6 @@
 # Agent
 
-Operating rules. A global copy goes in ~/.config/lyra/AGENT.md; put project-specific
+Operating rules. A global copy goes in ~/.lyra/config/AGENT.md; put project-specific
 ones in a project directory. All AGENT.md files from the global one down to the
 directory lyra is started in are combined, most specific last.
 

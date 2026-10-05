@@ -1,4 +1,4 @@
-# Copy to ~/.config/lyra/config.toml
+# Copy to ~/.lyra/config/config.toml
 url = "http://localhost:11434/v1"   # any OpenAI-compatible endpoint
 model = "llama3.2"
 
@@ -22,7 +22,7 @@ currency = "$"
 # forget / list tools; needs a server with tool calling (llama.cpp: --jinja).
 # [memory]
 # enabled = true
-# path = "~/.local/share/lyra/data/memory.db"   # default: $XDG_DATA_HOME/lyra/data/memory.db
+# path = "~/.lyra/memory/memory.db"            # default
 # default_scope = "user"                        # scope when the model doesn't pick one
 
 # Self-learning: after a correction or a multi-step success, lyra asks the model
@@ -30,6 +30,6 @@ currency = "$"
 # match a message are added to the system prompt.
 # [learning]
 # mode = "propose"          # off | propose (approve with /approve) | auto
-# path = "~/.local/share/lyra/data/skills.db"
+# path = "~/.lyra/skills/skills.db"     # default
 # min_confidence = 0.6      # drop lessons the reviewer is less sure of
 # max_skills = 3            # skills added to the prompt per message

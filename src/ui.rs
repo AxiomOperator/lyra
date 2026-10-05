@@ -183,6 +183,8 @@ fn session_panel(app: &App, width: usize) -> Vec<Line<'static>> {
 fn agent_panel(app: &App, width: usize) -> Vec<Line<'static>> {
     let dim = Style::default().fg(Color::DarkGray);
     let mut lines = Vec::new();
+    let home = crate::config::home().map_or("—".into(), |h| crate::context::show(&h));
+    lines.push(Line::from(vec![label("home"), Span::raw(truncate_start(&home, width.saturating_sub(8)))]));
     // Everything sent ahead of the conversation: system prompt, tool definitions
     // and the skills added for the latest message.
     let system = app.system_prompt.as_deref().map_or(0, crate::learn::approx_tokens);

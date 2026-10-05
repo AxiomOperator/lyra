@@ -1,6 +1,6 @@
 # User
 
-Who you are and how you want to be helped. Copy to ~/.config/lyra/USER.md.
+Who you are and how you want to be helped. Copy to ~/.lyra/config/USER.md.
 
 ## About me
 - Name:

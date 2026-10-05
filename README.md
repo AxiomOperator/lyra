@@ -4,9 +4,24 @@ A dead simple terminal chat client for a local LLM.
 
 Talks to any OpenAI-compatible `/chat/completions` endpoint (Ollama, llama.cpp server, LM Studio, vLLM, ...).
 
+## Files
+
+Everything lyra keeps lives in one folder, `~/.lyra` (set `LYRA_HOME` to use another):
+
+```text
+~/.lyra/
+├── config/   config.toml, SOUL.md, USER.md, AGENT.md
+├── memory/   memory.db
+└── skills/   skills.db
+```
+
+Upgrading from an older version moves things here automatically: on first run,
+files from `~/.config/lyra` and `~/.local/share/lyra/data` are copied in (the
+originals are left in place, so delete them once you're happy).
+
 ## Config
 
-`~/.config/lyra/config.toml` (or `$XDG_CONFIG_HOME/lyra/config.toml`):
+`~/.lyra/config/config.toml`:
 
 ```toml
 url = "http://localhost:8080/v1"
@@ -52,7 +67,7 @@ Three Markdown files make up the system prompt sent with every request:
 | `USER.md` | Who you are, your projects and preferences | nearest file wins |
 | `AGENT.md` | Operating rules, purpose, codebase instructions | all files stack, general to specific |
 
-Each is looked up in `~/.config/lyra/`, then in every directory from `/` down to
+Each is looked up in `~/.lyra/config/`, then in every directory from `/` down to
 the one lyra is started in. So a project can override the global `SOUL.md`, and
 a project `AGENT.md` adds to the global one. The first line in the chat shows
 which files were loaded. Templates are in `examples/`.
@@ -60,7 +75,7 @@ which files were loaded. Templates are in `examples/`.
 ## Memory
 
 lyra has a persistent notebook (V1): facts in a single SQLite file with FTS5
-keyword search, at `~/.local/share/lyra/data/memory.db` by default. The model gets
+keyword search, at `~/.lyra/memory/memory.db` by default. The model gets
 four tools and decides when to use them:
 
 | Tool | Does |
@@ -88,7 +103,7 @@ default_scope = "user"
 ## Self-learning (skills)
 
 Memory holds facts; **skills** hold procedures lyra learned. They live in their
-own crate (`learning/`, `lyra-learning`) and database (`data/skills.db`).
+own crate (`learning/`, `lyra-learning`) and database (`~/.lyra/skills/skills.db`).
 
 1. **Spot a lesson.** After each reply a cheap check looks for a reason to learn:
    you corrected the assistant, asked it to remember how something was done

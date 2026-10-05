@@ -4,7 +4,7 @@
 //! - `USER.md`  — profile of the person being helped.
 //! - `AGENT.md` — operating rules and instructions.
 //!
-//! Each is looked up in the global config dir (`~/.config/lyra`), then in every
+//! Each is looked up in the global config dir (`~/.lyra/config`), then in every
 //! directory from `/` down to the working directory. The nearest `SOUL.md` and
 //! `USER.md` replace any further out; every `AGENT.md` found is stacked, outermost
 //! first, so more specific instructions come last and take precedence.

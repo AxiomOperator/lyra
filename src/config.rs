@@ -32,7 +32,7 @@ pub struct Config {
 pub struct LearningConfig {
     /// `off`, `propose` (lessons wait for /approve) or `auto` (used straight away).
     pub mode: String,
-    /// SQLite file; defaults to `<data dir>/lyra/data/skills.db`.
+    /// SQLite file; defaults to `~/.lyra/skills/skills.db`.
     pub path: Option<String>,
     /// Lessons the reviewer is less sure of than this are dropped.
     pub min_confidence: f32,
@@ -48,7 +48,7 @@ impl Default for LearningConfig {
 
 impl LearningConfig {
     pub fn path(&self) -> Option<PathBuf> {
-        data_file(self.path.as_deref(), "skills.db")
+        data_file(self.path.as_deref(), "skills", "skills.db")
     }
 }
 
@@ -57,8 +57,7 @@ impl LearningConfig {
 pub struct MemoryConfig {
     /// Offer the memory tools to the model. Needs a server with tool calling.
     pub enabled: bool,
-    /// SQLite file; defaults to `$XDG_DATA_HOME/lyra/data/memory.db`
-    /// (`~/.local/share/lyra/data/memory.db`). A leading `~/` is expanded.
+    /// SQLite file; defaults to `~/.lyra/memory/memory.db`. A leading `~/` is expanded.
     pub path: Option<String>,
     /// Scope for `memory_remember` when the model doesn't give one.
     pub default_scope: String,
@@ -72,25 +71,18 @@ impl Default for MemoryConfig {
 
 impl MemoryConfig {
     pub fn path(&self) -> Option<PathBuf> {
-        data_file(self.path.as_deref(), "memory.db")
+        data_file(self.path.as_deref(), "memory", "memory.db")
     }
 }
 
-/// `custom` with a leading `~/` expanded, or `$XDG_DATA_HOME/lyra/data/<name>`
-/// (`~/.local/share/lyra/data/<name>`).
-fn data_file(custom: Option<&str>, name: &str) -> Option<PathBuf> {
-    let home = || std::env::var_os("HOME").map(PathBuf::from);
+/// `custom` with a leading `~/` expanded, or `<lyra home>/<folder>/<name>`.
+fn data_file(custom: Option<&str>, folder: &str, name: &str) -> Option<PathBuf> {
     match custom {
         Some(p) => match p.strip_prefix("~/") {
-            Some(rest) => Some(home()?.join(rest)),
+            Some(rest) => Some(user_home()?.join(rest)),
             None => Some(PathBuf::from(p)),
         },
-        None => {
-            let base = std::env::var_os("XDG_DATA_HOME")
-                .map(PathBuf::from)
-                .or_else(|| Some(home()?.join(".local").join("share")))?;
-            Some(base.join("lyra").join("data").join(name))
-        }
+        None => Some(home()?.join(folder).join(name)),
     }
 }
 
@@ -133,12 +125,28 @@ impl Config {
     }
 }
 
-/// `$XDG_CONFIG_HOME/lyra`, falling back to `~/.config/lyra`.
+fn user_home() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// Where everything lyra keeps lives: `$LYRA_HOME`, or `~/.lyra`.
+///
+/// ```text
+/// ~/.lyra/
+/// ├── config/   config.toml, SOUL.md, USER.md, AGENT.md
+/// ├── memory/   memory.db
+/// └── skills/   skills.db
+/// ```
+pub fn home() -> Option<PathBuf> {
+    match std::env::var_os("LYRA_HOME") {
+        Some(dir) => Some(PathBuf::from(dir)),
+        None => Some(user_home()?.join(".lyra")),
+    }
+}
+
+/// `<lyra home>/config`: config.toml and the global SOUL/USER/AGENT.md.
 pub fn dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("lyra"))
+    Some(home()?.join("config"))
 }
 
 /// `<config dir>/config.toml`.

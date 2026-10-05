@@ -1,6 +1,7 @@
 mod config;
 mod context;
 mod learn;
+mod migrate;
 mod retrieval;
 mod stats;
 mod tools;
@@ -822,6 +823,14 @@ fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>) -> Result<Round, St
 }
 
 fn main() {
+    // Before loading config: an old install's files may need moving into ~/.lyra.
+    let migrated = match migrate::run() {
+        Ok(note) => note,
+        Err(e) => {
+            eprintln!("lyra: couldn't move files into the lyra home: {e}");
+            std::process::exit(1);
+        }
+    };
     let config = match Config::load() {
         Ok(config) => config,
         Err(e) => {
@@ -835,6 +844,9 @@ fn main() {
     let (learning, learning_status) = open_learning(&config, runtime.handle());
     let services = Services { tools, memory_status, learning, learning_status };
     let mut app = App::new(config, Context::load(), services);
+    if let Some(note) = migrated {
+        app.log(Level::Info, note);
+    }
     app.start();
     ratatui::run(|terminal| run(terminal, &mut app)).expect("terminal error");
 }
