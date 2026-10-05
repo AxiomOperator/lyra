@@ -825,7 +825,8 @@ impl lyra_execution::Runtime for BenchRuntime<'_> {
         let system = format!("You are carrying out one step of a larger plan. Do only this step, then reply with the result.\n\n{}", task.context);
         let mut messages = vec![json!({ "role": "system", "content": system }), json!({ "role": "user", "content": task.instruction })];
         let mut out = lyra_execution::Reasoned::default();
-        for _ in 0..self.v.behavior.plan_step_rounds.max(1) {
+        let rounds = task.max_model_calls.map_or(self.v.behavior.plan_step_rounds, |left| self.v.behavior.plan_step_rounds.min(left));
+        for _ in 0..rounds.max(1) {
             let (message, tokens) = crate::plan::chat(&self.env.url, &self.env.model, &messages, &tools)?;
             out.model_calls += 1;
             out.tokens += tokens;
@@ -844,6 +845,7 @@ impl lyra_execution::Runtime for BenchRuntime<'_> {
                 let name = call["function"]["name"].as_str().unwrap_or("");
                 let result = if tools.iter().any(|d| d["function"]["name"] == name) {
                     out.tool_calls += 1;
+                    out.tools_used.push(name.to_string());
                     self.sandboxed(name, call["function"]["arguments"].as_str().unwrap_or("{}"))
                 } else {
                     json!({ "error": format!("{name} isn't available for this step") })

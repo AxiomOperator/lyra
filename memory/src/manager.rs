@@ -687,7 +687,16 @@ impl<S: MemoryStore> MemoryManager<S> {
     // ---- episodes (M8)
 
     /// Record a significant run as an episode (also an episodic memory).
-    pub async fn add_episode(&self, scope: &str, summary: &str, outcome: &str, entities: Vec<String>, run: Option<Uuid>) -> Result<Memory> {
+    /// `started` is when the run began (now if unknown); it ends now.
+    pub async fn add_episode(
+        &self,
+        scope: &str,
+        summary: &str,
+        outcome: &str,
+        entities: Vec<String>,
+        run: Option<Uuid>,
+        started: Option<DateTime<Utc>>,
+    ) -> Result<Memory> {
         let content = format!("{} Outcome: {}", summary.trim(), outcome.trim());
         let new = NewMemory {
             kind: MemoryKind::Episodic,
@@ -707,7 +716,7 @@ impl<S: MemoryStore> MemoryManager<S> {
             summary: summary.trim().into(),
             outcome: outcome.trim().into(),
             entities,
-            started_at: now,
+            started_at: started.unwrap_or(now).min(now),
             ended_at: now,
             source_run_id: run,
         };
@@ -725,7 +734,7 @@ impl<S: MemoryStore> MemoryManager<S> {
     /// memories and record an episode, each through the usual checks.
     /// `similar` are the memories the reviewer was shown (ids it may target).
     /// Returns notes for the log.
-    pub async fn apply_capture(&self, plan: capture::Plan, similar: &[Memory], run: Option<Uuid>) -> Result<Vec<String>> {
+    pub async fn apply_capture(&self, plan: capture::Plan, similar: &[Memory], run: Option<Uuid>, started: Option<DateTime<Utc>>) -> Result<Vec<String>> {
         let mut notes = Vec::new();
         let target = |key: &str| similar.iter().find(|m| !key.is_empty() && m.id.to_string().starts_with(key.trim_matches(['[', ']'])));
         for item in plan.memories {
@@ -762,7 +771,7 @@ impl<S: MemoryStore> MemoryManager<S> {
         }
         if let Some(ep) = plan.episode.filter(|e| !e.summary.trim().is_empty()) {
             let scope = self.settings().default_scope.clone();
-            match self.add_episode(&scope, &ep.summary, &ep.outcome, ep.entities, run).await {
+            match self.add_episode(&scope, &ep.summary, &ep.outcome, ep.entities, run, started).await {
                 Ok(m) => notes.push(format!("episode [{}] {}", m.short_id(), truncate(&ep.summary, 60))),
                 Err(e) => notes.push(format!("episode skipped: {e:#}")),
             }
@@ -1223,7 +1232,7 @@ mod tests {
             ],
             episode: Some(EpisodeItem { summary: "Moved the API to port 8080.".into(), outcome: "Done.".into(), entities: vec!["api".into()] }),
         };
-        let notes = m.apply_capture(plan, &[port.clone(), typo.clone()], None).await.unwrap();
+        let notes = m.apply_capture(plan, &[port.clone(), typo.clone()], None, None).await.unwrap();
         assert_eq!(notes.len(), 5, "{notes:?}");
         assert!(notes[3].starts_with("skipped: not stored"), "{notes:?}");
         assert_eq!(m.get(port.id).await.unwrap().unwrap().status, MemoryStatus::Superseded);
@@ -1244,7 +1253,7 @@ mod tests {
             consolidations: vec![Consolidation { memories: vec![a.short_id(), b.short_id()], content: "The agent runtime uses Rust.".into(), reason: "same fact".into() }],
             contradictions: vec![Contradiction { memories: vec![c.short_id(), d.short_id()], reason: "Friday deploys".into() }],
         };
-        let episode = m.add_episode("project:a", "Discussed the runtime language", "Chose Rust", vec![], None).await.unwrap();
+        let episode = m.add_episode("project:a", "Discussed the runtime language", "Chose Rust", vec![], None, Some(Utc::now() - Duration::minutes(5))).await.unwrap();
         let mixed = curator::Plan {
             consolidations: vec![Consolidation { memories: vec![a.short_id(), episode.short_id()], content: "x".into(), reason: "r".into() }],
             ..Default::default()

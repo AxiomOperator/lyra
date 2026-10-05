@@ -205,7 +205,18 @@ impl Mem {
 
     /// Ask the chat model what the turn taught that's worth remembering (M2,
     /// M3, M8), and store it.
-    pub fn capture(&self, url: &str, model: &str, reason: &str, transcript: &str, query: &str, run: Option<Uuid>) -> Review<Vec<String>> {
+    /// `started` is when the conversation (or plan) began, for episodes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture(
+        &self,
+        url: &str,
+        model: &str,
+        reason: &str,
+        transcript: &str,
+        query: &str,
+        run: Option<Uuid>,
+        started: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Review<Vec<String>> {
         let similar: Vec<Memory> = match self.recall(None, query, 6, false) {
             Ok(r) => r.into_iter().map(|r| r.memory).collect(),
             Err(e) => return Review { outcome: Err(e), usage: None },
@@ -216,7 +227,7 @@ impl Mem {
             Err(e) => return Review { outcome: Err(e), usage: None },
         };
         let outcome = capture::parse(&reply).and_then(|plan| {
-            let mut notes = self.run(self.manager.apply_capture(plan, &similar, run))?;
+            let mut notes = self.run(self.manager.apply_capture(plan, &similar, run, started))?;
             notes.extend(self.backfill());
             Ok(notes)
         });

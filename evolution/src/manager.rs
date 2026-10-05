@@ -482,8 +482,10 @@ impl EvolutionManager {
 
     // ---- monitoring
 
-    /// Whether the current generation is doing clearly worse than its parent,
-    /// once both have enough judged runs. Returns the reason.
+    /// Whether the current generation is doing clearly worse than its parent.
+    /// Judged runs compare success rates; all runs compare how often the user
+    /// corrected the answer and how many errors runs hit, so a regression shows
+    /// even when few runs get an explicit outcome. Returns the reason.
     pub fn regression(&self) -> Result<Option<String>, String> {
         let generations = self.generations()?;
         let Some(current) = generations.first() else { return Ok(None) };
@@ -492,21 +494,37 @@ impl EvolutionManager {
             return Ok(None);
         }
         let runs = self.runs(1000)?;
-        let judged = |n: u32| runs.iter().filter(|r| r.generation == n && r.outcome != RunOutcome::Unknown).collect::<Vec<_>>();
-        let (now, before) = (judged(current.number), judged(parent.number));
-        if now.len() < self.settings.monitor_runs || before.len() < self.settings.monitor_runs {
+        let of = |n: u32| runs.iter().filter(|r| r.generation == n).collect::<Vec<_>>();
+        let (now_all, before_all) = (of(current.number), of(parent.number));
+        fn judged<'a>(rs: &[&'a RunRecord]) -> Vec<&'a RunRecord> {
+            rs.iter().copied().filter(|r| r.outcome != RunOutcome::Unknown).collect()
+        }
+        let (now, before) = (judged(&now_all), judged(&before_all));
+        let n = self.settings.monitor_runs;
+        let drop = self.settings.monitor_drop;
+        let (cur, par) = (current.number, parent.number);
+        if now.len() >= n
+            && before.len() >= n
+            && let (Some(a), Some(b)) = (success_rate(&now), success_rate(&before))
+            && b - a > drop
+        {
+            return Ok(Some(format!("generation {cur} succeeds {:.0}% of the time vs {:.0}% for generation {par}", a * 100.0, b * 100.0)));
+        }
+        if now_all.len() < n || before_all.len() < n {
             return Ok(None);
         }
-        let (Some(a), Some(b)) = (success_rate(&now), success_rate(&before)) else { return Ok(None) };
-        Ok((b - a > self.settings.monitor_drop).then(|| {
-            format!(
-                "generation {} succeeds {:.0}% of the time vs {:.0}% for generation {}",
-                current.number,
-                a * 100.0,
-                b * 100.0,
-                parent.number
-            )
-        }))
+        let rate = |rs: &[&RunRecord], f: &dyn Fn(&RunRecord) -> f32| rs.iter().map(|r| f(r)).sum::<f32>() / rs.len() as f32;
+        let corrected = |r: &RunRecord| if r.corrected { 1.0 } else { 0.0 };
+        let (ca, cb) = (rate(&now_all, &corrected), rate(&before_all, &corrected));
+        if ca - cb > drop {
+            return Ok(Some(format!("generation {cur} gets corrected {:.0}% of the time vs {:.0}% for generation {par}", ca * 100.0, cb * 100.0)));
+        }
+        let errors = |r: &RunRecord| r.errors.len() as f32;
+        let (ea, eb) = (rate(&now_all, &errors), rate(&before_all, &errors));
+        if ea > eb * 2.0 + 0.25 {
+            return Ok(Some(format!("generation {cur} hits {ea:.1} errors per run vs {eb:.1} for generation {par}")));
+        }
+        Ok(None)
     }
 
     // ---- history
@@ -742,5 +760,22 @@ mod tests {
         assert!(why.contains("30%") && why.contains("100%"), "{why}");
         let stats = m.stats().unwrap();
         assert_eq!((stats.runs, stats.corrections, stats.generation), (20, 7, 2));
+    }
+
+    #[test]
+    fn regressions_show_in_corrections_and_errors_without_outcomes() {
+        let (_rt, m, _home) = manager(Mode::Propose);
+        let c = m.propose(&op(), vec![proposal(Change::Prompt { add: vec!["Be brief.".into()], remove: vec![] })]).unwrap().remove(0);
+        for i in 0..10 {
+            m.record_run(&RunRecord::new(RunKind::Chat, &format!("t{i}"), 1)).unwrap();
+        }
+        m.deploy(c, "ok").unwrap();
+        for i in 0..10 {
+            let mut r = RunRecord::new(RunKind::Chat, &format!("u{i}"), 2);
+            r.errors = vec!["connection refused".into()];
+            m.record_run(&r).unwrap();
+        }
+        let why = m.regression().unwrap().unwrap();
+        assert!(why.contains("errors per run"), "{why}");
     }
 }

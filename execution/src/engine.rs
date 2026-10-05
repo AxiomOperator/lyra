@@ -37,6 +37,8 @@ pub struct Task {
     /// Whether it may use tools that change things. Only steps marked
     /// conditional or unsafe may: a safe step must be safe to repeat.
     pub may_change: bool,
+    /// Model calls left in the plan's budget; the work should stop within them.
+    pub max_model_calls: Option<u32>,
 }
 
 /// What focused model work produced, and what it cost.
@@ -49,6 +51,8 @@ pub struct Reasoned {
     /// Calls that changed something (`tool {arguments}`), so a retry knows
     /// what was already done.
     pub changes: Vec<String>,
+    /// Every tool it called, in order (telemetry).
+    pub tools_used: Vec<String>,
 }
 
 /// Focused model work that failed, and what it had changed before failing.
@@ -221,6 +225,50 @@ impl Engine {
         })
     }
 
+    /// P11: give a plan more room: every limit grows by `extra`'s (limits
+    /// `extra` doesn't set stay as they are). A plan paused on its budget can
+    /// then be resumed.
+    pub fn raise_budget(&self, plan_id: Uuid, extra: &Budget) -> Result<String, String> {
+        let mut plan = self.plan(plan_id)?.ok_or("no such plan")?;
+        if plan.status.is_finished() {
+            return Err(format!("the plan is already {}", plan.status));
+        }
+        let b = &mut plan.budget;
+        let add = |limit: &mut Option<u32>, more: Option<u32>| {
+            if let (Some(l), Some(m)) = (limit.as_mut(), more) {
+                *l += m;
+            }
+        };
+        add(&mut b.max_model_calls, extra.max_model_calls);
+        add(&mut b.max_tool_calls, extra.max_tool_calls);
+        add(&mut b.max_replans, extra.max_replans);
+        add(&mut b.max_minutes, extra.max_minutes);
+        if let (Some(l), Some(m)) = (b.max_tokens.as_mut(), extra.max_tokens) {
+            *l += m;
+        }
+        let text = budget::describe(&plan.budget, &plan.usage);
+        if plan.status == PlanStatus::Paused && budget::exhausted(&plan.budget, &plan.usage).is_none() {
+            plan.note = Some("budget raised; /plan resume continues".into());
+        }
+        self.save(&plan)?;
+        Ok(format!("budget raised: {text}"))
+    }
+
+    /// Every error the plan's attempts hit, in order (P20).
+    pub fn errors(&self, plan: &Plan) -> Result<Vec<String>, String> {
+        Ok(self.db(self.store.attempts(plan.id))?.into_iter().filter_map(|a| a.error).collect())
+    }
+
+    /// Every tool the plan's steps called, in order (P20).
+    pub fn tools_used(plan: &Plan) -> Vec<String> {
+        plan.steps
+            .iter()
+            .filter_map(|s| s.result.as_ref()?.metadata.get("tools")?.as_array().cloned())
+            .flatten()
+            .filter_map(|t| t.as_str().map(str::to_string))
+            .collect()
+    }
+
     // ---- P1, P2, P10: from a request to a plan
 
     /// Parse the request into a goal, gather context and generate a plan.
@@ -230,7 +278,8 @@ impl Engine {
         let mut goal = ask(runtime, &mut usage, planner::GOAL_PROMPT, request, |r| planner::parse_goal(request, r))?;
         let ctx = runtime.context(&goal.description);
         let (system, prompt) = (planner::plan_system_prompt(), planner::plan_prompt(&goal, &ctx));
-        let steps = ask(runtime, &mut usage, &system, &prompt, |r| planner::parse_plan(r, &ctx))?;
+        let mut steps = ask(runtime, &mut usage, &system, &prompt, |r| planner::parse_plan(r, &ctx))?;
+        guard(&goal, &mut steps);
         let now = Utc::now();
         let plan = Plan {
             id: Uuid::new_v4(),
@@ -545,13 +594,20 @@ impl Engine {
             context += &format!("\n\nAlready done by an earlier attempt (don't repeat these):\n- {}", done_before.join("\n- "));
         }
         let may_change = step.idempotency != Idempotency::Safe;
+        // P11: the step works within what's left of the budget.
+        let max_model_calls = plan.budget.max_model_calls.map(|max| max.saturating_sub(plan.usage.model_calls).max(1));
+        if budget::running_low(&plan.budget, &plan.usage) {
+            context += "\n\nThe plan's budget is running low: be brief and use as few tool calls as you can.";
+        }
         let mut changes = Vec::new();
+        let mut tools_used = Vec::new();
         let mut reasoned = |task: Task, usage: &mut BudgetUsage| match runtime.reason(&task) {
             Ok(r) => {
                 usage.model_calls += r.model_calls;
                 usage.tool_calls += r.tool_calls;
                 usage.tokens += r.tokens;
                 changes = r.changes;
+                tools_used = r.tools_used;
                 Ok(Value::String(r.text))
             }
             Err(e) => {
@@ -566,12 +622,12 @@ impl Engine {
                 self.call_once(plan, step, tool, arguments, runtime)
             }
             StepAction::Reasoning { instruction } => {
-                reasoned(Task { instruction: instruction.clone(), context, tools: None, may_change }, &mut usage)
+                reasoned(Task { instruction: instruction.clone(), context, tools: None, may_change, max_model_calls }, &mut usage)
             }
             StepAction::Workflow { workflow, input } => match runtime.workflow(workflow) {
                 Some(procedure) => {
                     let instruction = format!("Follow this procedure:\n{procedure}\n\nInput: {input}");
-                    reasoned(Task { instruction, context, tools: None, may_change }, &mut usage)
+                    reasoned(Task { instruction, context, tools: None, may_change, max_model_calls }, &mut usage)
                 }
                 None => Err(format!("no workflow named {workflow}")),
             },
@@ -585,7 +641,7 @@ impl Engine {
                     if !done_before.is_empty() {
                         scoped += &format!("\n\nAlready done by an earlier attempt (don't repeat these):\n- {}", done_before.join("\n- "));
                     }
-                    reasoned(Task { instruction: task.clone(), context: scoped, tools: Some(tools), may_change }, &mut usage)
+                    reasoned(Task { instruction: task.clone(), context: scoped, tools: Some(tools), may_change, max_model_calls }, &mut usage)
                 }
                 None => Err(format!("no agent named {agent}")),
             },
@@ -593,7 +649,10 @@ impl Engine {
         // Changes accumulate across attempts.
         let mut all_changes = done_before;
         all_changes.extend(changes);
-        let metadata = json!({ "action": step.action.kind(), "changes": all_changes });
+        if let StepAction::Tool { tool, .. } = &step.action {
+            tools_used.push(tool.clone());
+        }
+        let metadata = json!({ "action": step.action.kind(), "changes": all_changes, "tools": tools_used });
         let result = match outcome {
             Ok(output) => StepResult { success: true, output, error: None, metadata },
             Err(e) => StepResult { success: false, output: Value::Null, error: Some(e), metadata },
@@ -756,6 +815,7 @@ impl Engine {
                 let usage = plan.usage;
                 *plan = next;
                 plan.usage = usage;
+                guard(goal, &mut plan.steps);
                 self.db(self.store.record_revision(plan.id, from, plan.version, &revision))?;
                 let msg = format!(
                     "v{} → v{}: -{} +{} ~{} — {}",
@@ -874,6 +934,16 @@ fn add_usage(total: &mut BudgetUsage, add: &BudgetUsage) {
     total.tokens += add.tokens;
 }
 
+/// P1/P14: when the goal itself is destructive or external, every step that
+/// may change something needs approval, whatever the planner said.
+fn guard(goal: &Goal, steps: &mut [PlanStep]) {
+    if goal.destructive {
+        for s in steps.iter_mut().filter(|s| s.idempotency != Idempotency::Safe && s.approval == ApprovalPolicy::Automatic) {
+            s.approval = ApprovalPolicy::RequireApproval;
+        }
+    }
+}
+
 /// What a step's attempts changed so far (from its result's metadata).
 fn changes_of(result: Option<&StepResult>) -> Vec<String> {
     result
@@ -963,7 +1033,7 @@ mod tests {
                 .pop_front()
                 .unwrap_or(Ok(format!("did: {}", task.instruction)))
                 .map_err(|error| ReasonError { error, changes: self.reason_changes.lock().unwrap().clone() })?;
-            Ok(Reasoned { text, model_calls: 1, tool_calls: 0, tokens: 50, changes: Vec::new() })
+            Ok(Reasoned { text, model_calls: 1, tokens: 50, ..Default::default() })
         }
         fn workflow(&self, _name: &str) -> Option<String> {
             None
@@ -1187,6 +1257,26 @@ mod tests {
         assert_eq!(out.plan.status, PlanStatus::Paused);
         assert!(out.plan.note.unwrap().contains("model call budget"));
         assert!(s.events.lock().unwrap().contains(&EventKind::BudgetExhausted));
+
+        // Raising the budget lets it finish.
+        assert!(e.raise_budget(plan.id, &Budget { max_model_calls: Some(10), ..Budget::default() }).unwrap().contains("budget raised"));
+        s.evaluate.lock().unwrap().push_back(r#"{"criteria":[{"criterion":"a","met":true}],"summary":"ok"}"#.into());
+        let out = e.run(plan.id, &s).unwrap();
+        assert_eq!(out.plan.status, PlanStatus::Completed);
+        assert_eq!(Engine::tools_used(&out.plan), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_destructive_goal_puts_every_change_behind_approval() {
+        let (_rt, e) = engine();
+        let s = Script::default();
+        s.goal.lock().unwrap().push_back(r#"{"description":"Rebuild the server","success_criteria":["rebuilt"],"destructive":true}"#.into());
+        s.plan.lock().unwrap().push_back(
+            r#"{"steps":[{"key":"s1","action":{"type":"tool","tool":"check","arguments":{}}},{"key":"s2","action":{"type":"tool","tool":"deploy","arguments":{}}}]}"#.into(),
+        );
+        let (_, plan) = e.create("rebuild the server", &s).unwrap();
+        assert!(!plan.steps[0].needs_approval(), "reads don't need approval");
+        assert!(plan.steps[1].needs_approval(), "changes do, though the planner didn't ask");
     }
 
     #[test]

@@ -43,6 +43,14 @@ pub struct RunRecord {
     /// Retried or failed-then-redone work (tool errors in chat; retries in plans).
     pub retries: u32,
     pub replans: u32,
+    /// Plans: attempts that failed, steps that failed and then recovered,
+    /// and results that didn't pass verification.
+    #[serde(default)]
+    pub failed_attempts: u32,
+    #[serde(default)]
+    pub recoveries: u32,
+    #[serde(default)]
+    pub verification_failures: u32,
     pub tokens: u64,
     pub duration_ms: u64,
     pub outcome: RunOutcome,
@@ -70,6 +78,9 @@ impl RunRecord {
             tool_calls: 0,
             retries: 0,
             replans: 0,
+            failed_attempts: 0,
+            recoveries: 0,
+            verification_failures: 0,
             tokens: 0,
             duration_ms: 0,
             outcome: RunOutcome::Unknown,

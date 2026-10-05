@@ -184,7 +184,9 @@ impl Runtime for LyraRuntime {
         let mut out = Reasoned::default();
         let failed = |out: &Reasoned, error: String| ReasonError { error, changes: out.changes.clone() };
         // Steps get a few rounds of tool use, not an open-ended conversation.
-        let rounds = self.evolution.as_ref().map_or(6, |e| e.behavior().plan_step_rounds) as usize;
+        let rounds = self.evolution.as_ref().map_or(6, |e| e.behavior().plan_step_rounds);
+        // Never more model calls than the plan's budget has left (P11).
+        let rounds = task.max_model_calls.map_or(rounds, |left| rounds.min(left)) as usize;
         for _ in 0..rounds {
             let (message, tokens) = chat(&self.url, &self.model, &messages, &tools).map_err(|e| failed(&out, e))?;
             out.model_calls += 1;
@@ -204,6 +206,7 @@ impl Runtime for LyraRuntime {
                 let allowed = tools.iter().any(|d| d["function"]["name"] == name);
                 let result = if allowed {
                     out.tool_calls += 1;
+                    out.tools_used.push(name.to_string());
                     let result = self.run_tool(name, arguments, call["id"].as_str().unwrap_or(""));
                     // Record what changed (successfully), so a retry doesn't redo it.
                     let ok = serde_json::from_str::<Value>(&result).map_or(true, |v| v.get("error").is_none());
@@ -341,6 +344,61 @@ pub fn list(engine: &Engine) -> Result<String, String> {
                 p.steps.len(),
                 goal.as_ref().map_or("?".into(), |g| g.status.to_string()),
                 goal.map_or(String::new(), |g| g.description)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// What each finished step produced, for memory capture.
+pub fn results(plan: &Plan) -> String {
+    plan.steps
+        .iter()
+        .filter_map(|s| {
+            let r = s.result.as_ref().filter(|r| r.success)?;
+            let text = match &r.output {
+                Value::String(t) => t.clone(),
+                other => other.to_string(),
+            };
+            Some(format!("[{} {}] {}", s.key, s.title, text.chars().take(1200).collect::<String>()))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// `/plan checkpoints`: the recovery points saved before steps that change things.
+pub fn checkpoints(engine: &Engine, plan: &Plan) -> Result<String, String> {
+    let list = engine.checkpoints(plan.id)?;
+    if list.is_empty() {
+        return Ok("no checkpoints yet (they're saved before steps that change things)".into());
+    }
+    Ok(list
+        .iter()
+        .map(|c| {
+            let done: Vec<&str> = c.completed_steps.iter().filter_map(|id| plan.step(*id)).map(|s| s.key.as_str()).collect();
+            format!("{} v{} · {} · done: {}", c.created_at.with_timezone(&chrono::Local).format("%H:%M:%S"), c.plan_version, c.reason, if done.is_empty() { "—".into() } else { done.join(", ") })
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// `/plan revisions`: how the plan changed when steps failed.
+pub fn revisions(engine: &Engine, plan: &Plan) -> Result<String, String> {
+    let list = engine.revisions(plan.id)?;
+    if list.is_empty() {
+        return Ok("never revised".into());
+    }
+    Ok(list
+        .iter()
+        .map(|(from, to, r)| {
+            let added: Vec<&str> = r.added_steps.iter().map(|s| s.key.as_str()).collect();
+            let changed: Vec<&str> = r.modified_steps.iter().map(|s| s.key.as_str()).collect();
+            format!(
+                "v{from} → v{to}: {} · removed {} · added {} · changed {}",
+                r.reason,
+                r.removed_steps.len(),
+                if added.is_empty() { "—".into() } else { added.join(", ") },
+                if changed.is_empty() { "—".into() } else { changed.join(", ") }
             )
         })
         .collect::<Vec<_>>()

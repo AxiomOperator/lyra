@@ -310,6 +310,10 @@ struct App {
     evolving: Option<&'static str>,
     /// Days between automatic evolution reviews, if scheduled.
     evolution_review_every: Option<i64>,
+    /// When the schedules were last checked.
+    last_schedule_check: Instant,
+    /// When this session began (episodes start here).
+    session_started: chrono::DateTime<chrono::Utc>,
     /// Tools plan steps may never use (`[planning] forbidden_tools`).
     forbidden_tools: Vec<String>,
     /// A plan is being created or run in the background.
@@ -386,6 +390,8 @@ impl App {
             evolution_panel: None,
             evolving: None,
             evolution_review_every: config.evolution.review.every_days(),
+            session_started: chrono::Utc::now(),
+            last_schedule_check: Instant::now(),
             forbidden_tools: config.planning.forbidden_tools.clone(),
             plan_busy: false,
             current_plan: None,
@@ -779,17 +785,26 @@ impl App {
             Err(line) => self.log(Level::Error, line),
         }
         self.reload_evolution();
-        if let Some(evolution) = &self.evolution
+        self.check_models();
+        self.memory_upkeep();
+        self.recover_plans();
+        self.sync_skills();
+        self.scheduled();
+    }
+
+    /// Run whatever scheduled maintenance is due: at startup, and every few
+    /// minutes while lyra is open (a long session still gets its daily runs).
+    fn scheduled(&mut self) {
+        self.last_schedule_check = Instant::now();
+        if self.evolving.is_none()
+            && let Some(evolution) = &self.evolution
             && evolution.review_due(self.evolution_review_every)
         {
             self.log(Level::Evolve, "scheduled evolution review is due".into());
             self.evolve_in_background("reviewing", false, evolve::review);
         }
-        self.check_models();
-        self.memory_upkeep();
-        self.recover_plans();
-        self.sync_skills();
-        if let Some(mem) = self.mem()
+        if !self.memory_curating
+            && let Some(mem) = self.mem()
             && mem.manager.settings().maintenance != lyra_memory::MaintenanceMode::Off
             && mem.curation_due(self.memory_curate_every)
         {
@@ -1112,8 +1127,9 @@ impl App {
         self.capturing = true;
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let (model, tx, run) = (self.model.clone(), self.tx.clone(), self.last_run.as_ref().map(|r| r.id));
+        let started = self.session_started;
         thread::spawn(move || {
-            let review = mem.capture(&url, &model, reason, &transcript, &query, run);
+            let review = mem.capture(&url, &model, reason, &transcript, &query, run, Some(started));
             let _ = tx.send(StreamEvent::MemoryReview { curation: false, review });
         });
     }
@@ -1161,7 +1177,8 @@ impl App {
         if name == "/plans" {
             return plan::list(&engine);
         }
-        let words: Vec<&str> = arg.split_whitespace().collect();
+        let anyway = arg.split_whitespace().any(|w| w == "anyway");
+        let words: Vec<&str> = arg.split_whitespace().filter(|w| *w != "anyway").collect();
         let is_id = |w: &str| w.len() >= 4 && w.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
         // `/plan run` etc. are commands; anything else is a new request.
         let target = |rest: &[&str]| -> Result<Plan, String> {
@@ -1172,7 +1189,8 @@ impl App {
         };
         let command = match words.first().copied() {
             None => Some("show"),
-            Some(w @ ("show" | "run" | "resume" | "cancel" | "events")) if words.len() <= 2 && words[1..].iter().all(|x| is_id(x)) => Some(w),
+            Some(w @ ("show" | "run" | "resume" | "cancel" | "events" | "checkpoints" | "revisions")) if words.len() <= 2 && words[1..].iter().all(|x| is_id(x)) => Some(w),
+            Some("budget") if words.len() <= 3 => Some("budget"),
             Some(w @ ("approve" | "retry" | "skip")) if (2..=3).contains(&words.len()) => Some(w),
             _ => None,
         };
@@ -1183,6 +1201,19 @@ impl App {
                 Ok(plan::describe(goal.as_ref(), &plan))
             }
             Some("events") => plan::events(&engine, &target(&words[1..])?),
+            Some("checkpoints") => plan::checkpoints(&engine, &target(&words[1..])?),
+            Some("revisions") => plan::revisions(&engine, &target(&words[1..])?),
+            Some("budget") => {
+                let plan = target(&words[1..])?;
+                if words.get(1) == Some(&"raise") {
+                    // Add the configured budget again on top of the current one.
+                    let note = engine.raise_budget(plan.id, &engine.settings.budget)?;
+                    self.reload_plan(plan.id);
+                    Ok(format!("{note} — /plan resume to continue"))
+                } else {
+                    Ok(format!("budget: {} — /plan budget raise adds the configured budget again", lyra_execution::budget::describe(&plan.budget, &plan.usage)))
+                }
+            }
             Some("run" | "resume") => {
                 if self.plan_busy {
                     return Err("a plan is already being created or run".into());
@@ -1190,6 +1221,17 @@ impl App {
                 let plan = target(&words[1..])?;
                 if plan.status.is_finished() {
                     return Err(format!("plan {} is already {}", lyra_execution::short(plan.id), plan.status));
+                }
+                // P1: open questions are asked before anything runs.
+                if plan.status == PlanStatus::Draft
+                    && !anyway
+                    && let Some((goal, _)) = engine.goal(plan.goal_id)?
+                    && !goal.ambiguities.is_empty()
+                {
+                    return Err(format!(
+                        "the goal has open questions:\n- {}\nanswer them with a clearer /plan <request>, or /plan run anyway",
+                        goal.ambiguities.join("\n- ")
+                    ));
                 }
                 self.plan_busy = true;
                 self.set_phase(Phase::Tools(format!("plan {}", lyra_execution::short(plan.id))));
@@ -1269,20 +1311,33 @@ impl App {
         }
         let Some(engine) = self.engine.clone() else { return };
         let goal_text = goal.as_ref().map_or(String::new(), |g| g.description.clone());
-        self.record_plan_run(&engine, &plan, &goal_text, outcome.goal_status);
-        // P18: the outcome becomes an episode, through the memory manager.
+        let evo = self.record_plan_run(&engine, &plan, &goal_text, outcome.goal_status);
+        // The user's next message is feedback on the plan, for evolution.
+        self.last_run = Some(LastRun { id: plan.id, skills: Vec::new(), memories: 0, evo });
+        // P18: the outcome becomes an episode (linked to the plan, with its
+        // real start), and durable discoveries are offered to memory, all
+        // through the memory manager.
         if let Some(mem) = self.mem() {
             let tx = self.tx.clone();
             let (scope, status) = (mem.manager.settings().default_scope.clone(), outcome.goal_status);
             let episode_summary = format!("Plan: {goal_text}. {summary}");
-            let episode_outcome = format!("goal {}{}", status.map_or("unknown".into(), |s| s.to_string()), answer.map_or(String::new(), |a| format!(": {}", a.chars().take(300).collect::<String>())));
+            let episode_outcome = format!("goal {}{}", status.map_or("unknown".into(), |s| s.to_string()), answer.as_ref().map_or(String::new(), |a| format!(": {}", a.chars().take(300).collect::<String>())));
+            let entities: Vec<String> = mem.working().entities.iter().cloned().collect();
+            let (plan_id, started) = (plan.id, plan.created_at);
+            let transcript = format!("Goal: {goal_text}\n\n{}", plan::results(&plan));
+            let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+            let model = self.model.clone();
             thread::spawn(move || {
-                let note = match mem.run(mem.manager.add_episode(&scope, &episode_summary, &episode_outcome, Vec::new(), None)) {
+                let note = match mem.run(mem.manager.add_episode(&scope, &episode_summary, &episode_outcome, entities, Some(plan_id), Some(started))) {
                     Ok(m) => format!("recorded plan episode [{}]", m.short_id()),
                     Err(e) => format!("plan episode not recorded: {e}"),
                 };
                 let _ = tx.send(StreamEvent::MemoryNotes(vec![note]));
+                let reason = "a plan finished; keep the durable facts it discovered or changed (state, configuration, decisions), not the steps themselves";
+                let review = mem.capture(&url, &model, reason, &transcript, &goal_text_for(&transcript), Some(plan_id), Some(started));
+                let _ = tx.send(StreamEvent::MemoryReview { curation: false, review });
             });
+            self.capturing = true;
         }
         // P19: recoveries are lessons; let the skill reviewer look at them.
         let metrics = engine.metrics(&plan).unwrap_or_default();
@@ -1406,8 +1461,9 @@ impl App {
     }
 
     /// E1: record a finished plan run, its outcome being the goal's status.
-    fn record_plan_run(&self, engine: &Engine, plan: &Plan, goal: &str, status: Option<GoalStatus>) {
-        let Some(evolution) = self.evolution.clone() else { return };
+    /// Returns its telemetry id.
+    fn record_plan_run(&self, engine: &Engine, plan: &Plan, goal: &str, status: Option<GoalStatus>) -> Option<Uuid> {
+        let evolution = self.evolution.clone()?;
         let m = engine.metrics(plan).unwrap_or_default();
         let mut run = lyra_evolution::RunRecord::new(lyra_evolution::RunKind::Plan, goal, 0);
         run.model_calls = m.model_calls;
@@ -1415,16 +1471,23 @@ impl App {
         run.tokens = m.tokens;
         run.retries = m.retries;
         run.replans = m.replans;
+        run.failed_attempts = m.failed_attempts as u32;
+        run.recoveries = m.recoveries as u32;
+        run.verification_failures = m.verification_failures as u32;
         run.duration_ms = m.seconds * 1000;
-        run.tools_used = plan
+        // Every tool called, inside reasoning and subagent steps too.
+        run.tools_used = Engine::tools_used(plan);
+        // Learned procedures the plan followed.
+        run.skills_used = plan
             .steps
             .iter()
             .filter_map(|s| match &s.action {
-                lyra_execution::StepAction::Tool { tool, .. } => Some(tool.clone()),
+                lyra_execution::StepAction::Workflow { workflow, .. } => Some(workflow.clone()),
                 _ => None,
             })
             .collect();
-        run.errors = plan.steps.iter().filter(|s| s.status == lyra_execution::StepStatus::Failed).filter_map(|s| s.last_error.clone()).collect();
+        // Every error along the way, including ones later recovered from.
+        run.errors = engine.errors(plan).unwrap_or_default();
         run.outcome = match status {
             Some(GoalStatus::Completed) => lyra_evolution::RunOutcome::Success,
             Some(GoalStatus::Partial) => lyra_evolution::RunOutcome::Partial,
@@ -1432,7 +1495,7 @@ impl App {
             None => lyra_evolution::RunOutcome::Unknown,
         };
         let env = self.evolution_env();
-        let tx = self.tx.clone();
+        let (tx, id) = (self.tx.clone(), run.id);
         thread::spawn(move || {
             let mut notes = Vec::new();
             if let Err(e) = evolution.record(run) {
@@ -1444,6 +1507,7 @@ impl App {
             let show = notes.iter().any(|n| n.starts_with('⚠') || n.starts_with('↩'));
             let _ = tx.send(StreamEvent::Evolved { done: evolve::Done { notes, usage: Vec::new() }, show });
         });
+        Some(id)
     }
 
     /// `/evolve …`
@@ -1621,9 +1685,17 @@ const COMMANDS: &str = "\
 /plan approve <step>         approve a step's action (needed again if it changes)
 /plan retry|skip <step>      after a failure or an interrupted step
 /plan cancel · /plan events  stop it · what happened, with metrics
+/plan run anyway             run despite the goal's open questions
+/plan budget [raise]         the plan's budget · add the configured budget again
+/plan checkpoints|revisions  recovery points · how the plan changed
 /outcome good|bad|partial    (also) how the last reply went, for evolution";
 
 const HELP_END: &str = "/help                        this list";
+
+/// The first line of a transcript (the goal), as the query for similar memories.
+fn goal_text_for(transcript: &str) -> String {
+    transcript.lines().next().unwrap_or("").trim_start_matches("Goal: ").to_string()
+}
 
 /// `1,234 tokens`, or that the server didn't say.
 fn usage_text(usage: Option<&stats::Usage>) -> String {
@@ -1974,6 +2046,9 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
         // Drain everything the stream has produced since the last frame.
         while let Ok(event) = app.rx.try_recv() {
             app.handle(event);
+        }
+        if !app.waiting && app.last_schedule_check.elapsed() > Duration::from_secs(10 * 60) {
+            app.scheduled();
         }
 
         terminal.draw(|f| ui::draw(f, app))?;
