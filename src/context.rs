@@ -88,16 +88,13 @@ impl Context {
         Some(sections.join("\n\n"))
     }
 
-    /// One line for the UI listing what was loaded.
-    pub fn summary(&self) -> String {
-        if self.is_empty() {
-            return "no SOUL.md / USER.md / AGENT.md found".into();
-        }
-        let mut parts = Vec::new();
-        parts.extend(self.soul.as_ref().map(|s| show(&s.path)));
-        parts.extend(self.user.as_ref().map(|s| show(&s.path)));
-        parts.extend(self.agent.iter().map(|s| show(&s.path)));
-        format!("loaded {}", parts.join(", "))
+    /// `(file name, shortened path)` for each file loaded.
+    pub fn files(&self) -> Vec<(&'static str, String)> {
+        let mut files = Vec::new();
+        files.extend(self.soul.as_ref().map(|s| ("SOUL", show(&s.path))));
+        files.extend(self.user.as_ref().map(|s| ("USER", show(&s.path))));
+        files.extend(self.agent.iter().map(|s| ("AGENT", show(&s.path))));
+        files
     }
 }
 
@@ -110,7 +107,7 @@ fn read(dir: &Path, name: &str) -> Option<Source> {
 }
 
 /// Path with the home directory shortened to `~`.
-fn show(path: &Path) -> String {
+pub fn show(path: &Path) -> String {
     if let Some(home) = std::env::var_os("HOME")
         && let Ok(rest) = path.strip_prefix(home)
     {

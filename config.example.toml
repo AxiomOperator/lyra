@@ -17,3 +17,19 @@ currency = "$"
 # [reranker]
 # url = "http://localhost:8081/v1"
 # model = "reranker"
+
+# Persistent memory (on by default). The model gets memory_remember / recall /
+# forget / list tools; needs a server with tool calling (llama.cpp: --jinja).
+# [memory]
+# enabled = true
+# path = "~/.local/share/lyra/data/memory.db"   # default: $XDG_DATA_HOME/lyra/data/memory.db
+# default_scope = "user"                        # scope when the model doesn't pick one
+
+# Self-learning: after a correction or a multi-step success, lyra asks the model
+# whether there's a reusable lesson and saves it as a skill. Active skills that
+# match a message are added to the system prompt.
+# [learning]
+# mode = "propose"          # off | propose (approve with /approve) | auto
+# path = "~/.local/share/lyra/data/skills.db"
+# min_confidence = 0.6      # drop lessons the reviewer is less sure of
+# max_skills = 3            # skills added to the prompt per message

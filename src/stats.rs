@@ -39,6 +39,16 @@ pub struct Stats {
 }
 
 impl Stats {
+    /// Fold in another request from the same turn (e.g. after a tool call).
+    pub fn absorb(&mut self, other: Stats) {
+        self.ttft = self.ttft.or(other.ttft);
+        self.elapsed += other.elapsed;
+        self.input += other.input;
+        self.cached += other.cached;
+        self.output += other.output;
+        self.estimated |= other.estimated;
+    }
+
     /// Generation speed: tokens after the first, over the time after the first.
     pub fn tokens_per_sec(&self) -> Option<f64> {
         let generating = self.elapsed.checked_sub(self.ttft?)?.as_secs_f64();
