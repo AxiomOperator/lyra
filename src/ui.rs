@@ -130,17 +130,22 @@ fn draw_panels(f: &mut Frame, app: &App, area: Rect) {
     let (skills_title, skills) = skills_panel(app, width);
     let (plan_title, plan) = plan_panel(app, width);
     let (evolution_title, evolution) = evolution_panel(app, width);
-    let [session_area, agent_area, memory_area, skills_area, plan_area, evolution_area, activity_area] = Layout::vertical([
+    let (goals_title, goals) = goals_panel(app, width);
+    let [session_area, agent_area, memory_area, skills_area, goals_area, plan_area, evolution_area, activity_area] = Layout::vertical([
         Constraint::Length(session.len() as u16 + 2),
         Constraint::Length(agent.len() as u16 + 2),
         Constraint::Fill(1),
         Constraint::Length(skills.len() as u16 + 2),
+        Constraint::Length(if goals.is_empty() { 0 } else { goals.len() as u16 + 2 }),
         Constraint::Length(if plan.is_empty() { 0 } else { plan.len() as u16 + 2 }),
         Constraint::Length(evolution.len() as u16 + 2),
         Constraint::Fill(1),
     ])
     .areas(area);
     f.render_widget(Paragraph::new(evolution).block(Block::bordered().title(evolution_title)), evolution_area);
+    if !goals.is_empty() {
+        f.render_widget(Paragraph::new(goals).block(Block::bordered().title(goals_title)), goals_area);
+    }
     if !plan.is_empty() {
         f.render_widget(Paragraph::new(plan).block(Block::bordered().title(plan_title)), plan_area);
     }
@@ -397,6 +402,57 @@ fn plan_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
     lines.push(Line::styled(truncate(&lyra_execution::budget::describe(&plan.budget, &plan.usage), width), dim));
     if let Some(note) = &plan.note {
         lines.push(Line::from(truncate(note, width).yellow()));
+    }
+    (title, lines)
+}
+
+/// Most goals shown; /goals lists them all.
+const MAX_GOALS: usize = 5;
+
+fn goals_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
+    let dim = Style::default().fg(Color::DarkGray);
+    let Some(snapshot) = &app.goals_panel else {
+        return if app.goals.is_some() { (" Goals ".into(), vec![Line::styled("loading…", dim)]) } else { (String::new(), Vec::new()) };
+    };
+    let s = match snapshot {
+        Ok(s) => s,
+        Err(e) => return (" Goals ".into(), vec![Line::from(truncate(e, width).red())]),
+    };
+    let title = format!(" Goals · {} open · {} ", s.open, s.mode.as_str());
+    let mut lines = Vec::new();
+    if s.ranked.is_empty() {
+        lines.push(Line::styled("none — /goal new <title>", dim));
+    }
+    for (g, _, blocker) in s.ranked.iter().take(MAX_GOALS) {
+        use lyra_goals::GoalStatus as S;
+        let (mark, style) = match g.status {
+            S::Active => ("▸ ", Style::default().fg(Color::Green)),
+            S::Blocked => ("⏸ ", Style::default().fg(Color::Yellow)),
+            S::Proposed => ("? ", Style::default().fg(Color::Yellow)),
+            _ => ("‖ ", dim),
+        };
+        let filled = (g.progress.clamp(0.0, 1.0) * 6.0).round() as usize;
+        let bar = format!(" {}{} {:>3.0}%", "█".repeat(filled), "░".repeat(6 - filled), g.progress * 100.0);
+        let indent = if g.parent_goal_id.is_some() { " " } else { "" };
+        let name_width = width.saturating_sub(2 + bar.chars().count() + indent.len());
+        lines.push(Line::from(vec![
+            Span::styled(format!("{indent}{mark}"), style),
+            Span::raw(truncate(&g.title, name_width)),
+            Span::styled(bar, dim),
+        ]));
+        if let Some(reason) = blocker {
+            lines.push(Line::from(truncate(&format!("  {reason}"), width).yellow()));
+        }
+    }
+    if s.ranked.len() > MAX_GOALS || s.open > s.ranked.len() {
+        lines.push(Line::styled(format!("… {} more (/goals)", s.open.saturating_sub(MAX_GOALS)), dim));
+    }
+    if s.mode != lyra_goals::AutonomyMode::Reactive {
+        let text = match &s.session.stopped {
+            Some((_, why)) => format!("autonomy {why}"),
+            None => format!("session: {} plans · {} tool calls", s.session.plans, s.session.tool_calls),
+        };
+        lines.push(Line::styled(truncate(&text, width), dim));
     }
     (title, lines)
 }

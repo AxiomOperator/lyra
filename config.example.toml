@@ -175,3 +175,29 @@ currency = "$"
 # name = "fs"
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/notes"]
+
+# Goals (see README): long-lived goals worked through plans, with blockers,
+# priorities, triggers and an autonomy policy the runtime enforces.
+# [goals]
+# tick_seconds = 60
+# stale_days = 14
+#
+# [goals.autonomy]
+# mode = "reactive"         # reactive | assisted | autonomous
+# max_runtime_minutes = 30
+# max_plans = 3
+# max_tool_calls = 60
+# max_model_calls = 40
+# max_replans = 2
+# max_cost = 0.0
+# max_risk = "write"
+# cooldown_minutes = 60
+# max_failures = 3
+#
+# [goals.priority]
+# explicit = 0.35
+# deadline = 0.25
+# dependency = 0.15
+# importance = 0.1
+# progress = 0.1
+# cost = 0.05

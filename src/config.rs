@@ -39,6 +39,25 @@ pub struct Config {
     pub evolution: EvolutionConfig,
     /// `[capabilities]` table: discovery, policy and external tool providers.
     pub capabilities: CapabilitiesConfig,
+    /// `[goals]` table: long-lived goals, their scheduling and autonomy.
+    pub goals: GoalsConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(default)]
+pub struct GoalsConfig {
+    pub enabled: bool,
+    /// Seconds between checks of triggers, blockers and autonomous work.
+    pub tick_seconds: u64,
+    /// `stale_days`, `[goals.autonomy]` and `[goals.priority]`.
+    #[serde(flatten)]
+    pub settings: lyra_goals::Settings,
+}
+
+impl Default for GoalsConfig {
+    fn default() -> Self {
+        Self { enabled: true, tick_seconds: 60, settings: Default::default() }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -275,6 +294,7 @@ impl Default for Config {
             planning: PlanningConfig::default(),
             evolution: EvolutionConfig::default(),
             capabilities: CapabilitiesConfig::default(),
+            goals: GoalsConfig::default(),
         }
     }
 }
@@ -310,7 +330,9 @@ fn user_home() -> Option<PathBuf> {
 /// ~/.lyra/
 /// ├── config/    config.toml, behavior.toml (evolved behavior)
 /// ├── context/   SOUL.md, USER.md, AGENT.md
+/// ├── capabilities/ capabilities.db (usage), index/ (discovery, LanceDB)
 /// ├── evolution/ evolution.db (runs, candidates, generations)
+/// ├── goals/     goals.db (long-lived goals, their plans, blockers, triggers)
 /// ├── memory/    lance/ (memories, LanceDB), backups
 /// ├── plans/     plans.db
 /// ├── skills/    <name>.md, one per skill

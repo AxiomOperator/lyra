@@ -14,6 +14,7 @@ Everything lyra keeps lives in one folder, `~/.lyra` (set `LYRA_HOME` to use ano
 ├── context/   SOUL.md, USER.md, AGENT.md
 ├── capabilities/ capabilities.db (usage), index/ (discovery, LanceDB)
 ├── evolution/ evolution.db (runs, candidates, generations)
+├── goals/     goals.db (long-lived goals, their plans, blockers, triggers)
 ├── memory/    lance/ (LanceDB: memories, vectors, history)
 ├── plans/     plans.db
 ├── skills/    <name>.md, one file per skill
@@ -381,6 +382,89 @@ deprecate_min_uses = 5
 stale_days = 90
 ```
 
+## Goals and autonomy
+
+A **plan** is one attempt at something; a **goal** is what lyra is trying to
+accomplish over days or weeks. Built following `docs/done/goal_manager.md`
+in the `goals/` crate (`lyra-goals`); goals persist in `~/.lyra/goals/goals.db`.
+
+- **Goals** have a title and description, success criteria, a priority (0–10),
+  importance, an optional deadline, a parent and subgoals, and goals they wait
+  for. Statuses: proposed, active, blocked, paused, completed, failed,
+  cancelled. Goals the model suggests (`goal_create`) start as proposed.
+- **Decomposition.** `/goal decompose` has the model break a goal into
+  subgoals with their order. A goal with open subgoals is worked through them,
+  and completes when they all have.
+- **Plans are attempts.** `/goal work` plans the next useful piece of a goal,
+  told what's done and what earlier plans found, and runs it. When a plan
+  ends, the goal's progress (items done, a summary in words) follows from the
+  plan's evaluation, and completed or failed goals become memory episodes.
+- **Blockers and dependencies.** A goal that can't progress is blocked with a
+  reason: missing information, missing permission, an external or failed
+  dependency, approval required, or a capability unavailable. A blocked goal
+  isn't retried; it waits for a state change. An approved plan, or a
+  capability that's healthy again, unblocks it, and so can a trigger or
+  `/goal unblock`. Plans that keep failing (`max_failures`) block their goal.
+- **Priority.** Goals rank by explicit priority, deadline urgency, how many
+  goals wait for them, importance and progress, less what they've cost so far
+  (`/goals next` explains the pick). A goal due tomorrow that blocks three
+  others can come before a higher-priority one.
+- **Scheduling and triggers.** `/goal when` wakes a goal at a time, every so
+  often (recurring goals reopen each period), after another goal completes,
+  or when a condition becomes true: an environment variable is set, a file
+  exists, a capability is healthy.
+- **Autonomy** (`[goals.autonomy] mode`, or `/goals autonomy` for this run):
+  - *reactive* (the default): only works when asked.
+  - *assisted*: may continue goals already worked on (and resume interrupted
+    plans), but every write is a plan step that waits for approval.
+  - *autonomous*: picks the highest-priority goal that can progress and works
+    on it.
+
+  In both of the last two, the runtime enforces a session's limits: minutes,
+  plans, tool and model calls, replans, cost, and the riskiest capability it
+  may use. When a limit is reached the session stops, and another may start
+  after `cooldown_minutes`. Autonomous work only starts while you're idle.
+- **Review.** `/goals review` has the model suggest merging duplicate goals,
+  cancelling obsolete ones, completing finished ones and fixing priorities,
+  and flags goals untouched for `stale_days`. Applied with
+  `/goals review apply`, or straight away in autonomous mode.
+- **The model knows.** The open goals are in the system prompt, and
+  `goal_list`, `goal_get`, `goal_create` and `goal_note` let it answer "how
+  far are we on …" and record progress. Goals that keep getting stuck become
+  evolution problems.
+
+Commands: `/goals [all]`, `/goals next`, `/goals review [apply]`,
+`/goals autonomy [reactive|assisted|autonomous]`, `/goal new <title> [-- description]`,
+`/goal <id>`, `/goal decompose|work <id>`,
+`/goal activate|pause|cancel|complete|fail|unblock <id>`,
+`/goal priority|importance|due|criteria|depends|block|when <id> …`.
+
+```toml
+[goals]
+tick_seconds = 60           # how often triggers, blockers and autonomy are checked
+stale_days = 14
+
+[goals.autonomy]
+mode = "reactive"           # reactive | assisted | autonomous
+max_runtime_minutes = 30    # one session's limits
+max_plans = 3
+max_tool_calls = 60
+max_model_calls = 40
+max_replans = 2
+max_cost = 0.0              # 0 = no limit
+max_risk = "write"          # the riskiest capability autonomous work may use
+cooldown_minutes = 60
+max_failures = 3            # failed plans in a row before a goal is blocked
+
+[goals.priority]
+explicit = 0.35
+deadline = 0.25
+dependency = 0.15
+importance = 0.1
+progress = 0.1
+cost = 0.05
+```
+
 ## Self-evolution
 
 Skills are what lyra learns; **evolution** changes *how it works*, from
@@ -617,6 +701,7 @@ address), rules and aligned tables, also while a reply is still streaming; on te
 - **Agent**: system prompt size, loaded SOUL/USER/AGENT files, capabilities by kind, how many are offered per message and any that are degraded or unavailable, and embedding/reranker health.
 - **Memory**: active memories by kind, vector coverage, the store (backend, size, search latency; red when operations fail), the current project, what needs approval (proposals, contradictions, duplicates, expired), working memory (goal, plan, notes, the last tool result), how many memories the last reply used, and the most recent memories (`?` marks unsure ones).
 - **Skills**: learning mode, average reliability, what needs review (proposals, conflicts, duplicates, failing or stale skills), the last reply's skills, and each active skill's reliability and use count.
+- **Goals**: open goals by priority with progress bars (subgoals indented, blocked ones with their reason), the autonomy mode and the current session's spending, or why it stopped.
 - **Plan**: the current plan's goal, steps with their status (✓ ▸ ⏸ ✗ ○, ⚠ for approval), budget use and any note.
 - **Evolution**: the generation and mode, runs recorded, success rate and corrections, calls per run, what has evolved (guidelines, workflows, composite tools, changed settings), candidates waiting for review, the last review, and what evolution is doing right now.
 - **Activity**: a timestamped log of requests, first tokens, tool calls and results, memory, skill, plan and evolution events, reloads and errors.

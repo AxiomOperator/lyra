@@ -33,6 +33,8 @@ pub struct Caps {
     pub evolution: Option<Arc<Evolution>>,
     openapi: Vec<OpenApiClient>,
     mcp: Vec<McpClient>,
+    /// Long-lived goals: the model can read them and note progress.
+    goals: std::sync::OnceLock<Arc<crate::goals::Goals>>,
 }
 
 /// Native tools: risk, permissions, prerequisites and how to check them.
@@ -71,6 +73,101 @@ fn native(name: &str, description: &str, parameters: &Value) -> Capability {
         _ => None,
     };
     c
+}
+
+/// The model's view of long-lived goals.
+fn goal_tools() -> Vec<Capability> {
+    let id = json!({ "type": "string", "description": "Goal id (the 8 characters shown is enough) or part of its title." });
+    let tool = |name: &str, description: &str, risk: RiskLevel, properties: Value, required: &[&str]| {
+        let mut c = Capability::new(name, CapabilityKind::NativeTool, description, risk);
+        c.input_schema = json!({ "type": "object", "properties": properties, "required": required });
+        c.source = "goals".into();
+        c.tags = vec!["goals".into(), "progress".into()];
+        c.permissions = vec![if risk == RiskLevel::ReadOnly { "goals.read" } else { "goals.write" }.into()];
+        c
+    };
+    vec![
+        tool("goal_list", "List the long-term goals by priority, with status and progress.", RiskLevel::ReadOnly, json!({}), &[]),
+        tool(
+            "goal_get",
+            "A goal's details: progress and where it stands, subgoals, plans so far, blockers.",
+            RiskLevel::ReadOnly,
+            json!({ "id": id }),
+            &["id"],
+        ),
+        tool(
+            "goal_create",
+            "Propose a new long-term goal (the user accepts it with /goal activate). Only for lasting objectives, not one-off requests.",
+            RiskLevel::LowWrite,
+            json!({
+                "title": { "type": "string" },
+                "description": { "type": "string" },
+                "success_criteria": { "type": "array", "items": { "type": "string" } },
+                "priority": { "type": "integer", "description": "0-10" },
+            }),
+            &["title"],
+        ),
+        tool(
+            "goal_note",
+            "Record progress on a goal: where it stands now, and optionally how many of how many pieces are done.",
+            RiskLevel::LowWrite,
+            json!({
+                "id": id,
+                "summary": { "type": "string" },
+                "completed_items": { "type": "integer" },
+                "total_items": { "type": "integer" },
+            }),
+            &["id", "summary"],
+        ),
+    ]
+}
+
+/// Run a goal tool.
+fn goal_tool(goals: &crate::goals::Goals, name: &str, args: &Value) -> Result<Value, String> {
+    let m = &goals.manager;
+    let brief = |g: &lyra_goals::Goal| {
+        json!({
+            "id": g.short(), "title": g.title, "status": g.status.as_str(), "priority": g.priority,
+            "progress": (g.progress * 100.0).round() / 100.0, "where_it_stands": g.progress_detail.summary,
+        })
+    };
+    match name {
+        "goal_list" => Ok(json!({ "goals": m.ranked()?.iter().map(|(g, _)| brief(g)).collect::<Vec<_>>() })),
+        "goal_get" => {
+            let g = m.find(args["id"].as_str().unwrap_or(""))?;
+            let mut v = brief(&g);
+            v["description"] = json!(g.description);
+            v["success_criteria"] = json!(g.success_criteria);
+            v["items"] = json!({ "completed": g.progress_detail.completed_items, "total": g.progress_detail.total_items });
+            v["subgoals"] = json!(m.children(g.id)?.iter().map(brief).collect::<Vec<_>>());
+            v["plans"] = json!(m.plans(g.id)?.iter().map(|p| json!({ "attempt": p.attempt, "outcome": p.outcome, "summary": p.summary })).collect::<Vec<_>>());
+            v["blockers"] = json!(m.blockers(Some(g.id), true)?.iter().map(|b| format!("{}: {}", b.blocker_type.as_str(), b.reason)).collect::<Vec<_>>());
+            Ok(v)
+        }
+        "goal_create" => {
+            let g = m.create(lyra_goals::prompts::agent_goal(args)?)?;
+            Ok(json!({ "result": "proposed", "id": g.short(), "note": format!("the user can accept it with /goal activate {}", g.short()) }))
+        }
+        "goal_note" => {
+            let mut g = m.find(args["id"].as_str().unwrap_or(""))?;
+            let summary = args["summary"].as_str().filter(|s| !s.trim().is_empty()).ok_or("a progress note needs a summary")?;
+            let d = &mut g.progress_detail;
+            d.summary = summary.trim().to_string();
+            d.updated_at = Some(chrono::Utc::now());
+            if let Some(n) = args["completed_items"].as_u64() {
+                d.completed_items = n as u32;
+            }
+            if let Some(n) = args["total_items"].as_u64() {
+                d.total_items = Some(n as u32);
+            }
+            if let Some(t) = d.total_items.filter(|t| *t > 0) {
+                g.progress = (d.completed_items as f32 / t as f32).clamp(0.0, 1.0);
+            }
+            m.update(&g, &format!("progress: {summary}"))?;
+            Ok(json!({ "result": "noted", "id": g.short(), "progress": (g.progress * 100.0).round() / 100.0 }))
+        }
+        _ => Err(format!("unknown goal tool {name}")),
+    }
 }
 
 /// The planner's risk scale.
@@ -112,7 +209,13 @@ impl Caps {
     }
 
     pub fn new(manager: CapabilityManager, rt: Handle, openapi: Vec<OpenApiClient>, mcp: Vec<McpClient>) -> Self {
-        Self { manager, rt, tools: None, learning: None, evolution: None, openapi, mcp }
+        Self { manager, rt, tools: None, learning: None, evolution: None, openapi, mcp, goals: std::sync::OnceLock::new() }
+    }
+
+    /// Add the goal tools (goal_list, goal_get, goal_create, goal_note).
+    pub fn set_goals(&self, goals: Arc<crate::goals::Goals>) {
+        let _ = self.goals.set(goals);
+        self.refresh();
     }
 
     fn run<T>(&self, f: impl Future<Output = anyhow::Result<T>>) -> Result<T, String> {
@@ -138,6 +241,9 @@ impl Caps {
                     caps.push(c);
                 }
             }
+        }
+        if self.goals.get().is_some() {
+            caps.extend(goal_tools());
         }
         caps.extend(self.openapi.iter().flat_map(OpenApiClient::capabilities));
         caps.extend(self.mcp.iter().flat_map(McpClient::capabilities));
@@ -294,6 +400,10 @@ impl Caps {
                 Some(client) => client.call(&c.id, &args),
                 None => Err(format!("{} has no provider", c.id)),
             },
+            _ if c.source == "goals" => match self.goals.get() {
+                Some(goals) => goal_tool(goals, &c.name, &args),
+                None => Err("goals are off".into()),
+            },
             _ => match &self.tools {
                 Some(tools) => {
                     let text = tools.run(&c.name, arguments, ctx);
@@ -399,6 +509,11 @@ impl Caps {
     /// Function definitions of every usable callable capability.
     pub fn tool_definitions(&self) -> Vec<Value> {
         self.callable().iter().map(Capability::definition).collect()
+    }
+
+    /// A capability's risk level, by name.
+    pub fn risk_level(&self, name: &str) -> Option<RiskLevel> {
+        self.manager.get(name).map(|c| c.risk)
     }
 
     /// The planner's risk for a tool, by name.

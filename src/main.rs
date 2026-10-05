@@ -2,6 +2,7 @@ mod caps;
 mod config;
 mod context;
 mod evolve;
+mod goals;
 mod markdown;
 mod learn;
 mod mem;
@@ -35,6 +36,7 @@ use lyra_execution::{Engine, ExecutionEvent, Goal, GoalStatus, Plan, PlanStatus,
 use evolve::{Evolution, EvolutionSnapshot};
 use mem::{Mem, MemorySnapshot};
 use caps::Caps;
+use goals::{Goals, GoalsSnapshot};
 use plan::LyraRuntime;
 use tools::{CallContext, Tools};
 
@@ -198,6 +200,12 @@ enum StreamEvent {
     Evolution(Result<EvolutionSnapshot, String>),
     /// Notes from capability work (registry refresh, health checks).
     CapNotes(Vec<String>),
+    /// Notes from goal work; `show` puts them in the chat too.
+    GoalNotes { notes: Vec<String>, show: bool },
+    /// A plan was made for a goal (and is now running).
+    GoalPlan { result: Result<(Goal, Plan), String>, autonomous: bool },
+    /// Fresh contents for the goals panel.
+    Goals(Result<GoalsSnapshot, String>),
 }
 
 /// What `main` opened before the UI starts.
@@ -215,6 +223,7 @@ struct Services {
     /// Where evolution keeps its records, or why it's off.
     evolution_status: Result<String, String>,
     caps: Option<Arc<Caps>>,
+    goals: Option<Arc<Goals>>,
 }
 
 /// What the assistant is doing right now, for the session panel.
@@ -319,6 +328,18 @@ struct App {
     evolution_panel: Option<Result<EvolutionSnapshot, String>>,
     /// Every capability, behind policy (`[capabilities]`).
     caps: Option<Arc<Caps>>,
+    /// Long-lived goals and autonomy (`[goals]`).
+    goals: Option<Arc<Goals>>,
+    goals_panel: Option<Result<GoalsSnapshot, String>>,
+    /// When goals were last checked, and how often to.
+    goals_checked: Instant,
+    goals_every: Duration,
+    /// Plans started by autonomy (their spending counts against the session).
+    autonomous_plans: std::collections::HashSet<Uuid>,
+    /// The last thing said about autonomy (not repeated every tick).
+    autonomy_note: String,
+    /// A goal decomposition or review is running.
+    goals_busy: bool,
     /// The evolution work running in the background, if any.
     evolving: Option<&'static str>,
     /// Days between automatic evolution reviews, if scheduled.
@@ -355,7 +376,7 @@ struct App {
 
 impl App {
     fn new(config: Config, context: Context, services: Services) -> Self {
-        let Services { tools, memory_status, learning, learning_status, engine, planning_status, evolution, evolution_status, caps } =
+        let Services { tools, memory_status, learning, learning_status, engine, planning_status, evolution, evolution_status, caps, goals } =
             services;
         let definitions = tools.as_ref().map(|t| t.definitions());
         let tools_tokens = definitions.as_ref().map_or(0, |d| learn::approx_tokens(&d.to_string()));
@@ -402,6 +423,13 @@ impl App {
             evolution_status,
             evolution_panel: None,
             caps,
+            goals,
+            goals_panel: None,
+            goals_checked: Instant::now(),
+            goals_every: Duration::from_secs(config.goals.tick_seconds.max(10)),
+            autonomous_plans: Default::default(),
+            autonomy_note: String::new(),
+            goals_busy: false,
             evolving: None,
             evolution_review_every: config.evolution.review.every_days(),
             session_started: chrono::Utc::now(),
@@ -456,6 +484,7 @@ impl App {
             .collect();
         let (model, tools, tx) = (self.model.clone(), self.tools.clone(), self.tx.clone());
         let (learning, evolution, caps) = (self.learning.clone(), self.evolution.clone(), self.caps.clone());
+        let goals_section = self.goals.as_ref().and_then(|g| g.prompt_section());
         thread::spawn(move || {
             let mut history = history;
             // Evolved behavior: guidelines, the matching workflow, the round limit.
@@ -465,6 +494,9 @@ impl App {
                 if let Some(section) = evolution.chat_section(&content) {
                     add_to_system(&mut history, &section);
                 }
+            }
+            if let Some(section) = &goals_section {
+                add_to_system(&mut history, section);
             }
             if let Some(tools) = &tools {
                 apply_memories(&tools.mem, &content, run, &mut history, &tx);
@@ -504,6 +536,9 @@ impl App {
                 self.set_phase(Phase::Waiting);
                 if name.starts_with("memory_") || name == "working_memory" {
                     self.refresh_memory();
+                }
+                if name.starts_with("goal_") {
+                    self.refresh_goals();
                 }
                 // A new fact may update, contradict or support what's known (M3, M4).
                 if name == "memory_remember"
@@ -759,6 +794,39 @@ impl App {
                 self.refresh_evolution();
                 self.refresh_skills();
             }
+            StreamEvent::GoalNotes { notes, show } => {
+                self.goals_busy = false;
+                for note in &notes {
+                    self.log(Level::Plan, note.clone());
+                }
+                if show && !notes.is_empty() {
+                    self.messages.push(Message::new("info", format!("🎯 {}", notes.join("\n"))));
+                }
+                self.refresh_goals();
+            }
+            StreamEvent::GoalPlan { result, autonomous } => match result {
+                Ok((goal, plan)) => {
+                    if autonomous {
+                        self.autonomous_plans.insert(plan.id);
+                    }
+                    let by = if autonomous { "autonomously " } else { "" };
+                    self.log(Level::Plan, format!("working {by}on goal with plan {}", lyra_execution::short(plan.id)));
+                    let mut text = plan::describe(Some(&goal), &plan);
+                    text += "\nrunning it now · /plan cancel stops it";
+                    self.messages.push(Message::new("info", text));
+                    self.current_goal = Some(goal);
+                    self.current_plan = Some(plan);
+                    self.refresh_goals();
+                }
+                Err(e) => {
+                    self.plan_busy = false;
+                    self.set_phase(Phase::Idle);
+                    self.log(Level::Error, e.clone());
+                    self.messages.push(Message::new("error", e));
+                    self.refresh_goals();
+                }
+            },
+            StreamEvent::Goals(snapshot) => self.goals_panel = Some(snapshot),
             StreamEvent::CapNotes(notes) => {
                 for note in notes {
                     self.log(Level::Tool, note);
@@ -818,6 +886,7 @@ impl App {
         self.reload_evolution();
         self.check_models();
         self.refresh_caps(true);
+        self.refresh_goals();
         self.memory_upkeep();
         self.recover_plans();
         self.sync_skills();
@@ -984,7 +1053,7 @@ impl App {
         };
         let last_run = self.last_run.clone();
         let result = match name {
-            "/help" => Ok(format!("{COMMANDS}\n{}\n{}\n{HELP_END}", evolve::COMMANDS, caps::COMMANDS)),
+            "/help" => Ok(format!("{COMMANDS}\n{}\n{}\n{}\n{HELP_END}", goals::COMMANDS, evolve::COMMANDS, caps::COMMANDS)),
             "/skills" => need().and_then(|l| l.describe()),
             "/approve" => need().and_then(|l| l.approve(arg)),
             "/reject" => need().and_then(|l| l.reject(arg)),
@@ -1031,6 +1100,7 @@ impl App {
             "/plan" | "/plans" => self.plan_command(name, arg),
             "/evolve" => self.evolve_command(arg),
             "/caps" => self.caps_command(arg),
+            "/goals" | "/goal" => self.goals_command(name, arg),
             "/memory" => {
                 let mem = self.mem().ok_or_else(|| match &self.memory_status {
                     Err(why) => why.clone(),
@@ -1180,6 +1250,13 @@ impl App {
         });
     }
 
+    /// The plan runtime for autonomous work: the autonomy guard applies (G11).
+    fn autonomous_runtime(&self) -> LyraRuntime {
+        let mut rt = self.runtime();
+        rt.guard = self.goals.as_ref().map(|g| g.guard());
+        rt
+    }
+
     fn runtime(&self) -> LyraRuntime {
         LyraRuntime {
             url: format!("{}/chat/completions", self.base_url.trim_end_matches('/')),
@@ -1189,6 +1266,7 @@ impl App {
             forbidden_tools: self.forbidden_tools.clone(),
             evolution: self.evolution.clone(),
             caps: self.caps.clone(),
+            guard: None,
             tx: self.tx.clone(),
         }
     }
@@ -1321,6 +1399,7 @@ impl App {
     /// A plan run ended. Report it, and when it finished, hand the evidence to
     /// memory (P18) and skills (P19): the planner never writes either directly.
     fn plan_finished(&mut self, outcome: RunOutcome) {
+        self.goal_plan_finished(&outcome);
         let plan = outcome.plan;
         self.reload_plan(plan.id);
         let goal = self.current_goal.clone();
@@ -1415,6 +1494,7 @@ impl App {
             tools: self.tools.clone(),
             learning: self.learning.clone(),
             caps: self.caps.clone(),
+            goals: self.goals.clone(),
             system_prompt: self.system_prompt.clone(),
         })
     }
@@ -1466,6 +1546,332 @@ impl App {
             }
             let _ = tx.send(StreamEvent::CapNotes(notes));
         });
+    }
+
+    // ---- goals (docs/done/goal_manager.md)
+
+    fn refresh_goals(&self) {
+        let Some(goals) = self.goals.clone() else { return };
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(StreamEvent::Goals(goals.snapshot()));
+        });
+    }
+
+    /// A plan ended or paused: if it was for a goal, the goal's progress,
+    /// status and (for autonomous work) the session's spending follow (G5).
+    fn goal_plan_finished(&mut self, outcome: &RunOutcome) {
+        let (Some(goals), Some(engine)) = (self.goals.clone(), self.engine.clone()) else { return };
+        let plan = &outcome.plan;
+        if self.autonomous_plans.contains(&plan.id) {
+            let m = engine.metrics(plan).unwrap_or_default();
+            let cost = self.pricing.cost(m.tokens, 0, 0);
+            goals.spent(m.model_calls, m.tool_calls, m.replans, cost);
+            if plan.status.is_finished() {
+                self.autonomous_plans.remove(&plan.id);
+            }
+        }
+        match goals.plan_finished(outcome, plan.usage.tokens) {
+            Ok(notes) if !notes.is_empty() => {
+                for note in &notes {
+                    self.log(Level::Plan, note.clone());
+                }
+                self.messages.push(Message::new("info", notes.join("\n")));
+            }
+            Ok(_) => {}
+            Err(e) => self.log(Level::Error, format!("goal update failed: {e}")),
+        }
+        if let Ok(Some(gp)) = goals.manager.plan_goal(plan.id) {
+            self.goal_episode(gp.goal_id);
+        }
+        self.refresh_goals();
+    }
+
+    /// A goal that ended becomes a memory episode (goal events feed Memory).
+    fn goal_episode(&self, id: Uuid) {
+        let (Some(goals), Some(mem)) = (self.goals.clone(), self.mem()) else { return };
+        let Ok(Some(g)) = goals.manager.get(id) else { return };
+        if !matches!(g.status, lyra_goals::GoalStatus::Completed | lyra_goals::GoalStatus::Failed) {
+            return;
+        }
+        let scope = mem.manager.settings().default_scope.clone();
+        let summary = format!("Goal: {}. {}", g.title, g.progress_detail.summary);
+        let outcome = format!("goal {} after {} plan(s)", g.status, goals.manager.plans(g.id).map(|p| p.len()).unwrap_or(0));
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let note = match mem.run(mem.manager.add_episode(&scope, &summary, &outcome, Vec::new(), None, Some(g.created_at))) {
+                Ok(m) => format!("recorded goal episode [{}]", m.short_id()),
+                Err(e) => format!("goal episode not recorded: {e}"),
+            };
+            let _ = tx.send(StreamEvent::MemoryNotes(vec![note]));
+        });
+    }
+
+    /// Plan and work on a goal now (G4): a new plan toward it, run right away.
+    fn work_goal(&mut self, key: &str, autonomous: bool) -> Result<String, String> {
+        let goals = self.goals.clone().ok_or("goals are off")?;
+        let engine = self.engine.clone().ok_or("planning is off, and goals are worked through plans")?;
+        if self.plan_busy {
+            return Err("a plan is already being created or run".into());
+        }
+        let g = goals.manager.find(key)?;
+        if matches!(g.status, lyra_goals::GoalStatus::Proposed | lyra_goals::GoalStatus::Paused) && !autonomous {
+            goals.manager.set_status(g.id, lyra_goals::GoalStatus::Active, "the user started work on it")?;
+        }
+        let g = goals.manager.get(g.id)?.ok_or("goal vanished")?;
+        if let Err((kind, why)) = goals.manager.can_progress(&g) {
+            return Err(format!("{} can't progress: {} ({})", g.title, why, kind.as_str()));
+        }
+        let request = goals.request(&g)?;
+        self.plan_busy = true;
+        self.set_phase(Phase::Tools(format!("goal {}", g.short())));
+        let rt = if autonomous { self.autonomous_runtime() } else { self.runtime() };
+        let (tx, base) = (self.tx.clone(), engine.settings.budget);
+        let title = g.title.clone();
+        thread::spawn(move || match engine.create(&request, &rt) {
+            Ok((plan_goal, plan)) => {
+                let _ = goals.manager.link_plan(g.id, plan.id, autonomous);
+                if autonomous {
+                    let _ = engine.set_budget(plan.id, goals.remaining_budget(base));
+                }
+                let plan = engine.plan(plan.id).ok().flatten().unwrap_or(plan);
+                let _ = tx.send(StreamEvent::GoalPlan { result: Ok((plan_goal, plan.clone())), autonomous });
+                let _ = tx.send(StreamEvent::PlanFinished(engine.run(plan.id, &rt)));
+            }
+            Err(e) => {
+                // A goal that can't even be planned needs information first.
+                if autonomous {
+                    let _ = goals.manager.block(g.id, lyra_goals::BlockerType::MissingInformation, &format!("couldn't plan it: {e}"));
+                }
+                let _ = tx.send(StreamEvent::GoalPlan { result: Err(format!("couldn't plan {title}: {e}")), autonomous });
+            }
+        });
+        Ok(format!("working on {} — planning…", g.title))
+    }
+
+    /// Run in the background: break a goal into subgoals (G3).
+    fn decompose_goal(&mut self, key: &str) -> Result<String, String> {
+        let goals = self.goals.clone().ok_or("goals are off")?;
+        let g = goals.manager.find(key)?;
+        if self.goals_busy {
+            return Err("a goal decomposition or review is already running".into());
+        }
+        self.goals_busy = true;
+        // What lyra can do, so subgoals are things it can actually work on.
+        let mut context: Vec<String> = Vec::new();
+        if let Some(caps) = &self.caps {
+            let (found, _) = caps.search(&serde_json::json!({ "query": format!("{} {}", g.title, g.description) }).to_string());
+            context.push(format!("capabilities: {found}"));
+        }
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let (model, tx, title) = (self.model.clone(), self.tx.clone(), g.title.clone());
+        thread::spawn(move || {
+            let prompt = lyra_goals::prompts::decompose_prompt(&g, &context.join("\n"));
+            let notes = learn::complete(&url, &model, lyra_goals::prompts::DECOMPOSE_PROMPT, &prompt)
+                .and_then(|(reply, _)| lyra_goals::prompts::parse_decomposition(&reply, &g))
+                .and_then(|subs| goals.manager.decompose(g.id, subs))
+                .map(|kids| {
+                    let mut notes = vec![format!("{title} → {} subgoals:", kids.len())];
+                    notes.extend(kids.iter().map(|k| {
+                        let waits = if k.dependencies.is_empty() { String::new() } else { format!(" (after {})", k.dependencies.len()) };
+                        format!("  {} {}{waits}", k.short(), k.title)
+                    }));
+                    notes
+                })
+                .unwrap_or_else(|e| vec![format!("decomposing {title} failed: {e}")]);
+            let _ = tx.send(StreamEvent::GoalNotes { notes, show: true });
+        });
+        Ok("breaking the goal into subgoals…".into())
+    }
+
+    /// Run in the background: review the goal list (G12). In autonomous mode
+    /// the suggestions are applied; otherwise they wait for `/goals review apply`.
+    fn review_goals(&mut self) -> Result<String, String> {
+        let goals = self.goals.clone().ok_or("goals are off")?;
+        if self.goals_busy {
+            return Err("a goal decomposition or review is already running".into());
+        }
+        let all = goals.manager.all()?;
+        if all.iter().filter(|g| g.status.is_open()).count() < 2 {
+            return Ok("fewer than two open goals: nothing to tidy".into());
+        }
+        self.goals_busy = true;
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let (model, tx) = (self.model.clone(), self.tx.clone());
+        thread::spawn(move || {
+            let stale: Vec<lyra_goals::Uuid> = goals.manager.stale().unwrap_or_default().iter().map(|g| g.id).collect();
+            let prompt = lyra_goals::prompts::review_prompt(&all, &stale);
+            let notes = match learn::complete(&url, &model, lyra_goals::prompts::REVIEW_PROMPT, &prompt).and_then(|(r, _)| lyra_goals::prompts::parse_review(&r)) {
+                Ok(review) => {
+                    for g in all.iter().filter(|g| g.status.is_open()) {
+                        let _ = goals.manager.note_review(g.id, "reviewed");
+                    }
+                    let text = goals::describe_review(&goals, &review);
+                    if goals.mode() == lyra_goals::AutonomyMode::Autonomous && !review.is_empty() {
+                        let mut notes = vec!["goal review (applied):".to_string()];
+                        notes.extend(goals::apply_review(&goals, &review));
+                        notes
+                    } else {
+                        let empty = review.is_empty();
+                        *goals.review.lock().unwrap_or_else(|e| e.into_inner()) = Some(review);
+                        let mut notes = vec![format!("goal review:\n{text}")];
+                        if !empty {
+                            notes.push("/goals review apply to make these changes".into());
+                        }
+                        notes
+                    }
+                }
+                Err(e) => vec![format!("goal review failed: {e}")],
+            };
+            let _ = tx.send(StreamEvent::GoalNotes { notes, show: true });
+        });
+        Ok("reviewing the goals…".into())
+    }
+
+    /// `/goals …` and `/goal …`
+    fn goals_command(&mut self, name: &str, arg: &str) -> Result<String, String> {
+        let goals = self.goals.clone().ok_or("goals are off ([goals] enabled)")?;
+        let (sub, rest) = arg.trim().split_once(' ').unwrap_or((arg.trim(), ""));
+        let rest = rest.trim();
+        let result = match (name, sub) {
+            ("/goals", "") => goals::list(&goals, false),
+            ("/goals", "all") => goals::list(&goals, true),
+            ("/goals", "next") => goals::next(&goals),
+            ("/goals", "review") if rest == "apply" => {
+                let review = goals.review.lock().unwrap_or_else(|e| e.into_inner()).take();
+                match review {
+                    Some(r) => Ok(goals::apply_review(&goals, &r).join("\n")),
+                    None => Err("no review waiting: /goals review".into()),
+                }
+            }
+            ("/goals", "review") => self.review_goals(),
+            ("/goals", "autonomy") => {
+                if !rest.is_empty() {
+                    let mode: lyra_goals::AutonomyMode = serde_json::from_value(serde_json::json!(rest))
+                        .map_err(|_| "usage: /goals autonomy reactive|assisted|autonomous")?;
+                    goals.set_mode(mode);
+                    self.autonomy_note.clear();
+                    self.log(Level::Plan, format!("autonomy: {}", mode.as_str()));
+                }
+                let p = &goals.manager.settings.autonomy;
+                let s = goals.session.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                Ok(format!(
+                    "autonomy {} · per session: {} min, {} plans, {} tool / {} model calls, {} replans, up to {} risk\nthis session: {} plans, {} tool / {} model calls{}",
+                    goals.mode().as_str(),
+                    p.max_runtime_minutes,
+                    p.max_plans,
+                    p.max_tool_calls,
+                    p.max_model_calls,
+                    p.max_replans,
+                    p.max_risk,
+                    s.plans,
+                    s.tool_calls,
+                    s.model_calls,
+                    s.stopped.as_ref().map_or(String::new(), |(_, why)| format!(" · stopped: {why}"))
+                ))
+            }
+            ("/goal", "new") => goals::create(&goals, rest),
+            ("/goal", "work") => self.work_goal(rest, false),
+            ("/goal", "decompose") => self.decompose_goal(rest),
+            ("/goal", "") => goals::list(&goals, false),
+            ("/goal", s)
+                if matches!(
+                    s,
+                    "activate" | "resume" | "pause" | "cancel" | "complete" | "fail" | "unblock" | "priority" | "importance" | "due"
+                        | "criteria" | "depends" | "block" | "when"
+                ) =>
+            {
+                let out = goals::edit(&goals, s, rest);
+                if out.is_ok() && matches!(s, "complete" | "fail")
+                    && let Ok(g) = goals.manager.find(rest.split_whitespace().next().unwrap_or(""))
+                {
+                    self.goal_episode(g.id);
+                }
+                out
+            }
+            ("/goal", _) => goals::show(&goals, arg.trim()),
+            _ => Err(goals::COMMANDS.into()),
+        };
+        self.refresh_goals();
+        result
+    }
+
+    /// The goal loop (G8–G11), every few seconds while idle: fire triggers,
+    /// lift blockers whose cause went away, resume interrupted plans, and,
+    /// within the autonomy policy, work on the next goal.
+    fn goals_tick(&mut self) {
+        self.goals_checked = Instant::now();
+        let Some(goals) = self.goals.clone() else { return };
+        let caps = self.caps.clone();
+        let mut notes = goals.manager.fire_triggers(chrono::Utc::now(), &|c| goals::condition(c, caps.as_deref())).unwrap_or_default();
+        let mode = goals.mode();
+        // Blockers whose cause went away.
+        if let Some(engine) = self.engine.clone() {
+            for b in goals.manager.blockers(None, true).unwrap_or_default() {
+                let lift = match b.blocker_type {
+                    lyra_goals::BlockerType::ApprovalRequired => goals
+                        .manager
+                        .plans(b.goal_id)
+                        .ok()
+                        .and_then(|p| p.last().cloned())
+                        .and_then(|p| engine.plan(p.plan_id).ok().flatten())
+                        .is_some_and(|plan| !plan.steps.iter().any(|s| s.needs_approval())),
+                    lyra_goals::BlockerType::CapabilityUnavailable => caps.as_ref().is_some_and(|c| {
+                        c.manager.all().iter().all(|x| c.manager.health(x) != lyra_capabilities::CapabilityHealth::Unavailable)
+                    }),
+                    _ => false,
+                };
+                if lift && let Ok(g) = goals.manager.unblock(b.goal_id, &format!("{} resolved", b.blocker_type.as_str())) {
+                    notes.push(format!("goal {} unblocked: {} resolved", g.title, b.blocker_type.as_str()));
+                }
+            }
+            // G8: plans for goals that were interrupted or approved resume (not in reactive mode).
+            if mode != lyra_goals::AutonomyMode::Reactive && !self.plan_busy {
+                for gp in goals.manager.open_plans().unwrap_or_default() {
+                    let Ok(Some(plan)) = engine.plan(gp.plan_id) else { continue };
+                    let waiting = plan.steps.iter().any(|s| s.needs_approval() || s.status == lyra_execution::StepStatus::Blocked);
+                    let goal_ok = goals.manager.get(gp.goal_id).ok().flatten().is_some_and(|g| g.status == lyra_goals::GoalStatus::Active);
+                    if plan.status == PlanStatus::Paused && !waiting && goal_ok {
+                        notes.push(format!("resuming plan {} for its goal", lyra_execution::short(plan.id)));
+                        self.plan_busy = true;
+                        self.autonomous_plans.insert(plan.id);
+                        let (rt, tx) = (self.autonomous_runtime(), self.tx.clone());
+                        thread::spawn(move || {
+                            let _ = tx.send(StreamEvent::PlanFinished(engine.run(plan.id, &rt)));
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+        for note in &notes {
+            self.log(Level::Plan, note.clone());
+        }
+        if !notes.is_empty() {
+            self.refresh_goals();
+        }
+        // G11: autonomous work, within the policy.
+        if mode == lyra_goals::AutonomyMode::Reactive || self.plan_busy || self.engine.is_none() {
+            return;
+        }
+        let note = match goals.may_work(goals.manager.settings.autonomy.cooldown_minutes) {
+            Err(why) => why,
+            Ok(()) => match goals.manager.next(mode == lyra_goals::AutonomyMode::Assisted) {
+                Ok(Some((g, score))) => {
+                    self.log(Level::Plan, format!("autonomy picked {} (score {:.2})", g.title, score.total));
+                    match self.work_goal(&g.id.to_string(), true) {
+                        Ok(text) => text,
+                        Err(e) => e,
+                    }
+                }
+                Ok(None) => "nothing to work on".into(),
+                Err(e) => e,
+            },
+        };
+        if note != self.autonomy_note {
+            self.log(Level::Plan, format!("autonomy: {note}"));
+            self.autonomy_note = note;
+        }
     }
 
     /// `/caps …`
@@ -2082,8 +2488,12 @@ fn main() {
     let (engine, planning_status) = open_planning(&config, runtime.handle());
     let (evolution, evolution_status) = open_evolution(&config, runtime.handle());
     let (caps, caps_notes) = open_capabilities(&config, runtime.handle(), &tools, &learning, &evolution);
+    let goals = open_goals(&config, runtime.handle());
+    if let (Some(caps), Some(goals)) = (&caps, &goals) {
+        caps.set_goals(goals.clone());
+    }
     let services =
-        Services { tools, memory_status, learning, learning_status, engine, planning_status, evolution, evolution_status, caps };
+        Services { tools, memory_status, learning, learning_status, engine, planning_status, evolution, evolution_status, caps, goals };
     learn::configure(learn::Structured {
         max_tokens: config.structured_max_tokens,
         thinking: config.structured_thinking,
@@ -2199,6 +2609,15 @@ fn open_memory(
     }
 }
 
+/// Open the goal store (`~/.lyra/goals/goals.db`), unless goals are off.
+fn open_goals(config: &Config, runtime: &tokio::runtime::Handle) -> Option<Arc<Goals>> {
+    if !config.goals.enabled {
+        return None;
+    }
+    let path = config::home()?.join("goals").join("goals.db");
+    lyra_goals::GoalManager::open(&path, runtime.clone(), config.goals.settings.clone()).ok().map(|m| Arc::new(Goals::new(m)))
+}
+
 /// Open the capability registry: usage history and discovery index in
 /// `~/.lyra/capabilities`, providers from `[capabilities]`, plus the memory
 /// tools, skills, workflows and helper agents. Returns notes for the log.
@@ -2252,6 +2671,9 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
         }
         if !app.waiting && app.last_schedule_check.elapsed() > Duration::from_secs(10 * 60) {
             app.scheduled();
+        }
+        if !app.waiting && !app.plan_busy && app.goals_checked.elapsed() > app.goals_every {
+            app.goals_tick();
         }
 
         terminal.draw(|f| ui::draw(f, app))?;

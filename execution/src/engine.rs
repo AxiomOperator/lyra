@@ -256,6 +256,13 @@ impl Engine {
         Ok(format!("budget raised: {text}"))
     }
 
+    /// Replace a plan's budget (e.g. the tighter limits of autonomous work).
+    pub fn set_budget(&self, plan_id: Uuid, budget: Budget) -> Result<(), String> {
+        let mut plan = self.plan(plan_id)?.ok_or("no such plan")?;
+        plan.budget = budget;
+        self.save(&plan)
+    }
+
     /// Every error the plan's attempts hit, in order (P20).
     pub fn errors(&self, plan: &Plan) -> Result<Vec<String>, String> {
         Ok(self.db(self.store.attempts(plan.id))?.into_iter().filter_map(|a| a.error).collect())

@@ -10,6 +10,39 @@ use uuid::Uuid;
 use crate::model::{Category, Opportunity, RunKind, RunRecord};
 
 /// How a learned skill is doing, from the skills system.
+/// How a long-lived goal has been going, for spotting goals that keep
+/// getting stuck the same way.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GoalRecord {
+    pub title: String,
+    /// Times it was blocked, and the most common kind of blocker.
+    pub blocks: u32,
+    pub common_blocker: Option<String>,
+    pub failed_plans: u32,
+}
+
+/// Goals blocked again and again (for the same reason) or whose plans keep
+/// failing: better workflows, tools or guidance could get them moving.
+pub fn detect_goals(goals: &[GoalRecord], t: &Thresholds) -> Vec<Opportunity> {
+    goals
+        .iter()
+        .filter(|g| g.blocks >= t.goal_blocks || g.failed_plans >= t.goal_blocks)
+        .map(|g| Opportunity {
+            kind: "stuck_goal".into(),
+            problem: format!(
+                "goal \"{}\" keeps getting stuck: blocked {} times{}, {} failed plans",
+                g.title,
+                g.blocks,
+                g.common_blocker.as_ref().map_or(String::new(), |b| format!(" (mostly {b})")),
+                g.failed_plans
+            ),
+            categories: vec![Category::Workflow, Category::Prompt, Category::Tool, Category::Skill],
+            evidence: Vec::new(),
+            details: json!({ "goal": g.title, "blocks": g.blocks, "common_blocker": g.common_blocker, "failed_plans": g.failed_plans }),
+        })
+        .collect()
+}
+
 /// A capability's track record, for spotting tools that fail or crawl (C12).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CapabilityRecord {
@@ -62,6 +95,8 @@ pub struct Thresholds {
     pub capability_success: f32,
     /// ...and one this slow on average (milliseconds) is slow.
     pub capability_slow_ms: u64,
+    /// A goal blocked (or with failed plans) this often is stuck.
+    pub goal_blocks: u32,
 }
 
 impl Default for Thresholds {
@@ -82,6 +117,7 @@ impl Default for Thresholds {
             capability_min_uses: 5,
             capability_success: 0.6,
             capability_slow_ms: 15_000,
+            goal_blocks: 3,
         }
     }
 }

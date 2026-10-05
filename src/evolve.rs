@@ -62,6 +62,7 @@ pub struct Env {
     pub tools: Option<Arc<Tools>>,
     pub learning: Option<Arc<Learning>>,
     pub caps: Option<Arc<crate::caps::Caps>>,
+    pub goals: Option<Arc<crate::goals::Goals>>,
     /// The chat's system prompt (context files and tool instructions), for benchmarks.
     pub system_prompt: Option<String>,
 }
@@ -273,7 +274,34 @@ fn review_inner(env: &Env, done: &mut Done) -> Result<(), String> {
                 .collect()
         })
         .unwrap_or_default();
-    let ops = ev.manager.detect(&skills.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>(), &records)?;
+    // Goal events feed evolution: goals that keep getting stuck.
+    let goal_records: Vec<lyra_evolution::detect::GoalRecord> = env
+        .goals
+        .as_ref()
+        .and_then(|g| {
+            let m = &g.manager;
+            let all = m.all().ok()?;
+            Some(
+                all.into_iter()
+                    .filter(|goal| goal.status.is_open())
+                    .map(|goal| {
+                        let blockers = m.blockers(Some(goal.id), false).unwrap_or_default();
+                        let mut counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+                        for b in &blockers {
+                            *counts.entry(b.blocker_type.as_str()).or_default() += 1;
+                        }
+                        lyra_evolution::detect::GoalRecord {
+                            title: goal.title.clone(),
+                            blocks: blockers.len() as u32,
+                            common_blocker: counts.into_iter().max_by_key(|(_, n)| *n).map(|(k, _)| k.to_string()),
+                            failed_plans: m.plans(goal.id).unwrap_or_default().iter().filter(|p| p.outcome.as_deref() == Some("failed")).count() as u32,
+                        }
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_default();
+    let ops = ev.manager.detect(&skills.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>(), &records, &goal_records)?;
     if ops.is_empty() {
         let note = format!("no problems found in the last {} runs", ev.manager.settings.window);
         ev.manager.note_review(&note)?;
@@ -1384,7 +1412,7 @@ mod tests {
         };
         let change = Change::Configuration { key: "verify_reasoning_steps".into(), from: json!(false), to: json!(true) };
         let c = ev.manager.propose(&op, vec![evolver::Proposal { change, rationale: "verify".into(), confidence: 0.6 }]).unwrap().remove(0);
-        let env = Env { url: format!("{}/chat/completions", url.trim_end_matches('/')), model, evolution: ev, tools: None, learning: None, caps: None, system_prompt: None };
+        let env = Env { url: format!("{}/chat/completions", url.trim_end_matches('/')), model, evolution: ev, tools: None, learning: None, caps: None, goals: None, system_prompt: None };
         let t = test(&env, c);
         for n in &t.notes {
             println!("{n}");

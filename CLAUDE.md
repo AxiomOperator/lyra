@@ -5,7 +5,7 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
 ## Layout
 
 - `src/` — the TUI binary: `main.rs` (app state, streaming, tool loop), `ui.rs` (all drawing), `markdown.rs` (replies as styled lines),
-  `config.rs`, `context.rs` (SOUL/USER/AGENT.md), `tools.rs` (memory tools + composite tools), `caps.rs` (capabilities glue), `mem.rs` (memory glue), `plan.rs` (planning glue), `learn.rs`
+  `config.rs`, `context.rs` (SOUL/USER/AGENT.md), `tools.rs` (memory tools + composite tools), `caps.rs` (capabilities glue), `goals.rs` (goals glue), `mem.rs` (memory glue), `plan.rs` (planning glue), `learn.rs`
   (self-learning glue), `evolve.rs` (evolution glue: evolved state, benchmark, `/evolve`), `retrieval.rs` (embedding/reranker clients), `stats.rs`.
 - `memory/` — `lyra-memory` crate: memory behind `MemoryManager` (LanceDB by default: typed memory rows with
   their embedding, FTS + vector search, history tables; SQLite backend kept as an alternative; the
@@ -25,6 +25,10 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
   workflow, skill, subagent) in one model; `CapabilityManager` (registry, FTS + semantic discovery in
   LanceDB, scoring, Rust-enforced policy, usage in SQLite, health); OpenAPI and MCP (stdio) providers.
   `src/caps.rs` is lyra's side: builds the registry and is the one way the chat and plans call tools.
+- `goals/` — `lyra-goals` crate: long-lived goals (`GoalManager`, SQLite): decomposition, goal ↔ plan
+  attempts, progress, blockers/dependencies, priority scoring, triggers and the autonomy policy.
+  `src/goals.rs` is lyra's side: commands, plan outcomes → progress, the autonomy session; the
+  goal loop runs from `App::goals_tick`.
 - `docs/` — design guides and examples (not binding; see rule 3). Fully implemented ones move to
   `docs/done/`.
 - Runtime files live in `~/.lyra` (`$LYRA_HOME`): `config/config.toml`, `context/`
@@ -44,7 +48,7 @@ cargo test --workspace
 1. **Commit and push after every completed feature or fix.** Once the checks pass, commit
    straight to `main` and `git push origin main`. Do not open a pull request.
 2. **After every feature, review the TUI panels.** Decide whether what was added should show
-   up in the side panels (Session, Agent, Memory, Skills, Plan, Evolution, Activity in `src/ui.rs`) or be
+   up in the side panels (Session, Agent, Memory, Skills, Goals, Plan, Evolution, Activity in `src/ui.rs`) or be
    logged to the Activity panel, and update them when it makes sense. Say in the summary
    what was changed in the UI, or why nothing needed to be.
 3. **`docs/` files are guides and examples, not instructions to change what's established.**
@@ -54,7 +58,7 @@ cargo test --workspace
    idea around it; never undo or migrate away from it because a doc says so. Established
    decisions are what the code and this file already do, for example:
    - everything lyra keeps lives in `~/.lyra` (`config/`, `context/`, `memory/`, `skills/`, `plans/`,
-     `evolution/`, `workflows/`, `tools/`, `capabilities/`)
+     `evolution/`, `workflows/`, `tools/`, `capabilities/`, `goals/`)
    - skills are Markdown files, one per skill; their history/evidence is in the ledger
    - memory is LanceDB behind `MemoryManager` (vectors + FTS); other state (plans, skills ledger,
      evolution) stays SQLite

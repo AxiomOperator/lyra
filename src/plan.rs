@@ -50,6 +50,9 @@ pub struct LyraRuntime {
     pub evolution: Option<Arc<Evolution>>,
     /// Every capability, behind policy; plans call tools through it.
     pub caps: Option<Arc<crate::caps::Caps>>,
+    /// Autonomous work (G11): the riskiest capability it may use, and the
+    /// level from which every use needs approval (assisted mode).
+    pub guard: Option<(lyra_capabilities::RiskLevel, Option<lyra_capabilities::RiskLevel>)>,
     pub tx: Sender<StreamEvent>,
 }
 
@@ -63,7 +66,11 @@ impl LyraRuntime {
         all.into_iter()
             .filter(|d| {
                 let name = d["function"]["name"].as_str().unwrap_or("");
-                !self.forbidden_tools.iter().any(|f| f == name) && allowed.is_none_or(|a| a.iter().any(|t| t == name))
+                // Reasoning can't stop for approval, so guarded writes stay out of it.
+                !self.forbidden_tools.iter().any(|f| f == name)
+                    && self.allowed_by_guard(name)
+                    && !self.guard_needs_approval(name)
+                    && allowed.is_none_or(|a| a.iter().any(|t| t == name))
             })
             .collect()
     }
@@ -81,6 +88,34 @@ impl LyraRuntime {
             (None, Some(tools)) => tools.run(name, arguments, ctx),
             _ => json!({ "error": format!("tool {name} isn't available") }).to_string(),
         }
+    }
+
+    /// Whether the autonomy guard lets plans use this tool at all.
+    fn allowed_by_guard(&self, name: &str) -> bool {
+        match (&self.guard, &self.caps) {
+            (Some((max, _)), Some(caps)) => caps.risk_level(name).is_none_or(|r| r <= *max),
+            _ => true,
+        }
+    }
+
+    /// The guard's approval floor applies to this tool.
+    fn guard_needs_approval(&self, name: &str) -> bool {
+        match (&self.guard, &self.caps) {
+            (Some((_, Some(floor))), Some(caps)) => caps.risk_level(name).is_some_and(|r| r >= *floor),
+            _ => false,
+        }
+    }
+
+    /// Apply the guard to the planner's tool list.
+    fn guarded(&self, tools: Vec<ToolInfo>) -> Vec<ToolInfo> {
+        tools
+            .into_iter()
+            .filter(|t| !self.forbidden_tools.contains(&t.name) && self.allowed_by_guard(&t.name))
+            .map(|mut t| {
+                t.requires_approval |= self.guard_needs_approval(&t.name);
+                t
+            })
+            .collect()
     }
 
     fn risk_of(&self, name: &str) -> Risk {
@@ -147,7 +182,7 @@ impl Runtime for LyraRuntime {
             // C3: the capabilities this goal needs, with their track record,
             // prerequisites, approval and verification.
             tools: match &self.caps {
-                Some(caps) => caps.plan_tools(goal).into_iter().filter(|t| !self.forbidden_tools.contains(&t.name)).collect(),
+                Some(caps) => self.guarded(caps.plan_tools(goal)),
                 None => self.tools(),
             },
             agents,
@@ -159,7 +194,7 @@ impl Runtime for LyraRuntime {
 
     fn tools(&self) -> Vec<ToolInfo> {
         if let Some(caps) = &self.caps {
-            return caps.all_tools().into_iter().filter(|t| !self.forbidden_tools.contains(&t.name)).collect();
+            return self.guarded(caps.all_tools());
         }
         self.definitions(None)
             .iter()
