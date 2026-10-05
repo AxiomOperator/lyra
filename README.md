@@ -557,12 +557,15 @@ Every call is checked in Rust before it runs, whatever the model asked for:
   `git status`, `systemctl status`, `docker ps`, `ping -c`, …), plus prefixes in
   `allow_commands` and file writes inside `write_roots`.
 - **Asks you first:** anything that changes things: other commands, `>`
-  redirects, `$(…)`, file writes elsewhere, deletes, other HTTP methods. The
-  chat shows `⚠ approval needed` with exactly what would run, the Session
-  state and Agents panel say who is waiting, and you answer `y` (allow), `n`
-  (deny) or `a` (allow that exact action for the session). Deleting, killing,
-  `sudo`, `git push`, stopping services and the like are marked ⚠. No answer
-  within `approval_timeout_seconds` is a no.
+  redirects, `$(…)`, file writes elsewhere, deletes, other HTTP methods. An
+  **Approval needed** box opens above the input: which agent asks, what kind
+  of thing it wants to do, exactly what (the command and where it runs, the
+  path, the URL), and why it needs a yes. Press `y` (allow once), `n` (deny)
+  or `a` (allow that exact action for the session); no Enter needed. Deleting,
+  killing, `sudo`, `git push`, stopping services and the like show in red as a
+  risk. The Session state and Agents panel say who is waiting, and the chat
+  keeps a record of each question and your answer. No answer within
+  `approval_timeout_seconds` is a no.
 - **Never runs:** `rm -rf /` or your home directory, `mkfs`, `dd` onto a disk,
   fork bombs, anything under `deny_paths` (keys, credentials, lyra's config),
   and servers not in `ssh_hosts`.

@@ -78,7 +78,10 @@ pub enum Answer {
 /// An agent waiting for the user's yes before it changes something.
 pub struct ApprovalRequest {
     pub agent: String,
-    pub action: String,
+    /// What kind of thing ("run a command on this machine").
+    pub what: String,
+    /// Exactly what (the command, the path).
+    pub detail: String,
     pub why: String,
     pub dangerous: bool,
     pub reply: Sender<Answer>,
@@ -87,13 +90,14 @@ pub struct ApprovalRequest {
 /// Ask the user (through the TUI) to approve an agent's action, and wait.
 /// No answer in time, or lyra closing, is a no.
 pub fn approve(env: &Env, profile: &AgentProfile, tool: &str, ask: crate::caps::Ask) -> Result<(), String> {
-    let key = format!("{}|{tool}|{}", profile.name, ask.action);
+    let key = format!("{}|{tool}|{}|{}", profile.name, ask.what, ask.detail);
+    let action = format!("{}: {}", ask.what, ask.detail.replace('\n', " "));
     if env.agents.allowed.lock().unwrap_or_else(|e| e.into_inner()).contains(&key) {
         return Ok(());
     }
     let timeout = env.caps.as_ref().and_then(|c| c.system.as_ref()).map_or(300, |s| s.settings.approval_timeout_seconds).max(10);
     let (reply, answer) = std::sync::mpsc::channel();
-    let request = ApprovalRequest { agent: profile.title.clone(), action: ask.action.clone(), why: ask.why, dangerous: ask.dangerous, reply };
+    let request = ApprovalRequest { agent: profile.title.clone(), what: ask.what, detail: ask.detail, why: ask.why, dangerous: ask.dangerous, reply };
     env.tx.send(StreamEvent::Approval(request)).map_err(|_| "lyra is closing".to_string())?;
     match answer.recv_timeout(std::time::Duration::from_secs(timeout)) {
         Ok(Answer::Yes) => Ok(()),
@@ -101,8 +105,8 @@ pub fn approve(env: &Env, profile: &AgentProfile, tool: &str, ask: crate::caps::
             env.agents.allowed.lock().unwrap_or_else(|e| e.into_inner()).insert(key);
             Ok(())
         }
-        Ok(Answer::No) => Err(format!("the user declined: {}", ask.action)),
-        Err(_) => Err(format!("no approval within {timeout}s, so it wasn't done: {}", ask.action)),
+        Ok(Answer::No) => Err(format!("the user declined: {action}")),
+        Err(_) => Err(format!("no approval within {timeout}s, so it wasn't done: {action}")),
     }
 }
 
@@ -623,17 +627,6 @@ pub fn auto_delegate(env: &Env, message: &str, run: Uuid, history: &mut Vec<Valu
     Some(profile.title)
 }
 
-/// The prompt for an approval.
-fn approval_text(r: &ApprovalRequest) -> String {
-    format!(
-        "{} wants to {}\n{}{}\ny allow · n deny · a allow this exact action for the session",
-        r.agent,
-        r.action,
-        if r.dangerous { "⚠ " } else { "" },
-        r.why
-    )
-}
-
 /// The wizard's finished draft (built and tested in the background).
 pub type Built = Result<Box<(AgentCreationDraft, Vec<String>)>, String>;
 
@@ -801,11 +794,10 @@ impl crate::App {
 
     /// An agent asks to change something: show it, and wait for y / n / a.
     pub(crate) fn approval_requested(&mut self, r: ApprovalRequest) {
-        use crate::{Level, Message, Phase};
-        self.log(Level::Agent, format!("{} asks: {} ({})", r.agent, r.action, r.why));
-        if self.approvals.is_empty() {
-            self.messages.push(Message::new("approval", approval_text(&r)));
-        }
+        use crate::{Level, Phase};
+        self.log(Level::Agent, format!("{} asks to {}: {} ({})", r.agent, r.what, r.detail.replace('\n', " "), r.why));
+        // The approval box above the input shows it; keep the chat at the bottom.
+        self.scroll = None;
         self.set_phase(Phase::Approval(r.agent.clone()));
         self.approvals.push(r);
     }
@@ -817,10 +809,8 @@ impl crate::App {
             "y" | "yes" | "ok" | "approve" => Answer::Yes,
             "n" | "no" | "deny" | "stop" => Answer::No,
             "a" | "always" => Answer::Always,
-            _ => {
-                self.messages.push(Message::new("error", "answer y (allow), n (deny) or a (allow this exact action for the session)".into()));
-                return;
-            }
+            // Anything else leaves the question open (the box stays up).
+            _ => return,
         };
         let r = self.approvals.remove(0);
         let said = match answer {
@@ -828,15 +818,13 @@ impl crate::App {
             Answer::No => "denied",
             Answer::Always => "allowed for this session",
         };
-        self.log(if answer == Answer::No { Level::Error } else { Level::Agent }, format!("{said}: {} — {}", r.agent, r.action));
-        self.messages.push(Message::new("info", format!("> {text}\n{said}: {}", r.action)));
+        let detail = r.detail.replace('\n', " · ");
+        self.log(if answer == Answer::No { Level::Error } else { Level::Agent }, format!("{said}: {} — {}: {detail}", r.agent, r.what));
+        // A record in the chat of what was asked and what you said.
+        self.messages.push(Message::new("approval", format!("{} asked to {}:\n  {detail}\n→ {said}", r.agent, r.what)));
         let _ = r.reply.send(answer);
-        match self.approvals.first() {
-            Some(next) => {
-                let text = approval_text(next);
-                self.messages.push(Message::new("approval", text));
-            }
-            None => self.set_phase(if self.waiting { Phase::Waiting } else { Phase::Idle }),
+        if self.approvals.is_empty() {
+            self.set_phase(if self.waiting { Phase::Waiting } else { Phase::Idle });
         }
     }
 
@@ -1333,7 +1321,7 @@ mod tests {
         while let Ok(e) = f.events.recv_timeout(std::time::Duration::from_secs(10)) {
             match e {
                 StreamEvent::Approval(r) => {
-                    asked.push((r.action.clone(), r.dangerous));
+                    asked.push((format!("{}: {}", r.what, r.detail), r.dangerous));
                     r.reply.send(answers.pop().unwrap()).unwrap();
                 }
                 StreamEvent::Agent(AgentEvent::Finished { .. }) => break,

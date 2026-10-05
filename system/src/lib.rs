@@ -305,21 +305,24 @@ impl System {
         }
     }
 
-    /// One line for the approval prompt: what exactly would happen.
-    pub fn describe(&self, tool: &str, args: &Value) -> String {
+    /// For the approval prompt: what kind of thing would happen ("run a
+    /// command on this machine") and exactly what (the command, the path).
+    pub fn describe(&self, tool: &str, args: &Value) -> (String, String) {
         let s = |k: &str| args[k].as_str().unwrap_or("").to_string();
         match tool {
-            "shell_run" => format!("run on this machine: {}{}", s("command"), if s("cwd").is_empty() { String::new() } else { format!("  (in {})", s("cwd")) }),
-            "ssh_run" => format!("run on {}: {}", s("host"), s("command")),
-            "file_write" => format!(
-                "{} {} ({} characters)",
-                if args["append"] == true { "append to" } else { "write" },
-                self.resolve(&s("path")).display(),
-                s("content").chars().count()
+            "shell_run" => {
+                let cwd = args["cwd"].as_str().filter(|c| !c.trim().is_empty()).map_or_else(|| self.home(), |c| self.resolve(c));
+                ("run a command on this machine".into(), format!("{}\nin {}", s("command"), cwd.display()))
+            }
+            "ssh_run" => (format!("run a command on the server {}", s("host")), s("command")),
+            "file_write" => (
+                if args["append"] == true { "add to a file".into() } else { "write a file".into() },
+                format!("{} ({} characters)", self.resolve(&s("path")).display(), s("content").chars().count()),
             ),
-            "file_delete" => format!("delete {}{}", self.resolve(&s("path")).display(), if args["recursive"] == true { " and everything in it" } else { "" }),
-            "http_request" => format!("{} {}", args["method"].as_str().unwrap_or("GET").to_uppercase(), s("url")),
-            _ => format!("{tool} {args}"),
+            "file_delete" if args["recursive"] == true => ("delete a folder and everything in it".into(), self.resolve(&s("path")).display().to_string()),
+            "file_delete" => ("delete a file".into(), self.resolve(&s("path")).display().to_string()),
+            "http_request" => (format!("send an HTTP {} request", args["method"].as_str().unwrap_or("GET").to_uppercase()), s("url")),
+            _ => (format!("use {tool}"), args.to_string()),
         }
     }
 

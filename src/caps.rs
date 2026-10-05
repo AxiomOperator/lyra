@@ -44,8 +44,10 @@ pub struct Caps {
 /// What a call needs the user's approval for.
 #[derive(Debug, Clone)]
 pub struct Ask {
-    /// Exactly what would happen.
-    pub action: String,
+    /// What kind of thing would happen ("run a command on this machine").
+    pub what: String,
+    /// Exactly what: the command, the path, the URL.
+    pub detail: String,
     pub why: String,
     pub dangerous: bool,
 }
@@ -363,10 +365,12 @@ impl Caps {
             && let Some(system) = &self.system
             && let lyra_system::Check::Ask { why, dangerous } = system.check(name, &args)
         {
-            return Some(Ask { action: system.describe(name, &args), why, dangerous });
+            let (what, detail) = system.describe(name, &args);
+            return Some(Ask { what, detail, why, dangerous });
         }
         (self.manager.rule(&c) == Rule::Approval).then(|| Ask {
-            action: format!("{name} {}", args.to_string().chars().take(300).collect::<String>()),
+            what: format!("use {name}"),
+            detail: args.to_string().chars().take(300).collect(),
             why: format!("{} needs approval ({} risk)", c.name, c.risk.as_str()),
             dangerous: c.risk >= RiskLevel::Destructive,
         })

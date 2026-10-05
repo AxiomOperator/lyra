@@ -17,8 +17,12 @@ const PANEL_WIDTH: u16 = 46;
 const HELP: &str = " Enter send · / commands · ↑↓ PgUp PgDn scroll · ^R reasoning · ^B panels · ^L reload · Esc quit ";
 
 pub fn draw(f: &mut Frame, app: &mut App) {
-    let [main, input_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(f.area());
+    // An agent waiting for approval gets its own box above the input, so the
+    // whole question is always on screen (never scrolled or cut off).
+    let approval = approval_box(app);
+    let approval_height = approval.as_ref().map_or(0, |p| p.line_count(f.area().width) as u16).min(f.area().height / 2);
+    let [main, approval_area, input_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(approval_height), Constraint::Length(3)]).areas(f.area());
 
     if app.show_panels && main.width >= MIN_WIDTH_FOR_PANELS {
         let [chat_area, side] =
@@ -34,10 +38,60 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         f.render_widget(Line::from(line.dark_gray()), status_area);
     }
 
-    let input = Paragraph::new(app.input.as_str()).block(Block::bordered().title(HELP));
+    if let Some(approval) = approval {
+        f.render_widget(approval, approval_area);
+    }
+    let input = if app.approvals.is_empty() {
+        Paragraph::new(app.input.as_str()).block(Block::bordered().title(HELP))
+    } else {
+        let keys = Line::from(vec![
+            Span::raw(" press "),
+            Span::styled("y", Style::default().fg(Color::Green).bold()),
+            Span::raw(" allow · "),
+            Span::styled("n", Style::default().fg(Color::Red).bold()),
+            Span::raw(" deny · "),
+            Span::styled("a", Style::default().fg(Color::Yellow).bold()),
+            Span::raw(" allow for this session "),
+        ]);
+        Paragraph::new(app.input.as_str()).block(Block::bordered().title(keys).border_style(Style::default().fg(Color::Yellow)))
+    };
     f.render_widget(input, input_area);
     draw_palette(f, app, main);
     f.set_cursor_position((input_area.x + 1 + app.input.chars().count() as u16, input_area.y + 1));
+}
+
+/// The oldest pending approval: who asks, what kind of thing, exactly what,
+/// why it needs a yes, and the keys.
+fn approval_box(app: &App) -> Option<Paragraph<'static>> {
+    let r = app.approvals.first()?;
+    let color = if r.dangerous { Color::Red } else { Color::Yellow };
+    let bold = Style::default().bold();
+    let mut lines = vec![Line::from(vec![Span::styled(r.agent.clone(), bold.fg(Color::LightBlue)), Span::styled(format!(" wants to {}:", r.what), bold)])];
+    for l in r.detail.lines() {
+        let style = if l.starts_with("in ") && r.detail.lines().count() > 1 { Style::default().fg(Color::DarkGray) } else { Style::default().fg(Color::Cyan) };
+        lines.push(Line::styled(format!("  {l}"), style));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(vec![
+        Span::styled(if r.dangerous { "Risk: " } else { "Why it asks: " }, bold.fg(color)),
+        Span::styled(r.why.clone(), Style::default().fg(color)),
+    ]));
+    lines.push(Line::default());
+    lines.push(Line::from(vec![
+        Span::styled(" y ", Style::default().fg(Color::Black).bg(Color::Green).bold()),
+        Span::raw(" allow once    "),
+        Span::styled(" n ", Style::default().fg(Color::Black).bg(Color::Red).bold()),
+        Span::raw(" deny    "),
+        Span::styled(" a ", Style::default().fg(Color::Black).bg(Color::Yellow).bold()),
+        Span::raw(" allow this exact action for the rest of the session"),
+    ]));
+    let more = if app.approvals.len() > 1 { format!(" · 1 of {}", app.approvals.len()) } else { String::new() };
+    let title = Line::from(Span::styled(format!(" Approval needed{more} "), bold.fg(color)));
+    Some(
+        Paragraph::new(Text::from(lines))
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered().title(title).border_style(Style::default().fg(color))),
+    )
 }
 
 /// Most commands the palette shows at once (it scrolls with the selection).
@@ -101,7 +155,7 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
             "info" => ("system", Color::Magenta),
             // A specialist agent working for lyra (UI only; not in the history).
             "agent" => ("↪ agent", Color::LightBlue),
-            "approval" => ("⚠ approval needed", Color::Yellow),
+            "approval" => ("approval", Color::Yellow),
             _ => ("error", Color::Red),
         };
         lines.push(Line::from(label.bold().fg(color)));
@@ -126,7 +180,7 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
                 let body = match m.role.as_str() {
                     "info" => dim,
                     "agent" => Style::default().fg(Color::Blue),
-                    "approval" => Style::default().fg(Color::Yellow).bold(),
+                    "approval" => Style::default().fg(Color::Yellow),
                     _ => Style::default(),
                 };
                 lines.extend(m.content.lines().map(|l| Line::styled(l.to_string(), body)));

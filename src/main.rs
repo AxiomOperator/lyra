@@ -2867,6 +2867,15 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
         if key.kind != KeyEventKind::Press {
             continue;
         }
+        // An agent waits for approval: y / n / a answer it straight away.
+        if !app.approvals.is_empty()
+            && app.input.is_empty()
+            && !key.modifiers.contains(KeyModifiers::CONTROL)
+            && let KeyCode::Char(c @ ('y' | 'Y' | 'n' | 'N' | 'a' | 'A')) = key.code
+        {
+            app.answer_approval(&c.to_string());
+            continue;
+        }
         // The command palette, while `/…` is being typed (↑↓ pick, Tab/Enter complete, Esc closes).
         let palette = app.palette_entries();
         if !palette.is_empty() {
