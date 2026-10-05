@@ -89,6 +89,13 @@ pub struct Stats {
     pub embedded: usize,
     pub episodes: usize,
     pub pending_proposals: usize,
+    /// Where memory is stored (`lance`, `sqlite`) and its size on disk.
+    pub backend: &'static str,
+    pub size_bytes: Option<u64>,
+    /// The embedding model in use, if any.
+    pub embedding_model: Option<String>,
+    /// Operation counts, failures and latency (L23).
+    pub operations: Vec<crate::metrics::OpStats>,
 }
 
 pub const SYSTEM_PROMPT: &str = "\

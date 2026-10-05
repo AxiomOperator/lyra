@@ -3,12 +3,12 @@
 //! to capture or curate) and backs the context compiler, the memory panel and
 //! the `/memory` commands. Policy stays in the manager.
 
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use lyra_memory::curator::Stats;
 use lyra_memory::store::{Filter, MemoryChange};
 use lyra_memory::{
-    Compiled, Memory, MemoryKind, MemoryManager, MemoryStatus, QueryVector, Recalled, Uuid, WorkingMemory, capture,
+    Compiled, Memory, MemoryKind, MemoryManager, MemoryStatus, Recalled, Uuid, WorkingMemory, capture,
     curator,
 };
 use tokio::runtime::Handle;
@@ -31,52 +31,65 @@ pub struct MemorySnapshot {
 pub struct Mem {
     pub manager: MemoryManager,
     runtime: Handle,
-    /// The embedding model, for hybrid recall; `None` means keywords only.
-    /// Replaceable by a config reload.
-    embedding: RwLock<Option<Endpoint>>,
     /// The project being worked on: its memories (`project:<name>`) are
     /// recalled, other projects' aren't unless asked for by scope.
     project: RwLock<Option<String>>,
     pub working: Mutex<WorkingMemory>,
-    /// Where the database is, for display.
+    /// Where the store is, for display.
     pub path: String,
-}
-
-/// A vector and the model that made it.
-pub struct Embedded {
-    pub model: String,
-    pub vector: Vec<f32>,
-}
-
-/// The manager's view of an optional vector.
-pub fn qv(e: &Option<Embedded>) -> Option<QueryVector<'_>> {
-    e.as_ref().map(|e| QueryVector { model: &e.model, vector: &e.vector })
+    /// Where `/memory backup` puts backups.
+    pub backups: Option<std::path::PathBuf>,
+    /// Collections this large get a vector index (`[memory] vector_index_threshold`).
+    vector_index_threshold: std::sync::atomic::AtomicUsize,
 }
 
 impl Mem {
-    pub fn new(manager: MemoryManager, runtime: Handle, embedding: Option<Endpoint>, path: String, project: Option<String>) -> Self {
+    pub fn new(manager: MemoryManager, runtime: Handle, path: String, project: Option<String>) -> Self {
         Self {
             manager,
             runtime,
-            embedding: RwLock::new(embedding),
             project: RwLock::new(project),
             working: Mutex::new(WorkingMemory::default()),
             path,
+            backups: None,
+            vector_index_threshold: std::sync::atomic::AtomicUsize::new(10_000),
         }
+    }
+
+    pub fn set_vector_index_threshold(&self, n: usize) {
+        self.vector_index_threshold.store(n, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Use this embedding endpoint (or none) from now on. Asks it for its
+    /// vector size, so call it outside the async runtime. Returns notes.
+    pub fn set_embedding(&self, endpoint: Option<Endpoint>) -> Vec<String> {
+        let mut notes = Vec::new();
+        let provider: Option<Arc<dyn lyra_memory::EmbeddingProvider>> = match endpoint {
+            Some(e) => match retrieval::EndpointEmbedder::connect(e) {
+                Ok(p) => Some(Arc::new(p)),
+                Err(e) => {
+                    notes.push(format!("embedding model unavailable, memory uses keywords only: {e}"));
+                    None
+                }
+            },
+            None => None,
+        };
+        match self.run(self.manager.set_embedder(provider)) {
+            Ok(note) => notes.extend(note),
+            Err(e) => notes.push(format!("embedding setup failed: {e}")),
+        }
+        notes
     }
 
     pub fn run<T, E: std::fmt::Display>(&self, f: impl Future<Output = Result<T, E>>) -> Result<T, String> {
         self.runtime.block_on(f).map_err(|e| format!("{e:#}"))
     }
 
-    fn endpoint(&self) -> Option<Endpoint> {
-        self.embedding.read().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
-    /// New settings and embedding endpoint (a config reload).
-    pub fn reconfigure(&self, settings: lyra_memory::Settings, embedding: Option<Endpoint>) {
+    /// New settings and embedding endpoint (a config reload). Returns notes.
+    pub fn reconfigure(&self, settings: lyra_memory::Settings, embedding: Option<Endpoint>) -> Vec<String> {
         self.manager.set_settings(settings);
-        *self.embedding.write().unwrap_or_else(|e| e.into_inner()) = embedding;
+        let changed = embedding.as_ref().map(|e| e.model.clone()) != self.manager.embedding_model();
+        if changed { self.set_embedding(embedding) } else { Vec::new() }
     }
 
     pub fn project(&self) -> Option<String> {
@@ -88,21 +101,7 @@ impl Mem {
     }
 
     pub fn model(&self) -> Option<String> {
-        self.endpoint().map(|e| e.model)
-    }
-
-    /// A vector for stored text, if an embedding model is configured and answers.
-    pub fn embed_text(&self, text: &str) -> Option<Embedded> {
-        let e = self.endpoint()?;
-        let vector = retrieval::embed(&e, &[text]).ok()?.vectors.pop()?;
-        Some(Embedded { model: e.model, vector })
-    }
-
-    /// A vector for a search query (with the retrieval instruction).
-    pub fn embed_query(&self, text: &str) -> Option<Embedded> {
-        let e = self.endpoint()?;
-        let vector = retrieval::embed_query(&e, text).ok()?;
-        Some(Embedded { model: e.model, vector })
+        self.manager.embedding_model()
     }
 
     pub fn working(&self) -> std::sync::MutexGuard<'_, WorkingMemory> {
@@ -111,24 +110,21 @@ impl Mem {
 
     /// The memories worth adding to the prompt for `message` (M12).
     pub fn compile(&self, message: &str, run: Uuid) -> Result<Compiled, String> {
-        let vector = self.embed_query(message);
-        self.run(self.manager.compile(message, qv(&vector), run, self.project().as_deref()))
+        self.run(self.manager.compile(message, run, self.project().as_deref()))
     }
 
     /// Recall in one scope, or (`None`) in everything visible from the
     /// current project.
     pub fn recall(&self, scope: Option<&str>, query: &str, limit: usize, archived: bool) -> Result<Vec<Recalled>, String> {
-        let vector = self.embed_query(query);
         match scope {
-            Some(_) => self.run(self.manager.recall(scope, query, qv(&vector), limit, archived)),
-            None => self.run(self.manager.recall_visible(self.project().as_deref(), query, qv(&vector), limit, archived)),
+            Some(_) => self.run(self.manager.recall(scope, query, limit, archived)),
+            None => self.run(self.manager.recall_visible(self.project().as_deref(), query, limit, archived)),
         }
     }
 
     /// Recall across every allowed scope (the user's `/memory search`).
     pub fn recall_all(&self, query: &str, limit: usize) -> Result<Vec<Recalled>, String> {
-        let vector = self.embed_query(query);
-        self.run(self.manager.recall(None, query, qv(&vector), limit, true))
+        self.run(self.manager.recall(None, query, limit, true))
     }
 
     /// M3/M4: relate a newly saved memory to similar ones: the model says
@@ -138,8 +134,7 @@ impl Mem {
         let Ok(Some(new)) = self.run(self.manager.get(id)) else {
             return Review { outcome: Ok(Vec::new()), usage: None };
         };
-        let vector = self.embed_text(&new.content);
-        let near = match self.run(self.manager.neighbours(&new, qv(&vector), 5)) {
+        let near = match self.run(self.manager.neighbours(&new, 5)) {
             Ok(near) if !near.is_empty() => near,
             Ok(_) => return Review { outcome: Ok(Vec::new()), usage: None },
             Err(e) => return Review { outcome: Err(e), usage: None },
@@ -170,36 +165,42 @@ impl Mem {
         self.run(self.manager.feedback(run, helpful))
     }
 
-    /// Give vectors to memories that don't have one yet. Returns notes.
+    /// Give vectors to memories that need one: new ones, ones from an older
+    /// embedding model, ones whose content changed (L22). Returns notes.
     pub fn backfill(&self) -> Vec<String> {
-        let Some(endpoint) = self.endpoint() else { return Vec::new() };
-        let endpoint = &endpoint;
-        let mut done = 0;
-        for _ in 0..20 {
-            let batch = match self.run(self.manager.needs_embedding(&endpoint.model, 32)) {
-                Ok(b) if !b.is_empty() => b,
-                Ok(_) => break,
-                Err(e) => return vec![format!("vector backfill failed: {e}")],
-            };
-            let texts: Vec<&str> = batch.iter().map(|m| m.content.as_str()).collect();
-            let vectors = match retrieval::embed(endpoint, &texts) {
-                Ok(e) => e.vectors,
-                Err(e) => return vec![format!("vector backfill failed: {e}")],
-            };
-            for (m, v) in batch.iter().zip(&vectors) {
-                if let Err(e) = self.run(self.manager.set_embedding(m.id, &endpoint.model, v)) {
-                    return vec![format!("vector backfill failed: {e}")];
-                }
-            }
-            done += batch.len();
+        if self.model().is_none() {
+            return Vec::new();
         }
-        if done == 0 { Vec::new() } else { vec![format!("added vectors to {done} memories")] }
+        let (mut done, mut failed) = (0, 0);
+        for _ in 0..50 {
+            match self.run(self.manager.reembed(32)) {
+                Ok(p) => {
+                    done += p.done;
+                    failed += p.failed;
+                    if p.remaining == 0 || p.done == 0 {
+                        break;
+                    }
+                }
+                Err(e) => return vec![format!("re-embedding failed: {e}")],
+            }
+        }
+        let mut notes = Vec::new();
+        if done > 0 {
+            notes.push(format!("added vectors to {done} memories"));
+        }
+        if failed > 0 {
+            notes.push(format!("{failed} memories couldn't be embedded; they're found by keywords until /memory reembed"));
+        }
+        notes
     }
 
     /// Startup upkeep: archive expired memories, add missing vectors.
     pub fn upkeep(&self) -> Vec<String> {
         let mut notes = self.run(self.manager.expire_due()).unwrap_or_else(|e| vec![format!("expiry failed: {e}")]);
         notes.extend(self.backfill());
+        // L15: compact storage, and index vectors once the collection is large.
+        let threshold = self.vector_index_threshold.load(std::sync::atomic::Ordering::Relaxed);
+        notes.extend(self.run(self.manager.maintain(threshold)).unwrap_or_else(|e| vec![format!("memory maintenance failed: {e}")]));
         notes
     }
 
@@ -238,7 +239,7 @@ impl Mem {
     /// consolidations and contradictions. Returns notes.
     pub fn curate(&self, url: &str, model: &str) -> Review<Vec<String>> {
         let mut notes = self.run(self.manager.expire_due()).unwrap_or_default();
-        let report = match self.run(self.manager.review_collection(self.model().as_deref())) {
+        let report = match self.run(self.manager.review_collection()) {
             Ok(r) => r,
             Err(e) => return Review { outcome: Err(e), usage: None },
         };
@@ -276,10 +277,10 @@ impl Mem {
     }
 
     pub fn snapshot(&self) -> Result<MemorySnapshot, String> {
-        let stats = self.run(self.manager.stats(self.model().as_deref()))?;
+        let stats = self.run(self.manager.stats())?;
         let recent = self.run(self.manager.list(&Filter::active(), 30))?;
         let proposals = self.run(self.manager.proposals())?.iter().map(|p| describe_proposal(&p.change, &p.id, &recent)).collect();
-        Ok(MemorySnapshot { stats, recent, working: self.working().clone(), proposals, vectors: self.endpoint().is_some(), project: self.project() })
+        Ok(MemorySnapshot { stats, recent, working: self.working().clone(), proposals, vectors: self.model().is_some(), project: self.project() })
     }
 
     /// `/memory …` commands that don't need the model. (`curate` and
@@ -305,12 +306,23 @@ impl Mem {
                 let (key, text) = rest.split_once(char::is_whitespace).ok_or("usage: /memory correct <id> <new text>")?;
                 let m = find(key)?;
                 let v = self.run(self.manager.correct(m.id, text, "corrected by the user", None))?;
-                if let Some(e) = self.embed_text(text) {
-                    let _ = self.run(self.manager.set_embedding(m.id, &e.model, &e.vector));
-                }
                 Ok(format!("corrected [{}], now v{v}", m.short_id()))
             }
             "events" => self.events_text(),
+            "reembed" => {
+                let notes = self.backfill();
+                Ok(if notes.is_empty() { "every memory already has a current vector".into() } else { notes.join("\n") })
+            }
+            "backup" => {
+                let dir = self.backups.clone().ok_or("no backup folder (no home directory)")?;
+                let dest = dir.join(format!("memory-{}", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+                self.run(self.manager.backup(&dest))?;
+                Ok(format!(
+                    "backed up memory to {}\nto restore it: quit lyra, then run `lyra --restore-memory {}`",
+                    crate::context::show(&dest),
+                    dest.display()
+                ))
+            }
             "approve" => self.run(self.manager.approve(rest)),
             "reject" => self.run(self.manager.reject(rest)),
             "working" if rest == "clear" => {
@@ -323,7 +335,7 @@ impl Mem {
     }
 
     fn stats_text(&self) -> Result<String, String> {
-        let s = self.run(self.manager.stats(self.model().as_deref()))?;
+        let s = self.run(self.manager.stats())?;
         let pairs = |v: Vec<String>| if v.is_empty() { "—".into() } else { v.join(" · ") };
         let mut out = vec![format!(
             "Memory: {} ({} active) · {}",
@@ -344,6 +356,15 @@ impl Mem {
         };
         let confidence = s.average_confidence.map_or("—".into(), |c| format!("{c:.2}"));
         out.push(format!("  average confidence {confidence} · {vectors}"));
+        out.push(format!(
+            "  storage: {}{}",
+            s.backend,
+            s.size_bytes.map_or(String::new(), |b| format!(" · {}", human_bytes(b)))
+        ));
+        for op in &s.operations {
+            let failed = if op.failures > 0 { format!(" · {} failed", op.failures) } else { String::new() };
+            out.push(format!("  {}: {} calls · p50 {:.0} ms · p95 {:.0} ms{failed}", op.name, op.count, op.p50_ms, op.p95_ms));
+        }
         let proposals = self.run(self.manager.proposals())?;
         if !proposals.is_empty() {
             let recent = self.run(self.manager.list(&Filter::default(), 500))?;
@@ -352,7 +373,7 @@ impl Mem {
                 out.push(format!("    {} — {}", describe_proposal(&p.change, &p.id, &recent), p.reason));
             }
         }
-        out.push("/memory search <q> · list · inspect <id> · correct <id> <text> · forget|archive|restore|purge <id> · approve|reject <id> · working [clear] · curate · episode".into());
+        out.push("/memory search <q> · list · inspect <id> · correct <id> <text> · forget|archive|restore|purge <id> · approve|reject <id> · working [clear] · curate · episode · events · reembed · backup".into());
         Ok(out.join("\n"))
     }
 
@@ -488,4 +509,16 @@ pub fn parse_kind(kind: Option<&str>) -> Result<MemoryKind, String> {
         "working" => Ok(MemoryKind::Working),
         other => Err(format!("unknown kind {other:?} (semantic, episodic or working)")),
     }
+}
+
+/// `12.3 MB`.
+pub fn human_bytes(b: u64) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB"];
+    let mut size = b as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit + 1 < units.len() {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 { format!("{b} B") } else { format!("{size:.1} {}", units[unit]) }
 }

@@ -29,7 +29,10 @@ currency = "$"
 # context compiler that adds the relevant few memories to each prompt.
 # [memory]
 # enabled = true
-# path = "~/.lyra/memory/memory.db"   # default
+# backend = "lance"                   # lance (LanceDB, default) | sqlite
+# path = "~/.lyra/memory/lance"       # default: a directory for lance, memory.db for sqlite
+# table = "memories"
+# vector_index_threshold = 10000      # index vectors from this many on; 0 = never
 # default_scope = "user"
 # allowed_scopes = ["*"]              # e.g. ["user", "agent", "project:*"]
 # capture = "auto"                    # auto | off

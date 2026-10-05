@@ -1013,6 +1013,7 @@ impl App {
                     "curate" => Ok("curating memories…".into()),
                     "episode" if self.capturing => Err("a memory capture is already running".into()),
                     "episode" => Ok("recording this conversation as an episode…".into()),
+                    "reembed" => Ok("re-embedding memories in the background…".into()),
                     "project" => {
                         let name = arg.split_whitespace().nth(1);
                         match name {
@@ -1042,7 +1043,19 @@ impl App {
         match name {
             "/memory" if ok && memory_sub == "curate" => self.memory_curate(),
             "/memory" if ok && memory_sub == "episode" => self.capture(true),
-            "/memory" if ok && matches!(memory_sub, "forget" | "archive" | "restore" | "purge" | "correct" | "approve" | "reject" | "working" | "project") => {
+            "/memory" if ok && memory_sub == "reembed" => {
+                if let Some(mem) = self.mem() {
+                    let tx = self.tx.clone();
+                    thread::spawn(move || {
+                        let mut notes = mem.backfill();
+                        if notes.is_empty() {
+                            notes.push("every memory already has a current vector".into());
+                        }
+                        let _ = tx.send(StreamEvent::MemoryNotes(notes));
+                    });
+                }
+            }
+            "/memory" if ok && matches!(memory_sub, "forget" | "archive" | "restore" | "purge" | "correct" | "approve" | "reject" | "working" | "project" | "backup") => {
                 self.log(Level::Memory, line.to_string());
                 self.refresh_memory();
             }
@@ -1608,8 +1621,11 @@ impl App {
                 });
                 self.pricing = pricing(&config);
                 if let Some(mem) = self.mem() {
-                    mem.reconfigure(config.memory.settings.clone(), config.embedding.clone());
+                    for note in mem.reconfigure(config.memory.settings.clone(), config.embedding.clone()) {
+                        self.log(Level::Memory, note);
+                    }
                     mem.set_project(config.memory.project());
+                    mem.set_vector_index_threshold(config.memory.vector_index_threshold);
                 }
                 self.memory_curate_every = config.memory.curate.every_days();
                 self.curate_every = config.learning.curate.every_days();
@@ -1682,6 +1698,8 @@ const COMMANDS: &str = "\
 /memory approve|reject <id>  act on a proposed consolidation or archive
 /memory working [clear]      show or clear working memory
 /memory events               what happened to memories lately (created, superseded, linked, …)
+/memory reembed              give every memory a vector from the current embedding model
+/memory backup               copy the memory store to ~/.lyra/backup (restore: lyra --restore-memory <dir>)
 /memory curate               consolidate duplicates, flag contradictions now
 /memory episode              record this conversation as an episode
 /memory project [name|none]  the current project (its memories are recalled, others' aren't)
@@ -1935,6 +1953,21 @@ fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>) -> Result<Round, St
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--restore-memory") {
+        let Some(backup) = args.get(i + 1) else {
+            eprintln!("usage: lyra --restore-memory <backup directory>");
+            std::process::exit(2);
+        };
+        match restore_memory(backup) {
+            Ok(note) => println!("{note}"),
+            Err(e) => {
+                eprintln!("lyra: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     // Before loading config: an old install's files may need moving into ~/.lyra.
     let migrated = match migrate::run() {
         Ok(notes) => notes,
@@ -1952,7 +1985,7 @@ fn main() {
     };
     // Memory is async (sqlx); a small runtime lets lyra's threads call into it.
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
-    let (tools, memory_status) = open_memory(&config, runtime.handle());
+    let (tools, memory_status, memory_notes) = open_memory(&config, runtime.handle());
     let (learning, learning_status) = open_learning(&config, runtime.handle());
     let (engine, planning_status) = open_planning(&config, runtime.handle());
     let (evolution, evolution_status) = open_evolution(&config, runtime.handle());
@@ -1965,6 +1998,9 @@ fn main() {
     let mut app = App::new(config, Context::load(), services);
     for note in migrated {
         app.log(Level::Info, note);
+    }
+    for note in memory_notes {
+        app.log(Level::Memory, note);
     }
     app.start();
     ratatui::run(|terminal| run(terminal, &mut app)).expect("terminal error");
@@ -2027,26 +2063,56 @@ fn open_learning(
 }
 
 /// Open the memory database and build the memory tools, if enabled.
+/// Open the memory store (LanceDB by default), connect the embedding model
+/// and build the memory tools, if enabled. Also returns notes for the log.
 fn open_memory(
     config: &Config,
     runtime: &tokio::runtime::Handle,
-) -> (Option<Arc<Tools>>, Result<String, String>) {
-    if !config.memory.enabled {
-        return (None, Ok("memory off".into()));
+) -> (Option<Arc<Tools>>, Result<String, String>, Vec<String>) {
+    let c = &config.memory;
+    if !c.enabled {
+        return (None, Ok("memory off".into()), Vec::new());
     }
-    let Some(path) = config.memory.path() else {
-        return (None, Err("memory off: no data directory (set [memory] path)".into()));
+    let Some(path) = c.path() else {
+        return (None, Err("memory off: no data directory (set [memory] path)".into()), Vec::new());
     };
-    match runtime.block_on(lyra_memory::MemoryManager::open(&path, config.memory.settings.clone())) {
+    let opened = match c.backend {
+        config::MemoryBackend::Lance => runtime.block_on(lyra_memory::MemoryManager::open_lance(&path, &c.table, c.settings.clone())),
+        config::MemoryBackend::Sqlite => runtime.block_on(lyra_memory::MemoryManager::open_sqlite(&path, c.settings.clone())),
+    };
+    match opened {
         Ok(manager) => {
             // Memories saved in this session are traced to it (provenance).
             manager.set_conversation(Some(Uuid::new_v4()));
-            let shown = context::show(&path);
-            let mem = Mem::new(manager, runtime.clone(), config.embedding.clone(), shown.clone(), config.memory.project());
-            (Some(Arc::new(Tools::new(Arc::new(mem)))), Ok(shown))
+            let shown = format!("{} · {}", manager.backend(), context::show(&path));
+            let mut mem = Mem::new(manager, runtime.clone(), shown.clone(), c.project());
+            mem.backups = config::home().map(|h| h.join("backup"));
+            mem.set_vector_index_threshold(c.vector_index_threshold);
+            let mut notes = Vec::new();
+            if c.points_at_sqlite() {
+                notes.push(format!(
+                    "[memory] path {} is a SQLite file; memory now lives in LanceDB at {} (remove the path line, or set it to a directory)",
+                    c.path.clone().unwrap_or_default(),
+                    context::show(&path)
+                ));
+            }
+            notes.extend(mem.set_embedding(config.embedding.clone()));
+            (Some(Arc::new(Tools::new(Arc::new(mem)))), Ok(shown), notes)
         }
-        Err(e) => (None, Err(format!("memory off: {e:#}"))),
+        Err(e) => (None, Err(format!("memory off: {e:#}")), Vec::new()),
     }
+}
+
+/// `lyra --restore-memory <backup>`: put a memory backup in place before
+/// anything opens the store. The replaced store is kept next to it.
+fn restore_memory(backup: &str) -> Result<String, String> {
+    let config = Config::load()?;
+    if config.memory.backend != config::MemoryBackend::Lance {
+        return Err("restore works for the lance backend; for sqlite, copy the file back".into());
+    }
+    let path = config.memory.path().ok_or("no memory path")?;
+    let kept = lyra_memory::restore(std::path::Path::new(backup), &path).map_err(|e| format!("{e:#}"))?;
+    Ok(format!("restored memory from {backup}; the previous store is kept at {}", kept.display()))
 }
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {

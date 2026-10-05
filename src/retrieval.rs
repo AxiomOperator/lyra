@@ -1,6 +1,7 @@
 //! Clients for the embedding and reranker models (OpenAI-style `/embeddings`,
-//! Jina/Cohere-style `/rerank`, as served by vLLM and llama.cpp). Not used by
-//! the chat yet; `check` confirms they're reachable and behaving.
+//! Jina/Cohere-style `/rerank`, as served by vLLM and llama.cpp). The
+//! embedding endpoint is memory's [`EmbeddingProvider`]; `check` confirms
+//! both are reachable and behaving.
 
 use std::time::Duration;
 
@@ -11,6 +12,9 @@ use serde::Deserialize;
 pub struct Endpoint {
     pub url: String,
     pub model: String,
+    /// The embedding model's vector size; asked of the model when not set.
+    #[serde(default)]
+    pub dimensions: Option<usize>,
 }
 
 impl Endpoint {
@@ -83,6 +87,53 @@ pub fn embed_query(endpoint: &Endpoint, query: &str) -> Result<Vec<f32>, String>
     let text = format!("{QUERY_INSTRUCTION}{query}");
     let mut e = embed(endpoint, &[&text])?;
     e.vectors.pop().ok_or_else(|| "no embedding returned".into())
+}
+
+/// The embedding endpoint as memory's embedding provider (L4). Calls are
+/// blocking HTTP, so they run on tokio's blocking pool.
+pub struct EndpointEmbedder {
+    endpoint: Endpoint,
+    dimensions: usize,
+}
+
+impl EndpointEmbedder {
+    /// Ready an endpoint, asking it for its vector size unless configured.
+    /// Blocking: call it outside the async runtime.
+    pub fn connect(endpoint: Endpoint) -> Result<Self, String> {
+        let dimensions = match endpoint.dimensions {
+            Some(d) => d,
+            None => embed(&endpoint, &["dimension probe"])?.vectors.pop().map_or(0, |v| v.len()),
+        };
+        if dimensions == 0 {
+            return Err(format!("{} returned an empty vector", endpoint.model));
+        }
+        Ok(Self { endpoint, dimensions })
+    }
+}
+
+#[async_trait::async_trait]
+impl lyra_memory::EmbeddingProvider for EndpointEmbedder {
+    fn model(&self) -> &str {
+        &self.endpoint.model
+    }
+
+    fn dimensions(&self) -> usize {
+        self.dimensions
+    }
+
+    async fn embed(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        let (endpoint, texts) = (self.endpoint.clone(), texts.to_vec());
+        tokio::task::spawn_blocking(move || {
+            let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+            embed(&endpoint, &refs).map(|e| e.vectors).map_err(anyhow::Error::msg)
+        })
+        .await?
+    }
+
+    async fn embed_query(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        let (endpoint, text) = (self.endpoint.clone(), text.to_string());
+        tokio::task::spawn_blocking(move || embed_query(&endpoint, &text).map_err(anyhow::Error::msg)).await?
+    }
 }
 
 /// A document's position in the input and its relevance to the query.

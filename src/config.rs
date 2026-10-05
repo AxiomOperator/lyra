@@ -137,13 +137,29 @@ impl LearningConfig {
     }
 }
 
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryBackend {
+    #[default]
+    Lance,
+    Sqlite,
+}
+
 #[derive(Deserialize)]
 #[serde(default)]
 pub struct MemoryConfig {
     /// Offer the memory tools to the model. Needs a server with tool calling.
     pub enabled: bool,
-    /// SQLite file; defaults to `~/.lyra/memory/memory.db`. A leading `~/` is expanded.
+    /// Where memories are stored: `lance` (LanceDB, the default) or `sqlite`.
+    pub backend: MemoryBackend,
+    /// The LanceDB directory (default `~/.lyra/memory/lance`) or SQLite file
+    /// (default `~/.lyra/memory/memory.db`). A leading `~/` is expanded.
     pub path: Option<String>,
+    /// LanceDB table for memories.
+    pub table: String,
+    /// Collections with this many vectors get a vector index; below it,
+    /// search is exact (L15). 0 means never index.
+    pub vector_index_threshold: usize,
     /// When to curate the collection on its own: `manual`, `daily` or `weekly`.
     pub curate: Schedule,
     /// The project being worked on: its `project:<name>` memories are
@@ -158,13 +174,33 @@ pub struct MemoryConfig {
 
 impl Default for MemoryConfig {
     fn default() -> Self {
-        Self { enabled: true, path: None, curate: Schedule::Manual, project: None, settings: Default::default() }
+        Self {
+            enabled: true,
+            backend: MemoryBackend::Lance,
+            path: None,
+            table: "memories".into(),
+            vector_index_threshold: 10_000,
+            curate: Schedule::Manual,
+            project: None,
+            settings: Default::default(),
+        }
     }
 }
 
 impl MemoryConfig {
     pub fn path(&self) -> Option<PathBuf> {
-        data_file(self.path.as_deref(), "memory", "memory.db")
+        match self.backend {
+            MemoryBackend::Lance if self.points_at_sqlite() => data_file(None, "memory", "lance"),
+            MemoryBackend::Lance => data_file(self.path.as_deref(), "memory", "lance"),
+            MemoryBackend::Sqlite => data_file(self.path.as_deref(), "memory", "memory.db"),
+        }
+    }
+
+    /// An older config's `path` naming the SQLite file, which LanceDB (a
+    /// directory) can't use; the default LanceDB directory is used instead.
+    pub fn points_at_sqlite(&self) -> bool {
+        self.backend == MemoryBackend::Lance
+            && self.path.as_deref().and_then(expand).is_some_and(|p| p.extension().is_some_and(|e| e == "db") || p.is_file())
     }
 
     /// The current project's name, if any (see `project`).
@@ -255,7 +291,7 @@ fn user_home() -> Option<PathBuf> {
 /// ├── config/    config.toml, behavior.toml (evolved behavior)
 /// ├── context/   SOUL.md, USER.md, AGENT.md
 /// ├── evolution/ evolution.db (runs, candidates, generations)
-/// ├── memory/    memory.db
+/// ├── memory/    lance/ (memories, LanceDB), backups
 /// ├── plans/     plans.db
 /// ├── skills/    <name>.md, one per skill
 /// ├── tools/     <name>.toml, composite tools

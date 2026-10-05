@@ -7,7 +7,9 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
 - `src/` — the TUI binary: `main.rs` (app state, streaming, tool loop), `ui.rs` (all drawing),
   `config.rs`, `context.rs` (SOUL/USER/AGENT.md), `tools.rs` (memory tools + composite tools), `mem.rs` (memory glue), `plan.rs` (planning glue), `learn.rs`
   (self-learning glue), `evolve.rs` (evolution glue: evolved state, benchmark, `/evolve`), `retrieval.rs` (embedding/reranker clients), `stats.rs`.
-- `memory/` — `lyra-memory` crate: memory behind `MemoryManager` (SQLite + FTS5, vectors in a table;
+- `memory/` — `lyra-memory` crate: memory behind `MemoryManager` (LanceDB by default: typed memory rows with
+  their embedding, FTS + vector search, history tables; SQLite backend kept as an alternative; the
+  `EmbeddingProvider` makes vectors outside the store; schema/embedding versioning, re-embed, backup;
   kinds, provenance, supersede/versions, hybrid ranking, context compiler, capture, curator,
   safety scan, working memory). `src/mem.rs` is lyra's side (embeddings, model calls, /memory).
 - `learning/` — `lyra-learning` crate: skills behind `SkillManager` (Markdown files + SQLite ledger
@@ -21,7 +23,7 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
   creates a local `evolution/<id>` branch — never merge, push or touch the running binary).
 - `docs/` — design guides and examples (not binding; see rule 3).
 - Runtime files live in `~/.lyra` (`$LYRA_HOME`): `config/config.toml`, `context/`
-  (SOUL/USER/AGENT.md), `memory/memory.db`, `plans/plans.db`, `skills/<name>.md` (one Markdown file per skill) + `skills/ledger.db`,
+  (SOUL/USER/AGENT.md), `memory/lance/` (LanceDB), `plans/plans.db`, `skills/<name>.md` (one Markdown file per skill) + `skills/ledger.db`,
   `evolution/evolution.db`, `config/behavior.toml`, `workflows/<name>.toml`, `tools/<name>.toml` (evolved state).
   `src/migrate.rs` brings older layouts up to date on startup.
 
@@ -49,6 +51,7 @@ cargo test --workspace
    - everything lyra keeps lives in `~/.lyra` (`config/`, `context/`, `memory/`, `skills/`, `plans/`,
      `evolution/`, `workflows/`, `tools/`)
    - skills are Markdown files, one per skill; their history/evidence is in the ledger
-   - memory is SQLite + FTS5 behind `MemoryManager`
+   - memory is LanceDB behind `MemoryManager` (vectors + FTS); other state (plans, skills ledger,
+     evolution) stays SQLite
    Only the user changes an established decision. If a doc's approach seems clearly better,
    say so and ask; don't switch on your own.

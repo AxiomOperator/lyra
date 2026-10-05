@@ -289,8 +289,7 @@ impl Tools {
             ..NewMemory::fact("", &a.content, source)
         };
         ctx.check_write(&new.scope)?;
-        let vector = self.mem.embed_text(&a.content);
-        let r = self.mem.run(self.mem.manager.remember(new, crate::mem::qv(&vector)))?;
+        let r = self.mem.run(self.mem.manager.remember(new))?;
         let (what, m) = match &r {
             Remembered::Created(m) => ("remembered", m),
             Remembered::Reconfirmed(m) => ("already known; reconfirmed", m),
@@ -354,9 +353,6 @@ impl Tools {
         ctx.check_write(&m.scope)?;
         let reason = a.reason.unwrap_or_else(|| "corrected".into());
         let v = self.mem.run(self.mem.manager.correct(m.id, &a.content, &reason, ctx.run))?;
-        if let Some(e) = self.mem.embed_text(&a.content) {
-            let _ = self.mem.run(self.mem.manager.set_embedding(m.id, &e.model, &e.vector));
-        }
         Ok(json!({ "result": "corrected", "id": m.short_id(), "version": v }))
     }
 
@@ -379,9 +375,8 @@ impl Tools {
             importance: Some(old.importance),
             ..NewMemory::fact(&old.scope, &a.content, source)
         };
-        let vector = self.mem.embed_text(&a.content);
         let reason = a.reason.unwrap_or_else(|| "no longer true".into());
-        let m = self.mem.run(self.mem.manager.supersede(old.id, new, &reason, crate::mem::qv(&vector)))?;
+        let m = self.mem.run(self.mem.manager.supersede(old.id, new, &reason))?;
         Ok(json!({ "result": "superseded", "old": old.short_id(), "new": m.short_id() }))
     }
 
@@ -487,13 +482,13 @@ fn memory_json(m: &lyra_memory::Memory) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lyra_memory::{MemoryManager, Settings, SqliteStore};
+    use lyra_memory::{MemoryManager, Settings};
 
     fn tools() -> (tokio::runtime::Runtime, Tools) {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let store = rt.block_on(SqliteStore::in_memory()).unwrap();
-        let manager = MemoryManager::new(store, Settings::default());
-        let mem = Mem::new(manager, rt.handle().clone(), None, "test".into(), Some("api".into()));
+        let dir = std::env::temp_dir().join(format!("lyra-tools-test-{}", Uuid::new_v4()));
+        let manager = rt.block_on(MemoryManager::open_lance(&dir, "memories", Settings::default())).unwrap();
+        let mem = Mem::new(manager, rt.handle().clone(), "test".into(), Some("api".into()));
         (rt, Tools::new(Arc::new(mem)))
     }
 

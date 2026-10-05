@@ -11,6 +11,10 @@
 
 pub mod capture;
 pub mod curator;
+pub mod embedding;
+mod error;
+mod lance;
+pub mod metrics;
 mod manager;
 mod memory;
 pub mod rank;
@@ -22,12 +26,15 @@ pub mod text;
 mod working;
 
 pub use manager::{
-    Budget, CaptureMode, Compiled, Inspection, MaintenanceMode, MemoryManager, QueryVector, Recalled, Remembered,
+    Budget, CaptureMode, Compiled, Inspection, MaintenanceMode, MemoryManager, Recalled, Reembedded, Remembered,
     Report, Settings, approx_tokens, visible,
 };
 pub use memory::{
     Episode, Memory, MemoryKind, MemorySource, MemoryStatus, NewMemory, Provenance, Relationship, Usage,
 };
+pub use embedding::EmbeddingProvider;
+pub use error::MemoryStoreError;
+pub use lance::{LanceStore, MEMORY_SCHEMA_VERSION, restore};
 pub use sqlite::SqliteStore;
 pub use store::{Filter, MemoryStore};
 pub use uuid::Uuid;

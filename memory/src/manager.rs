@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::{Arc, RwLock};
 
 use anyhow::{Result, anyhow, bail};
 use chrono::{DateTime, Duration, Utc};
@@ -15,9 +16,11 @@ use crate::curator::{self, Stats, overlap};
 use crate::rank::{self, HalfLives, Score, Weights};
 use crate::safety;
 use crate::store::{Event, Filter, MemoryChange, Proposal, ProposalStatus, Version};
+use crate::embedding::EmbeddingProvider;
+use crate::metrics::Metrics;
 use crate::{
-    Episode, Memory, MemoryKind, MemorySource, MemoryStatus, MemoryStore, NewMemory, Provenance, Relationship,
-    SqliteStore,
+    Episode, LanceStore, Memory, MemoryKind, MemorySource, MemoryStatus, MemoryStore, NewMemory, Provenance,
+    Relationship, SqliteStore,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -106,11 +109,33 @@ impl Default for Settings {
     }
 }
 
-/// A query's vector, and the model that made it.
+/// A vector and the model that made it (internal to the manager: callers
+/// never handle vectors; the [`EmbeddingProvider`] makes them).
 #[derive(Debug, Clone, Copy)]
-pub struct QueryVector<'a> {
-    pub model: &'a str,
-    pub vector: &'a [f32],
+struct QueryVector<'a> {
+    model: &'a str,
+    vector: &'a [f32],
+}
+
+/// An owned vector and its model.
+struct Embedded {
+    model: String,
+    vector: Vec<f32>,
+}
+
+impl Embedded {
+    fn qv(e: &Option<Embedded>) -> Option<QueryVector<'_>> {
+        e.as_ref().map(|e| QueryVector { model: &e.model, vector: &e.vector })
+    }
+}
+
+/// Progress of re-embedding (L22).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Reembedded {
+    pub done: usize,
+    pub failed: usize,
+    /// Still waiting for a vector from the current model.
+    pub remaining: usize,
 }
 
 /// What `remember` did.
@@ -164,12 +189,15 @@ pub struct Report {
     pub stale: Vec<Uuid>,
 }
 
-pub struct MemoryManager<S: MemoryStore = SqliteStore> {
-    store: S,
+pub struct MemoryManager {
+    store: Box<dyn MemoryStore>,
     /// Replaceable at runtime (a config reload).
-    settings: std::sync::RwLock<std::sync::Arc<Settings>>,
+    settings: RwLock<Arc<Settings>>,
     /// The conversation new memories come from, unless they say otherwise.
-    conversation: std::sync::RwLock<Option<Uuid>>,
+    conversation: RwLock<Option<Uuid>>,
+    /// Makes vectors for memories and queries; `None` means keyword search only.
+    embedder: RwLock<Option<Arc<dyn EmbeddingProvider>>>,
+    metrics: Metrics,
 }
 
 /// Whether a memory in `scope` is visible while working on `project`:
@@ -181,9 +209,14 @@ pub fn visible(project: Option<&str>, scope: &str) -> bool {
     }
 }
 
-impl MemoryManager<SqliteStore> {
-    /// Open the SQLite-backed memory at `path`, creating it if needed.
-    pub async fn open(path: &Path, settings: Settings) -> Result<Self> {
+impl MemoryManager {
+    /// Open the LanceDB memory in directory `path` (table `table`), creating it if needed.
+    pub async fn open_lance(path: &Path, table: &str, settings: Settings) -> Result<Self> {
+        Ok(Self::new(LanceStore::open(path, table).await?, settings))
+    }
+
+    /// Open the SQLite memory at `path`, creating it if needed.
+    pub async fn open_sqlite(path: &Path, settings: Settings) -> Result<Self> {
         Ok(Self::new(SqliteStore::open(path).await?, settings))
     }
 }
@@ -193,9 +226,93 @@ pub fn approx_tokens(text: &str) -> usize {
     text.len().div_ceil(4)
 }
 
-impl<S: MemoryStore> MemoryManager<S> {
-    pub fn new(store: S, settings: Settings) -> Self {
-        Self { store, settings: std::sync::RwLock::new(std::sync::Arc::new(settings)), conversation: Default::default() }
+impl MemoryManager {
+    pub fn new(store: impl MemoryStore + 'static, settings: Settings) -> Self {
+        Self {
+            store: Box::new(store),
+            settings: RwLock::new(Arc::new(settings)),
+            conversation: Default::default(),
+            embedder: Default::default(),
+            metrics: Metrics::default(),
+        }
+    }
+
+    /// `lance` or `sqlite`.
+    pub fn backend(&self) -> &'static str {
+        self.store.backend()
+    }
+
+    // ---- embeddings (L4, L21, L22)
+
+    /// Use this embedding model from now on (or none). When it differs from
+    /// the one the stored vectors came from, those stop being used and every
+    /// memory is due for re-embedding; returns a note saying so.
+    pub async fn set_embedder(&self, embedder: Option<Arc<dyn EmbeddingProvider>>) -> Result<Option<String>> {
+        let note = match &embedder {
+            Some(e) => self.store.prepare_embeddings(e.model(), e.dimensions()).await?,
+            None => None,
+        };
+        *self.embedder.write().unwrap_or_else(|e| e.into_inner()) = embedder;
+        Ok(note)
+    }
+
+    fn embedder(&self) -> Option<Arc<dyn EmbeddingProvider>> {
+        self.embedder.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn embedding_model(&self) -> Option<String> {
+        self.embedder().map(|e| e.model().to_string())
+    }
+
+    /// A vector for stored text; `None` without a model or when it fails
+    /// (the memory is then found by keywords until re-embedded).
+    async fn embed_text(&self, text: &str) -> Option<Embedded> {
+        let e = self.embedder()?;
+        let texts = [text.to_string()];
+        let vector = self.metrics.timed("memory.embed", e.embed(&texts)).await.ok()?.pop()?;
+        crate::embedding::check(&vector, e.dimensions()).ok()?;
+        Some(Embedded { model: e.model().to_string(), vector })
+    }
+
+    async fn embed_query(&self, text: &str) -> Option<Embedded> {
+        let e = self.embedder()?;
+        let vector = self.metrics.timed("memory.embed", e.embed_query(text)).await.ok()?;
+        crate::embedding::check(&vector, e.dimensions()).ok()?;
+        Some(Embedded { model: e.model().to_string(), vector })
+    }
+
+    /// Give up to `batch` memories a vector from the current model: new
+    /// ones, ones from an older model, ones whose content changed (L22).
+    /// Safe to stop and run again: it picks up whatever is still missing.
+    pub async fn reembed(&self, batch: usize) -> Result<Reembedded> {
+        let Some(e) = self.embedder() else { return Ok(Reembedded::default()) };
+        let todo = self.store.missing_embeddings(e.model(), batch.max(1)).await?;
+        let mut progress = Reembedded::default();
+        if !todo.is_empty() {
+            let texts: Vec<String> = todo.iter().map(|m| m.content.clone()).collect();
+            match self.metrics.timed("memory.embed", e.embed(&texts)).await {
+                Ok(vectors) if vectors.len() == todo.len() => {
+                    for (m, v) in todo.iter().zip(vectors) {
+                        let ok = crate::embedding::check(&v, e.dimensions()).is_ok()
+                            && self.metrics.timed("memory.write", self.store.set_embedding(m.id, e.model(), &v)).await.is_ok();
+                        if ok { progress.done += 1 } else { progress.failed += 1 }
+                    }
+                }
+                _ => progress.failed = todo.len(),
+            }
+        }
+        progress.remaining = self.store.missing_embeddings(e.model(), usize::MAX >> 2).await?.len();
+        Ok(progress)
+    }
+
+    /// Compact storage and build indexes when they pay off (L15). Returns notes.
+    pub async fn maintain(&self, vector_index_threshold: usize) -> Result<Vec<String>> {
+        self.store.maintain(vector_index_threshold).await
+    }
+
+    /// Copy the whole store to `dest` (a new directory) (L19).
+    pub async fn backup(&self, dest: &Path) -> Result<()> {
+        self.store.backup(dest).await
     }
 
     /// The conversation (session) memories saved from now on come from.
@@ -278,28 +395,16 @@ impl<S: MemoryStore> MemoryManager<S> {
 
     /// Hybrid recall (M5): keyword and vector candidates, filtered to usable
     /// memories in allowed scopes, ranked by every signal.
-    pub async fn recall(
-        &self,
-        scope: Option<&str>,
-        query: &str,
-        query_vector: Option<QueryVector<'_>>,
-        limit: usize,
-        include_archived: bool,
-    ) -> Result<Vec<Recalled>> {
-        self.recall_where(scope, &|_| true, query, query_vector, limit, include_archived).await
+    pub async fn recall(&self, scope: Option<&str>, query: &str, limit: usize, include_archived: bool) -> Result<Vec<Recalled>> {
+        let vector = self.embed_query(query).await;
+        self.recall_where(scope, &|_| true, query, Embedded::qv(&vector), limit, include_archived).await
     }
 
     /// Recall what's visible while working on `project` (see [`visible`]):
     /// the user's and agent's memories and that project's, not other projects'.
-    pub async fn recall_visible(
-        &self,
-        project: Option<&str>,
-        query: &str,
-        query_vector: Option<QueryVector<'_>>,
-        limit: usize,
-        include_archived: bool,
-    ) -> Result<Vec<Recalled>> {
-        self.recall_where(None, &|s| visible(project, s), query, query_vector, limit, include_archived).await
+    pub async fn recall_visible(&self, project: Option<&str>, query: &str, limit: usize, include_archived: bool) -> Result<Vec<Recalled>> {
+        let vector = self.embed_query(query).await;
+        self.recall_where(None, &|s| visible(project, s), query, Embedded::qv(&vector), limit, include_archived).await
     }
 
     async fn recall_where(
@@ -314,28 +419,29 @@ impl<S: MemoryStore> MemoryManager<S> {
         if let Some(scope) = scope {
             self.check_scope(scope)?;
         }
+        let started = std::time::Instant::now();
         let now = Utc::now();
+        // L13: keyword candidates (full-text search)...
         // id -> (memory, lexical score)
         let mut candidates: HashMap<Uuid, (Memory, f32)> = HashMap::new();
-        for (m, lexical) in self.store.search(query, scope, 40).await? {
+        for (m, lexical) in self.metrics.timed("memory.fts_search", self.store.search(query, scope, 40)).await? {
             candidates.insert(m.id, (m, lexical));
         }
+        // L12: ...and the nearest by meaning, merged, then ranked here (L14).
         let mut similarity: HashMap<Uuid, f32> = HashMap::new();
         if let Some(q) = query_vector {
-            let vectors: HashMap<Uuid, Vec<f32>> = self.store.embeddings(q.model).await?.into_iter().collect();
-            let mut by_meaning: Vec<(Uuid, f32)> =
-                vectors.iter().map(|(id, v)| (*id, rank::cosine(q.vector, v))).collect();
-            by_meaning.sort_by(|a, b| b.1.total_cmp(&a.1));
-            for (id, sim) in by_meaning.iter().take(40) {
-                similarity.insert(*id, *sim);
-                if !candidates.contains_key(id)
-                    && let Some(m) = self.store.get(*id).await?
+            for (id, sim) in self.metrics.timed("memory.vector_search", self.store.nearest(q.model, q.vector, 40)).await? {
+                similarity.insert(id, sim);
+                if !candidates.contains_key(&id)
+                    && let Some(m) = self.store.get(id).await?
                 {
-                    candidates.insert(*id, (m, 0.0));
+                    candidates.insert(id, (m, 0.0));
                 }
             }
-            for (id, v) in &vectors {
-                similarity.entry(*id).or_insert_with(|| rank::cosine(q.vector, v));
+            // Keyword matches outside the nearest few still get their similarity.
+            let missing: Vec<Uuid> = candidates.keys().filter(|id| !similarity.contains_key(id)).copied().collect();
+            for (id, v) in self.store.embeddings_of(q.model, &missing).await? {
+                similarity.insert(id, rank::cosine(q.vector, &v));
             }
         }
         let usable = |m: &Memory| {
@@ -375,17 +481,18 @@ impl<S: MemoryStore> MemoryManager<S> {
             .collect();
         ranked.sort_by(|a, b| b.score.total.total_cmp(&a.score.total));
         ranked.truncate(limit);
+        self.metrics.record("memory.hybrid_search", started.elapsed().as_secs_f32() * 1000.0, true);
         Ok(ranked)
     }
 
     /// The context compiler (M12): pick the few memories worth the prompt
     /// space for this message, within the token budget, and record their use.
-    pub async fn compile(&self, query: &str, query_vector: Option<QueryVector<'_>>, run: Uuid, project: Option<&str>) -> Result<Compiled> {
+    pub async fn compile(&self, query: &str, run: Uuid, project: Option<&str>) -> Result<Compiled> {
         if !self.settings().inject {
             return Ok(Compiled::default());
         }
         let b = self.settings().context;
-        let candidates = self.recall_visible(project, query, query_vector, 20, false).await?;
+        let candidates = self.recall_visible(project, query, 20, false).await?;
         let mut used: Vec<Recalled> = Vec::new();
         let mut passed_over: Vec<Uuid> = Vec::new();
         let mut tokens = 0;
@@ -447,7 +554,11 @@ impl<S: MemoryStore> MemoryManager<S> {
 
     /// Store a memory, unless it's unsafe, not allowed, or already known (in
     /// which case the existing one is reconfirmed).
-    pub async fn remember(&self, new: NewMemory, vector: Option<QueryVector<'_>>) -> Result<Remembered> {
+    pub async fn remember(&self, new: NewMemory) -> Result<Remembered> {
+        self.metrics.timed("memory.write", self.remember_inner(new)).await
+    }
+
+    async fn remember_inner(&self, new: NewMemory) -> Result<Remembered> {
         let content = new.content.trim().to_string();
         if content.is_empty() {
             bail!("memory content is empty");
@@ -457,6 +568,8 @@ impl<S: MemoryStore> MemoryManager<S> {
             self.store.record(&Event::new("rejected", None, format!("not stored: {why}")).run(new.provenance.run_id)).await?;
             bail!("not stored: {why}");
         }
+        let embedded = self.embed_text(&content).await;
+        let vector = Embedded::qv(&embedded);
         if let Some(existing) = self.same_as(&new.scope, &content, vector).await? {
             return Ok(Remembered::Reconfirmed(self.reconfirm(existing, &new).await?));
         }
@@ -504,8 +617,8 @@ impl<S: MemoryStore> MemoryManager<S> {
             }
         }
         if let Some(q) = vector {
-            for (id, v) in self.store.embeddings(q.model).await? {
-                if rank::cosine(q.vector, &v) >= self.settings().same_meaning
+            for (id, sim) in self.store.nearest(q.model, q.vector, 5).await? {
+                if sim >= self.settings().same_meaning
                     && let Some(m) = self.store.get(id).await?
                     && m.status == MemoryStatus::Active
                     && m.scope == scope
@@ -541,7 +654,9 @@ impl<S: MemoryStore> MemoryManager<S> {
     /// Active memories in the same scope that are about the same thing as
     /// `m` without being the same memory: candidates for a relationship
     /// (supports, updates, contradicts, related).
-    pub async fn neighbours(&self, m: &Memory, vector: Option<QueryVector<'_>>, limit: usize) -> Result<Vec<Memory>> {
+    pub async fn neighbours(&self, m: &Memory, limit: usize) -> Result<Vec<Memory>> {
+        let embedded = self.embed_text(&m.content).await;
+        let vector = Embedded::qv(&embedded);
         let mut out: Vec<Memory> = Vec::new();
         for (other, _) in self.store.search(&m.content, Some(&m.scope), 8).await? {
             if other.id != m.id && other.status == MemoryStatus::Active && overlap(&other.content, &m.content) >= 0.3 {
@@ -549,9 +664,9 @@ impl<S: MemoryStore> MemoryManager<S> {
             }
         }
         if let Some(q) = vector {
-            for (id, v) in self.store.embeddings(q.model).await? {
+            for (id, sim) in self.store.nearest(q.model, q.vector, 10).await? {
                 if id != m.id
-                    && rank::cosine(q.vector, &v) >= 0.75
+                    && sim >= 0.75
                     && !out.iter().any(|o| o.id == id)
                     && let Some(other) = self.store.get(id).await?
                     && other.status == MemoryStatus::Active
@@ -605,7 +720,11 @@ impl<S: MemoryStore> MemoryManager<S> {
         }
         m.content = content.to_string();
         m.updated_at = Utc::now();
-        self.store.update(&m).await?;
+        self.metrics.timed("memory.write", self.store.update(&m)).await?;
+        // New words, new vector (if this fails, re-embedding catches it later).
+        if let Some(e) = self.embed_text(content).await {
+            let _ = self.store.set_embedding(id, &e.model, &e.vector).await;
+        }
         let version = self.store.add_version(id, content, m.confidence, reason).await?;
         self.store
             .record(&Event::new("corrected", Some(id), reason).states(format!("v{}", version - 1), format!("v{version}")).run(run))
@@ -615,11 +734,11 @@ impl<S: MemoryStore> MemoryManager<S> {
 
     /// Replace a memory that's no longer true with a new one; the old one is
     /// kept, marked superseded and linked (M3, M14).
-    pub async fn supersede(&self, old: Uuid, new: NewMemory, reason: &str, vector: Option<QueryVector<'_>>) -> Result<Memory> {
+    pub async fn supersede(&self, old: Uuid, new: NewMemory, reason: &str) -> Result<Memory> {
         let mut previous = self.get(old).await?.ok_or_else(|| anyhow!("no memory with id {old}"))?;
         self.check_scope(&previous.scope)?;
         let run = new.provenance.run_id;
-        let created = match self.remember(new, vector).await? {
+        let created = match self.remember(new).await? {
             Remembered::Created(m) => m,
             Remembered::Reconfirmed(m) if m.id == old => bail!("that's what the memory already says"),
             Remembered::Reconfirmed(m) => m,
@@ -684,15 +803,7 @@ impl<S: MemoryStore> MemoryManager<S> {
         Ok(notes)
     }
 
-    // ---- vectors (M5)
 
-    pub async fn needs_embedding(&self, model: &str, limit: usize) -> Result<Vec<Memory>> {
-        self.store.missing_embeddings(model, limit).await
-    }
-
-    pub async fn set_embedding(&self, id: Uuid, model: &str, vector: &[f32]) -> Result<()> {
-        self.store.set_embedding(id, model, vector).await
-    }
 
     // ---- episodes (M8)
 
@@ -715,7 +826,7 @@ impl<S: MemoryStore> MemoryManager<S> {
             importance: Some(0.5),
             ..NewMemory::fact(scope, &content, MemorySource::Derived)
         };
-        let m = match self.remember(new, None).await? {
+        let m = match self.remember(new).await? {
             Remembered::Created(m) => m,
             Remembered::Reconfirmed(m) => return Ok(m),
         };
@@ -769,10 +880,10 @@ impl<S: MemoryStore> MemoryManager<S> {
                     .await
                     .map(|v| format!("updated [{}] to v{v}: {}", old.short_id(), truncate(&item.content, 60))),
                 ("supersede", Some(old)) => self
-                    .supersede(old.id, new, if item.reason.is_empty() { "changed" } else { &item.reason }, None)
+                    .supersede(old.id, new, if item.reason.is_empty() { "changed" } else { &item.reason })
                     .await
                     .map(|m| format!("[{}] supersedes [{}]: {}", m.short_id(), old.short_id(), truncate(&m.content, 60))),
-                _ => self.remember(new, None).await.map(|r| match r {
+                _ => self.remember(new).await.map(|r| match r {
                     Remembered::Created(m) => format!("remembered [{}] {}", m.short_id(), truncate(&m.content, 60)),
                     Remembered::Reconfirmed(m) => format!("reconfirmed [{}] {}", m.short_id(), truncate(&m.content, 60)),
                 }),
@@ -792,10 +903,10 @@ impl<S: MemoryStore> MemoryManager<S> {
     // ---- maintenance (M9, M18)
 
     /// The checks that need no model: near-duplicates and stale memories.
-    pub async fn review_collection(&self, model: Option<&str>) -> Result<Report> {
+    pub async fn review_collection(&self) -> Result<Report> {
         let all = self.list(&Filter::active(), usize::MAX >> 2).await?;
-        let vectors: HashMap<Uuid, Vec<f32>> = match model {
-            Some(model) => self.store.embeddings(model).await?.into_iter().collect(),
+        let vectors: HashMap<Uuid, Vec<f32>> = match self.embedding_model() {
+            Some(model) => self.store.embeddings(&model).await?.into_iter().collect(),
             None => HashMap::new(),
         };
         let short = |id: Uuid| id.to_string()[..8].to_string();
@@ -982,7 +1093,8 @@ impl<S: MemoryStore> MemoryManager<S> {
         self.store.events(None, limit).await
     }
 
-    pub async fn stats(&self, model: Option<&str>) -> Result<Stats> {
+    pub async fn stats(&self) -> Result<Stats> {
+        let model = self.embedding_model();
         let all = self.list(&Filter::default(), usize::MAX >> 2).await?;
         let now = Utc::now();
         let active: Vec<&Memory> = all.iter().filter(|m| m.status == MemoryStatus::Active).collect();
@@ -997,7 +1109,7 @@ impl<S: MemoryStore> MemoryManager<S> {
             .map(|s| (s, count(&|m: &Memory| m.status == s)))
             .filter(|(_, n)| *n > 0)
             .collect();
-        let embedded: HashSet<Uuid> = match model {
+        let embedded: HashSet<Uuid> = match &model {
             Some(model) => self.store.embeddings(model).await?.into_iter().map(|(id, _)| id).collect(),
             None => HashSet::new(),
         };
@@ -1008,7 +1120,7 @@ impl<S: MemoryStore> MemoryManager<S> {
             .iter()
             .filter(|r| r.2 == Relationship::Contradicts)
             .count();
-        let report = self.review_collection(model).await?;
+        let report = self.review_collection().await?;
         Ok(Stats {
             total: all.len(),
             active: active.len(),
@@ -1024,6 +1136,10 @@ impl<S: MemoryStore> MemoryManager<S> {
             embedded: active.iter().filter(|m| embedded.contains(&m.id)).count(),
             episodes: self.store.episodes(usize::MAX >> 2).await?.len(),
             pending_proposals: self.proposals().await?.len(),
+            backend: self.store.backend(),
+            size_bytes: self.store.size_bytes().await?,
+            embedding_model: model,
+            operations: self.metrics.snapshot(),
         })
     }
 }
@@ -1043,8 +1159,16 @@ mod tests {
     use crate::capture::{EpisodeItem, Item};
     use crate::curator::{Consolidation, Contradiction};
 
+    use crate::embedding::FakeEmbedder;
+
+    /// Manager tests run on the default backend, LanceDB, in a scratch directory.
     async fn manager(settings: Settings) -> MemoryManager {
-        MemoryManager::new(SqliteStore::in_memory().await.unwrap(), settings)
+        let dir = std::env::temp_dir().join(format!("lyra-memory-test-{}", Uuid::new_v4()));
+        MemoryManager::new(LanceStore::open(&dir, "memories").await.unwrap(), settings)
+    }
+
+    async fn with_embedder(m: &MemoryManager, e: FakeEmbedder) {
+        m.set_embedder(Some(Arc::new(e))).await.unwrap();
     }
 
     fn fact(scope: &str, content: &str) -> NewMemory {
@@ -1054,44 +1178,44 @@ mod tests {
     #[tokio::test]
     async fn remember_recall_and_scope_isolation() {
         let m = manager(Settings::default()).await;
-        m.remember(fact("project:arcella", "The agent runtime will be written in Rust."), None).await.unwrap();
-        m.remember(fact("project:other", "The agent runtime is Go."), None).await.unwrap();
+        m.remember(fact("project:arcella", "The agent runtime will be written in Rust.")).await.unwrap();
+        m.remember(fact("project:other", "The agent runtime is Go.")).await.unwrap();
 
-        let found = m.recall(Some("project:arcella"), "agent runtime language", None, 5, false).await.unwrap();
+        let found = m.recall(Some("project:arcella"), "agent runtime language", 5, false).await.unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].memory.confidence, 1.0, "the user said it");
-        assert_eq!(m.recall(None, "agent runtime", None, 5, false).await.unwrap().len(), 2);
+        assert_eq!(m.recall(None, "agent runtime", 5, false).await.unwrap().len(), 2);
         // Working on one project, the other's memories stay out unless asked for.
-        let visible = m.recall_visible(Some("arcella"), "agent runtime", None, 5, false).await.unwrap();
+        let visible = m.recall_visible(Some("arcella"), "agent runtime", 5, false).await.unwrap();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].memory.scope, "project:arcella");
-        assert!(m.recall_visible(None, "agent runtime", None, 5, false).await.unwrap().is_empty());
+        assert!(m.recall_visible(None, "agent runtime", 5, false).await.unwrap().is_empty());
         assert!(crate::visible(None, "user") && !crate::visible(Some("a"), "project:b"));
     }
 
     #[tokio::test]
     async fn hearing_a_fact_again_strengthens_it() {
         let m = manager(Settings::default()).await;
-        let a = m.remember(NewMemory::fact("user", "Deploys happen on Fridays.", MemorySource::Agent), None).await.unwrap();
-        let b = m.remember(NewMemory::fact("user", "Deploys happen on Fridays", MemorySource::Agent), None).await.unwrap();
+        let a = m.remember(NewMemory::fact("user", "Deploys happen on Fridays.", MemorySource::Agent)).await.unwrap();
+        let b = m.remember(NewMemory::fact("user", "Deploys happen on Fridays", MemorySource::Agent)).await.unwrap();
         assert!(b.memory().confidence > a.memory().confidence, "same source, still stronger");
     }
 
     #[tokio::test]
     async fn new_memories_can_replace_or_be_linked_to_old_ones() {
         let m = manager(Settings::default()).await;
-        let old = m.remember(fact("user", "The database server is db1 in Frankfurt"), None).await.unwrap().memory().clone();
-        let new = m.remember(fact("user", "The database server moved to db2 in Paris"), None).await.unwrap().memory().clone();
-        let near = m.neighbours(&new, None, 5).await.unwrap();
+        let old = m.remember(fact("user", "The database server is db1 in Frankfurt")).await.unwrap().memory().clone();
+        let new = m.remember(fact("user", "The database server moved to db2 in Paris")).await.unwrap().memory().clone();
+        let near = m.neighbours(&new, 5).await.unwrap();
         assert_eq!(near.iter().map(|n| n.id).collect::<Vec<_>>(), [old.id]);
         let reply = format!(r#"{{"links":[{{"id":"{}","relation":"updates","reason":"server moved"}}]}}"#, old.short_id());
         let links = crate::relate::parse(&reply, &near).unwrap();
         assert_eq!(links[0].1, crate::relate::Link::Replaces);
         m.replace(old.id, new.id, "server moved").await.unwrap();
         assert_eq!(m.get(old.id).await.unwrap().unwrap().status, MemoryStatus::Superseded);
-        let third = m.remember(fact("user", "The database server is db3"), None).await.unwrap().memory().clone();
+        let third = m.remember(fact("user", "The database server is db3")).await.unwrap().memory().clone();
         m.link(third.id, new.id, Relationship::Contradicts, "which server?").await.unwrap();
-        assert_eq!(m.stats(None).await.unwrap().contradictions, 1);
+        assert_eq!(m.stats().await.unwrap().contradictions, 1);
         assert!(crate::relate::parse(r#"{"links":[{"id":"zzzz","relation":"updates"}]}"#, &near).unwrap().is_empty(), "unknown ids are ignored");
     }
 
@@ -1100,9 +1224,9 @@ mod tests {
         let m = manager(Settings::default()).await;
         let mut first = NewMemory::fact("user", "Garrett prefers Rust for the agent runtime.", MemorySource::Agent);
         first.tags = vec!["preference".into()];
-        let a = m.remember(first, None).await.unwrap();
+        let a = m.remember(first).await.unwrap();
         assert_eq!(a.memory().confidence, 0.5, "inferred");
-        let b = m.remember(fact("user", "Garrett prefers Rust for the agent runtime"), None).await.unwrap();
+        let b = m.remember(fact("user", "Garrett prefers Rust for the agent runtime")).await.unwrap();
         assert!(matches!(b, Remembered::Reconfirmed(_)));
         assert_eq!(b.memory().id, a.memory().id);
         assert_eq!(b.memory().confidence, 1.0, "confirmed by the user");
@@ -1112,10 +1236,12 @@ mod tests {
     #[tokio::test]
     async fn vector_duplicates_are_caught_too() {
         let m = manager(Settings::default()).await;
-        let v = QueryVector { model: "emb", vector: &[1.0, 0.0, 0.0] };
-        m.remember(fact("user", "Deploys happen on Fridays"), Some(v)).await.unwrap();
-        let close = QueryVector { model: "emb", vector: &[0.99, 0.02, 0.0] };
-        let r = m.remember(fact("user", "Releases go out at the end of the week"), Some(close)).await.unwrap();
+        let e = FakeEmbedder::new("emb", 3)
+            .with("Deploys happen on Fridays", &[1.0, 0.0, 0.0])
+            .with("Releases go out at the end of the week", &[0.99, 0.02, 0.0]);
+        with_embedder(&m, e).await;
+        m.remember(fact("user", "Deploys happen on Fridays")).await.unwrap();
+        let r = m.remember(fact("user", "Releases go out at the end of the week")).await.unwrap();
         assert!(matches!(r, Remembered::Reconfirmed(_)));
     }
 
@@ -1123,23 +1249,23 @@ mod tests {
     async fn secrets_and_disallowed_scopes_are_refused() {
         let settings = Settings { allowed_scopes: vec!["user".into(), "project:*".into()], ..Settings::default() };
         let m = manager(settings).await;
-        let err = m.remember(fact("user", "The prod db password is hunter2"), None).await.unwrap_err();
+        let err = m.remember(fact("user", "The prod db password is hunter2")).await.unwrap_err();
         assert!(err.to_string().contains("not stored"), "{err}");
-        assert!(m.remember(fact("agent", "x"), None).await.is_err(), "agent scope not allowed");
-        assert!(m.remember(fact("project:arcella", "Uses Rust"), None).await.is_ok());
-        assert!(m.recall(Some("agent"), "x", None, 5, false).await.is_err());
+        assert!(m.remember(fact("agent", "x")).await.is_err(), "agent scope not allowed");
+        assert!(m.remember(fact("project:arcella", "Uses Rust")).await.is_ok());
+        assert!(m.recall(Some("agent"), "x", 5, false).await.is_err());
     }
 
     #[tokio::test]
     async fn superseding_keeps_history() {
         let m = manager(Settings::default()).await;
-        let go = m.remember(fact("project:a", "The agent runtime language is Go."), None).await.unwrap();
+        let go = m.remember(fact("project:a", "The agent runtime language is Go.")).await.unwrap();
         let go = go.memory().clone();
         let rust = m
-            .supersede(go.id, fact("project:a", "The agent runtime language is Rust."), "we switched", None)
+            .supersede(go.id, fact("project:a", "The agent runtime language is Rust."), "we switched")
             .await
             .unwrap();
-        let found = m.recall(None, "runtime language", None, 5, false).await.unwrap();
+        let found = m.recall(None, "runtime language", 5, false).await.unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].memory.id, rust.id);
         let old = m.inspect(go.id).await.unwrap();
@@ -1150,7 +1276,7 @@ mod tests {
     #[tokio::test]
     async fn corrections_are_versioned() {
         let m = manager(Settings::default()).await;
-        let r = m.remember(fact("project:a", "The API uses port 8000."), None).await.unwrap();
+        let r = m.remember(fact("project:a", "The API uses port 8000.")).await.unwrap();
         let id = r.memory().id;
         assert_eq!(m.correct(id, "The API uses port 8080.", "typo", None).await.unwrap(), 2);
         let i = m.inspect(id).await.unwrap();
@@ -1162,18 +1288,18 @@ mod tests {
     #[tokio::test]
     async fn forgetting_archiving_expiry_and_purge() {
         let m = manager(Settings::default()).await;
-        let a = m.remember(fact("user", "Likes green tea"), None).await.unwrap().memory().clone();
+        let a = m.remember(fact("user", "Likes green tea")).await.unwrap().memory().clone();
         m.forget(a.id, "asked", None).await.unwrap();
-        assert!(m.recall(None, "tea", None, 5, false).await.unwrap().is_empty());
+        assert!(m.recall(None, "tea", 5, false).await.unwrap().is_empty());
         m.restore(a.id).await.unwrap();
         m.archive(a.id, "old", None).await.unwrap();
-        assert!(m.recall(None, "tea", None, 5, false).await.unwrap().is_empty());
-        assert_eq!(m.recall(None, "tea", None, 5, true).await.unwrap().len(), 1, "archived is still findable");
+        assert!(m.recall(None, "tea", 5, false).await.unwrap().is_empty());
+        assert_eq!(m.recall(None, "tea", 5, true).await.unwrap().len(), 1, "archived is still findable");
 
         let mut temp = fact("user", "Currently debugging server db1");
         temp.expires_at = Some(Utc::now() - Duration::minutes(1));
-        let t = m.remember(temp, None).await.unwrap().memory().clone();
-        assert!(m.recall(None, "debugging", None, 5, false).await.unwrap().is_empty(), "expired");
+        let t = m.remember(temp).await.unwrap().memory().clone();
+        assert!(m.recall(None, "debugging", 5, false).await.unwrap().is_empty(), "expired");
         assert_eq!(m.expire_due().await.unwrap().len(), 1);
         assert_eq!(m.get(t.id).await.unwrap().unwrap().status, MemoryStatus::Archived);
 
@@ -1186,11 +1312,11 @@ mod tests {
     async fn context_compiler_picks_few_within_budget_and_records_use() {
         let settings = Settings { context: Budget { max_tokens: 60, max_memories: 8, min_score: 0.0, min_relevance: 0.0 }, ..Settings::default() };
         let m = manager(settings).await;
-        m.remember(fact("user", "The production database runs PostgreSQL 16."), None).await.unwrap();
-        m.remember(fact("user", "The production database runs PostgreSQL 16 on db1."), None).await.unwrap();
-        m.remember(fact("user", "The staging database runs PostgreSQL 15 on a small VM with little memory."), None).await.unwrap();
+        m.remember(fact("user", "The production database runs PostgreSQL 16.")).await.unwrap();
+        m.remember(fact("user", "The production database runs PostgreSQL 16 on db1.")).await.unwrap();
+        m.remember(fact("user", "The staging database runs PostgreSQL 15 on a small VM with little memory.")).await.unwrap();
         let run = Uuid::new_v4();
-        let c = m.compile("which postgres version does the production database run", None, run, None).await.unwrap();
+        let c = m.compile("which postgres version does the production database run", run, None).await.unwrap();
         assert!(c.tokens <= 60);
         assert!(!c.used.is_empty() && c.used.len() < 3, "near-duplicates and budget trim the list");
         assert!(c.section.unwrap().contains("# Relevant memories"));
@@ -1203,12 +1329,14 @@ mod tests {
     #[tokio::test]
     async fn unrelated_memories_stay_out_of_the_prompt() {
         let m = manager(Settings::default()).await;
-        let port = m.remember(fact("user", "The billing API listens on port 8080"), None).await.unwrap().memory().clone();
-        m.set_embedding(port.id, "emb", &[0.0, 1.0]).await.unwrap();
-        let deploy = m.remember(fact("user", "Deploys happen every Friday afternoon"), None).await.unwrap().memory().clone();
-        m.set_embedding(deploy.id, "emb", &[1.0, 0.1]).await.unwrap();
-        let q = [0.95, 0.3];
-        let c = m.compile("when do we ship releases", Some(QueryVector { model: "emb", vector: &q }), Uuid::new_v4(), None).await.unwrap();
+        let e = FakeEmbedder::new("emb", 2)
+            .with("The billing API listens on port 8080", &[0.0, 1.0])
+            .with("Deploys happen every Friday afternoon", &[1.0, 0.1])
+            .with("when do we ship releases", &[0.95, 0.3]);
+        with_embedder(&m, e).await;
+        m.remember(fact("user", "The billing API listens on port 8080")).await.unwrap();
+        let deploy = m.remember(fact("user", "Deploys happen every Friday afternoon")).await.unwrap().memory().clone();
+        let c = m.compile("when do we ship releases", Uuid::new_v4(), None).await.unwrap();
         let ids: Vec<Uuid> = c.used.iter().map(|r| r.memory.id).collect();
         assert_eq!(ids, [deploy.id], "the port memory is important and fresh, but not relevant");
     }
@@ -1216,13 +1344,14 @@ mod tests {
     #[tokio::test]
     async fn semantic_recall_finds_what_keywords_miss() {
         let m = manager(Settings::default()).await;
-        let v = |x: f32, y: f32| vec![x, y];
-        let deploy = m.remember(fact("user", "Releases ship every Friday afternoon"), None).await.unwrap().memory().clone();
-        m.set_embedding(deploy.id, "emb", &v(1.0, 0.1)).await.unwrap();
-        let tea = m.remember(fact("user", "Likes green tea"), None).await.unwrap().memory().clone();
-        m.set_embedding(tea.id, "emb", &v(0.0, 1.0)).await.unwrap();
-        let q = v(0.95, 0.15);
-        let found = m.recall(None, "when do we deploy", Some(QueryVector { model: "emb", vector: &q }), 2, false).await.unwrap();
+        let e = FakeEmbedder::new("emb", 2)
+            .with("Releases ship every Friday afternoon", &[1.0, 0.1])
+            .with("Likes green tea", &[0.0, 1.0])
+            .with("when do we deploy", &[0.95, 0.15]);
+        with_embedder(&m, e).await;
+        let deploy = m.remember(fact("user", "Releases ship every Friday afternoon")).await.unwrap().memory().clone();
+        m.remember(fact("user", "Likes green tea")).await.unwrap();
+        let found = m.recall(None, "when do we deploy", 2, false).await.unwrap();
         assert_eq!(found[0].memory.id, deploy.id, "no shared keywords, same meaning");
         assert!(found[0].score.semantic.unwrap() > 0.9);
     }
@@ -1230,8 +1359,8 @@ mod tests {
     #[tokio::test]
     async fn capture_plans_create_update_supersede_and_record_episodes() {
         let m = manager(Settings::default()).await;
-        let port = m.remember(fact("project:api", "The API listens on port 8000."), None).await.unwrap().memory().clone();
-        let typo = m.remember(fact("project:api", "Deploys use Kubernetis."), None).await.unwrap().memory().clone();
+        let port = m.remember(fact("project:api", "The API listens on port 8000.")).await.unwrap().memory().clone();
+        let typo = m.remember(fact("project:api", "Deploys use Kubernetis.")).await.unwrap().memory().clone();
         let plan = capture::Plan {
             memories: vec![
                 Item { action: "supersede".into(), target: port.short_id(), content: "The API listens on port 8080.".into(), scope: "project:api".into(), ..Item::default() },
@@ -1248,17 +1377,17 @@ mod tests {
         assert_eq!(m.get(port.id).await.unwrap().unwrap().status, MemoryStatus::Superseded);
         assert_eq!(m.get(typo.id).await.unwrap().unwrap().content, "Deploys use Kubernetes.");
         assert_eq!(m.episodes(5).await.unwrap().len(), 1);
-        let stats = m.stats(None).await.unwrap();
+        let stats = m.stats().await.unwrap();
         assert_eq!(stats.episodes, 1);
     }
 
     #[tokio::test]
     async fn curation_proposes_consolidation_and_flags_contradictions() {
         let m = manager(Settings::default()).await;
-        let a = m.remember(fact("project:a", "Project uses Rust."), None).await.unwrap().memory().clone();
-        let b = m.remember(fact("project:a", "Agent runtime is implemented in Rust."), None).await.unwrap().memory().clone();
-        let c = m.remember(fact("project:a", "Deploys happen on Fridays."), None).await.unwrap().memory().clone();
-        let d = m.remember(fact("project:a", "Deploys never happen on Fridays."), None).await.unwrap().memory().clone();
+        let a = m.remember(fact("project:a", "Project uses Rust.")).await.unwrap().memory().clone();
+        let b = m.remember(fact("project:a", "Agent runtime is implemented in Rust.")).await.unwrap().memory().clone();
+        let c = m.remember(fact("project:a", "Deploys happen on Fridays.")).await.unwrap().memory().clone();
+        let d = m.remember(fact("project:a", "Deploys never happen on Fridays.")).await.unwrap().memory().clone();
         let plan = curator::Plan {
             consolidations: vec![Consolidation { memories: vec![a.short_id(), b.short_id()], content: "The agent runtime uses Rust.".into(), reason: "same fact".into() }],
             contradictions: vec![Contradiction { memories: vec![c.short_id(), d.short_id()], reason: "Friday deploys".into() }],
@@ -1279,21 +1408,21 @@ mod tests {
         let note = m.approve(&p.id.to_string()[..8]).await.unwrap();
         assert!(note.starts_with("consolidated 2 memories"), "{note}");
         assert_eq!(m.get(a.id).await.unwrap().unwrap().status, MemoryStatus::Superseded);
-        let found = m.recall(None, "rust runtime", None, 5, false).await.unwrap();
+        let found = m.recall(None, "rust runtime", 5, false).await.unwrap();
         let facts: Vec<&Recalled> = found.iter().filter(|r| r.memory.kind == MemoryKind::Semantic).collect();
         assert_eq!(facts.len(), 1, "the two originals are superseded");
         assert_eq!(facts[0].memory.content, "The agent runtime uses Rust.");
         assert!(facts[0].memory.confidence >= 1.0);
 
         // Contradicted memories rank below otherwise equal ones.
-        assert!(m.stats(None).await.unwrap().contradictions == 1);
+        assert!(m.stats().await.unwrap().contradictions == 1);
         assert!(m.last_curated().await.unwrap().is_some());
     }
 
     #[tokio::test]
     async fn auto_maintenance_archives_stale_memories() {
         let m = manager(Settings { maintenance: MaintenanceMode::Auto, ..Settings::default() }).await;
-        let a = m.remember(fact("user", "Old detail"), None).await.unwrap().memory().clone();
+        let a = m.remember(fact("user", "Old detail")).await.unwrap().memory().clone();
         let notes = m.apply_curation(curator::Plan::default(), &[a.id], None).await.unwrap();
         assert!(notes[0].starts_with("archived"), "{notes:?}");
         assert_eq!(m.get(a.id).await.unwrap().unwrap().status, MemoryStatus::Archived);

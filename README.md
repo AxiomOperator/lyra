@@ -13,7 +13,7 @@ Everything lyra keeps lives in one folder, `~/.lyra` (set `LYRA_HOME` to use ano
 ├── config/    config.toml, behavior.toml (evolved behavior)
 ├── context/   SOUL.md, USER.md, AGENT.md
 ├── evolution/ evolution.db (runs, candidates, generations)
-├── memory/    memory.db
+├── memory/    lance/ (LanceDB: memories, vectors, history)
 ├── plans/     plans.db
 ├── skills/    <name>.md, one file per skill
 ├── tools/     <name>.toml, composite tools
@@ -48,13 +48,16 @@ currency = "$"
 
 ### Embedding and reranker models
 
-Optional; not used by the chat yet. When configured, lyra sends each a tiny
-test request at startup and on `Ctrl-L` and reports in the chat whether it's ready.
+Optional. The embedding model gives memories their vectors (meaning-based
+recall); without it, memory uses keywords only. The reranker isn't used yet.
+When configured, lyra sends each a tiny test request at startup and on
+`Ctrl-L` and reports whether it's ready.
 
 ```toml
 [embedding]           # OpenAI-style /embeddings
 url = "http://localhost:8082/v1"
 model = "embedding"
+# dimensions = 4096   # the vector size; asked of the model when not set
 
 [reranker]            # /rerank (vLLM, llama.cpp, Jina/Cohere style)
 url = "http://localhost:8081/v1"
@@ -83,8 +86,23 @@ which files were loaded. Templates are in `examples/`.
 What lyra knows (facts), what happened (episodes) and what it's working on
 (working memory), built following `docs/memory_system.md` in the `memory/`
 crate (`lyra-memory`). Everything goes through `MemoryManager`: the model
-proposes memories, the manager decides. Storage is one SQLite file,
-`~/.lyra/memory/memory.db` (FTS5 keyword search, vectors in a table).
+proposes memories, the manager decides.
+
+**Storage is LanceDB** (`docs/lancedb_migration.md`), a local directory,
+`~/.lyra/memory/lance`, with no server. Each memory is a row with typed
+columns and its embedding (a fixed-size vector sized for the embedding model,
+with the model and generation that made it). Keyword search uses LanceDB's
+full-text index, meaning uses vector search (exact, or an index once the
+collection passes `vector_index_threshold`), and the two are merged and
+ranked by the manager. The history around memories (versions, links,
+events, usage, episodes, proposals) is kept in small tables next to it.
+Vectors come from the `[embedding]` model through an embedding provider the
+store never sees. When that model changes, its old vectors stop being used
+and memories are re-embedded (`/memory reembed`, also done on startup).
+`/memory backup` copies the store to `~/.lyra/backup/memory-<time>`;
+`lyra --restore-memory <dir>` puts one back (the replaced store is kept
+aside). `/memory` shows the store's size and how fast each operation is
+(P50/P95). A SQLite backend is still available (`backend = "sqlite"`).
 
 - **Remembering.** The model saves facts with `memory_remember`. After a turn
   where you shared something that sounds durable ("we use…", "I prefer…", "we
@@ -134,16 +152,21 @@ Model tools: `memory_remember`, `memory_recall`, `memory_list`, `memory_inspect`
 `memory_correct`, `memory_supersede`, `memory_archive`, `memory_forget`,
 `working_memory`. Ctrl-L reloads the `[memory]` settings and embedding model.
 
-Commands: `/memory` (stats and what's waiting for approval), `/memory search <q>`
+Commands: `/memory` (stats, storage and latency, what's waiting for approval), `/memory search <q>`
 (with each ranking signal), `/memory list [scope]`, `/memory inspect <id>`
 (provenance, links, versions, history), `/memory correct <id> <text>`,
 `/memory forget|archive|restore|purge <id>`, `/memory approve|reject <id>`,
 `/memory working [clear]`, `/memory curate`, `/memory episode`,
-`/memory events` (what happened to memories lately), `/memory project [name|none]`.
+`/memory events` (what happened to memories lately), `/memory project [name|none]`,
+`/memory reembed`, `/memory backup`.
 
 ```toml
 [memory]
 enabled = true
+backend = "lance"            # lance | sqlite
+# path = "~/.lyra/memory/lance"   # the LanceDB directory (or SQLite file)
+table = "memories"
+vector_index_threshold = 10000    # index vectors from this many on; 0 = never
 default_scope = "user"
 allowed_scopes = ["*"]       # e.g. ["user", "agent", "project:*"]
 capture = "auto"             # auto | off
@@ -484,6 +507,10 @@ output tokens are estimated from the stream and marked `~`.
 cargo run
 ```
 
+Building needs `protoc`, the Protocol Buffers compiler, for LanceDB
+(`dnf install protobuf-compiler` / `apt install protobuf-compiler`, or a
+release from github.com/protocolbuffers/protobuf on your `PATH`).
+
 Keys: type, `Enter` to send, `↑`/`↓`/`PgUp`/`PgDn` to scroll history, `Ctrl-R` to show/hide model reasoning, `Ctrl-B` to show/hide the side panels, `Ctrl-L` to reload the context files and config, `Esc` / `Ctrl-C` to quit.
 
 ## Layout
@@ -492,7 +519,7 @@ The chat sits on the left; on terminals at least 100 columns wide, panels on the
 
 - **Session**: what the assistant is doing right now (idle / waiting / thinking / streaming / running a tool, with a timer), model and server, replies, last reply's TTFT and speed, tokens, cache hit rate and cost.
 - **Agent**: system prompt size, loaded SOUL/USER/AGENT files, tools, and embedding/reranker health.
-- **Memory**: active memories by kind, vector coverage, the current project, what needs approval (proposals, contradictions, duplicates, expired), working memory (goal, plan, notes, the last tool result), how many memories the last reply used, and the most recent memories (`?` marks unsure ones).
+- **Memory**: active memories by kind, vector coverage, the store (backend, size, search latency; red when operations fail), the current project, what needs approval (proposals, contradictions, duplicates, expired), working memory (goal, plan, notes, the last tool result), how many memories the last reply used, and the most recent memories (`?` marks unsure ones).
 - **Skills**: learning mode, average reliability, what needs review (proposals, conflicts, duplicates, failing or stale skills), the last reply's skills, and each active skill's reliability and use count.
 - **Plan**: the current plan's goal, steps with their status (✓ ▸ ⏸ ✗ ○, ⚠ for approval), budget use and any note.
 - **Evolution**: the generation and mode, runs recorded, success rate and corrections, calls per run, what has evolved (guidelines, workflows, composite tools, changed settings), candidates waiting for review, the last review, and what evolution is doing right now.

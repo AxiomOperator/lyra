@@ -262,6 +262,17 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect, width: usize) {
             let mut summary: Vec<String> = s.by_kind.iter().map(|(k, n)| format!("{k} {n}")).collect();
             summary.push(if snap.vectors { format!("vectors {}/{}", s.embedded, s.active) } else { "keywords only".into() });
             lines.push(Line::styled(truncate(&summary.join(" · "), width), dim));
+            // Storage and how fast search is (L23).
+            let mut storage = vec![s.backend.to_string()];
+            if let Some(b) = s.size_bytes {
+                storage.push(crate::mem::human_bytes(b));
+            }
+            if let Some(op) = s.operations.iter().find(|o| o.name == "memory.hybrid_search") {
+                storage.push(format!("search p50 {:.0}ms", op.p50_ms));
+            }
+            let failures: u64 = s.operations.iter().map(|o| o.failures).sum();
+            let line = Line::from(vec![label("store"), Span::raw(truncate(&storage.join(" · "), width.saturating_sub(8)))]);
+            lines.push(if failures > 0 { line.red() } else { line });
             let project = snap.project.as_deref().map_or("none (all projects left out)".to_string(), |p| format!("project:{p}"));
             lines.push(Line::from(vec![label("project"), Span::raw(truncate(&project, width.saturating_sub(8)))]));
 

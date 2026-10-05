@@ -95,7 +95,7 @@ pub struct Usage {
 }
 
 /// A significant run, summarized. Also stored as an episodic memory.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Episode {
     pub id: Uuid,
     pub scope: String,

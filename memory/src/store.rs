@@ -24,7 +24,7 @@ impl Filter {
 }
 
 /// A past version of a memory's content (from corrections).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Version {
     pub memory_id: Uuid,
     pub version: i64,
@@ -35,7 +35,7 @@ pub struct Version {
 }
 
 /// One entry in the audit log.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: Uuid,
     pub memory_id: Option<Uuid>,
@@ -93,7 +93,8 @@ impl MemoryChange {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ProposalStatus {
     Pending,
     Applied,
@@ -110,7 +111,7 @@ impl ProposalStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Proposal {
     pub id: Uuid,
     pub change: MemoryChange,
@@ -125,10 +126,14 @@ impl Proposal {
     }
 }
 
-/// Storage for memories and everything around them. SQLite today; the agent
-/// only ever sees `MemoryManager`, so this can be replaced.
+/// Storage for memories and everything around them: LanceDB
+/// ([`crate::LanceStore`]) by default, SQLite ([`crate::SqliteStore`]) as an
+/// alternative. The agent only ever sees `MemoryManager`, so this can be replaced.
 #[async_trait::async_trait]
 pub trait MemoryStore: Send + Sync {
+    /// `lance` or `sqlite`, for display.
+    fn backend(&self) -> &'static str;
+
     // ---- memories
     async fn create(&self, memory: &Memory) -> Result<()>;
     async fn get(&self, id: Uuid) -> Result<Option<Memory>>;
@@ -148,8 +153,41 @@ pub trait MemoryStore: Send + Sync {
     // ---- vectors
     async fn set_embedding(&self, id: Uuid, model: &str, vector: &[f32]) -> Result<()>;
     async fn embeddings(&self, model: &str) -> Result<Vec<(Uuid, Vec<f32>)>>;
-    /// Active memories without a vector from `model`.
+    /// Active memories without a current vector from `model`.
     async fn missing_embeddings(&self, model: &str, limit: usize) -> Result<Vec<Memory>>;
+    /// The memories whose `model` vectors are nearest to `vector`, with cosine
+    /// similarity, best first (L12). Exact search unless the store has an index.
+    async fn nearest(&self, model: &str, vector: &[f32], limit: usize) -> Result<Vec<(Uuid, f32)>> {
+        let mut all: Vec<(Uuid, f32)> =
+            self.embeddings(model).await?.into_iter().map(|(id, v)| (id, crate::rank::cosine(vector, &v))).collect();
+        all.sort_by(|a, b| b.1.total_cmp(&a.1));
+        all.truncate(limit);
+        Ok(all)
+    }
+    /// These memories' `model` vectors.
+    async fn embeddings_of(&self, model: &str, ids: &[Uuid]) -> Result<Vec<(Uuid, Vec<f32>)>> {
+        Ok(self.embeddings(model).await?.into_iter().filter(|(id, _)| ids.contains(id)).collect())
+    }
+    /// Get ready for vectors from `model` of `dimensions` (L21): when they no
+    /// longer match what's stored, old vectors stop being used and every
+    /// memory is due for re-embedding. Returns a note when that happened.
+    async fn prepare_embeddings(&self, _model: &str, _dimensions: usize) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    // ---- upkeep
+    /// Compact storage and build indexes once they pay off (L15). Returns notes.
+    async fn maintain(&self, _vector_index_threshold: usize) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+    /// Bytes on disk, if known.
+    async fn size_bytes(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+    /// Copy everything to `dest`, a new directory (L19).
+    async fn backup(&self, _dest: &std::path::Path) -> Result<()> {
+        anyhow::bail!("this memory store can't be backed up from lyra; copy its file instead")
+    }
 
     // ---- history
     /// Record a version; returns its number (1, 2, ...).

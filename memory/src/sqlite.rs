@@ -51,6 +51,10 @@ impl SqliteStore {
 
 #[async_trait::async_trait]
 impl MemoryStore for SqliteStore {
+    fn backend(&self) -> &'static str {
+        "sqlite"
+    }
+
     async fn create(&self, m: &Memory) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
