@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use crate::retrieval::Endpoint;
+
 #[derive(Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -15,6 +17,10 @@ pub struct Config {
     pub output_cost_per_mtok: f64,
     /// Symbol shown before costs.
     pub currency: String,
+    /// `[embedding]` table: embedding model endpoint.
+    pub embedding: Option<Endpoint>,
+    /// `[reranker]` table: reranker model endpoint.
+    pub reranker: Option<Endpoint>,
 }
 
 impl Default for Config {
@@ -26,6 +32,8 @@ impl Default for Config {
             cached_input_cost_per_mtok: None,
             output_cost_per_mtok: 0.0,
             currency: "$".into(),
+            embedding: None,
+            reranker: None,
         }
     }
 }
@@ -51,10 +59,15 @@ impl Config {
     }
 }
 
-/// `$XDG_CONFIG_HOME/lyra/config.toml`, falling back to `~/.config/lyra/config.toml`.
-pub fn path() -> Option<PathBuf> {
+/// `$XDG_CONFIG_HOME/lyra`, falling back to `~/.config/lyra`.
+pub fn dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("lyra").join("config.toml"))
+    Some(base.join("lyra"))
+}
+
+/// `<config dir>/config.toml`.
+pub fn path() -> Option<PathBuf> {
+    Some(dir()?.join("config.toml"))
 }

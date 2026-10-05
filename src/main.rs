@@ -1,4 +1,6 @@
 mod config;
+mod context;
+mod retrieval;
 mod stats;
 
 use std::io::{BufRead, BufReader};
@@ -15,6 +17,8 @@ use ratatui::{DefaultTerminal, Frame};
 use serde::{Deserialize, Serialize};
 
 use config::Config;
+use context::Context;
+use retrieval::Endpoint;
 use stats::{Pricing, Stats, Totals, Usage, percent, secs, thousands};
 
 #[derive(Serialize)]
@@ -63,12 +67,19 @@ enum StreamEvent {
     Reasoning(String),
     Done(Stats),
     Error(String),
+    /// Result of a background health check of the embedding/reranker models.
+    Status(Result<String, String>),
 }
 
 struct App {
     base_url: String,
     model: String,
+    /// Built from SOUL.md / AGENT.md / USER.md; sent first with every request.
+    system_prompt: Option<String>,
     pricing: Pricing,
+    /// Not used by the chat yet; checked at startup and on reload.
+    embedding: Option<Endpoint>,
+    reranker: Option<Endpoint>,
     totals: Totals,
     /// When the in-flight request was sent.
     started: Option<Instant>,
@@ -86,22 +97,18 @@ struct App {
 }
 
 impl App {
-    fn new(config: Config) -> Self {
+    fn new(config: Config, context: Context) -> Self {
         let (tx, rx) = mpsc::channel();
         Self {
-            base_url: config.url,
-            model: config.model,
-            pricing: Pricing {
-                input_per_mtok: config.input_cost_per_mtok,
-                cached_per_mtok: config
-                    .cached_input_cost_per_mtok
-                    .unwrap_or(config.input_cost_per_mtok),
-                output_per_mtok: config.output_cost_per_mtok,
-                currency: config.currency,
-            },
+            base_url: config.url.clone(),
+            model: config.model.clone(),
+            system_prompt: context.system_prompt(),
+            pricing: pricing(&config),
+            embedding: config.embedding,
+            reranker: config.reranker,
             totals: Totals::default(),
             started: None,
-            messages: Vec::new(),
+            messages: vec![Message::new("info", context.summary())],
             input: String::new(),
             waiting: false,
             show_reasoning: true,
@@ -126,11 +133,11 @@ impl App {
         self.started = Some(Instant::now());
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        // Error lines are UI-only; don't send them to the model.
-        let history: Vec<&Message> = self
-            .messages
+        // Error and info lines are UI-only; don't send them to the model.
+        let system = self.system_prompt.clone().map(|p| Message::new("system", p));
+        let history: Vec<&Message> = system
             .iter()
-            .filter(|m| m.role == "user" || m.role == "assistant")
+            .chain(self.messages.iter().filter(|m| m.role == "user" || m.role == "assistant"))
             .collect();
         let body = serde_json::json!({
             "model": self.model,
@@ -158,12 +165,45 @@ impl App {
                 self.totals.add(&stats);
                 self.reply().stats = Some(stats);
             }
+            StreamEvent::Status(Ok(line)) => self.messages.push(Message::new("info", line)),
+            StreamEvent::Status(Err(line)) => self.messages.push(Message::new("error", line)),
             StreamEvent::Error(e) => {
                 self.waiting = false;
                 self.started = None;
                 self.messages.push(Message::new("error", e));
             }
         }
+    }
+
+    /// Re-read the context files and config.toml; takes effect on the next request.
+    fn reload(&mut self) {
+        let context = Context::load();
+        self.system_prompt = context.system_prompt();
+        self.messages.push(Message::new("info", format!("reloaded · {}", context.summary())));
+        match Config::load() {
+            Ok(config) => {
+                self.base_url = config.url.clone();
+                self.model = config.model.clone();
+                self.pricing = pricing(&config);
+                self.embedding = config.embedding;
+                self.reranker = config.reranker;
+            }
+            // Keep the current settings rather than dropping to defaults.
+            Err(e) => self.messages.push(Message::new("error", format!("config not reloaded: {e}"))),
+        }
+        self.scroll = None;
+        self.check_models();
+    }
+
+    /// Ping the embedding and reranker models in the background; results show as info lines.
+    fn check_models(&self) {
+        let (embedding, reranker) = (self.embedding.clone(), self.reranker.clone());
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            for line in retrieval::check(embedding.as_ref(), reranker.as_ref()) {
+                let _ = tx.send(StreamEvent::Status(line));
+            }
+        });
     }
 
     fn scroll_up(&mut self, n: u16) {
@@ -184,6 +224,15 @@ impl App {
             self.messages.push(Message::new("assistant", String::new()));
         }
         self.messages.last_mut().unwrap()
+    }
+}
+
+fn pricing(config: &Config) -> Pricing {
+    Pricing {
+        input_per_mtok: config.input_cost_per_mtok,
+        cached_per_mtok: config.cached_input_cost_per_mtok.unwrap_or(config.input_cost_per_mtok),
+        output_per_mtok: config.output_cost_per_mtok,
+        currency: config.currency.clone(),
     }
 }
 
@@ -251,7 +300,8 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let mut app = App::new(config);
+    let mut app = App::new(config, Context::load());
+    app.check_models();
     ratatui::run(|terminal| run(terminal, &mut app)).expect("terminal error");
 }
 
@@ -277,6 +327,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.show_reasoning = !app.show_reasoning;
             }
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => app.reload(),
             KeyCode::Up => app.scroll_up(1),
             KeyCode::Down => app.scroll_down(1),
             KeyCode::PageUp => app.scroll_up(app.page),
@@ -305,6 +356,7 @@ fn draw(f: &mut Frame, app: &mut App) {
         let (label, color) = match m.role.as_str() {
             "user" => ("you", Color::Cyan),
             "assistant" => ("lyra", Color::Green),
+            "info" => ("context", Color::DarkGray),
             _ => ("error", Color::Red),
         };
         lines.push(Line::from(label.bold().fg(color)));
@@ -323,7 +375,8 @@ fn draw(f: &mut Frame, app: &mut App) {
                 lines.push(Line::default());
             }
         }
-        lines.extend(m.content.lines().map(|l| Line::from(l.to_string())));
+        let body = if m.role == "info" { Style::default().fg(Color::DarkGray) } else { Style::default() };
+        lines.extend(m.content.lines().map(|l| Line::styled(l.to_string(), body)));
         if let Some(stats) = &m.stats {
             lines.push(Line::from(reply_stats(stats, &app.pricing).dark_gray()));
         }
@@ -360,7 +413,7 @@ fn draw(f: &mut Frame, app: &mut App) {
     // Input box
     let input = Paragraph::new(app.input.as_str())
         .style(Style::default())
-        .block(Block::bordered().title(" message (Enter send · ↑↓/PgUp/PgDn scroll · Ctrl-R reasoning · Esc quit) "));
+        .block(Block::bordered().title(" message (Enter send · ↑↓/PgUp/PgDn scroll · Ctrl-R reasoning · Ctrl-L reload · Esc quit) "));
     f.render_widget(input, input_area);
     f.set_cursor_position((
         input_area.x + 1 + app.input.chars().count() as u16,

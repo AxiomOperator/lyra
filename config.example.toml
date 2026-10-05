@@ -7,3 +7,13 @@ input_cost_per_mtok = 0.0
 cached_input_cost_per_mtok = 0.0    # prompt tokens served from cache; defaults to the input price
 output_cost_per_mtok = 0.0
 currency = "$"
+
+# Embedding and reranker models (optional). Not used by the chat yet; lyra
+# checks they respond at startup and on Ctrl-L.
+# [embedding]
+# url = "http://localhost:8082/v1"
+# model = "embedding"
+#
+# [reranker]
+# url = "http://localhost:8081/v1"
+# model = "reranker"

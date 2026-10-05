@@ -39,10 +39,10 @@ pub struct Stats {
 }
 
 impl Stats {
-    /// Generation speed, measured from the first token to the end.
+    /// Generation speed: tokens after the first, over the time after the first.
     pub fn tokens_per_sec(&self) -> Option<f64> {
         let generating = self.elapsed.checked_sub(self.ttft?)?.as_secs_f64();
-        (generating > 0.0).then(|| self.output as f64 / generating)
+        (generating > 0.0 && self.output > 1).then(|| (self.output - 1) as f64 / generating)
     }
 }
 
