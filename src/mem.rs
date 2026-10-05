@@ -3,7 +3,7 @@
 //! to capture or curate) and backs the context compiler, the memory panel and
 //! the `/memory` commands. Policy stays in the manager.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 use lyra_memory::curator::Stats;
 use lyra_memory::store::{Filter, MemoryChange};
@@ -24,44 +24,85 @@ pub struct MemorySnapshot {
     /// Pending maintenance changes, one line each.
     pub proposals: Vec<String>,
     pub vectors: bool,
+    /// The current project, if any.
+    pub project: Option<String>,
 }
 
 pub struct Mem {
     pub manager: MemoryManager,
     runtime: Handle,
     /// The embedding model, for hybrid recall; `None` means keywords only.
-    embedding: Option<Endpoint>,
+    /// Replaceable by a config reload.
+    embedding: RwLock<Option<Endpoint>>,
+    /// The project being worked on: its memories (`project:<name>`) are
+    /// recalled, other projects' aren't unless asked for by scope.
+    project: RwLock<Option<String>>,
     pub working: Mutex<WorkingMemory>,
     /// Where the database is, for display.
     pub path: String,
 }
 
+/// A vector and the model that made it.
+pub struct Embedded {
+    pub model: String,
+    pub vector: Vec<f32>,
+}
+
+/// The manager's view of an optional vector.
+pub fn qv(e: &Option<Embedded>) -> Option<QueryVector<'_>> {
+    e.as_ref().map(|e| QueryVector { model: &e.model, vector: &e.vector })
+}
+
 impl Mem {
-    pub fn new(manager: MemoryManager, runtime: Handle, embedding: Option<Endpoint>, path: String) -> Self {
-        Self { manager, runtime, embedding, working: Mutex::new(WorkingMemory::default()), path }
+    pub fn new(manager: MemoryManager, runtime: Handle, embedding: Option<Endpoint>, path: String, project: Option<String>) -> Self {
+        Self {
+            manager,
+            runtime,
+            embedding: RwLock::new(embedding),
+            project: RwLock::new(project),
+            working: Mutex::new(WorkingMemory::default()),
+            path,
+        }
     }
 
     pub fn run<T, E: std::fmt::Display>(&self, f: impl Future<Output = Result<T, E>>) -> Result<T, String> {
         self.runtime.block_on(f).map_err(|e| format!("{e:#}"))
     }
 
-    pub fn model(&self) -> Option<&str> {
-        self.embedding.as_ref().map(|e| e.model.as_str())
+    fn endpoint(&self) -> Option<Endpoint> {
+        self.embedding.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// New settings and embedding endpoint (a config reload).
+    pub fn reconfigure(&self, settings: lyra_memory::Settings, embedding: Option<Endpoint>) {
+        self.manager.set_settings(settings);
+        *self.embedding.write().unwrap_or_else(|e| e.into_inner()) = embedding;
+    }
+
+    pub fn project(&self) -> Option<String> {
+        self.project.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set_project(&self, project: Option<String>) {
+        *self.project.write().unwrap_or_else(|e| e.into_inner()) = project;
+    }
+
+    pub fn model(&self) -> Option<String> {
+        self.endpoint().map(|e| e.model)
     }
 
     /// A vector for stored text, if an embedding model is configured and answers.
-    pub fn embed_text(&self, text: &str) -> Option<Vec<f32>> {
-        let e = self.embedding.as_ref()?;
-        retrieval::embed(e, &[text]).ok()?.vectors.pop()
+    pub fn embed_text(&self, text: &str) -> Option<Embedded> {
+        let e = self.endpoint()?;
+        let vector = retrieval::embed(&e, &[text]).ok()?.vectors.pop()?;
+        Some(Embedded { model: e.model, vector })
     }
 
     /// A vector for a search query (with the retrieval instruction).
-    pub fn embed_query(&self, text: &str) -> Option<Vec<f32>> {
-        retrieval::embed_query(self.embedding.as_ref()?, text).ok()
-    }
-
-    pub fn query_vector<'a>(&'a self, vector: &'a Option<Vec<f32>>) -> Option<QueryVector<'a>> {
-        Some(QueryVector { model: self.model()?, vector: vector.as_deref()? })
+    pub fn embed_query(&self, text: &str) -> Option<Embedded> {
+        let e = self.endpoint()?;
+        let vector = retrieval::embed_query(&e, text).ok()?;
+        Some(Embedded { model: e.model, vector })
     }
 
     pub fn working(&self) -> std::sync::MutexGuard<'_, WorkingMemory> {
@@ -71,12 +112,57 @@ impl Mem {
     /// The memories worth adding to the prompt for `message` (M12).
     pub fn compile(&self, message: &str, run: Uuid) -> Result<Compiled, String> {
         let vector = self.embed_query(message);
-        self.run(self.manager.compile(message, self.query_vector(&vector), run))
+        self.run(self.manager.compile(message, qv(&vector), run, self.project().as_deref()))
     }
 
+    /// Recall in one scope, or (`None`) in everything visible from the
+    /// current project.
     pub fn recall(&self, scope: Option<&str>, query: &str, limit: usize, archived: bool) -> Result<Vec<Recalled>, String> {
         let vector = self.embed_query(query);
-        self.run(self.manager.recall(scope, query, self.query_vector(&vector), limit, archived))
+        match scope {
+            Some(_) => self.run(self.manager.recall(scope, query, qv(&vector), limit, archived)),
+            None => self.run(self.manager.recall_visible(self.project().as_deref(), query, qv(&vector), limit, archived)),
+        }
+    }
+
+    /// Recall across every allowed scope (the user's `/memory search`).
+    pub fn recall_all(&self, query: &str, limit: usize) -> Result<Vec<Recalled>, String> {
+        let vector = self.embed_query(query);
+        self.run(self.manager.recall(None, query, qv(&vector), limit, true))
+    }
+
+    /// M3/M4: relate a newly saved memory to similar ones: the model says
+    /// whether it updates (supersedes), contradicts (flagged), supports or is
+    /// related to each. Returns notes.
+    pub fn relate(&self, url: &str, model: &str, id: Uuid) -> Review<Vec<String>> {
+        let Ok(Some(new)) = self.run(self.manager.get(id)) else {
+            return Review { outcome: Ok(Vec::new()), usage: None };
+        };
+        let vector = self.embed_text(&new.content);
+        let near = match self.run(self.manager.neighbours(&new, qv(&vector), 5)) {
+            Ok(near) if !near.is_empty() => near,
+            Ok(_) => return Review { outcome: Ok(Vec::new()), usage: None },
+            Err(e) => return Review { outcome: Err(e), usage: None },
+        };
+        let (reply, usage) = match complete(url, model, lyra_memory::relate::SYSTEM_PROMPT, &lyra_memory::relate::prompt(&new, &near)) {
+            Ok(r) => r,
+            Err(e) => return Review { outcome: Err(e), usage: None },
+        };
+        let outcome = lyra_memory::relate::parse(&reply, &near).map(|links| {
+            let mut notes = Vec::new();
+            for (old, link, reason) in links {
+                let (result, what) = match link {
+                    lyra_memory::relate::Link::Replaces => (self.run(self.manager.replace(old.id, new.id, &reason)), "supersedes"),
+                    lyra_memory::relate::Link::Relate(rel) => (self.run(self.manager.link(new.id, old.id, rel, &reason)), rel.as_str()),
+                };
+                match result {
+                    Ok(()) => notes.push(format!("[{}] {what} [{}]: {reason}", new.short_id(), old.short_id())),
+                    Err(e) => notes.push(format!("linking [{}] failed: {e}", old.short_id())),
+                }
+            }
+            notes
+        });
+        Review { outcome, usage }
     }
 
     /// The user's reaction to the last run's memories.
@@ -86,7 +172,8 @@ impl Mem {
 
     /// Give vectors to memories that don't have one yet. Returns notes.
     pub fn backfill(&self) -> Vec<String> {
-        let Some(endpoint) = &self.embedding else { return Vec::new() };
+        let Some(endpoint) = self.endpoint() else { return Vec::new() };
+        let endpoint = &endpoint;
         let mut done = 0;
         for _ in 0..20 {
             let batch = match self.run(self.manager.needs_embedding(&endpoint.model, 32)) {
@@ -140,7 +227,7 @@ impl Mem {
     /// consolidations and contradictions. Returns notes.
     pub fn curate(&self, url: &str, model: &str) -> Review<Vec<String>> {
         let mut notes = self.run(self.manager.expire_due()).unwrap_or_default();
-        let report = match self.run(self.manager.review_collection(self.model())) {
+        let report = match self.run(self.manager.review_collection(self.model().as_deref())) {
             Ok(r) => r,
             Err(e) => return Review { outcome: Err(e), usage: None },
         };
@@ -178,10 +265,10 @@ impl Mem {
     }
 
     pub fn snapshot(&self) -> Result<MemorySnapshot, String> {
-        let stats = self.run(self.manager.stats(self.model()))?;
+        let stats = self.run(self.manager.stats(self.model().as_deref()))?;
         let recent = self.run(self.manager.list(&Filter::active(), 30))?;
         let proposals = self.run(self.manager.proposals())?.iter().map(|p| describe_proposal(&p.change, &p.id, &recent)).collect();
-        Ok(MemorySnapshot { stats, recent, working: self.working().clone(), proposals, vectors: self.embedding.is_some() })
+        Ok(MemorySnapshot { stats, recent, working: self.working().clone(), proposals, vectors: self.endpoint().is_some(), project: self.project() })
     }
 
     /// `/memory …` commands that don't need the model. (`curate` and
@@ -207,10 +294,8 @@ impl Mem {
                 let (key, text) = rest.split_once(char::is_whitespace).ok_or("usage: /memory correct <id> <new text>")?;
                 let m = find(key)?;
                 let v = self.run(self.manager.correct(m.id, text, "corrected by the user", None))?;
-                if let Some(vector) = self.embed_text(text)
-                    && let Some(model) = self.model()
-                {
-                    let _ = self.run(self.manager.set_embedding(m.id, model, &vector));
+                if let Some(e) = self.embed_text(text) {
+                    let _ = self.run(self.manager.set_embedding(m.id, &e.model, &e.vector));
                 }
                 Ok(format!("corrected [{}], now v{v}", m.short_id()))
             }
@@ -226,7 +311,7 @@ impl Mem {
     }
 
     fn stats_text(&self) -> Result<String, String> {
-        let s = self.run(self.manager.stats(self.model()))?;
+        let s = self.run(self.manager.stats(self.model().as_deref()))?;
         let pairs = |v: Vec<String>| if v.is_empty() { "—".into() } else { v.join(" · ") };
         let mut out = vec![format!(
             "Memory: {} ({} active) · {}",
@@ -263,7 +348,7 @@ impl Mem {
         if query.is_empty() {
             return Err("usage: /memory search <query>".into());
         }
-        let found = self.recall(None, query, 10, true)?;
+        let found = self.recall_all(query, 10)?;
         if found.is_empty() {
             return Ok("nothing found".into());
         }

@@ -14,6 +14,7 @@ pub mod curator;
 mod manager;
 mod memory;
 pub mod rank;
+pub mod relate;
 pub mod safety;
 mod sqlite;
 pub mod store;
@@ -22,7 +23,7 @@ mod working;
 
 pub use manager::{
     Budget, CaptureMode, Compiled, Inspection, MaintenanceMode, MemoryManager, QueryVector, Recalled, Remembered,
-    Report, Settings, approx_tokens,
+    Report, Settings, approx_tokens, visible,
 };
 pub use memory::{
     Episode, Memory, MemoryKind, MemorySource, MemoryStatus, NewMemory, Provenance, Relationship, Usage,

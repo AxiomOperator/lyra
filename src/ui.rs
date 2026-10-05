@@ -262,6 +262,8 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect, width: usize) {
             let mut summary: Vec<String> = s.by_kind.iter().map(|(k, n)| format!("{k} {n}")).collect();
             summary.push(if snap.vectors { format!("vectors {}/{}", s.embedded, s.active) } else { "keywords only".into() });
             lines.push(Line::styled(truncate(&summary.join(" · "), width), dim));
+            let project = snap.project.as_deref().map_or("none (all projects left out)".to_string(), |p| format!("project:{p}"));
+            lines.push(Line::from(vec![label("project"), Span::raw(truncate(&project, width.saturating_sub(8)))]));
 
             let mut attention = Vec::new();
             for (n, what) in [

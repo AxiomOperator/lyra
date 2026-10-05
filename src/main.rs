@@ -162,6 +162,8 @@ enum StreamEvent {
     MemoryReview { curation: bool, review: Review<Vec<String>> },
     /// Notes from background memory work (upkeep, feedback).
     MemoryNotes(Vec<String>),
+    /// A new memory was related to similar ones (supersedes, contradicts, …).
+    MemoryRelated(Review<Vec<String>>),
     /// Something happened in a running plan.
     PlanEvent(ExecutionEvent),
     /// A request was turned into a goal and plan (or couldn't be).
@@ -483,6 +485,14 @@ impl App {
                 if name.starts_with("memory_") || name == "working_memory" {
                     self.refresh_memory();
                 }
+                // A new fact may update, contradict or support what's known (M3, M4).
+                if name == "memory_remember"
+                    && let Ok(v) = serde_json::from_str::<Value>(&content)
+                    && v["result"] == "remembered"
+                    && let Some(id) = v["id"].as_str()
+                {
+                    self.relate_memory(id.to_string());
+                }
                 let mut result = Message::new("tool", content);
                 result.tool_call_id = Some(id);
                 self.messages.push(result);
@@ -681,6 +691,20 @@ impl App {
                 for note in notes {
                     self.log(Level::Plan, note);
                 }
+            }
+            StreamEvent::MemoryRelated(Review { outcome, usage }) => {
+                if usage.is_some() {
+                    self.totals.add_review(usage.as_ref());
+                }
+                match outcome {
+                    Ok(notes) => {
+                        for note in notes {
+                            self.log(Level::Memory, note);
+                        }
+                    }
+                    Err(e) => self.log(Level::Error, format!("relating a memory failed: {e}")),
+                }
+                self.refresh_memory();
             }
             StreamEvent::MemoryNotes(notes) => {
                 for note in notes {
@@ -969,6 +993,20 @@ impl App {
                     "curate" => Ok("curating memories…".into()),
                     "episode" if self.capturing => Err("a memory capture is already running".into()),
                     "episode" => Ok("recording this conversation as an episode…".into()),
+                    "project" => {
+                        let name = arg.split_whitespace().nth(1);
+                        match name {
+                            None => Ok(m.project().map_or("no current project ([memory] project)".into(), |p| format!("current project: {p} (scope project:{p})"))),
+                            Some("none") => {
+                                m.set_project(None);
+                                Ok("no current project: every project's memories stay out of prompts".into())
+                            }
+                            Some(p) => {
+                                m.set_project(Some(p.to_string()));
+                                Ok(format!("current project: {p} — its memories (project:{p}) are recalled, other projects' aren't"))
+                            }
+                        }
+                    }
                     _ => m.command(arg),
                 })
             }
@@ -984,7 +1022,7 @@ impl App {
         match name {
             "/memory" if ok && memory_sub == "curate" => self.memory_curate(),
             "/memory" if ok && memory_sub == "episode" => self.capture(true),
-            "/memory" if ok && matches!(memory_sub, "forget" | "archive" | "restore" | "purge" | "correct" | "approve" | "reject" | "working") => {
+            "/memory" if ok && matches!(memory_sub, "forget" | "archive" | "restore" | "purge" | "correct" | "approve" | "reject" | "working" | "project") => {
                 self.log(Level::Memory, line.to_string());
                 self.refresh_memory();
             }
@@ -1018,6 +1056,20 @@ impl App {
 
     fn mem(&self) -> Option<Arc<Mem>> {
         self.tools.as_ref().map(|t| t.mem.clone())
+    }
+
+    /// Relate a memory the model just saved to similar ones, in the background.
+    fn relate_memory(&self, short_id: String) {
+        let Some(mem) = self.mem() else { return };
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let (model, tx) = (self.model.clone(), self.tx.clone());
+        thread::spawn(move || {
+            let review = match mem.run(mem.manager.find(&short_id)) {
+                Ok(m) => mem.relate(&url, &model, m.id),
+                Err(e) => Review { outcome: Err(e), usage: None },
+            };
+            let _ = tx.send(StreamEvent::MemoryRelated(review));
+        });
     }
 
     /// Archive expired memories and add missing vectors, in the background.
@@ -1486,6 +1538,13 @@ impl App {
                     thinking: config.structured_thinking,
                 });
                 self.pricing = pricing(&config);
+                if let Some(mem) = self.mem() {
+                    mem.reconfigure(config.memory.settings.clone(), config.embedding.clone());
+                    mem.set_project(config.memory.project());
+                }
+                self.memory_curate_every = config.memory.curate.every_days();
+                self.curate_every = config.learning.curate.every_days();
+                self.evolution_review_every = config.evolution.review.every_days();
                 self.embedding = config.embedding;
                 self.reranker = config.reranker;
             }
@@ -1555,6 +1614,7 @@ const COMMANDS: &str = "\
 /memory working [clear]      show or clear working memory
 /memory curate               consolidate duplicates, flag contradictions now
 /memory episode              record this conversation as an episode
+/memory project [name|none]  the current project (its memories are recalled, others' aren't)
 /plan <request>              turn a request into a goal and a structured plan
 /plan [id] · /plans          show the current (or a) plan · list plans
 /plan run|resume [id]        execute it (pauses for approvals and budgets)
@@ -1630,6 +1690,11 @@ fn apply_memories(mem: &Mem, message: &str, run: Uuid, history: &mut Vec<Value>,
         }
     }
     sections.extend(mem.working().render());
+    if let Some(project) = mem.project() {
+        sections.push(format!(
+            "Current project: {project}. Memories about it belong in scope \"project:{project}\"; other projects' memories are left out unless you recall them by scope."
+        ));
+    }
     if !sections.is_empty() {
         add_to_system(history, &sections.join("\n\n"));
     }
@@ -1897,7 +1962,7 @@ fn open_memory(
     match runtime.block_on(lyra_memory::MemoryManager::open(&path, config.memory.settings.clone())) {
         Ok(manager) => {
             let shown = context::show(&path);
-            let mem = Mem::new(manager, runtime.clone(), config.embedding.clone(), shown.clone());
+            let mem = Mem::new(manager, runtime.clone(), config.embedding.clone(), shown.clone(), config.memory.project());
             (Some(Arc::new(Tools::new(Arc::new(mem)))), Ok(shown))
         }
         Err(e) => (None, Err(format!("memory off: {e:#}"))),

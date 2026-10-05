@@ -146,6 +146,10 @@ pub struct MemoryConfig {
     pub path: Option<String>,
     /// When to curate the collection on its own: `manual`, `daily` or `weekly`.
     pub curate: Schedule,
+    /// The project being worked on: its `project:<name>` memories are
+    /// recalled, other projects' aren't. `auto` (the default) uses the name of
+    /// the git checkout lyra was started in; `none` turns it off.
+    pub project: Option<String>,
     /// `default_scope`, `allowed_scopes`, `capture`, `maintenance`, `inject`, the
     /// `[memory.context]`, `[memory.ranking]` and `[memory.half_life_days]` tables, ...
     #[serde(flatten)]
@@ -154,7 +158,7 @@ pub struct MemoryConfig {
 
 impl Default for MemoryConfig {
     fn default() -> Self {
-        Self { enabled: true, path: None, curate: Schedule::Manual, settings: Default::default() }
+        Self { enabled: true, path: None, curate: Schedule::Manual, project: None, settings: Default::default() }
     }
 }
 
@@ -162,6 +166,24 @@ impl MemoryConfig {
     pub fn path(&self) -> Option<PathBuf> {
         data_file(self.path.as_deref(), "memory", "memory.db")
     }
+
+    /// The current project's name, if any (see `project`).
+    pub fn project(&self) -> Option<String> {
+        match self.project.as_deref().map(str::trim) {
+            None | Some("auto") => detect_project(),
+            Some("" | "none") => None,
+            Some(name) => Some(name.to_string()),
+        }
+    }
+}
+
+/// The git checkout containing the working directory, by folder name.
+fn detect_project() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let root = cwd.ancestors().find(|d| d.join(".git").exists())?;
+    let name = root.file_name()?.to_string_lossy().to_lowercase();
+    let name: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+    (!name.is_empty()).then_some(name)
 }
 
 /// `custom` with a leading `~/` expanded, or `<lyra home>/<folder>/<name>`.

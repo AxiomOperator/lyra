@@ -259,7 +259,7 @@ impl Tools {
             ..NewMemory::fact("", &a.content, source)
         };
         let vector = self.mem.embed_text(&a.content);
-        let r = self.mem.run(self.mem.manager.remember(new, self.mem.query_vector(&vector)))?;
+        let r = self.mem.run(self.mem.manager.remember(new, crate::mem::qv(&vector)))?;
         let (what, m) = match &r {
             Remembered::Created(m) => ("remembered", m),
             Remembered::Reconfirmed(m) => ("already known; reconfirmed", m),
@@ -312,8 +312,8 @@ impl Tools {
         let m = self.mem.run(self.mem.manager.find(&a.id))?;
         let reason = a.reason.unwrap_or_else(|| "corrected".into());
         let v = self.mem.run(self.mem.manager.correct(m.id, &a.content, &reason, ctx.run))?;
-        if let (Some(vector), Some(model)) = (self.mem.embed_text(&a.content), self.mem.model()) {
-            let _ = self.mem.run(self.mem.manager.set_embedding(m.id, model, &vector));
+        if let Some(e) = self.mem.embed_text(&a.content) {
+            let _ = self.mem.run(self.mem.manager.set_embedding(m.id, &e.model, &e.vector));
         }
         Ok(json!({ "result": "corrected", "id": m.short_id(), "version": v }))
     }
@@ -336,7 +336,7 @@ impl Tools {
         };
         let vector = self.mem.embed_text(&a.content);
         let reason = a.reason.unwrap_or_else(|| "no longer true".into());
-        let m = self.mem.run(self.mem.manager.supersede(old.id, new, &reason, self.mem.query_vector(&vector)))?;
+        let m = self.mem.run(self.mem.manager.supersede(old.id, new, &reason, crate::mem::qv(&vector)))?;
         Ok(json!({ "result": "superseded", "old": old.short_id(), "new": m.short_id() }))
     }
 
@@ -447,7 +447,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let store = rt.block_on(SqliteStore::in_memory()).unwrap();
         let manager = MemoryManager::new(store, Settings::default());
-        let mem = Mem::new(manager, rt.handle().clone(), None, "test".into());
+        let mem = Mem::new(manager, rt.handle().clone(), None, "test".into(), Some("api".into()));
         (rt, Tools::new(Arc::new(mem)))
     }
 
