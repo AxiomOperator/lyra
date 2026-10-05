@@ -1347,7 +1347,7 @@ impl App {
             if let Err(e) = env.evolution.manager.set_outcome(id, outcome, corrected, feedback.as_deref()) {
                 notes.push(format!("recording the outcome failed: {e}"));
             }
-            notes.extend(env.evolution.monitor(env.tools.as_deref()));
+            notes.extend(evolve::monitor(&env));
             let show = notes.iter().any(|n| n.starts_with('⚠') || n.starts_with('↩'));
             let _ = tx.send(StreamEvent::Evolved { done: evolve::Done { notes, usage: Vec::new() }, show });
         });
@@ -1387,7 +1387,7 @@ impl App {
                 notes.push(format!("recording the plan run failed: {e}"));
             }
             if let Some(env) = env {
-                notes.extend(env.evolution.monitor(env.tools.as_deref()));
+                notes.extend(evolve::monitor(&env));
             }
             let show = notes.iter().any(|n| n.starts_with('⚠') || n.starts_with('↩'));
             let _ = tx.send(StreamEvent::Evolved { done: evolve::Done { notes, usage: Vec::new() }, show });
@@ -1402,7 +1402,7 @@ impl App {
         })?;
         let (sub, rest) = arg.trim().split_once(' ').unwrap_or((arg.trim(), ""));
         let rest = rest.trim().to_string();
-        let background = matches!(sub, "review" | "test" | "approve" | "rollback" | "code");
+        let background = matches!(sub, "review" | "test" | "compare" | "approve" | "rollback" | "code");
         if background && let Some(what) = self.evolving {
             return Err(format!("evolution is busy ({what}); try again when it's done"));
         }
@@ -1430,8 +1430,13 @@ impl App {
                 self.evolve_in_background("testing", true, move |env| evolve::test(env, c).into());
                 Ok("testing the candidate (static checks, then a sandboxed benchmark)…".into())
             }
-            "approve" => {
+            "compare" => {
                 evolution.manager.find(&rest)?;
+                self.evolve_in_background("comparing", true, move |env| evolve::compare(env, &rest));
+                Ok("testing every open candidate for that problem and ranking them…".into())
+            }
+            "approve" => {
+                evolution.manager.find(rest.split_whitespace().next().unwrap_or(""))?;
                 self.evolve_in_background("deploying", true, move |env| evolve::approve(env, &rest));
                 Ok("applying the change…".into())
             }
@@ -1835,7 +1840,7 @@ fn open_evolution(config: &Config, runtime: &tokio::runtime::Handle) -> (Option<
         Ok(manager) => {
             let code = if c.source_repo().is_some() { " · code lab on" } else { "" };
             let status = format!("evolution · {} · mode {:?}{code}", context::show(&home.join("evolution")), c.settings.mode);
-            let evolution = Evolution::new(manager, c.source_repo(), c.benchmark_tasks.max(1));
+            let evolution = Evolution::new(manager, runtime.clone(), c.source_repo(), c.benchmark_tasks.max(1));
             (Some(Arc::new(evolution)), Ok(status))
         }
         Err(e) => (None, Err(format!("evolution off: {e:#}"))),

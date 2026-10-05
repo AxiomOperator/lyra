@@ -7,7 +7,7 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use lyra_execution::{
-    AgentInfo, Engine, ExecutionEvent, Goal, Plan, PlanStep, PlanningContext, Reasoned, Risk, Runtime, StepAction,
+    AgentInfo, Engine, ExecutionEvent, Goal, Plan, PlanStep, PlanningContext, ReasonError, Reasoned, Risk, Runtime, StepAction,
     StepStatus, Task, ToolInfo, Uuid, budget, short,
 };
 use serde_json::{Value, json};
@@ -18,7 +18,7 @@ use crate::learn::Learning;
 use crate::tools::{CallContext, Tools};
 
 /// Helper agents for subagent steps (P13): each sees only its task and these tools.
-const AGENTS: &[(&str, &str, &[&str])] = &[
+pub(crate) const AGENTS: &[(&str, &str, &[&str])] = &[
     ("researcher", "looks things up in memory and reports what it finds (read-only)", &["memory_recall", "memory_list"]),
     ("archivist", "records findings and decisions in memory", &["memory_recall", "memory_list", "memory_remember", "memory_correct", "memory_supersede"]),
 ];
@@ -26,7 +26,7 @@ const AGENTS: &[(&str, &str, &[&str])] = &[
 /// How risky each tool is. Declared here, by the runtime, never by the model.
 /// Composite tools are `Mutating` unless they're only reads: they never
 /// contain destructive steps.
-fn risk(tool: &str) -> Risk {
+pub(crate) fn risk(tool: &str) -> Risk {
     if crate::tools::is_read_only(tool) {
         Risk::ReadOnly
     } else if crate::tools::is_destructive(tool) {
@@ -101,6 +101,8 @@ impl Runtime for LyraRuntime {
             .and_then(|t| t.mem.recall(None, goal, 6, false).ok())
             .map(|found| found.into_iter().map(|r| r.memory.content).collect())
             .unwrap_or_default();
+        // Evolved setting: whether the planner is shown the relevant skills.
+        // Workflow steps can name any active skill either way.
         let behavior = self.evolution.as_ref().map(|e| e.behavior()).unwrap_or_default();
         let skills = self
             .learning
@@ -109,8 +111,34 @@ impl Runtime for LyraRuntime {
             .and_then(|l| l.relevant(goal).ok())
             .map(|found| found.into_iter().map(|r| (r.skill.name, r.skill.description)).collect())
             .unwrap_or_default();
-        let tools = self
-            .definitions(None)
+        let workflows = self
+            .learning
+            .as_ref()
+            .and_then(|l| l.active_skills().ok())
+            .map(|all| all.into_iter().map(|s| s.name).collect())
+            .unwrap_or_default();
+        let agents = AGENTS
+            .iter()
+            .map(|(n, d, tools)| AgentInfo {
+                name: n.to_string(),
+                description: d.to_string(),
+                changes_things: tools.iter().any(|t| risk(t) != Risk::ReadOnly),
+            })
+            .collect();
+        PlanningContext {
+            memories,
+            skills,
+            workflows,
+            tools: self.tools(),
+            agents,
+            forbidden_tools: self.forbidden_tools.clone(),
+            budget_note: None,
+            guidance: self.evolution.as_ref().and_then(|e| e.planning_guidance(goal)),
+        }
+    }
+
+    fn tools(&self) -> Vec<ToolInfo> {
+        self.definitions(None)
             .iter()
             .map(|d| {
                 let name = d["function"]["name"].as_str().unwrap_or("").to_string();
@@ -121,12 +149,7 @@ impl Runtime for LyraRuntime {
                     name,
                 }
             })
-            .collect();
-        let agents = AGENTS.iter().map(|(n, d, _)| AgentInfo { name: n.to_string(), description: d.to_string() }).collect();
-        PlanningContext { memories, skills, tools, agents, forbidden_tools: self.forbidden_tools.clone(),
-            budget_note: None,
-            guidance: self.evolution.as_ref().and_then(|e| e.planning_guidance(goal)),
-        }
+            .collect()
     }
 
     fn call_tool(&self, tool: &str, arguments: &Value, operation: Option<Uuid>) -> Result<Value, String> {
@@ -139,12 +162,17 @@ impl Runtime for LyraRuntime {
         }
     }
 
-    fn reason(&self, task: &Task) -> Result<Reasoned, String> {
-        // Destructive tools only run as their own, approved tool steps.
+    fn reason(&self, task: &Task) -> Result<Reasoned, ReasonError> {
+        // Destructive tools only run as their own, approved tool steps; a
+        // step marked safe (repeatable) only gets read-only tools.
         let tools: Vec<Value> = self
             .definitions(task.tools.as_deref())
             .into_iter()
-            .filter(|d| risk(d["function"]["name"].as_str().unwrap_or("")) != Risk::Destructive)
+            .filter(|d| match risk(d["function"]["name"].as_str().unwrap_or("")) {
+                Risk::ReadOnly => true,
+                Risk::Mutating => task.may_change,
+                Risk::Destructive => false,
+            })
             .collect();
         let system = format!(
             "You are carrying out one step of a larger plan. Do only this step, using the tools if \
@@ -154,34 +182,42 @@ impl Runtime for LyraRuntime {
         );
         let mut messages = vec![json!({ "role": "system", "content": system }), json!({ "role": "user", "content": task.instruction })];
         let mut out = Reasoned::default();
+        let failed = |out: &Reasoned, error: String| ReasonError { error, changes: out.changes.clone() };
         // Steps get a few rounds of tool use, not an open-ended conversation.
         let rounds = self.evolution.as_ref().map_or(6, |e| e.behavior().plan_step_rounds) as usize;
         for _ in 0..rounds {
-            let (message, tokens) = chat(&self.url, &self.model, &messages, &tools)?;
+            let (message, tokens) = chat(&self.url, &self.model, &messages, &tools).map_err(|e| failed(&out, e))?;
             out.model_calls += 1;
             out.tokens += tokens;
             let calls = message["tool_calls"].as_array().cloned().unwrap_or_default();
             if calls.is_empty() {
                 out.text = message["content"].as_str().unwrap_or("").trim().to_string();
                 if out.text.is_empty() {
-                    return Err("the model returned nothing".into());
+                    return Err(failed(&out, "the model returned nothing".into()));
                 }
                 return Ok(out);
             }
             messages.push(json!({ "role": "assistant", "content": message["content"].as_str().unwrap_or(""), "tool_calls": calls }));
             for call in &calls {
                 let name = call["function"]["name"].as_str().unwrap_or("");
+                let arguments = call["function"]["arguments"].as_str().unwrap_or("{}");
                 let allowed = tools.iter().any(|d| d["function"]["name"] == name);
                 let result = if allowed {
                     out.tool_calls += 1;
-                    self.run_tool(name, call["function"]["arguments"].as_str().unwrap_or("{}"), call["id"].as_str().unwrap_or(""))
+                    let result = self.run_tool(name, arguments, call["id"].as_str().unwrap_or(""));
+                    // Record what changed (successfully), so a retry doesn't redo it.
+                    let ok = serde_json::from_str::<Value>(&result).map_or(true, |v| v.get("error").is_none());
+                    if risk(name) != Risk::ReadOnly && ok {
+                        out.changes.push(format!("{name} {}", arguments.chars().take(300).collect::<String>()));
+                    }
+                    result
                 } else {
                     json!({ "error": format!("{name} isn't available for this step") }).to_string()
                 };
                 messages.push(json!({ "role": "tool", "tool_call_id": call["id"], "content": result }));
             }
         }
-        Err(format!("the step didn't finish within {rounds} rounds"))
+        Err(failed(&out, format!("the step didn't finish within {rounds} rounds")))
     }
 
     fn workflow(&self, name: &str) -> Option<String> {

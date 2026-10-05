@@ -34,6 +34,9 @@ pub struct Task {
     pub context: String,
     /// Tools it may use; `None` means all of them.
     pub tools: Option<Vec<String>>,
+    /// Whether it may use tools that change things. Only steps marked
+    /// conditional or unsafe may: a safe step must be safe to repeat.
+    pub may_change: bool,
 }
 
 /// What focused model work produced, and what it cost.
@@ -43,6 +46,22 @@ pub struct Reasoned {
     pub model_calls: u32,
     pub tool_calls: u32,
     pub tokens: u64,
+    /// Calls that changed something (`tool {arguments}`), so a retry knows
+    /// what was already done.
+    pub changes: Vec<String>,
+}
+
+/// Focused model work that failed, and what it had changed before failing.
+#[derive(Debug, Clone, Default)]
+pub struct ReasonError {
+    pub error: String,
+    pub changes: Vec<String>,
+}
+
+impl From<String> for ReasonError {
+    fn from(error: String) -> Self {
+        Self { error, changes: Vec::new() }
+    }
 }
 
 /// What the engine needs from the application.
@@ -51,10 +70,15 @@ pub trait Runtime: Send + Sync {
     fn complete(&self, system: &str, user: &str) -> Result<(String, u64), String>;
     /// Relevant memories, skills, tools and agents for planning `goal` (P10).
     fn context(&self, goal: &str) -> PlanningContext;
+    /// The tools steps can call, without the rest of the planning context
+    /// (used to fill in a step's arguments).
+    fn tools(&self) -> Vec<planner::ToolInfo> {
+        self.context("").tools
+    }
     /// Call a tool. `operation` is a stable id for unsafe actions (P15).
     fn call_tool(&self, tool: &str, arguments: &Value, operation: Option<Uuid>) -> Result<Value, String>;
     /// Let the model work on a task, using tools as allowed.
-    fn reason(&self, task: &Task) -> Result<Reasoned, String>;
+    fn reason(&self, task: &Task) -> Result<Reasoned, ReasonError>;
     /// The procedure behind a workflow name (a learned skill), if known.
     fn workflow(&self, name: &str) -> Option<String>;
     /// The tools a helper agent may use (P13), if it exists.
@@ -312,7 +336,14 @@ impl Engine {
             }
             let mut blocked = Vec::new();
             for s in plan.steps.iter_mut().filter(|s| s.status == StepStatus::Running) {
-                if s.idempotency == Idempotency::Safe {
+                // P8/P15: check the actual state where we can. A tool step whose
+                // operation was recorded did take effect; rerunning it just
+                // reuses the recorded result.
+                let recorded = match (s.operation_id, &s.action) {
+                    (Some(op), StepAction::Tool { .. }) => self.db(self.store.operation(op))?.is_some(),
+                    _ => false,
+                };
+                if s.idempotency == Idempotency::Safe || recorded {
                     s.status = StepStatus::Pending;
                 } else {
                     s.status = StepStatus::Blocked;
@@ -481,8 +512,8 @@ impl Engine {
     fn bind(&self, plan: &mut Plan, id: Uuid, runtime: &dyn Runtime) -> Result<(), String> {
         let step = plan.step(id).unwrap().clone();
         let StepAction::Tool { tool, .. } = &step.action else { return Ok(()) };
-        let ctx = runtime.context("");
-        let info = ctx.tools.iter().find(|t| &t.name == tool);
+        let tools = runtime.tools();
+        let info = tools.iter().find(|t| &t.name == tool);
         let mut usage = BudgetUsage::default();
         let arguments = ask(runtime, &mut usage, planner::BIND_PROMPT, &planner::bind_prompt(plan, &step, info), planner::parse_bound);
         add_usage(&mut plan.usage, &usage);
@@ -508,47 +539,80 @@ impl Engine {
                 context += &format!("\n\nResult of {} ({}):\n{}", dep.key, dep.title, truncate(&output_text(&r.output), 2000));
             }
         }
-        let reasoned = |task: Task, usage: &mut BudgetUsage| match runtime.reason(&task) {
+        // A retry must not redo what an earlier attempt already changed.
+        let done_before = changes_of(step.result.as_ref());
+        if !done_before.is_empty() {
+            context += &format!("\n\nAlready done by an earlier attempt (don't repeat these):\n- {}", done_before.join("\n- "));
+        }
+        let may_change = step.idempotency != Idempotency::Safe;
+        let mut changes = Vec::new();
+        let mut reasoned = |task: Task, usage: &mut BudgetUsage| match runtime.reason(&task) {
             Ok(r) => {
                 usage.model_calls += r.model_calls;
                 usage.tool_calls += r.tool_calls;
                 usage.tokens += r.tokens;
+                changes = r.changes;
                 Ok(Value::String(r.text))
             }
             Err(e) => {
                 usage.model_calls += 1;
-                Err(e)
+                changes = e.changes;
+                Err(e.error)
             }
         };
         let outcome: Result<Value, String> = match &step.action {
             StepAction::Tool { tool, arguments } => {
                 usage.tool_calls += 1;
-                runtime.call_tool(tool, arguments, step.operation_id)
+                self.call_once(plan, step, tool, arguments, runtime)
             }
             StepAction::Reasoning { instruction } => {
-                reasoned(Task { instruction: instruction.clone(), context, tools: None }, &mut usage)
+                reasoned(Task { instruction: instruction.clone(), context, tools: None, may_change }, &mut usage)
             }
             StepAction::Workflow { workflow, input } => match runtime.workflow(workflow) {
                 Some(procedure) => {
                     let instruction = format!("Follow this procedure:\n{procedure}\n\nInput: {input}");
-                    reasoned(Task { instruction, context, tools: None }, &mut usage)
+                    reasoned(Task { instruction, context, tools: None, may_change }, &mut usage)
                 }
                 None => Err(format!("no workflow named {workflow}")),
             },
             StepAction::Subagent { agent, task } => match runtime.agent_tools(agent) {
                 // P13: a scoped task, not the parent's whole context.
                 Some(tools) => {
-                    let scoped = format!("You are the {agent} agent. Do this task and report what you found.\nGoal it serves: {}", goal.description);
-                    reasoned(Task { instruction: task.clone(), context: scoped, tools: Some(tools) }, &mut usage)
+                    let mut scoped = format!("You are the {agent} agent. Do this task and report what you found.\nGoal it serves: {}", goal.description);
+                    if let Some(expected) = &step.expected_outcome {
+                        scoped += &format!("\nExpected outcome: {expected}");
+                    }
+                    if !done_before.is_empty() {
+                        scoped += &format!("\n\nAlready done by an earlier attempt (don't repeat these):\n- {}", done_before.join("\n- "));
+                    }
+                    reasoned(Task { instruction: task.clone(), context: scoped, tools: Some(tools), may_change }, &mut usage)
                 }
                 None => Err(format!("no agent named {agent}")),
             },
         };
+        // Changes accumulate across attempts.
+        let mut all_changes = done_before;
+        all_changes.extend(changes);
+        let metadata = json!({ "action": step.action.kind(), "changes": all_changes });
         let result = match outcome {
-            Ok(output) => StepResult { success: true, output, error: None, metadata: json!({ "action": step.action.kind() }) },
-            Err(e) => StepResult { success: false, output: Value::Null, error: Some(e), metadata: json!({ "action": step.action.kind() }) },
+            Ok(output) => StepResult { success: true, output, error: None, metadata },
+            Err(e) => StepResult { success: false, output: Value::Null, error: Some(e), metadata },
         };
         StepRun { id, started, result, usage }
+    }
+
+    /// P15: a tool step with an operation id runs at most once. If the
+    /// operation already completed (a retry, or a resume after a restart),
+    /// its recorded result is returned instead of acting again.
+    fn call_once(&self, plan: &Plan, step: &PlanStep, tool: &str, arguments: &Value, runtime: &dyn Runtime) -> Result<Value, String> {
+        let Some(op) = step.operation_id else { return runtime.call_tool(tool, arguments, None) };
+        if let Some(result) = self.db(self.store.operation(op))? {
+            self.event(runtime, ExecutionEvent::new(plan.id, Some(step.id), EventKind::StepStarted, format!("{} already done (operation {}); reusing its result", step.key, short(op))));
+            return Ok(result);
+        }
+        let result = runtime.call_tool(tool, arguments, Some(op))?;
+        self.db(self.store.record_operation(op, plan.id, step.id, tool, &result))?;
+        Ok(result)
     }
 
     /// Record a step's result, verify it (P5), and decide what happens next:
@@ -593,7 +657,10 @@ impl Engine {
         let s = plan.step_mut(id).unwrap();
         s.failure_class = Some(class);
         s.last_error = Some(error.clone());
-        if retry::should_retry(&s.retry_policy, class, s.attempts) {
+        // Work that already changed something isn't simply run again: the
+        // replanner sees what was done and decides.
+        let changed = !matches!(s.action, StepAction::Tool { .. }) && !changes_of(s.result.as_ref()).is_empty();
+        if !changed && retry::should_retry(&s.retry_policy, class, s.attempts) {
             s.status = StepStatus::Pending;
             let wait = retry::backoff(&s.retry_policy, s.attempts);
             plan.usage.retries += 1;
@@ -807,6 +874,15 @@ fn add_usage(total: &mut BudgetUsage, add: &BudgetUsage) {
     total.tokens += add.tokens;
 }
 
+/// What a step's attempts changed so far (from its result's metadata).
+fn changes_of(result: Option<&StepResult>) -> Vec<String> {
+    result
+        .and_then(|r| r.metadata.get("changes"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|c| c.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
 pub fn short(id: Uuid) -> String {
     id.to_string()[..8].to_string()
 }
@@ -833,6 +909,10 @@ mod tests {
         tool_calls: AtomicU32,
         tool_args: Mutex<Vec<Value>>,
         events: Mutex<Vec<EventKind>>,
+        /// What a failing reasoning call had changed.
+        reason_changes: Mutex<Vec<String>>,
+        /// `may_change` of each reasoning task.
+        may_change: Mutex<Vec<bool>>,
     }
 
     fn pop(q: &Mutex<VecDeque<String>>, what: &str) -> Result<(String, u64), String> {
@@ -862,7 +942,7 @@ mod tests {
                     crate::planner::tests::tool("deploy", Risk::Mutating),
                     crate::planner::tests::tool("wipe", Risk::Destructive),
                 ],
-                agents: vec![AgentInfo { name: "researcher".into(), description: "reads".into() }],
+                agents: vec![AgentInfo { name: "researcher".into(), description: "reads".into(), changes_things: false }],
                 ..Default::default()
             }
         }
@@ -874,9 +954,16 @@ mod tests {
             }
             Ok(json!(format!("{tool} ok: service healthy")))
         }
-        fn reason(&self, task: &Task) -> Result<Reasoned, String> {
-            let text = self.reasoning.lock().unwrap().pop_front().unwrap_or(Ok(format!("did: {}", task.instruction)))?;
-            Ok(Reasoned { text, model_calls: 1, tool_calls: 0, tokens: 50 })
+        fn reason(&self, task: &Task) -> Result<Reasoned, ReasonError> {
+            self.may_change.lock().unwrap().push(task.may_change);
+            let text = self
+                .reasoning
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Ok(format!("did: {}", task.instruction)))
+                .map_err(|error| ReasonError { error, changes: self.reason_changes.lock().unwrap().clone() })?;
+            Ok(Reasoned { text, model_calls: 1, tool_calls: 0, tokens: 50, changes: Vec::new() })
         }
         fn workflow(&self, _name: &str) -> Option<String> {
             None
@@ -954,7 +1041,7 @@ mod tests {
                 }
                 self.inner.call_tool(t, a, o)
             }
-            fn reason(&self, t: &Task) -> Result<Reasoned, String> {
+            fn reason(&self, t: &Task) -> Result<Reasoned, ReasonError> {
                 self.inner.reason(t)
             }
             fn workflow(&self, n: &str) -> Option<String> {
@@ -1173,5 +1260,62 @@ mod tests {
         assert!(started[0].starts_with("s1") && started[1].starts_with("s2"), "s1 and s2 start together: {started:?}");
         let s3 = out.plan.find_step("s3").unwrap();
         assert!(output_text(&s3.result.as_ref().unwrap().output).contains("combine"));
+    }
+
+    #[test]
+    fn a_recorded_operation_is_not_repeated_after_a_restart() {
+        let (_rt, e) = engine();
+        let s = script(r#"{"steps":[{"key":"s1","action":{"type":"tool","tool":"deploy","arguments":{}},"idempotency":"unsafe"}]}"#);
+        s.evaluate.lock().unwrap().push_back(MET.into());
+        s.evaluate.lock().unwrap().push_back(MET.into());
+        let plan = prepare(&e, &s);
+        assert!(plan.steps[0].operation_id.is_some());
+        assert_eq!(e.run(plan.id, &s).unwrap().plan.status, PlanStatus::Completed);
+        assert_eq!(s.tool_calls.load(Ordering::SeqCst), 1);
+
+        // Crash right after the deploy took effect, before it was marked done.
+        let mut plan = e.plan(plan.id).unwrap().unwrap();
+        plan.status = PlanStatus::Running;
+        plan.steps[0].status = StepStatus::Running;
+        e.save(&plan).unwrap();
+        e.recover(&s).unwrap();
+        let plan = e.plan(plan.id).unwrap().unwrap();
+        assert_eq!(plan.steps[0].status, StepStatus::Pending, "the operation is on record, so resuming is safe");
+        assert_eq!(e.run(plan.id, &s).unwrap().plan.status, PlanStatus::Completed);
+        assert_eq!(s.tool_calls.load(Ordering::SeqCst), 1, "the recorded result was reused, not deployed again");
+    }
+
+    #[test]
+    fn only_conditional_reasoning_may_change_things_and_is_not_blindly_retried() {
+        let (_rt, e) = engine();
+        let s = script(
+            r#"{"steps":[
+            {"key":"s1","action":{"type":"reasoning","instruction":"look around"}},
+            {"key":"s2","depends_on":["s1"],"action":{"type":"reasoning","instruction":"record it"},"idempotency":"conditional"}]}"#,
+        );
+        let plan = prepare(&e, &s);
+        assert!(plan.steps[1].operation_id.is_some());
+        s.reasoning.lock().unwrap().push_back(Ok("found it".into()));
+        s.reasoning.lock().unwrap().push_back(Err("connection reset".into()));
+        *s.reason_changes.lock().unwrap() = vec!["deploy {}".into()];
+        let out = e.run(plan.id, &s).unwrap();
+        assert_eq!(*s.may_change.lock().unwrap(), [false, true], "safe steps get read-only tools");
+        let s2 = out.plan.find_step("s2").unwrap();
+        assert_eq!(s2.attempts, 1, "a transient error after a change is not retried blindly");
+        assert!(!s.events.lock().unwrap().contains(&EventKind::RetryScheduled));
+        assert_eq!(changes_of(s2.result.as_ref()), ["deploy {}"]);
+    }
+
+    #[test]
+    fn steps_that_change_things_run_alone() {
+        let (_rt, e) = engine();
+        let s = script(
+            r#"{"steps":[
+            {"key":"s1","action":{"type":"tool","tool":"deploy","arguments":{}}},
+            {"key":"s2","action":{"type":"tool","tool":"check","arguments":{}}}]}"#,
+        );
+        let plan = prepare(&e, &s);
+        let ready: Vec<&PlanStep> = plan.steps.iter().collect();
+        assert_eq!(graph::schedule(&ready, 3).len(), 1, "a mutating step doesn't share its batch");
     }
 }

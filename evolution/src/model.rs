@@ -278,6 +278,18 @@ pub struct Generation {
     pub candidate: Option<Uuid>,
     pub reason: String,
     pub created_at: DateTime<Utc>,
+    /// A skill revision this generation made. Skills live in the skill
+    /// system (files and ledger), so the snapshot doesn't hold them; rolling
+    /// back past this generation restores `from_version`.
+    #[serde(default)]
+    pub skill: Option<SkillRevision>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkillRevision {
+    pub name: String,
+    pub from_version: i64,
+    pub to_version: i64,
 }
 
 /// How good a version of the agent is on a benchmark (E7). All 0–1.

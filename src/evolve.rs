@@ -28,6 +28,8 @@ pub struct Evolution {
     benchmark_tasks: usize,
     /// The generation the monitor last warned about (propose mode).
     warned: Mutex<Option<u32>>,
+    /// For the plan stores of benchmark runs.
+    rt: tokio::runtime::Handle,
 }
 
 /// The evolved state in use, re-read after every deployment or rollback.
@@ -71,8 +73,8 @@ pub struct Done {
 }
 
 impl Evolution {
-    pub fn new(manager: EvolutionManager, source_repo: Option<PathBuf>, benchmark_tasks: usize) -> Self {
-        Self { manager, live: RwLock::new(Live::default()), source_repo, benchmark_tasks, warned: Mutex::new(None) }
+    pub fn new(manager: EvolutionManager, rt: tokio::runtime::Handle, source_repo: Option<PathBuf>, benchmark_tasks: usize) -> Self {
+        Self { manager, live: RwLock::new(Live::default()), source_repo, benchmark_tasks, warned: Mutex::new(None), rt }
     }
 
     pub fn mode(&self) -> Mode {
@@ -113,16 +115,7 @@ impl Evolution {
     /// steps should be verified.
     pub fn planning_guidance(&self, request: &str) -> Option<String> {
         let live = self.live.read().unwrap_or_else(|e| e.into_inner());
-        let mut parts = Vec::new();
-        if let Some(w) = workflow::pick(&live.workflows, request) {
-            parts.push(w.guidance());
-        }
-        if live.behavior.verify_reasoning_steps {
-            parts.push(
-                "Give every reasoning step a model_evaluation verification with a clear expected outcome.".to_string(),
-            );
-        }
-        (!parts.is_empty()).then(|| parts.join("\n\n"))
+        planning_guidance(&live.behavior, &live.workflows, request)
     }
 
     pub fn generation(&self) -> u32 {
@@ -169,32 +162,67 @@ impl Evolution {
         }
     }
 
-    /// After new outcomes: has the current generation regressed? In auto mode
-    /// it is rolled back; otherwise the user is told once per generation.
-    pub fn monitor(&self, tools: Option<&Tools>) -> Vec<String> {
-        let reason = match self.manager.regression() {
-            Ok(Some(reason)) => reason,
-            Ok(None) => return Vec::new(),
-            Err(e) => return vec![format!("evolution monitor failed: {e}")],
-        };
-        if self.mode() == Mode::Auto {
-            return match self.manager.rollback(None, &format!("regression: {reason}")) {
-                Ok(g) => {
-                    let mut notes = vec![format!("↩ {reason}; rolled back (now generation {})", g.number)];
-                    notes.extend(self.reload(tools));
-                    notes
-                }
-                Err(e) => vec![format!("{reason}; rollback failed: {e}")],
-            };
-        }
+    /// Whether the monitor already warned about this generation (propose mode).
+    fn warn_once(&self) -> bool {
         let generation = self.generation();
         let mut warned = self.warned.lock().unwrap_or_else(|e| e.into_inner());
-        if *warned == Some(generation) {
-            return Vec::new();
-        }
+        let first = *warned != Some(generation);
         *warned = Some(generation);
-        vec![format!("⚠ {reason} — /evolve rollback to undo the last change")]
+        first
     }
+}
+
+/// After new outcomes: has the current generation regressed? In auto mode
+/// it is rolled back (skill revisions included); otherwise the user is told
+/// once per generation.
+pub fn monitor(env: &Env) -> Vec<String> {
+    let ev = &env.evolution;
+    let reason = match ev.manager.regression() {
+        Ok(Some(reason)) => reason,
+        Ok(None) => return Vec::new(),
+        Err(e) => return vec![format!("evolution monitor failed: {e}")],
+    };
+    if ev.mode() == Mode::Auto {
+        return match rollback_to(env, None, &format!("regression: {reason}")) {
+            Ok(mut notes) => {
+                notes[0] = format!("↩ {reason}; {}", notes[0].trim_start_matches("↩ "));
+                notes
+            }
+            Err(e) => vec![format!("{reason}; rollback failed: {e}")],
+        };
+    }
+    if !ev.warn_once() {
+        return Vec::new();
+    }
+    vec![format!("⚠ {reason} — /evolve rollback to undo the last change")]
+}
+
+/// Restore a generation, undo the skill revisions made after it, and reload.
+fn rollback_to(env: &Env, to: Option<u32>, why: &str) -> Result<Vec<String>, String> {
+    let ev = &env.evolution;
+    let (g, skills) = ev.manager.rollback(to, why)?;
+    let mut notes = vec![format!("↩ {} — now generation {}", g.reason, g.number)];
+    for r in skills {
+        match env.learning.as_ref().map(|l| l.rollback(&format!("{} {}", r.name, r.from_version))) {
+            Some(Ok(note)) => notes.push(format!("  {note}")),
+            Some(Err(e)) => notes.push(format!("  ✗ couldn't restore skill {} v{}: {e}", r.name, r.from_version)),
+            None => notes.push(format!("  ✗ learning is off; skill {} wasn't restored to v{}", r.name, r.from_version)),
+        }
+    }
+    notes.extend(ev.reload(env.tools.as_deref()));
+    Ok(notes)
+}
+
+/// Planner guidance under some evolved state.
+fn planning_guidance(behavior: &Behavior, workflows: &[WorkflowDef], request: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(w) = workflow::pick(workflows, request) {
+        parts.push(w.guidance());
+    }
+    if behavior.verify_reasoning_steps {
+        parts.push("Give every reasoning step a model_evaluation verification with a clear expected outcome.".to_string());
+    }
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
 }
 
 /// The system prompt section for a request under some evolved state.
@@ -286,7 +314,7 @@ fn review_inner(env: &Env, done: &mut Done) -> Result<(), String> {
     if ev.mode() == Mode::Auto {
         auto_deploy(env, created, done)?;
     } else if !created.is_empty() {
-        done.notes.push("/evolve list · /evolve test <id> · /evolve approve <id>".into());
+        done.notes.push("/evolve compare <id> tests and ranks a problem's candidates · /evolve approve <id>".into());
     }
     Ok(())
 }
@@ -300,9 +328,6 @@ fn auto_deploy(env: &Env, created: Vec<Candidate>, done: &mut Done) -> Result<()
     for group in groups {
         let mut tested = Vec::new();
         for c in created.iter().filter(|c| c.group == group && c.level.policy() == lyra_evolution::Policy::AutoEventually) {
-            if c.change.category() == Category::Skill {
-                continue;
-            }
             let c = ev.manager.find(&c.id.to_string())?;
             let t = test(env, c);
             done.notes.extend(t.notes);
@@ -313,10 +338,8 @@ fn auto_deploy(env: &Env, created: Vec<Candidate>, done: &mut Done) -> Result<()
         }
         let score = |c: &Candidate| c.validation.as_ref().and_then(|v| v.fitness_after.as_ref()).map_or(0.0, |f| f.total);
         if let Some(best) = tested.into_iter().max_by(|a, b| score(a).total_cmp(&score(b))) {
-            let summary = best.change.summary();
-            let g = ev.manager.deploy(best, "auto: beat the baseline")?;
-            done.notes.push(format!("✓ deployed {summary} on its own (generation {})", g.number));
-            done.notes.extend(ev.reload(env.tools.as_deref()));
+            let note = deploy(env, best, "auto: beat the baseline", done)?;
+            done.notes.push(format!("{note} (on its own)"));
         }
     }
     // Deploying one candidate rejects its siblings; say what's still open.
@@ -453,14 +476,24 @@ fn test_inner(env: &Env, c: Candidate, t: &mut Tested) -> Result<Candidate, Stri
         t.notes.push(format!("{}: ✓ checks passed; no recent tasks to benchmark with", c.short()));
         return ev.manager.save_validation(c, v);
     }
-    t.notes.push(format!("{}: benchmarking {} task(s), baseline vs candidate…", c.short(), tasks.len()));
+    // Planner-only changes are measured by planning and running the tasks
+    // (sandboxed); everything else by answering them in a chat.
+    let plans = plan_mode(&c.change);
+    let tasks: Vec<BenchTask> = if plans { tasks.into_iter().take(2).collect() } else { tasks };
+    let how = if plans { "as plans" } else { "as chats" };
+    t.notes.push(format!("{}: benchmarking {} task(s) {how}, baseline vs candidate…", c.short(), tasks.len()));
     let baseline = Variant::new(env, &current, skill_override.clone(), false);
     let candidate = Variant::new(env, &next, skill_override, true);
     let mut before = Vec::new();
     let mut after = Vec::new();
     for task in &tasks {
-        before.push(bench(env, &baseline, &task.task, &task.expect, t));
-        after.push(bench(env, &candidate, &task.task, &task.expect, t));
+        if plans {
+            before.push(bench_plan(env, &baseline, task, t));
+            after.push(bench_plan(env, &candidate, task, t));
+        } else {
+            before.push(bench(env, &baseline, &task.task, &task.expect, t));
+            after.push(bench(env, &candidate, &task.task, &task.expect, t));
+        }
     }
     let weights = &ev.manager.settings.fitness;
     let (fb, fa) = (fitness::fitness(&before, weights), fitness::fitness(&after, weights));
@@ -514,6 +547,17 @@ fn benchmark_tasks(ev: &Evolution, c: &Candidate) -> Result<Vec<BenchTask>, Stri
         }
     }
     Ok(tasks)
+}
+
+/// Changes that only affect planning, so a chat benchmark can't see them.
+fn plan_mode(change: &Change) -> bool {
+    match change {
+        Change::Configuration { key, .. } => {
+            matches!(key.as_str(), "plan_step_rounds" | "search_skills_before_planning" | "verify_reasoning_steps")
+        }
+        Change::Workflow { .. } => true,
+        _ => false,
+    }
 }
 
 /// One version of the agent for the benchmark: its system prompt additions,
@@ -605,7 +649,13 @@ fn bench(env: &Env, v: &Variant, task: &str, expect: &str, t: &mut Tested) -> Be
         r.errors += 1;
         return r;
     };
-    match crate::learn::complete(&env.url, &env.model, evolver::JUDGE_PROMPT, &evolver::judge_prompt(task, expect, &answer)) {
+    judge(env, task, expect, &answer, &mut r, t);
+    r
+}
+
+/// Have the model judge an answer; fills `success` and `accuracy`.
+fn judge(env: &Env, task: &str, expect: &str, answer: &str, r: &mut BenchResult, t: &mut Tested) {
+    match crate::learn::complete(&env.url, &env.model, evolver::JUDGE_PROMPT, &evolver::judge_prompt(task, expect, answer)) {
         Ok((reply, usage)) => {
             t.usage.extend(usage);
             match evolver::parse_judgement(&reply) {
@@ -618,7 +668,202 @@ fn bench(env: &Env, v: &Variant, task: &str, expect: &str, t: &mut Tested) -> Be
         }
         Err(e) => t.notes.push(format!("  judge call failed: {e}")),
     }
+}
+
+/// Plan and run a task with a variant on a throwaway plan store, approving
+/// steps automatically (tools are sandboxed), then judge the result.
+fn bench_plan(env: &Env, v: &Variant, task: &BenchTask, t: &mut Tested) -> BenchResult {
+    use lyra_execution::{Budget, Engine, PlanStatus, PlanStore, Settings};
+    let start = Instant::now();
+    let rt = BenchRuntime { env, v, r: Mutex::new(BenchResult::default()) };
+    let store = match env.evolution.rt.block_on(PlanStore::in_memory()) {
+        Ok(store) => store,
+        Err(e) => {
+            t.notes.push(format!("  benchmark plan store: {e:#}"));
+            return BenchResult { errors: 1, ..Default::default() };
+        }
+    };
+    let budget = Budget { max_model_calls: Some(30), max_tool_calls: Some(40), max_replans: Some(1), max_minutes: Some(15), max_tokens: Some(200_000) };
+    let engine = Engine::with_store(store, env.evolution.rt.clone(), Settings { budget, max_parallel: 1 });
+    let mut answer = None;
+    match engine.create(&task.task, &rt) {
+        Err(e) => t.notes.push(format!("  benchmark planning failed: {e}")),
+        Ok((_, plan)) => {
+            for _ in 0..4 {
+                match engine.run(plan.id, &rt) {
+                    Ok(out) if out.plan.status == PlanStatus::Paused => {
+                        // Approve what waits for approval: nothing real runs.
+                        let waiting: Vec<String> = out.plan.steps.iter().filter(|s| s.needs_approval()).map(|s| s.key.clone()).collect();
+                        if waiting.is_empty() {
+                            break;
+                        }
+                        for key in waiting {
+                            let _ = engine.approve(plan.id, &key, &rt);
+                        }
+                    }
+                    Ok(out) => {
+                        answer = out.evaluation.map(|e| if e.answer.trim().is_empty() { e.summary } else { e.answer });
+                        break;
+                    }
+                    Err(e) => {
+                        t.notes.push(format!("  benchmark plan failed: {e}"));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let mut r = rt.r.into_inner().unwrap_or_else(|e| e.into_inner());
+    r.seconds = start.elapsed().as_secs_f32();
+    match answer.filter(|a| !a.trim().is_empty()) {
+        Some(answer) => judge(env, &task.task, &task.expect, &answer, &mut r, t),
+        None => r.errors += 1,
+    }
     r
+}
+
+/// The planner's runtime during a benchmark: the variant's behavior,
+/// workflows and tools, with every tool call sandboxed.
+struct BenchRuntime<'a> {
+    env: &'a Env,
+    v: &'a Variant,
+    r: Mutex<BenchResult>,
+}
+
+impl BenchRuntime<'_> {
+    fn sandboxed(&self, name: &str, arguments: &str) -> Value {
+        let mut r = self.r.lock().unwrap_or_else(|e| e.into_inner());
+        sandboxed(self.env, self.v, name, arguments, &mut r)
+    }
+}
+
+impl lyra_execution::Runtime for BenchRuntime<'_> {
+    fn complete(&self, system: &str, user: &str) -> Result<(String, u64), String> {
+        let (text, usage) = crate::learn::complete(&self.env.url, &self.env.model, system, user)?;
+        let tokens = usage.map_or(0, |u| u.prompt_tokens + u.completion_tokens);
+        let mut r = self.r.lock().unwrap_or_else(|e| e.into_inner());
+        r.model_calls += 1;
+        r.tokens += tokens;
+        Ok((text, tokens))
+    }
+
+    fn context(&self, goal: &str) -> lyra_execution::PlanningContext {
+        let learning = self.env.learning.as_ref();
+        let skills = learning
+            .filter(|_| self.v.behavior.search_skills_before_planning)
+            .and_then(|l| l.relevant(goal).ok())
+            .map(|found| found.into_iter().map(|r| (r.skill.name, r.skill.description)).collect())
+            .unwrap_or_default();
+        let memories = self
+            .env
+            .tools
+            .as_ref()
+            .and_then(|t| t.mem.recall(None, goal, 6, false).ok())
+            .map(|found| found.into_iter().map(|r| r.memory.content).collect())
+            .unwrap_or_default();
+        let agents = crate::plan::AGENTS
+            .iter()
+            .map(|(n, d, tools)| lyra_execution::AgentInfo {
+                name: n.to_string(),
+                description: d.to_string(),
+                changes_things: tools.iter().any(|t| crate::plan::risk(t) != lyra_execution::Risk::ReadOnly),
+            })
+            .collect();
+        lyra_execution::PlanningContext {
+            memories,
+            skills,
+            workflows: learning.and_then(|l| l.active_skills().ok()).map(|a| a.into_iter().map(|s| s.name).collect()).unwrap_or_default(),
+            tools: self.tools(),
+            agents,
+            forbidden_tools: Vec::new(),
+            budget_note: None,
+            guidance: planning_guidance(&self.v.behavior, &self.v.workflows, goal),
+        }
+    }
+
+    fn tools(&self) -> Vec<lyra_execution::ToolInfo> {
+        self.v
+            .definitions
+            .iter()
+            .map(|d| {
+                let name = d["function"]["name"].as_str().unwrap_or("").to_string();
+                lyra_execution::ToolInfo {
+                    risk: crate::plan::risk(&name),
+                    description: d["function"]["description"].as_str().unwrap_or("").into(),
+                    parameters: d["function"]["parameters"].clone(),
+                    name,
+                }
+            })
+            .collect()
+    }
+
+    fn call_tool(&self, tool: &str, arguments: &Value, _operation: Option<Uuid>) -> Result<Value, String> {
+        let value = self.sandboxed(tool, &arguments.to_string());
+        match value.get("error").and_then(Value::as_str) {
+            Some(e) => Err(e.to_string()),
+            None => Ok(value),
+        }
+    }
+
+    fn reason(&self, task: &lyra_execution::Task) -> Result<lyra_execution::Reasoned, lyra_execution::ReasonError> {
+        use lyra_execution::Risk;
+        let tools: Vec<Value> = self
+            .v
+            .definitions
+            .iter()
+            .filter(|d| {
+                let name = d["function"]["name"].as_str().unwrap_or("");
+                task.tools.as_ref().is_none_or(|a| a.iter().any(|t| t == name))
+                    && match crate::plan::risk(name) {
+                        Risk::ReadOnly => true,
+                        Risk::Mutating => task.may_change,
+                        Risk::Destructive => false,
+                    }
+            })
+            .cloned()
+            .collect();
+        let system = format!("You are carrying out one step of a larger plan. Do only this step, then reply with the result.\n\n{}", task.context);
+        let mut messages = vec![json!({ "role": "system", "content": system }), json!({ "role": "user", "content": task.instruction })];
+        let mut out = lyra_execution::Reasoned::default();
+        for _ in 0..self.v.behavior.plan_step_rounds.max(1) {
+            let (message, tokens) = crate::plan::chat(&self.env.url, &self.env.model, &messages, &tools)?;
+            out.model_calls += 1;
+            out.tokens += tokens;
+            {
+                let mut r = self.r.lock().unwrap_or_else(|e| e.into_inner());
+                r.model_calls += 1;
+                r.tokens += tokens;
+            }
+            let calls = message["tool_calls"].as_array().cloned().unwrap_or_default();
+            if calls.is_empty() {
+                out.text = message["content"].as_str().unwrap_or("").trim().to_string();
+                return if out.text.is_empty() { Err("the model returned nothing".to_string().into()) } else { Ok(out) };
+            }
+            messages.push(json!({ "role": "assistant", "content": message["content"].as_str().unwrap_or(""), "tool_calls": calls }));
+            for call in &calls {
+                let name = call["function"]["name"].as_str().unwrap_or("");
+                let result = if tools.iter().any(|d| d["function"]["name"] == name) {
+                    out.tool_calls += 1;
+                    self.sandboxed(name, call["function"]["arguments"].as_str().unwrap_or("{}"))
+                } else {
+                    json!({ "error": format!("{name} isn't available for this step") })
+                };
+                messages.push(json!({ "role": "tool", "tool_call_id": call["id"], "content": result.to_string() }));
+            }
+        }
+        Err(format!("the step didn't finish within {} rounds", self.v.behavior.plan_step_rounds).into())
+    }
+
+    fn workflow(&self, name: &str) -> Option<String> {
+        match &self.v.skill {
+            Some((skill, old, new)) if skill == name => Some(if self.v.candidate { new.clone() } else { old.clone() }),
+            _ => self.env.learning.as_ref()?.instructions(name),
+        }
+    }
+
+    fn agent_tools(&self, agent: &str) -> Option<Vec<String>> {
+        crate::plan::AGENTS.iter().find(|(n, _, _)| *n == agent).map(|(_, _, tools)| tools.iter().map(|t| t.to_string()).collect())
+    }
 }
 
 /// A tool call during a benchmark.
@@ -674,56 +919,138 @@ pub fn approve(env: &Env, key: &str) -> Done {
     done
 }
 
-fn approve_inner(env: &Env, key: &str, done: &mut Done) -> Result<String, String> {
+fn approve_inner(env: &Env, arg: &str, done: &mut Done) -> Result<String, String> {
     let ev = &env.evolution;
+    let (key, force) = match arg.trim().strip_suffix(" force") {
+        Some(key) => (key, true),
+        None => (arg.trim(), false),
+    };
     let c = ev.manager.find(key)?;
     if matches!(c.status, CandidateStatus::Deployed | CandidateStatus::Rejected | CandidateStatus::RolledBack) {
         return Err(format!("candidate {} is {}", c.short(), c.status));
     }
-    let untested = if c.validation.is_none() { " (not tested)" } else { "" };
-    if c.validation.as_ref().is_some_and(|v| !v.valid) {
+    // The validation lab comes before promotion: tested, passing, and not
+    // worse than what's running (unless the user insists).
+    let Some(v) = &c.validation else {
+        return Err(format!("test it first: /evolve test {} (or /evolve compare {} for its whole group)", c.short(), c.short()));
+    };
+    if !v.valid {
         return Err(format!("candidate {} failed its checks: /evolve show {}", c.short(), c.short()));
     }
-    match c.change.clone() {
-        Change::Code { base_commit, diff } => {
-            if c.validation.is_none() {
-                return Err(format!("test the patch first: /evolve test {}", c.short()));
-            }
-            let lab = code_lab(ev)?;
-            let message = format!("evolution: {}\n\n{}", c.problem, c.rationale);
-            let branch = lab.branch(&c.short(), &base_commit, &diff, &message)?;
-            ev.manager.mark_deployed_elsewhere(c, &format!("committed to branch {branch}"))?;
-            Ok(format!(
-                "✓ committed the patch to local branch {branch} in {} — review and merge it yourself; \
-                 the running binary is unchanged",
-                ev.source_repo.as_ref().map_or(String::new(), |p| crate::context::show(p))
-            ))
-        }
-        Change::Skill { skill, instructions } => {
-            let learning = env.learning.as_ref().ok_or("learning is off")?;
-            let version = learning.refine(&skill, &instructions, &format!("evolution: {}", c.rationale))?;
-            ev.manager.mark_deployed_elsewhere(c, &format!("skill {skill} v{version}"))?;
-            Ok(format!("✓ refined skill {skill} to v{version}{untested} — /rollback {skill} undoes it"))
-        }
-        _ => {
-            let summary = c.change.summary();
-            let g = ev.manager.deploy(c, "approved")?;
-            done.notes.extend(ev.reload(env.tools.as_deref()));
-            Ok(format!("✓ deployed {summary}{untested} — generation {} (/evolve rollback undoes it)", g.number))
-        }
+    if let (Some(b), Some(a)) = (&v.fitness_before, &v.fitness_after)
+        && !fitness::improves(b, a)
+        && !force
+    {
+        return Err(format!(
+            "candidate {} didn't beat the current agent ({:.2} → {:.2}); /evolve approve {} force to deploy it anyway",
+            c.short(),
+            b.total,
+            a.total,
+            c.short()
+        ));
     }
+    if let Change::Code { base_commit, diff } = c.change.clone() {
+        let lab = code_lab(ev)?;
+        let message = format!("evolution: {}\n\n{}", c.problem, c.rationale);
+        let branch = lab.branch(&c.short(), &base_commit, &diff, &message)?;
+        ev.manager.mark_deployed_elsewhere(c, &format!("committed to branch {branch}"))?;
+        return Ok(format!(
+            "✓ committed the patch to local branch {branch} in {} — review and merge it yourself; \
+             the running binary is unchanged",
+            ev.source_repo.as_ref().map_or(String::new(), |p| crate::context::show(p))
+        ));
+    }
+    deploy(env, c, if force { "approved despite its benchmark" } else { "approved" }, done)
+}
+
+/// Deploy a tested candidate as a new generation: files for prompt,
+/// configuration, workflow and tool changes; a new skill version (recorded
+/// in the generation) for skill changes.
+fn deploy(env: &Env, c: Candidate, why: &str, done: &mut Done) -> Result<String, String> {
+    let ev = &env.evolution;
+    if let Change::Tool { tool } = &c.change {
+        // Re-check against the tools as they are now.
+        let tools = env.tools.as_ref().ok_or("tools are off (memory is disabled)")?;
+        let base = tools.base_tools();
+        tool.validate(&lyra_evolution::composite::Available { tools: &base })?;
+    }
+    if let Change::Skill { skill, instructions } = c.change.clone() {
+        let learning = env.learning.as_ref().ok_or("learning is off")?;
+        let to = learning.refine(&skill, &instructions, &format!("evolution: {}", c.rationale))?;
+        let revision = lyra_evolution::SkillRevision { name: skill.clone(), from_version: to - 1, to_version: to };
+        let g = ev.manager.deploy_skill(c, revision, why)?;
+        return Ok(format!("✓ refined skill {skill} to v{to} — generation {} (/evolve rollback undoes it)", g.number));
+    }
+    let summary = c.change.summary();
+    let g = ev.manager.deploy(c, why)?;
+    done.notes.extend(ev.reload(env.tools.as_deref()));
+    Ok(format!("✓ deployed {summary} — generation {} (/evolve rollback undoes it)", g.number))
 }
 
 pub fn rollback(env: &Env, arg: &str) -> Done {
     let to = arg.trim().trim_start_matches('g');
     let to = if to.is_empty() { Ok(None) } else { to.parse::<u32>().map(Some).map_err(|_| format!("not a generation number: {arg}")) };
-    let result = to.and_then(|to| env.evolution.manager.rollback(to, "requested by the user"));
-    let mut notes = match result {
-        Ok(g) => vec![format!("↩ {} — now generation {}", g.reason, g.number)],
+    let notes = match to.and_then(|to| rollback_to(env, to, "requested by the user")) {
+        Ok(notes) => notes,
         Err(e) => vec![format!("✗ {e}")],
     };
-    notes.extend(env.evolution.reload(env.tools.as_deref()));
     Done { notes, usage: Vec::new() }
+}
+
+/// Test every open candidate in a group on the same tasks and rank them.
+pub fn compare(env: &Env, key: &str) -> Done {
+    let mut done = Done { notes: Vec::new(), usage: Vec::new() };
+    let ev = &env.evolution;
+    let group = match ev.manager.find(key) {
+        Ok(c) => c.group,
+        Err(e) => {
+            done.notes.push(format!("✗ {e}"));
+            return done;
+        }
+    };
+    let open: Vec<Candidate> = ev
+        .manager
+        .candidates(500)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| c.group == group && matches!(c.status, CandidateStatus::Proposed | CandidateStatus::Testing))
+        .collect();
+    let mut ranked = Vec::new();
+    for c in open {
+        let c = if c.validation.is_some() {
+            c
+        } else {
+            let t = test(env, c);
+            done.notes.extend(t.notes);
+            done.usage.extend(t.usage);
+            match t.candidate {
+                Some(c) => c,
+                None => continue,
+            }
+        };
+        ranked.push(c);
+    }
+    let score = |c: &Candidate| match &c.validation {
+        Some(v) if v.valid => v.fitness_after.as_ref().map_or(0.0, |f| f.total),
+        _ => -1.0,
+    };
+    ranked.sort_by(|a, b| score(b).total_cmp(&score(a)));
+    done.notes.push("ranking:".into());
+    for (i, c) in ranked.iter().enumerate() {
+        let v = c.validation.as_ref();
+        let fit = match v.map(|v| (v.valid, &v.fitness_before, &v.fitness_after)) {
+            Some((false, _, _)) => "failed checks".to_string(),
+            Some((true, Some(b), Some(a))) => {
+                format!("{:.2} → {:.2}{}", b.total, a.total, if fitness::improves(b, a) { " ✓ beats the baseline" } else { "" })
+            }
+            _ => "checked, not benchmarked".into(),
+        };
+        done.notes.push(format!("  {}. {} {} — {fit}", i + 1, c.short(), truncate(&c.change.summary(), 70)));
+    }
+    if let Some(best) = ranked.first().filter(|c| score(c) >= 0.0) {
+        done.notes.push(format!("/evolve approve {} deploys the best one (and rejects the rest)", best.short()));
+    }
+    done
 }
 
 // ---- code evolution (E6)
@@ -792,7 +1119,10 @@ pub const COMMANDS: &str = "\
 /evolve review               look for problems in recent runs and propose fixes now
 /evolve list · show <id>     candidates · one candidate's change, evidence and test results
 /evolve test <id>            check a candidate and benchmark it against the current agent
-/evolve approve|reject <id>  deploy it (code: commit to a local branch) · discard it
+/evolve compare <id>         test every open candidate for the same problem and rank them
+/evolve approve <id> [force] deploy a tested candidate (code: commit to a local branch);
+                             force deploys one that didn't beat the current agent
+/evolve reject <id>          discard it
 /evolve rollback [gen]       restore the previous (or a given) generation
 /evolve generations|history|runs   deployed generations · evolution events · recorded runs
 /evolve code <problem>       propose a source patch (needs [evolution] source_repo)";

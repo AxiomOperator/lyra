@@ -15,7 +15,7 @@ pub mod planner;
 pub mod retry;
 mod store;
 
-pub use engine::{Engine, Metrics, Reasoned, RunOutcome, Runtime, Settings, Task, short};
+pub use engine::{Engine, Metrics, ReasonError, Reasoned, RunOutcome, Runtime, Settings, Task, short};
 pub use model::*;
 pub use planner::{AgentInfo, Evaluation, PlanningContext, Risk, ToolInfo};
 pub use store::PlanStore;

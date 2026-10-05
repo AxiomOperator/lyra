@@ -190,6 +190,7 @@ impl EvolutionManager {
             candidate,
             reason: reason.to_string(),
             created_at: Utc::now(),
+            skill: None,
         };
         self.db(self.store.add_generation(&g))?;
         Ok(g)
@@ -342,7 +343,6 @@ impl EvolutionManager {
         let Some(v) = &c.validation else { return false };
         self.settings.mode == Mode::Auto
             && c.level.policy() == Policy::AutoEventually
-            && c.change.category() != Category::Skill
             && v.valid
             && matches!((&v.fitness_before, &v.fitness_after), (Some(b), Some(a)) if fitness::improves(b, a))
     }
@@ -405,9 +405,43 @@ impl EvolutionManager {
         Ok(generation)
     }
 
-    /// A skill or code change handled by its own system; recorded here.
+    /// A code change handled outside the agent (a branch); recorded here.
     pub fn mark_deployed_elsewhere(&self, c: Candidate, note: &str) -> Result<Candidate, String> {
         self.set_status(c, CandidateStatus::Deployed, note)
+    }
+
+    /// A skill revision the skill system applied: it becomes a generation of
+    /// its own (same files, plus the revision), so the monitor attributes
+    /// regressions to it and a rollback can undo it.
+    pub fn deploy_skill(&self, c: Candidate, revision: SkillRevision, why: &str) -> Result<Generation, String> {
+        let current = self.generation()?;
+        let reason = format!("{} (v{} → v{}) — {why}", c.change.summary(), revision.from_version, revision.to_version);
+        let mut g = Generation {
+            id: Uuid::new_v4(),
+            number: current.number + 1,
+            parent: Some(current.id),
+            snapshot: current.snapshot.clone(),
+            candidate: Some(c.id),
+            reason: reason.clone(),
+            created_at: Utc::now(),
+            skill: Some(revision),
+        };
+        // The files may have been edited since; snapshot what's there now.
+        g.snapshot = self.snapshot();
+        self.db(self.store.add_generation(&g))?;
+        let v = c.validation.clone().unwrap_or_default();
+        let (fb, fa) = (v.fitness_before.map(|f| f.total), v.fitness_after.map(|f| f.total));
+        let mut c = c;
+        c.status = CandidateStatus::Deployed;
+        c.updated_at = Utc::now();
+        self.save(&c)?;
+        self.event(Some(c.id), "deployed", reason, Some(current.number), fb, fa)?;
+        for other in self.candidates(500)?.into_iter().filter(|o| o.group == c.group && o.id != c.id) {
+            if matches!(other.status, CandidateStatus::Proposed | CandidateStatus::Testing) {
+                self.set_status(other, CandidateStatus::Rejected, &format!("{} was selected instead", c.short()))?;
+            }
+        }
+        Ok(g)
     }
 
     pub fn reject(&self, c: Candidate, why: &str) -> Result<Candidate, String> {
@@ -415,8 +449,10 @@ impl EvolutionManager {
     }
 
     /// Restore an earlier generation's state (the parent of the current one by
-    /// default). The rollback is itself a new generation.
-    pub fn rollback(&self, to: Option<u32>, why: &str) -> Result<Generation, String> {
+    /// default). The rollback is itself a new generation. Skill revisions made
+    /// after the target are returned, newest first, for the skill system to
+    /// undo (see [`Generation::skill`]).
+    pub fn rollback(&self, to: Option<u32>, why: &str) -> Result<(Generation, Vec<SkillRevision>), String> {
         let generations = self.generations()?;
         let current = generations.first().ok_or("no generations")?.clone();
         let target = match to {
@@ -432,14 +468,16 @@ impl EvolutionManager {
         self.write_snapshot(&target.snapshot)?;
         let reason = format!("rollback to generation {}: {why}", target.number);
         let generation = self.add_generation(target.snapshot.clone(), Some(&current), None, &reason)?;
-        // Changes made after the target are undone.
-        let undone: Vec<Uuid> = generations.iter().filter(|g| g.number > target.number).filter_map(|g| g.candidate).collect();
+        // Changes made after the target are undone. `generations` is newest first.
+        let after: Vec<&Generation> = generations.iter().filter(|g| g.number > target.number).collect();
+        let skills: Vec<SkillRevision> = after.iter().filter_map(|g| g.skill.clone()).collect();
+        let undone: Vec<Uuid> = after.iter().filter_map(|g| g.candidate).collect();
         for c in self.candidates(500)?.into_iter().filter(|c| undone.contains(&c.id) && c.status == CandidateStatus::Deployed) {
             let note = format!("{} undone by the {reason}", c.change.summary());
             self.set_status(c, CandidateStatus::RolledBack, &note)?;
         }
         self.event(None, "rolled_back", reason, Some(current.number), None, None)?;
-        Ok(generation)
+        Ok((generation, skills))
     }
 
     // ---- monitoring
@@ -624,13 +662,31 @@ mod tests {
         assert_eq!(m.composites().0, [tool]);
         assert_eq!(m.generation().unwrap().number, 3);
 
-        let g = m.rollback(Some(1), "test").unwrap();
+        let (g, skills) = m.rollback(Some(1), "test").unwrap();
         assert_eq!(g.number, 4, "a rollback is a new generation");
+        assert!(skills.is_empty());
         assert!(m.workflows().0.is_empty() && m.composites().0.is_empty());
         assert!(!home.join("tools/memory_overview.toml").exists());
         let rolled: Vec<CandidateStatus> = m.candidates(10).unwrap().iter().map(|c| c.status).collect();
         assert_eq!(rolled, [CandidateStatus::RolledBack, CandidateStatus::RolledBack]);
         assert!(m.events(50).unwrap().iter().any(|e| e.kind == "rolled_back"));
+    }
+
+    #[test]
+    fn skill_revisions_are_generations_and_rollback_reports_them() {
+        let (_rt, m, _home) = manager(Mode::Propose);
+        let c = m
+            .propose(&op(), vec![proposal(Change::Skill { skill: "rust-commit".into(), instructions: "run clippy first".into() })])
+            .unwrap()
+            .remove(0);
+        let revision = SkillRevision { name: "rust-commit".into(), from_version: 2, to_version: 3 };
+        let g = m.deploy_skill(c, revision.clone(), "approved").unwrap();
+        assert_eq!((g.number, g.skill.clone()), (2, Some(revision.clone())));
+        assert_eq!(m.candidates(5).unwrap()[0].status, CandidateStatus::Deployed);
+        let (g, skills) = m.rollback(None, "worse").unwrap();
+        assert_eq!(g.number, 3);
+        assert_eq!(skills, [revision], "the caller restores v2");
+        assert_eq!(m.candidates(5).unwrap()[0].status, CandidateStatus::RolledBack);
     }
 
     #[test]

@@ -48,6 +48,8 @@ impl ToolInfo {
 pub struct AgentInfo {
     pub name: String,
     pub description: String,
+    /// It can use tools that change things.
+    pub changes_things: bool,
 }
 
 /// What the planner gets to see (P10): only what's relevant.
@@ -56,6 +58,9 @@ pub struct PlanningContext {
     pub memories: Vec<String>,
     /// `(name, description)` of relevant skills; also the workflows a step may use.
     pub skills: Vec<(String, String)>,
+    /// Every workflow a step may name, shown or not (the planner may know a
+    /// procedure's name from guidance or memory).
+    pub workflows: Vec<String>,
     pub tools: Vec<ToolInfo>,
     pub agents: Vec<AgentInfo>,
     /// Tools steps may never use.
@@ -203,7 +208,9 @@ procedure, subagent for a self-contained branch. Use deterministic verification 
 (tool_result, follow_up_tool, state_check) where you can; model_evaluation for \
 judgment calls. Mark anything that deletes, overwrites or acts externally as unsafe \
 and requires_approval. Destructive tools can only be used as tool steps, never from \
-reasoning, workflow or subagent steps.
+reasoning, workflow or subagent steps. A reasoning or workflow step only gets tools \
+that change things (e.g. recording in memory) when it is marked conditional; safe \
+steps must be safe to repeat, so they only get read-only tools.
 
 When a tool argument depends on an earlier step's result (an id it found, a text it \
 wrote), write the placeholder \"{{{{key}}}}\" with that step's key, e.g. {{\"id\": \"{{{{s3}}}}\"}}, and \
@@ -270,13 +277,15 @@ fn build_step(d: &StepDraft, id: Uuid, deps: Vec<Uuid>, ctx: &PlanningContext) -
             }
         }
         StepAction::Workflow { workflow, .. } => {
-            if !ctx.skills.iter().any(|(n, _)| n == workflow) {
+            if !ctx.skills.iter().any(|(n, _)| n == workflow) && !ctx.workflows.contains(workflow) {
                 return Err(format!("{key} uses unknown workflow {workflow}"));
             }
         }
         StepAction::Subagent { agent, .. } => {
-            if !ctx.agents.iter().any(|a| &a.name == agent) {
-                return Err(format!("{key} uses unknown agent {agent}"));
+            let info = ctx.agents.iter().find(|a| &a.name == agent).ok_or(format!("{key} uses unknown agent {agent}"))?;
+            // An agent that changes things can't be repeated blindly.
+            if info.changes_things && idempotency == Idempotency::Safe {
+                idempotency = Idempotency::Conditional;
             }
         }
         StepAction::Reasoning { instruction } if instruction.trim().is_empty() => {
@@ -318,7 +327,7 @@ fn build_step(d: &StepDraft, id: Uuid, deps: Vec<Uuid>, ctx: &PlanningContext) -
         attempts: 0,
         failure_class: None,
         last_error: None,
-        operation_id: (idempotency == Idempotency::Unsafe).then(Uuid::new_v4),
+        operation_id: (idempotency != Idempotency::Safe).then(Uuid::new_v4),
         created_at: Utc::now(),
         started_at: None,
         completed_at: None,
@@ -667,7 +676,7 @@ pub(crate) mod tests {
                 tool("memory_forget", Risk::Destructive),
                 tool("shell", Risk::Destructive),
             ],
-            agents: vec![AgentInfo { name: "researcher".into(), description: "reads".into() }],
+            agents: vec![AgentInfo { name: "researcher".into(), description: "reads".into(), changes_things: false }],
             skills: vec![("rust-precommit-checks".into(), "before commits".into())],
             forbidden_tools: vec!["shell".into()],
             ..Default::default()

@@ -95,7 +95,8 @@ pub fn schedule(ready: &[&PlanStep], max_parallel: usize) -> Vec<Uuid> {
         if batch.len() >= max_parallel.max(1) {
             break;
         }
-        let alone = s.idempotency == Idempotency::Unsafe;
+        // Steps that may change things run on their own.
+        let alone = s.idempotency != Idempotency::Safe;
         if alone && !batch.is_empty() {
             continue;
         }

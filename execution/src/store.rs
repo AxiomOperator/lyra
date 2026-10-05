@@ -322,6 +322,29 @@ impl PlanStore {
             .collect()
     }
 
+    /// Record a completed operation (P15).
+    pub async fn record_operation(&self, id: Uuid, plan: Uuid, step: Uuid, tool: &str, result: &Value) -> Result<()> {
+        sqlx::query("INSERT OR IGNORE INTO operations (id, plan_id, step_id, tool, result, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+            .bind(id.to_string())
+            .bind(plan.to_string())
+            .bind(step.to_string())
+            .bind(tool)
+            .bind(result.to_string())
+            .bind(time(Utc::now()))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// The recorded result of an operation, if it already happened.
+    pub async fn operation(&self, id: Uuid) -> Result<Option<Value>> {
+        let row = sqlx::query("SELECT result FROM operations WHERE id = ?").bind(id.to_string()).fetch_optional(&self.pool).await?;
+        Ok(match row {
+            Some(r) => Some(serde_json::from_str(r.try_get("result")?)?),
+            None => None,
+        })
+    }
+
     pub async fn record_approval(&self, plan: Uuid, step: Uuid, fingerprint: &str) -> Result<()> {
         sqlx::query("INSERT INTO approvals (id, plan_id, step_id, fingerprint, approved_at) VALUES (?, ?, ?, ?, ?)")
             .bind(Uuid::new_v4().to_string())
