@@ -533,6 +533,54 @@ max_model_calls = 6         # per delegation
 max_tool_calls = 12
 ```
 
+## System access
+
+lyra can work on the machine it runs on and on your servers through the
+**Operator** subagent, which is installed when system access is on (delete it
+and it stays deleted). The tools live in the `system/` crate (`lyra-system`):
+
+- `system_info`: OS, kernel, uptime, load, CPUs, memory, disks, busiest processes
+- `shell_run`: a command on this machine (in your home directory by default)
+- `file_read`, `file_list`, `file_write`, `file_delete`
+- `http_request`: HTTP(S); a header value like `"$API_TOKEN"` is read from that environment variable
+- `ssh_run`: a command on a server in `ssh_hosts`, with your SSH keys (batch mode, never a password)
+
+Only agents whose profile lists them can use these: the main agent isn't
+offered them (it hands the work to the Operator) and its calls are refused,
+plans only reach them through an Operator step, and other agents don't get
+them unless you add them to their profile.
+
+Every call is checked in Rust before it runs, whatever the model asked for:
+
+- **Runs at once:** looking: `system_info`, reading and listing files, GET/HEAD
+  requests, and commands that only read (`ls`, `df`, `ps`, `cat`, `grep`,
+  `git status`, `systemctl status`, `docker ps`, `ping -c`, …), plus prefixes in
+  `allow_commands` and file writes inside `write_roots`.
+- **Asks you first:** anything that changes things: other commands, `>`
+  redirects, `$(…)`, file writes elsewhere, deletes, other HTTP methods. The
+  chat shows `⚠ approval needed` with exactly what would run, the Session
+  state and Agents panel say who is waiting, and you answer `y` (allow), `n`
+  (deny) or `a` (allow that exact action for the session). Deleting, killing,
+  `sudo`, `git push`, stopping services and the like are marked ⚠. No answer
+  within `approval_timeout_seconds` is a no.
+- **Never runs:** `rm -rf /` or your home directory, `mkfs`, `dd` onto a disk,
+  fork bombs, anything under `deny_paths` (keys, credentials, lyra's config),
+  and servers not in `ssh_hosts`.
+
+Commands have a timeout (their whole process group is stopped), output is
+capped, and approved or not, each call is recorded in the capability usage
+and the Operator's delegation log.
+
+```toml
+[system]
+enabled = true
+timeout_seconds = 60
+allow_commands = []          # e.g. ["cargo test", "make check"]
+write_roots = []             # e.g. ["~/lyra-work"]
+ssh_hosts = []               # e.g. ["web1", "deploy@10.0.0.5"]
+approval_timeout_seconds = 300
+```
+
 ## Self-evolution
 
 Skills are what lyra learns; **evolution** changes *how it works*, from

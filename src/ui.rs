@@ -101,6 +101,7 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
             "info" => ("system", Color::Magenta),
             // A specialist agent working for lyra (UI only; not in the history).
             "agent" => ("↪ agent", Color::LightBlue),
+            "approval" => ("⚠ approval needed", Color::Yellow),
             _ => ("error", Color::Red),
         };
         lines.push(Line::from(label.bold().fg(color)));
@@ -125,6 +126,7 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
                 let body = match m.role.as_str() {
                     "info" => dim,
                     "agent" => Style::default().fg(Color::Blue),
+                    "approval" => Style::default().fg(Color::Yellow).bold(),
                     _ => Style::default(),
                 };
                 lines.extend(m.content.lines().map(|l| Line::styled(l.to_string(), body)));
@@ -496,6 +498,9 @@ fn agents_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
         let name_width = width.saturating_sub(2 + info.chars().count());
         lines.push(Line::from(vec![Span::styled(mark, style), Span::styled(truncate(&a.title, name_width), style), Span::styled(info, dim)]));
     }
+    for r in &app.approvals {
+        lines.push(Line::styled(truncate(&format!("⚠ {} awaits approval", r.agent), width), Style::default().fg(Color::Yellow)));
+    }
     if app.wizard_busy {
         lines.push(Line::styled("building a new agent…", Style::default().fg(Color::Yellow)));
     } else if app.wizard_active() {
@@ -722,6 +727,7 @@ fn phase_span(app: &App) -> Span<'static> {
         Phase::Idle => text.dark_gray(),
         Phase::Tools(_) => text.yellow(),
         Phase::Delegating(_) => text.light_blue(),
+        Phase::Approval(_) => text.yellow().bold(),
         _ => text.green(),
     }
 }
@@ -735,6 +741,7 @@ fn phase_text(app: &App) -> String {
         Phase::Streaming => format!("▸ streaming {since}"),
         Phase::Tools(names) => format!("⚙ {names}"),
         Phase::Delegating(agent) => format!("↪ {agent} {since}"),
+        Phase::Approval(agent) => format!("⚠ {agent} awaits your y/n"),
     }
 }
 

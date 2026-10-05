@@ -161,6 +161,8 @@ enum StreamEvent {
     Token(String),
     /// The main agent is working with a subagent (routing, progress, result).
     Agent(agents::AgentEvent),
+    /// An agent waits for the user's approval before changing something.
+    Approval(agents::ApprovalRequest),
     Reasoning(String),
     /// The model asked to run these tools.
     ToolCalls(Vec<ToolCall>),
@@ -251,6 +253,8 @@ enum Phase {
     Tools(String),
     /// A specialist agent is working (its name, and its tool).
     Delegating(String),
+    /// An agent waits for the user's approval.
+    Approval(String),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -359,6 +363,8 @@ struct App {
     wizard_busy: bool,
     /// A message to send once the current command is handled (`/agent ask`).
     pending_input: Option<String>,
+    /// Agents' actions waiting for the user's y / n / a, oldest first.
+    approvals: Vec<agents::ApprovalRequest>,
     /// The highlighted entry in the command palette, and whether Esc closed it.
     palette: usize,
     palette_hidden: bool,
@@ -476,6 +482,7 @@ impl App {
             show_handled_by,
             wizard_busy: false,
             pending_input: None,
+            approvals: Vec::new(),
             palette: 0,
             palette_hidden: false,
             goals_checked: Instant::now(),
@@ -507,6 +514,13 @@ impl App {
     /// Push the user's input and start streaming a reply on a background thread.
     fn send(&mut self) {
         let content = self.input.trim().to_string();
+        // An agent is waiting for a yes or no: this line answers it.
+        if !self.approvals.is_empty() && !content.is_empty() && !content.starts_with('/') {
+            self.input.clear();
+            self.scroll = None;
+            self.answer_approval(&content);
+            return;
+        }
         if content.is_empty() || self.waiting {
             return;
         }
@@ -589,6 +603,7 @@ impl App {
     fn handle(&mut self, event: StreamEvent) {
         match event {
             StreamEvent::Agent(e) => self.agent_event(e),
+            StreamEvent::Approval(r) => self.approval_requested(r),
             StreamEvent::AgentBuilt(built) => self.agent_built(built),
             StreamEvent::Token(t) => {
                 self.set_phase(Phase::Streaming);
@@ -2761,6 +2776,12 @@ fn open_agents(config: &Config, runtime: &tokio::runtime::Handle) -> (Option<Arc
             {
                 a.router.set_embedder(Some(Arc::new(provider.with_instruction(retrieval::ROUTING_INSTRUCTION))));
             }
+            // System access comes with an operator to use it (once: deleting it sticks).
+            if config.system.enabled && a.registry.get("operator").is_none() && a.registry.versions("operator").is_ok_and(|v| v.is_empty())
+                && let Some(p) = lyra_agents::templates::template("operator")
+            {
+                let _ = a.registry.create(p, "installed with system access");
+            }
             (Some(Arc::new(a)), Ok(format!("agents · {}", context::show(&dir))))
         }
         Err(e) => (None, Err(format!("agents off: {e:#}"))),
@@ -2804,6 +2825,9 @@ fn open_capabilities(
     caps.tools = tools.clone();
     caps.learning = learning.clone();
     caps.evolution = evolution.clone();
+    if config.system.enabled {
+        caps.system = Some(lyra_system::System::new(config.system.clone(), config::expand_path));
+    }
     notes.extend(caps.refresh());
     notes.push(format!("capabilities · {} ({} callable)", caps.manager.all().len(), caps.manager.all().iter().filter(|c| c.kind.callable()).count()));
     (Some(Arc::new(caps)), notes)

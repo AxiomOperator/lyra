@@ -44,6 +44,9 @@ pub struct CallContext<'a> {
     pub write_scopes: Option<&'a [&'a str]>,
     /// Scopes the caller may read; `None` means every allowed scope.
     pub read_scopes: Option<&'a [&'a str]>,
+    /// The subagent making the call; `None` is the main agent (or a plan's
+    /// own step). System access is only for agents.
+    pub agent: Option<&'a str>,
 }
 
 /// `scope` matches one of the patterns (`user`, `project:*`, `*`).
@@ -53,7 +56,7 @@ fn in_scopes(patterns: &[&str], scope: &str) -> bool {
 
 impl CallContext<'_> {
     pub fn new(run: Option<Uuid>, call_id: &str) -> CallContext<'_> {
-        CallContext { run, call_id, write_scopes: None, read_scopes: None }
+        CallContext { run, call_id, write_scopes: None, read_scopes: None, agent: None }
     }
 
     fn check_write(&self, scope: &str) -> Result<(), String> {
@@ -517,7 +520,7 @@ mod tests {
     fn helper_agents_only_write_their_scopes() {
         let (_rt, t) = tools();
         let scopes: &[&str] = &["agent", "project:*"];
-        let ctx = CallContext { run: None, call_id: "", write_scopes: Some(scopes), read_scopes: None };
+        let ctx = CallContext { run: None, call_id: "", write_scopes: Some(scopes), read_scopes: None, agent: Some("archivist") };
         let denied: Value = serde_json::from_str(&t.run("memory_remember", r#"{"content":"The user likes tea.","scope":"user"}"#, ctx)).unwrap();
         assert!(denied["error"].as_str().unwrap().contains("may not write"));
         let ok: Value = serde_json::from_str(&t.run("memory_remember", r#"{"content":"Builds use cargo.","scope":"project:api"}"#, ctx)).unwrap();

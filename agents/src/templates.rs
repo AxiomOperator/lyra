@@ -19,6 +19,7 @@ pub const NAMES: &[&str] = &[
     "reviewer",
     "data-analyst",
     "archivist",
+    "operator",
     "custom",
 ];
 
@@ -57,6 +58,47 @@ pub fn template(name: &str) -> Option<AgentProfile> {
             p.memory_policy = MemoryPolicy { mode: MemoryMode::Scoped, read: strs(&["user"]), write: Vec::new() };
             p.tools = strs(&["memory_recall"]);
             p.test_task = Some("Rewrite this message professionally: \"hey the server is broke again, cant log in, pls fix asap\"".into());
+            p
+        }
+        "operator" => {
+            let mut p = t(
+                "Operator",
+                "System operator: runs shell commands, reads and writes files, makes HTTP requests, works on servers over SSH and checks machine health.",
+            );
+            p.role = "Careful systems administrator with access to this machine, its files, the network and the configured servers.".into();
+            p.instructions = "Look before you change anything: inspect with read-only commands first, then make the \
+                smallest change that does the job, one step at a time, and check the result afterwards. Changes wait for \
+                the user's approval, so say plainly what each one does. Never try to get around a refusal, never use \
+                sudo unless asked, and never print or store passwords, keys or tokens. Report the commands you ran and \
+                what they showed, briefly, with the answer first."
+                .into();
+            p.delegation = DelegationProfile {
+                auto_delegate: true,
+                intents: strs(&["run_command", "inspect_system", "manage_files", "check_server", "http_request", "check_service"]),
+                keywords: strs(&[
+                    "shell", "terminal", "command", "disk", "process", "port", "service", "server", "ssh", "file", "folder",
+                    "directory", "curl", "logs", "cpu", "uptime", "systemctl", "nginx", "docker", "endpoint",
+                ]),
+                examples: strs(&[
+                    "How much disk space is left?",
+                    "What's using port 8080?",
+                    "Show me the last 50 lines of /var/log/syslog",
+                    "Restart nginx on web1",
+                    "List the files in ~/Projects",
+                    "Check whether http://localhost:8080/health is up",
+                    "Which processes are using the most CPU?",
+                    "Run git status in ~/Projects/lyra",
+                    "Create a file called notes.txt in ~/lyra-work",
+                ]),
+                priority: 8,
+                exclusions: strs(&["rewrite this email", "write a poem", "explain this concept", "summarize this text"]),
+            };
+            p.memory_policy = MemoryPolicy { mode: MemoryMode::Scoped, read: strs(&["user", "project:*"]), write: Vec::new() };
+            p.tools = strs(&[
+                "system_info", "shell_run", "file_read", "file_list", "file_write", "file_delete", "http_request", "ssh_run", "memory_recall",
+            ]);
+            p.permission_policy.max_risk = "destructive".into();
+            p.test_task = Some("Report this machine's OS, uptime, CPU count and free disk space.".into());
             p
         }
         "developer" => {

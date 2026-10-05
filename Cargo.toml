@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["agents","capabilities","evolution","execution","goals","learning","memory"]
+members = ["agents","capabilities","system","evolution","execution","goals","learning","memory"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -16,6 +16,7 @@ lyra-evolution = { version = "0.1.0", path = "evolution" }
 lyra-execution = { version = "0.1.0", path = "execution" }
 lyra-goals = { version = "0.1.0", path = "goals" }
 lyra-learning = { version = "0.1.0", path = "learning" }
+lyra-system = { version = "0.1.0", path = "system" }
 lyra-memory = { version = "0.1.0", path = "memory" }
 pulldown-cmark = { version = "0.13", default-features = false }
 ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }

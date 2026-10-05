@@ -62,6 +62,48 @@ pub struct Agents {
     pub wizard: Mutex<Option<AgentCreationDraft>>,
     /// Agents working right now (for the panel).
     pub active: Mutex<Vec<String>>,
+    /// Actions the user allowed for the rest of the session ("a").
+    pub allowed: Mutex<std::collections::HashSet<String>>,
+}
+
+/// The user's answer to an approval request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    Yes,
+    No,
+    /// Yes, and don't ask again for this exact action this session.
+    Always,
+}
+
+/// An agent waiting for the user's yes before it changes something.
+pub struct ApprovalRequest {
+    pub agent: String,
+    pub action: String,
+    pub why: String,
+    pub dangerous: bool,
+    pub reply: Sender<Answer>,
+}
+
+/// Ask the user (through the TUI) to approve an agent's action, and wait.
+/// No answer in time, or lyra closing, is a no.
+pub fn approve(env: &Env, profile: &AgentProfile, tool: &str, ask: crate::caps::Ask) -> Result<(), String> {
+    let key = format!("{}|{tool}|{}", profile.name, ask.action);
+    if env.agents.allowed.lock().unwrap_or_else(|e| e.into_inner()).contains(&key) {
+        return Ok(());
+    }
+    let timeout = env.caps.as_ref().and_then(|c| c.system.as_ref()).map_or(300, |s| s.settings.approval_timeout_seconds).max(10);
+    let (reply, answer) = std::sync::mpsc::channel();
+    let request = ApprovalRequest { agent: profile.title.clone(), action: ask.action.clone(), why: ask.why, dangerous: ask.dangerous, reply };
+    env.tx.send(StreamEvent::Approval(request)).map_err(|_| "lyra is closing".to_string())?;
+    match answer.recv_timeout(std::time::Duration::from_secs(timeout)) {
+        Ok(Answer::Yes) => Ok(()),
+        Ok(Answer::Always) => {
+            env.agents.allowed.lock().unwrap_or_else(|e| e.into_inner()).insert(key);
+            Ok(())
+        }
+        Ok(Answer::No) => Err(format!("the user declined: {}", ask.action)),
+        Err(_) => Err(format!("no approval within {timeout}s, so it wasn't done: {}", ask.action)),
+    }
 }
 
 /// What a delegation needs from lyra.
@@ -84,7 +126,15 @@ impl Agents {
     pub fn open(dir: &std::path::Path, rt: Handle, settings: Settings) -> anyhow::Result<Self> {
         let registry = AgentRegistry::open(dir, rt.clone())?;
         let router = rt.block_on(SemanticRouter::open(&dir.join("index")))?;
-        Ok(Self { registry, router, rt, settings: Mutex::new(settings), wizard: Mutex::new(None), active: Mutex::new(Vec::new()) })
+        Ok(Self {
+            registry,
+            router,
+            rt,
+            settings: Mutex::new(settings),
+            wizard: Mutex::new(None),
+            active: Mutex::new(Vec::new()),
+            allowed: Mutex::new(Default::default()),
+        })
     }
 
     pub fn settings(&self) -> Settings {
@@ -292,8 +342,24 @@ pub fn delegate(
                 nested(env, profile, args, depth, run)
             } else if allowed.iter().any(|c| c.name == name) {
                 tool_calls += 1;
-                let ctx = CallContext { run, call_id: call["id"].as_str().unwrap_or(""), write_scopes: write_refs.as_deref(), read_scopes: read_refs.as_deref() };
-                env.caps.as_ref().map_or_else(|| json!({ "error": "tools are off" }).to_string(), |c| c.invoke(name, args, ctx, false, true))
+                let ctx = CallContext {
+                    run,
+                    call_id: call["id"].as_str().unwrap_or(""),
+                    write_scopes: write_refs.as_deref(),
+                    read_scopes: read_refs.as_deref(),
+                    agent: Some(&profile.name),
+                };
+                match &env.caps {
+                    None => json!({ "error": "tools are off" }).to_string(),
+                    // Changes wait for the user's yes (asked in the TUI).
+                    Some(c) => match c.approval(name, args) {
+                        Some(ask) => match approve(env, profile, name, ask) {
+                            Ok(()) => c.invoke(name, args, ctx, true, true),
+                            Err(why) => json!({ "error": why }).to_string(),
+                        },
+                        None => c.invoke(name, args, ctx, false, true),
+                    },
+                }
             } else {
                 // A9: not in this agent's permissions, whatever the model asked.
                 json!({ "error": format!("{} may not use {name}", profile.title) }).to_string()
@@ -557,6 +623,17 @@ pub fn auto_delegate(env: &Env, message: &str, run: Uuid, history: &mut Vec<Valu
     Some(profile.title)
 }
 
+/// The prompt for an approval.
+fn approval_text(r: &ApprovalRequest) -> String {
+    format!(
+        "{} wants to {}\n{}{}\ny allow · n deny · a allow this exact action for the session",
+        r.agent,
+        r.action,
+        if r.dangerous { "⚠ " } else { "" },
+        r.why
+    )
+}
+
 /// The wizard's finished draft (built and tested in the background).
 pub type Built = Result<Box<(AgentCreationDraft, Vec<String>)>, String>;
 
@@ -719,6 +796,47 @@ impl crate::App {
                 self.messages.push(crate::Message::new("info", text));
             }
             Err(e) => self.messages.push(crate::Message::new("error", e)),
+        }
+    }
+
+    /// An agent asks to change something: show it, and wait for y / n / a.
+    pub(crate) fn approval_requested(&mut self, r: ApprovalRequest) {
+        use crate::{Level, Message, Phase};
+        self.log(Level::Agent, format!("{} asks: {} ({})", r.agent, r.action, r.why));
+        if self.approvals.is_empty() {
+            self.messages.push(Message::new("approval", approval_text(&r)));
+        }
+        self.set_phase(Phase::Approval(r.agent.clone()));
+        self.approvals.push(r);
+    }
+
+    /// The user's answer to the oldest pending approval.
+    pub(crate) fn answer_approval(&mut self, text: &str) {
+        use crate::{Level, Message, Phase};
+        let answer = match text.trim().to_lowercase().as_str() {
+            "y" | "yes" | "ok" | "approve" => Answer::Yes,
+            "n" | "no" | "deny" | "stop" => Answer::No,
+            "a" | "always" => Answer::Always,
+            _ => {
+                self.messages.push(Message::new("error", "answer y (allow), n (deny) or a (allow this exact action for the session)".into()));
+                return;
+            }
+        };
+        let r = self.approvals.remove(0);
+        let said = match answer {
+            Answer::Yes => "allowed",
+            Answer::No => "denied",
+            Answer::Always => "allowed for this session",
+        };
+        self.log(if answer == Answer::No { Level::Error } else { Level::Agent }, format!("{said}: {} — {}", r.agent, r.action));
+        self.messages.push(Message::new("info", format!("> {text}\n{said}: {}", r.action)));
+        let _ = r.reply.send(answer);
+        match self.approvals.first() {
+            Some(next) => {
+                let text = approval_text(next);
+                self.messages.push(Message::new("approval", text));
+            }
+            None => self.set_phase(if self.waiting { Phase::Waiting } else { Phase::Idle }),
         }
     }
 
@@ -1126,8 +1244,11 @@ mod tests {
         let manager = rt.block_on(lyra_capabilities::CapabilityManager::open(&dir.join("caps"), Default::default())).unwrap();
         let mut caps = Caps::new(manager, rt.handle().clone(), Vec::new(), Vec::new());
         caps.tools = Some(tools.clone());
+        let system = lyra_system::Settings { write_roots: vec![dir.join("work").display().to_string()], approval_timeout_seconds: 10, ..Default::default() };
+        caps.system = Some(lyra_system::System::new(system, crate::config::expand_path));
         let agents = Arc::new(Agents::open(&dir.join("agents"), rt.handle().clone(), Settings::default()).unwrap());
         agents.registry.create(lyra_agents::templates::template("writer").unwrap(), "test").unwrap();
+        agents.registry.create(lyra_agents::templates::template("operator").unwrap(), "test").unwrap();
         caps.set_agents(agents.clone());
         caps.refresh();
         let (tx, events) = mpsc::channel();
@@ -1188,6 +1309,60 @@ mod tests {
         f.env.agents.settings.lock().unwrap().routing.model_fallback = false;
         assert!(auto_delegate(&f.env, "what's 2 + 2?", Uuid::new_v4(), &mut quiet).is_none());
         assert!(quiet.is_empty());
+    }
+
+    #[test]
+    fn the_operator_reads_freely_and_asks_before_changing_anything() {
+        let tool = |id: &str, name: &str, args: Value| {
+            json!({ "role": "assistant", "content": "", "tool_calls": [{ "id": id, "type": "function", "function": { "name": name, "arguments": args.to_string() } }] })
+        };
+        let (url, requests) = fake_model(vec![
+            tool("c1", "shell_run", json!({ "command": "echo looked" })),
+            tool("c2", "shell_run", json!({ "command": "touch made.txt", "cwd": "/tmp" })),
+            tool("c3", "shell_run", json!({ "command": "rm -f made.txt", "cwd": "/tmp" })),
+            tool("c4", "shell_run", json!({ "command": "rm -rf /" })),
+            json!({ "role": "assistant", "content": "Done.\nCONFIDENCE: 0.9" }),
+        ]);
+        let f = fixture(&url);
+        let operator = f.env.agents.registry.get("operator").unwrap();
+        let env = f.env.clone();
+        let worker = std::thread::spawn(move || delegate(&env, &operator, MAIN, "tidy up", None, None, 1, "tool", None, None));
+        // The TUI's side: the first change is approved, the second denied.
+        let mut answers = vec![Answer::No, Answer::Yes];
+        let mut asked = Vec::new();
+        while let Ok(e) = f.events.recv_timeout(std::time::Duration::from_secs(10)) {
+            match e {
+                StreamEvent::Approval(r) => {
+                    asked.push((r.action.clone(), r.dangerous));
+                    r.reply.send(answers.pop().unwrap()).unwrap();
+                }
+                StreamEvent::Agent(AgentEvent::Finished { .. }) => break,
+                _ => {}
+            }
+        }
+        let r = worker.join().unwrap();
+        assert_eq!(r.status, DelegationStatus::Completed);
+        assert_eq!(asked.len(), 2, "reading didn't ask; forbidden didn't ask: {asked:?}");
+        assert!(asked[0].0.contains("touch made.txt") && !asked[0].1);
+        assert!(asked[1].0.contains("rm -f made.txt") && asked[1].1, "deleting is flagged");
+        let last = requests.try_iter().last().unwrap();
+        let results: Vec<String> =
+            last["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "tool").map(|m| m["content"].as_str().unwrap().to_string()).collect();
+        assert!(results[0].contains("looked"), "{results:?}");
+        assert!(results[1].contains("exit_code"), "approved, so it ran: {}", results[1]);
+        assert!(results[2].contains("declined"), "{}", results[2]);
+        assert!(results[3].contains("refused"), "{}", results[3]);
+        assert!(std::path::Path::new("/tmp/made.txt").exists(), "the approved change happened");
+        let _ = std::fs::remove_file("/tmp/made.txt");
+
+        // The main agent never gets system tools, and can't call them.
+        let caps = f.env.caps.as_ref().unwrap();
+        assert!(!caps.tool_definitions().iter().any(|d| d["function"]["name"] == "shell_run"));
+        let direct = caps.invoke("shell_run", r#"{"command":"echo hi"}"#, CallContext::new(None, ""), true, true);
+        assert!(direct.contains("only for agents"), "{direct}");
+        // Other agents don't have them either.
+        let writer = f.env.agents.registry.get("writer").unwrap();
+        assert!(!caps.manager.usable().iter().any(|c| c.name == "shell_run" && delegation::allows(&writer, c)));
     }
 
     #[test]

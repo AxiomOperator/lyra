@@ -224,3 +224,18 @@ currency = "$"
 # [agents.budget]
 # max_model_calls = 6         # per delegation
 # max_tool_calls = 12
+
+# System access (see README): shell, files, HTTP and servers over SSH, for the
+# Operator agent only (the main agent hands it the work). Read-only actions run
+# at once; changes wait for your y / n in the TUI; some things never run.
+# [system]
+# enabled = true
+# shell = "bash"
+# timeout_seconds = 60          # longest a command may run
+# max_output = 20000            # characters of output handed back
+# allow_commands = []           # prefixes that run without asking, e.g. ["cargo test", "make check"]
+# write_roots = []              # folders files may be written in without asking, e.g. ["~/lyra-work"]
+# deny_paths = ["~/.ssh", "~/.gnupg", "~/.lyra/config", "~/.aws", "~/.kube/config", "~/.docker/config.json", "~/.netrc", "/etc/shadow", "/etc/gshadow", "/etc/sudoers"]
+# ssh_hosts = []                # servers ssh_run may use (~/.ssh/config names or user@host; keys only)
+# http_timeout_seconds = 30
+# approval_timeout_seconds = 300   # an unanswered approval counts as no

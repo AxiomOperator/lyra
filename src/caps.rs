@@ -37,6 +37,32 @@ pub struct Caps {
     goals: std::sync::OnceLock<Arc<crate::goals::Goals>>,
     /// Specialist agents (plans can give them steps).
     agents: std::sync::OnceLock<Arc<crate::agents::Agents>>,
+    /// Shell, files, network, servers (`[system]`): for agents only.
+    pub system: Option<lyra_system::System>,
+}
+
+/// What a call needs the user's approval for.
+#[derive(Debug, Clone)]
+pub struct Ask {
+    /// Exactly what would happen.
+    pub action: String,
+    pub why: String,
+    pub dangerous: bool,
+}
+
+/// The system tools as capabilities.
+fn system_tools() -> Vec<Capability> {
+    lyra_system::specs()
+        .into_iter()
+        .map(|s| {
+            let mut c = Capability::new(s.name, CapabilityKind::NativeTool, s.description, s.risk);
+            c.input_schema = s.parameters;
+            c.source = "system".into();
+            c.tags = vec!["system".into(), s.name.split('_').next().unwrap_or("").into()];
+            c.permissions = vec![format!("system.{}", s.name)];
+            c
+        })
+        .collect()
 }
 
 /// Native tools: risk, permissions, prerequisites and how to check them.
@@ -211,7 +237,7 @@ impl Caps {
     }
 
     pub fn new(manager: CapabilityManager, rt: Handle, openapi: Vec<OpenApiClient>, mcp: Vec<McpClient>) -> Self {
-        Self { manager, rt, tools: None, learning: None, evolution: None, openapi, mcp, goals: std::sync::OnceLock::new(), agents: std::sync::OnceLock::new() }
+        Self { manager, rt, tools: None, learning: None, evolution: None, openapi, mcp, goals: std::sync::OnceLock::new(), agents: std::sync::OnceLock::new(), system: None }
     }
 
     /// Add the goal tools (goal_list, goal_get, goal_create, goal_note).
@@ -254,6 +280,9 @@ impl Caps {
         }
         if self.goals.get().is_some() {
             caps.extend(goal_tools());
+        }
+        if self.system.as_ref().is_some_and(|s| s.settings.enabled) {
+            caps.extend(system_tools());
         }
         caps.extend(self.openapi.iter().flat_map(OpenApiClient::capabilities));
         caps.extend(self.mcp.iter().flat_map(McpClient::capabilities));
@@ -319,9 +348,28 @@ impl Caps {
         notes
     }
 
-    /// Callable capabilities usable now.
+    /// Callable capabilities usable now by the main agent and plans (system
+    /// access is only for agents whose profile allows it).
     fn callable(&self) -> Vec<Capability> {
-        self.manager.usable().into_iter().filter(|c| c.kind.callable()).collect()
+        self.manager.usable().into_iter().filter(|c| c.kind.callable() && c.source != "system").collect()
+    }
+
+    /// Whether this call needs the user's approval first, and for what: the
+    /// policy's approval rule, or a system call that changes things.
+    pub fn approval(&self, name: &str, arguments: &str) -> Option<Ask> {
+        let c = self.manager.get(name)?;
+        let args: Value = serde_json::from_str(if arguments.trim().is_empty() { "{}" } else { arguments }).unwrap_or(json!({}));
+        if c.source == "system"
+            && let Some(system) = &self.system
+            && let lyra_system::Check::Ask { why, dangerous } = system.check(name, &args)
+        {
+            return Some(Ask { action: system.describe(name, &args), why, dangerous });
+        }
+        (self.manager.rule(&c) == Rule::Approval).then(|| Ask {
+            action: format!("{name} {}", args.to_string().chars().take(300).collect::<String>()),
+            why: format!("{} needs approval ({} risk)", c.name, c.risk.as_str()),
+            dangerous: c.risk >= RiskLevel::Destructive,
+        })
     }
 
     /// The tools to offer the model for `query` (C3): all of them when there
@@ -356,7 +404,7 @@ impl Caps {
     pub fn search(&self, arguments: &str) -> (String, Vec<String>) {
         let query = serde_json::from_str::<Value>(arguments).ok().and_then(|v| v["query"].as_str().map(str::to_string)).unwrap_or_default();
         let found = self.run(self.manager.discover(&query, 10, &[])).unwrap_or_default();
-        let names = found.iter().filter(|f| f.capability.kind.callable()).map(|f| f.capability.name.clone()).collect();
+        let names = found.iter().filter(|f| f.capability.kind.callable() && f.capability.source != "system").map(|f| f.capability.name.clone()).collect();
         let list: Vec<Value> = found.iter().map(|f| self.describe(f)).collect();
         (json!({ "capabilities": list }).to_string(), names)
     }
@@ -396,6 +444,22 @@ impl Caps {
             }
             _ => {}
         }
+        // System access: only agents whose profile allows it (checked by the
+        // delegation), and every call checked again here.
+        if c.source == "system" {
+            if ctx.agent.is_none() {
+                return json!({ "error": format!("{} is only for agents with system access: hand the task to the operator agent", c.name) }).to_string();
+            }
+            let Some(system) = &self.system else { return json!({ "error": "system access is off" }).to_string() };
+            let args: Value = serde_json::from_str(if arguments.trim().is_empty() { "{}" } else { arguments }).unwrap_or(json!({}));
+            match system.check(&c.name, &args) {
+                lyra_system::Check::Forbidden(why) => return json!({ "error": format!("refused: {why}") }).to_string(),
+                lyra_system::Check::Ask { why, .. } if !approved => {
+                    return json!({ "error": format!("needs the user's approval ({why})") }).to_string();
+                }
+                _ => {}
+            }
+        }
         if self.manager.health(&c) == CapabilityHealth::Unavailable {
             return json!({ "error": format!("{} is unavailable right now", c.id) }).to_string();
         }
@@ -409,6 +473,10 @@ impl Caps {
             CapabilityKind::Mcp => match self.mcp.iter().find(|m| m.has(&c.id)) {
                 Some(client) => client.call(&c.id, &args),
                 None => Err(format!("{} has no provider", c.id)),
+            },
+            _ if c.source == "system" => match &self.system {
+                Some(system) => system.call(&c.name, &args),
+                None => Err("system access is off".into()),
             },
             _ if c.source == "goals" => match self.goals.get() {
                 Some(goals) => goal_tool(goals, &c.name, &args),

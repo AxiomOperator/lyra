@@ -17,6 +17,9 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
 - `agents/` — `lyra-agents` crate: user-defined subagents (profiles as TOML files, registry with
   versions and delegation log, rule/semantic/model routing, the creation wizard, the delegation
   contract and permission checks). `src/agents.rs` is lyra's side (delegation, wizard, /agent).
+- `system/` — `lyra-system` crate: system access for agents (shell with a Rust command classifier,
+  files, HTTP, SSH, system info), every call checked (`System::check`: auto / ask / forbidden). Only
+  agents whose profile lists the tools (the Operator) may call them; changes wait for the user's y/n.
 - `execution/` — `lyra-execution` crate: goals, plans and the execution `Engine` (task graph,
   verification, retry, replanning, approvals, budgets, checkpoints, events) behind a `Runtime`
   trait; `src/plan.rs` is lyra's runtime and `/plan` text.

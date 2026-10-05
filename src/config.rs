@@ -43,6 +43,8 @@ pub struct Config {
     pub goals: GoalsConfig,
     /// `[agents]` table: specialist subagents and how work is handed to them.
     pub agents: crate::agents::Settings,
+    /// `[system]` table: shell, files, network and servers for agents.
+    pub system: lyra_system::Settings,
 }
 
 #[derive(Deserialize)]
@@ -298,6 +300,7 @@ impl Default for Config {
             capabilities: CapabilitiesConfig::default(),
             goals: GoalsConfig::default(),
             agents: crate::agents::Settings::default(),
+            system: lyra_system::Settings::default(),
         }
     }
 }
