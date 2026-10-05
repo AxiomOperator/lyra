@@ -14,7 +14,7 @@ use crate::{App, Level, Phase};
 const MIN_WIDTH_FOR_PANELS: u16 = 100;
 const PANEL_WIDTH: u16 = 46;
 
-const HELP: &str = " Enter send · /help · ↑↓ PgUp PgDn scroll · ^R reasoning · ^B panels · ^L reload · Esc quit ";
+const HELP: &str = " Enter send · / commands · ↑↓ PgUp PgDn scroll · ^R reasoning · ^B panels · ^L reload · Esc quit ";
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let [main, input_area] =
@@ -36,7 +36,47 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     let input = Paragraph::new(app.input.as_str()).block(Block::bordered().title(HELP));
     f.render_widget(input, input_area);
+    draw_palette(f, app, main);
     f.set_cursor_position((input_area.x + 1 + app.input.chars().count() as u16, input_area.y + 1));
+}
+
+/// Most commands the palette shows at once (it scrolls with the selection).
+const PALETTE_ROWS: usize = 12;
+
+/// The commands matching what's typed, just above the input line.
+fn draw_palette(f: &mut Frame, app: &App, area: Rect) {
+    let entries = app.palette_entries();
+    if entries.is_empty() || area.height < 5 {
+        return;
+    }
+    let rows = entries.len().min(PALETTE_ROWS).min(area.height as usize - 2);
+    let selected = app.palette.min(entries.len() - 1);
+    let first = selected.saturating_sub(rows - 1);
+    let usage_width = entries.iter().map(|e| e.usage.chars().count()).max().unwrap_or(0).min(44);
+    let width = area.width.min(120);
+    let inner = width.saturating_sub(2) as usize;
+    let lines: Vec<Line> = entries
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(rows)
+        .map(|(i, e)| {
+            let usage = format!(" {:<usage_width$}  ", truncate(&e.usage, usage_width));
+            let description = truncate(&e.description, inner.saturating_sub(usage.chars().count()));
+            let (u, d) = if i == selected {
+                let style = Style::default().bg(Color::DarkGray);
+                (Span::styled(usage, style.fg(Color::Cyan).bold()), Span::styled(format!("{description:<width$}", width = inner.saturating_sub(usage_width + 3)), style))
+            } else {
+                (Span::styled(usage, Style::default().fg(Color::Cyan)), Span::styled(description, Style::default().fg(Color::DarkGray)))
+            };
+            Line::from(vec![u, d])
+        })
+        .collect();
+    let height = rows as u16 + 2;
+    let popup = Rect { x: area.x, y: area.y + area.height - height, width, height };
+    let title = format!(" commands · {} · ↑↓ Tab Esc ", entries.len());
+    f.render_widget(ratatui::widgets::Clear, popup);
+    f.render_widget(Paragraph::new(lines).block(Block::bordered().title(title).border_style(Style::default().fg(Color::Cyan))), popup);
 }
 
 fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {

@@ -1,5 +1,6 @@
 mod agents;
 mod caps;
+mod commands;
 mod config;
 mod context;
 mod evolve;
@@ -358,6 +359,9 @@ struct App {
     wizard_busy: bool,
     /// A message to send once the current command is handled (`/agent ask`).
     pending_input: Option<String>,
+    /// The highlighted entry in the command palette, and whether Esc closed it.
+    palette: usize,
+    palette_hidden: bool,
     /// When goals were last checked, and how often to.
     goals_checked: Instant,
     goals_every: Duration,
@@ -472,6 +476,8 @@ impl App {
             show_handled_by,
             wizard_busy: false,
             pending_input: None,
+            palette: 0,
+            palette_hidden: false,
             goals_checked: Instant::now(),
             goals_every: Duration::from_secs(config.goals.tick_seconds.max(10)),
             autonomous_plans: Default::default(),
@@ -2242,6 +2248,22 @@ impl App {
     }
 
     /// The assistant message being streamed into, created on the first token.
+    /// What the command palette shows for the input (nothing when closed).
+    fn palette_entries(&self) -> Vec<&'static commands::Entry> {
+        if self.palette_hidden { Vec::new() } else { commands::matching(&self.input) }
+    }
+
+    /// Fill in a palette entry; one that takes no arguments is sent right away.
+    fn complete_command(&mut self, e: &commands::Entry) {
+        let text = commands::completion(e);
+        let send = !text.ends_with(' ') && text == self.input.trim();
+        self.input = text;
+        self.palette = 0;
+        if send {
+            self.send();
+        }
+    }
+
     fn reply(&mut self) -> &mut Message {
         if self.messages.last().is_none_or(|m| m.role != "assistant") {
             self.messages.push(Message::new("assistant", String::new()));
@@ -2250,7 +2272,7 @@ impl App {
     }
 }
 
-const COMMANDS: &str = "\
+pub(crate) const COMMANDS: &str = "\
 /skills                      skills and changes waiting for review
 /approve <id>                apply a proposal, or (re)activate a skill
 /reject <id>                 discard a proposal or proposed skill for good
@@ -2286,7 +2308,7 @@ const COMMANDS: &str = "\
 /caps [search|show|allow|health]  what lyra can do, which capability fits, what's allowed
 /outcome good|bad|partial    (also) how the last reply went, for evolution";
 
-const HELP_END: &str = "/help                        this list";
+pub(crate) const HELP_END: &str = "/help                        this list";
 
 /// The first line of a transcript (the goal), as the query for similar memories.
 fn goal_text_for(transcript: &str) -> String {
@@ -2821,6 +2843,34 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
         if key.kind != KeyEventKind::Press {
             continue;
         }
+        // The command palette, while `/…` is being typed (↑↓ pick, Tab/Enter complete, Esc closes).
+        let palette = app.palette_entries();
+        if !palette.is_empty() {
+            let n = palette.len();
+            match key.code {
+                KeyCode::Esc => {
+                    app.palette_hidden = true;
+                    continue;
+                }
+                KeyCode::Up => {
+                    app.palette = (app.palette + n - 1) % n;
+                    continue;
+                }
+                KeyCode::Down => {
+                    app.palette = (app.palette + 1) % n;
+                    continue;
+                }
+                KeyCode::Tab => {
+                    app.complete_command(palette[app.palette.min(n - 1)]);
+                    continue;
+                }
+                KeyCode::Enter if !app.input.contains(' ') && !commands::all().iter().any(|e| e.usage.split_whitespace().next() == Some(app.input.trim())) => {
+                    app.complete_command(palette[app.palette.min(n - 1)]);
+                    continue;
+                }
+                _ => {}
+            }
+        }
         match key.code {
             KeyCode::Esc => return Ok(()),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
@@ -2838,8 +2888,14 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
             KeyCode::Enter => app.send(),
             KeyCode::Backspace => {
                 app.input.pop();
+                app.palette = 0;
+                app.palette_hidden = false;
             }
-            KeyCode::Char(c) => app.input.push(c),
+            KeyCode::Char(c) => {
+                app.input.push(c);
+                app.palette = 0;
+                app.palette_hidden = false;
+            }
             _ => {}
         }
     }

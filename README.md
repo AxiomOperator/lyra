@@ -756,7 +756,7 @@ Building needs `protoc`, the Protocol Buffers compiler, for LanceDB
 (`dnf install protobuf-compiler` / `apt install protobuf-compiler`, or a
 release from github.com/protocolbuffers/protobuf on your `PATH`).
 
-Keys: type, `Enter` to send, `↑`/`↓`/`PgUp`/`PgDn` to scroll history, `Ctrl-R` to show/hide model reasoning, `Ctrl-B` to show/hide the side panels, `Ctrl-L` to reload the context files and config, `Esc` / `Ctrl-C` to quit.
+Keys: type, `Enter` to send, `/` to open the command palette (it narrows as you type; `↑`/`↓` pick, `Tab` or `Enter` fills the command in, `Esc` closes it), `↑`/`↓`/`PgUp`/`PgDn` to scroll history, `Ctrl-R` to show/hide model reasoning, `Ctrl-B` to show/hide the side panels, `Ctrl-L` to reload the context files and config, `Esc` / `Ctrl-C` to quit.
 
 ## Layout
 
