@@ -4,12 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["capabilities","evolution","execution","goals","learning","memory"]
+members = ["agents","capabilities","evolution","execution","goals","learning","memory"]
 
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.92"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+lyra-agents = { version = "0.1.0", path = "agents" }
 lyra-capabilities = { version = "0.1.0", path = "capabilities" }
 lyra-evolution = { version = "0.1.0", path = "evolution" }
 lyra-execution = { version = "0.1.0", path = "execution" }

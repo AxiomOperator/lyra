@@ -1,3 +1,4 @@
+mod agents;
 mod caps;
 mod config;
 mod context;
@@ -62,6 +63,9 @@ struct Message {
     /// Learned skills that were in the prompt for this reply.
     #[serde(skip)]
     skills: Vec<String>,
+    /// Specialist agents that worked on this reply.
+    #[serde(skip)]
+    agents: Vec<String>,
     /// The content rendered as Markdown, and the content length it was
     /// rendered from (re-rendered when a streaming reply grows).
     #[serde(skip)]
@@ -79,6 +83,7 @@ impl Message {
             stats: None,
             memories: Vec::new(),
             skills: Vec::new(),
+            agents: Vec::new(),
             rendered: None,
         }
     }
@@ -153,6 +158,8 @@ struct Round {
 
 enum StreamEvent {
     Token(String),
+    /// The main agent is working with a subagent (routing, progress, result).
+    Agent(agents::AgentEvent),
     Reasoning(String),
     /// The model asked to run these tools.
     ToolCalls(Vec<ToolCall>),
@@ -206,6 +213,8 @@ enum StreamEvent {
     GoalPlan { result: Result<(Goal, Plan), String>, autonomous: bool },
     /// Fresh contents for the goals panel.
     Goals(Result<GoalsSnapshot, String>),
+    /// The agent wizard built and tested a draft.
+    AgentBuilt(agents::Built),
 }
 
 /// What `main` opened before the UI starts.
@@ -224,6 +233,9 @@ struct Services {
     evolution_status: Result<String, String>,
     caps: Option<Arc<Caps>>,
     goals: Option<Arc<Goals>>,
+    agents: Option<Arc<agents::Agents>>,
+    /// Where agents live, or why they're off.
+    agents_status: Result<String, String>,
 }
 
 /// What the assistant is doing right now, for the session panel.
@@ -236,6 +248,8 @@ enum Phase {
     Streaming,
     /// Running these tools.
     Tools(String),
+    /// A specialist agent is working (its name, and its tool).
+    Delegating(String),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -246,6 +260,7 @@ enum Level {
     Memory,
     Plan,
     Evolve,
+    Agent,
     Error,
 }
 
@@ -331,6 +346,18 @@ struct App {
     /// Long-lived goals and autonomy (`[goals]`).
     goals: Option<Arc<Goals>>,
     goals_panel: Option<Result<GoalsSnapshot, String>>,
+    /// Specialist subagents (`~/.lyra/agents`).
+    agents: Option<Arc<agents::Agents>>,
+    agents_status: Result<String, String>,
+    agents_panel: Vec<agents::PanelRow>,
+    /// Agents that worked on the reply being answered.
+    handled_by: Vec<String>,
+    /// Say which agents worked on a reply (`[agents] show_handled_by`).
+    show_handled_by: bool,
+    /// The agent wizard is building a draft.
+    wizard_busy: bool,
+    /// A message to send once the current command is handled (`/agent ask`).
+    pending_input: Option<String>,
     /// When goals were last checked, and how often to.
     goals_checked: Instant,
     goals_every: Duration,
@@ -376,8 +403,21 @@ struct App {
 
 impl App {
     fn new(config: Config, context: Context, services: Services) -> Self {
-        let Services { tools, memory_status, learning, learning_status, engine, planning_status, evolution, evolution_status, caps, goals } =
-            services;
+        let Services {
+            tools,
+            memory_status,
+            learning,
+            learning_status,
+            engine,
+            planning_status,
+            evolution,
+            evolution_status,
+            caps,
+            goals,
+            agents,
+            agents_status,
+        } = services;
+        let show_handled_by = config.agents.show_handled_by;
         let definitions = tools.as_ref().map(|t| t.definitions());
         let tools_tokens = definitions.as_ref().map_or(0, |d| learn::approx_tokens(&d.to_string()));
         let tool_count = definitions.as_ref().and_then(|d| d.as_array().map(Vec::len)).unwrap_or(0);
@@ -425,6 +465,13 @@ impl App {
             caps,
             goals,
             goals_panel: None,
+            agents,
+            agents_status,
+            agents_panel: Vec::new(),
+            handled_by: Vec::new(),
+            show_handled_by,
+            wizard_busy: false,
+            pending_input: None,
             goals_checked: Instant::now(),
             goals_every: Duration::from_secs(config.goals.tick_seconds.max(10)),
             autonomous_plans: Default::default(),
@@ -461,9 +508,19 @@ impl App {
         self.scroll = None;
         if content.starts_with('/') {
             self.command(&content);
+            if let Some(next) = self.pending_input.take() {
+                self.input = next;
+                self.send();
+            }
+            return;
+        }
+        // The agent wizard takes plain lines as its answers.
+        if self.wizard_active() {
+            self.wizard_input(&content);
             return;
         }
         self.judge_last_run(&content);
+        self.handled_by.clear();
         self.messages.push(Message::new("user", content.clone()));
         self.applied_skills.clear();
         self.applied_skills_tokens = 0;
@@ -485,6 +542,7 @@ impl App {
         let (model, tools, tx) = (self.model.clone(), self.tools.clone(), self.tx.clone());
         let (learning, evolution, caps) = (self.learning.clone(), self.evolution.clone(), self.caps.clone());
         let goals_section = self.goals.as_ref().and_then(|g| g.prompt_section());
+        let agent_env = self.agent_env();
         thread::spawn(move || {
             let mut history = history;
             // Evolved behavior: guidelines, the matching workflow, the round limit.
@@ -504,7 +562,17 @@ impl App {
             if let Some(learning) = learning {
                 apply_skills(&learning, &content, run, &mut history, &tx);
             }
-            let event = match converse(&url, &model, history, caps.as_deref(), &content, max_rounds, run, &tx) {
+            // A specialist may take it first; the main agent checks and presents
+            // its result (A6, A11).
+            if let Some(env) = &agent_env {
+                if let Some(names) = env.agents.registry.enabled().iter().map(|a| format!("{} ({})", a.name, a.description)).reduce(|a, b| format!("{a}; {b}")) {
+                    add_to_system(&mut history, &format!("{}\nSpecialist agents you can hand work to with the delegate tool: {names}. Keep simple requests yourself.", agents::MAIN_ROLE));
+                }
+                if agents::auto_delegate(env, &content, run, &mut history).is_some() {
+                    add_to_system(&mut history, agents::MAIN_NOTE);
+                }
+            }
+            let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref(), &content, max_rounds, run, &tx) {
                 Ok(stats) => StreamEvent::Done(stats),
                 Err(e) => StreamEvent::Error(e),
             };
@@ -514,6 +582,8 @@ impl App {
 
     fn handle(&mut self, event: StreamEvent) {
         match event {
+            StreamEvent::Agent(e) => self.agent_event(e),
+            StreamEvent::AgentBuilt(built) => self.agent_built(built),
             StreamEvent::Token(t) => {
                 self.set_phase(Phase::Streaming);
                 self.reply().content.push_str(&t);
@@ -573,6 +643,10 @@ impl App {
                 reply.stats = Some(stats);
                 reply.skills = skills.clone();
                 reply.memories = memories.clone();
+                if self.show_handled_by {
+                    let handled = self.handled_by.clone();
+                    self.reply().agents = handled;
+                }
                 self.last_run = self.run.take().map(|id| LastRun { id, skills, memories: memories.len(), evo });
                 self.review(false);
                 self.capture(false);
@@ -883,6 +957,12 @@ impl App {
             Ok(line) => self.log(Level::Info, line),
             Err(line) => self.log(Level::Error, line),
         }
+        match self.agents_status.clone() {
+            Ok(line) => self.log(Level::Agent, line),
+            Err(line) => self.log(Level::Error, line),
+        }
+        self.refresh_agents();
+        self.sync_agents();
         self.reload_evolution();
         self.check_models();
         self.refresh_caps(true);
@@ -937,6 +1017,7 @@ impl App {
         self.corrected_skills.clear();
         let Some(last) = self.last_run.take() else { return };
         let Some(outcome) = evaluator::outcome_signal(message) else { return };
+        self.judge_delegations(last.id, outcome, message);
         if let Some(evo) = last.evo {
             self.record_evolution_outcome(evo, outcome, Some(message));
         }
@@ -1053,7 +1134,7 @@ impl App {
         };
         let last_run = self.last_run.clone();
         let result = match name {
-            "/help" => Ok(format!("{COMMANDS}\n{}\n{}\n{}\n{HELP_END}", goals::COMMANDS, evolve::COMMANDS, caps::COMMANDS)),
+            "/help" => Ok(format!("{COMMANDS}\n{}\n{}\n{}\n{}\n{HELP_END}", goals::COMMANDS, agents::COMMANDS, evolve::COMMANDS, caps::COMMANDS)),
             "/skills" => need().and_then(|l| l.describe()),
             "/approve" => need().and_then(|l| l.approve(arg)),
             "/reject" => need().and_then(|l| l.reject(arg)),
@@ -1101,6 +1182,7 @@ impl App {
             "/evolve" => self.evolve_command(arg),
             "/caps" => self.caps_command(arg),
             "/goals" | "/goal" => self.goals_command(name, arg),
+            "/agents" | "/agent" => self.agents_command(name, arg),
             "/memory" => {
                 let mem = self.mem().ok_or_else(|| match &self.memory_status {
                     Err(why) => why.clone(),
@@ -2110,6 +2192,10 @@ impl App {
                 if let Some(caps) = &self.caps {
                     caps.manager.set_settings(config.capabilities.settings.clone());
                 }
+                if let Some(agents) = &self.agents {
+                    *agents.settings.lock().unwrap_or_else(|e| e.into_inner()) = config.agents.clone();
+                }
+                self.show_handled_by = config.agents.show_handled_by;
                 self.curate_every = config.learning.curate.every_days();
                 self.evolution_review_every = config.evolution.review.every_days();
                 self.embedding = config.embedding;
@@ -2124,6 +2210,8 @@ impl App {
         }
         self.scroll = None;
         self.reload_evolution();
+        self.sync_agents();
+        self.refresh_agents();
         self.refresh_caps(true);
         self.check_models();
         self.refresh_memory();
@@ -2307,6 +2395,7 @@ fn converse(
     model: &str,
     mut history: Vec<Value>,
     caps: Option<&Caps>,
+    agents: Option<&agents::Env>,
     request: &str,
     max_rounds: usize,
     run: Uuid,
@@ -2327,7 +2416,14 @@ fn converse(
             "stream_options": { "include_usage": true },
         });
         if let Some(caps) = caps {
-            let definitions = caps.definitions(request, &found);
+            let mut definitions = caps.definitions(request, &found);
+            // The main agent can hand work to a specialist itself.
+            if let Some(env) = agents {
+                let enabled = env.agents.registry.enabled();
+                if !enabled.is_empty() {
+                    definitions.push(agents::delegate_tool(&enabled));
+                }
+            }
             if !definitions.is_empty() {
                 body["tools"] = Value::Array(definitions);
             }
@@ -2352,7 +2448,9 @@ fn converse(
         for call in &round.tool_calls {
             let ctx = CallContext::new(Some(run), &call.id);
             // Policy, usage tracking and verification happen in there.
-            let content = if call.function.name == caps::SEARCH_TOOL {
+            let content = if let (Some(env), "delegate") = (agents, call.function.name.as_str()) {
+                agents::delegate_call(env, &call.function.arguments, run)
+            } else if call.function.name == caps::SEARCH_TOOL {
                 let (text, names) = caps.search(&call.function.arguments);
                 found.extend(names);
                 text
@@ -2492,8 +2590,24 @@ fn main() {
     if let (Some(caps), Some(goals)) = (&caps, &goals) {
         caps.set_goals(goals.clone());
     }
-    let services =
-        Services { tools, memory_status, learning, learning_status, engine, planning_status, evolution, evolution_status, caps, goals };
+    let (agents, agents_status) = open_agents(&config, runtime.handle());
+    if let (Some(caps), Some(agents)) = (&caps, &agents) {
+        caps.set_agents(agents.clone());
+    }
+    let services = Services {
+        tools,
+        memory_status,
+        learning,
+        learning_status,
+        engine,
+        planning_status,
+        evolution,
+        evolution_status,
+        caps,
+        goals,
+        agents,
+        agents_status,
+    };
     learn::configure(learn::Structured {
         max_tokens: config.structured_max_tokens,
         thinking: config.structured_thinking,
@@ -2606,6 +2720,28 @@ fn open_memory(
             (Some(Arc::new(Tools::new(Arc::new(mem)))), Ok(shown), notes)
         }
         Err(e) => (None, Err(format!("memory off: {e:#}")), Vec::new()),
+    }
+}
+
+/// Open the agent profiles (`~/.lyra/agents/*.toml`), their ledger and the
+/// routing index, unless agents are off.
+fn open_agents(config: &Config, runtime: &tokio::runtime::Handle) -> (Option<Arc<agents::Agents>>, Result<String, String>) {
+    if !config.agents.enabled {
+        return (None, Ok("agents off".into()));
+    }
+    let Some(dir) = config::home().map(|h| h.join("agents")) else {
+        return (None, Err("agents off: no home directory".into()));
+    };
+    match agents::Agents::open(&dir, runtime.clone(), config.agents.clone()) {
+        Ok(a) => {
+            if let Some(endpoint) = config.embedding.clone()
+                && let Ok(provider) = retrieval::EndpointEmbedder::connect(endpoint)
+            {
+                a.router.set_embedder(Some(Arc::new(provider.with_instruction(retrieval::ROUTING_INSTRUCTION))));
+            }
+            (Some(Arc::new(a)), Ok(format!("agents · {}", context::show(&dir))))
+        }
+        Err(e) => (None, Err(format!("agents off: {e:#}"))),
     }
 }
 

@@ -10,6 +10,7 @@ Everything lyra keeps lives in one folder, `~/.lyra` (set `LYRA_HOME` to use ano
 
 ```text
 ~/.lyra/
+├── agents/    <name>.toml, one file per subagent; agents.db (versions, delegations), index/ (routing, LanceDB)
 ├── config/    config.toml, behavior.toml (evolved behavior)
 ├── context/   SOUL.md, USER.md, AGENT.md
 ├── capabilities/ capabilities.db (usage), index/ (discovery, LanceDB)
@@ -465,6 +466,73 @@ progress = 0.1
 cost = 0.05
 ```
 
+## Subagents
+
+The main agent owns the conversation; **subagents** own specialties. Built
+following `docs/done/sub_agents.md` in the `agents/` crate (`lyra-agents`).
+Each agent is a TOML file in `~/.lyra/agents/` (edit it by hand if you like:
+the change becomes a new version), with its versions and every delegation in
+`agents.db`. Researcher and Archivist are installed to start with.
+
+- **Profiles.** A name, description and role, its own instructions, the tools
+  and capability patterns it may use (and a deny list and risk ceiling), its
+  memory policy, its own skills, a model policy (another model, endpoint,
+  temperature, thinking), and routing hints: intents, keywords, example
+  requests and requests it must *not* get.
+- **Creating one.** `/agent new` asks one question at a time (answer by number
+  or in words); `/agent new writer` starts from a template (writer, developer,
+  researcher, analyst, project-manager, assistant, reviewer, data-analyst,
+  archivist) and only asks how to customize it; `/agent new expert` takes a
+  TOML or YAML profile. The model then writes its instructions and routing
+  examples, the agent is **tried on a test task** before it exists, and you
+  `activate`, `modify <answer>`, `test` again or `cancel`. An interrupted
+  interview resumes with `/agent new`.
+- **Routing.** Before the main agent answers, a message goes to a specialist
+  when it's named (`@writer …`, "ask the writer"), when an agent's rules match
+  well (examples, keywords, intents; exclusions veto), or when it's very close
+  in meaning to what an agent handles (embeddings in LanceDB). In between, the
+  model is asked; anything else stays with the main agent, which can also hand
+  work over itself with the `delegate` tool.
+- **Delegation.** The specialist gets a structured request: the task, only the
+  context it needs (the input, memories its policy lets it read), its skills,
+  an output contract and a budget. It answers with its result, a confidence,
+  or why it refused. The main agent checks the result and gives the user the
+  answer; "handled with: Writer" shows under the reply.
+- **Permissions are enforced.** An agent is only offered what its profile
+  allows, every call is checked again, and its memory reads and writes stay in
+  its scopes. Agents that may delegate can call others, up to `max_depth`.
+- **Plans** can give steps to any agent (with its instructions, model and
+  scopes); those steps are recorded as its delegations too.
+- **Learning and evolution.** Your reaction to a reply counts for the agents
+  that worked on it; a correction is reviewed for a lesson that becomes that
+  agent's own skill. Agents that keep failing or getting corrected become
+  evolution problems: revised instructions are benchmarked on the agent's own
+  tasks (no tools, nothing changes) and deploy as a new agent version, which
+  `/evolve rollback` and `/agent rollback` undo.
+
+Commands: `/agents [log]`, `/agent new [template|expert …]`, `/agent <name>`,
+`/agent ask <name> <task>`, `/agent edit <name> <field> <value>`,
+`/agent enable|disable|delete|history <name>`, `/agent rollback <name> [version]`,
+`/agent skill <skill> <agent|global>`, `/agent cancel`.
+
+```toml
+[agents]
+enabled = true
+auto_delegate = true        # hand matching requests over without being asked
+max_depth = 2               # main → agent → agent, no further
+show_handled_by = true      # "handled with: Writer" under replies
+
+[agents.routing]
+rule_threshold = 0.75       # rule score that routes on its own
+semantic_threshold = 0.85   # similarity that routes on its own
+semantic_floor = 0.5        # below this an agent isn't considered
+model_fallback = true       # ask the model when it's in between
+
+[agents.budget]
+max_model_calls = 6         # per delegation
+max_tool_calls = 12
+```
+
 ## Self-evolution
 
 Skills are what lyra learns; **evolution** changes *how it works*, from
@@ -701,6 +769,7 @@ address), rules and aligned tables, also while a reply is still streaming; on te
 - **Agent**: system prompt size, loaded SOUL/USER/AGENT files, capabilities by kind, how many are offered per message and any that are degraded or unavailable, and embedding/reranker health.
 - **Memory**: active memories by kind, vector coverage, the store (backend, size, search latency; red when operations fail), the current project, what needs approval (proposals, contradictions, duplicates, expired), working memory (goal, plan, notes, the last tool result), how many memories the last reply used, and the most recent memories (`?` marks unsure ones).
 - **Skills**: learning mode, average reliability, what needs review (proposals, conflicts, duplicates, failing or stale skills), the last reply's skills, and each active skill's reliability and use count.
+- **Agents**: the main agent and every subagent: who is working right now (↪, highlighted), how many delegations each has had and how many were corrected, which ones only work when asked, and the agent wizard's state. While a specialist works, the Session state shows `↪ Writer` (and its tool), and the chat shows the hand-off and its result.
 - **Goals**: open goals by priority with progress bars (subgoals indented, blocked ones with their reason), the autonomy mode and the current session's spending, or why it stopped.
 - **Plan**: the current plan's goal, steps with their status (✓ ▸ ⏸ ✗ ○, ⚠ for approval), budget use and any note.
 - **Evolution**: the generation and mode, runs recorded, success rate and corrections, calls per run, what has evolved (guidelines, workflows, composite tools, changed settings), candidates waiting for review, the last review, and what evolution is doing right now.

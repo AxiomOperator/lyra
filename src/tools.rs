@@ -40,22 +40,33 @@ pub struct CallContext<'a> {
     pub run: Option<Uuid>,
     pub call_id: &'a str,
     /// Scopes the caller may write (`prefix:*` patterns); `None` means any
-    /// allowed scope. Helper agents in plans are limited (M16).
+    /// allowed scope. Subagents are limited by their memory policy (M16, A10).
     pub write_scopes: Option<&'a [&'a str]>,
+    /// Scopes the caller may read; `None` means every allowed scope.
+    pub read_scopes: Option<&'a [&'a str]>,
+}
+
+/// `scope` matches one of the patterns (`user`, `project:*`, `*`).
+fn in_scopes(patterns: &[&str], scope: &str) -> bool {
+    patterns.iter().any(|p| p.strip_suffix('*').map_or(*p == scope, |prefix| scope.starts_with(prefix)))
 }
 
 impl CallContext<'_> {
     pub fn new(run: Option<Uuid>, call_id: &str) -> CallContext<'_> {
-        CallContext { run, call_id, write_scopes: None }
+        CallContext { run, call_id, write_scopes: None, read_scopes: None }
     }
 
     fn check_write(&self, scope: &str) -> Result<(), String> {
         match self.write_scopes {
-            Some(allowed) if !allowed.iter().any(|p| p.strip_suffix('*').map_or(*p == scope, |prefix| scope.starts_with(prefix))) => {
+            Some(allowed) if !in_scopes(allowed, scope) => {
                 Err(format!("this agent may not write to scope {scope:?} (only {})", allowed.join(", ")))
             }
             _ => Ok(()),
         }
+    }
+
+    fn can_read(&self, scope: &str) -> bool {
+        self.read_scopes.is_none_or(|allowed| in_scopes(allowed, scope))
     }
 }
 
@@ -227,8 +238,8 @@ impl Tools {
         let result = match name {
             "memory_remember" => self.remember(arguments, ctx),
             "memory_recall" => self.recall(arguments, ctx),
-            "memory_list" => self.list(arguments),
-            "memory_inspect" => self.inspect(arguments),
+            "memory_list" => self.list(arguments, ctx),
+            "memory_inspect" => self.inspect(arguments, ctx),
             "memory_correct" => self.correct(arguments, ctx),
             "memory_supersede" => self.supersede(arguments, ctx),
             "memory_archive" => self.set_status(arguments, ctx, true),
@@ -308,7 +319,13 @@ impl Tools {
         }
         let a: Args = parse(arguments)?;
         let scope = a.scope.filter(|s| s != "*" && !s.is_empty());
-        let found = self.mem.recall(scope.as_deref(), &a.query, a.limit.unwrap_or(5).clamp(1, 20), a.include_archived)?;
+        if let Some(s) = &scope
+            && !ctx.can_read(s)
+        {
+            return Err(format!("this agent may not read scope {s:?}"));
+        }
+        let mut found = self.mem.recall(scope.as_deref(), &a.query, a.limit.unwrap_or(5).clamp(1, 20), a.include_archived)?;
+        found.retain(|r| ctx.can_read(&r.memory.scope));
         if let Some(run) = ctx.run {
             let ids: Vec<Uuid> = found.iter().map(|r| r.memory.id).collect();
             let _ = self.mem.run(self.mem.manager.record_recall(run, &ids));
@@ -316,17 +333,20 @@ impl Tools {
         Ok(Value::Array(found.iter().map(|r| memory_json(&r.memory)).collect()))
     }
 
-    fn inspect(&self, arguments: &str) -> Result<Value, String> {
+    fn inspect(&self, arguments: &str, ctx: CallContext) -> Result<Value, String> {
         #[derive(Deserialize)]
         struct Args {
             id: String,
         }
         let a: Args = parse(arguments)?;
         let m = self.mem.run(self.mem.manager.find(&a.id))?;
+        if !ctx.can_read(&m.scope) {
+            return Err(format!("this agent may not read scope {:?}", m.scope));
+        }
         Ok(json!({ "memory": self.mem.inspect_text(&m)? }))
     }
 
-    fn list(&self, arguments: &str) -> Result<Value, String> {
+    fn list(&self, arguments: &str, ctx: CallContext) -> Result<Value, String> {
         #[derive(Deserialize)]
         struct Args {
             scope: Option<String>,
@@ -337,7 +357,8 @@ impl Tools {
             scope: a.scope.filter(|s| s != "*" && !s.is_empty()),
             ..lyra_memory::Filter::active()
         };
-        let listed = self.mem.run(self.mem.manager.list(&filter, a.limit.unwrap_or(10).clamp(1, 50)))?;
+        let mut listed = self.mem.run(self.mem.manager.list(&filter, a.limit.unwrap_or(10).clamp(1, 50)))?;
+        listed.retain(|m| ctx.can_read(&m.scope));
         Ok(Value::Array(listed.iter().map(memory_json).collect()))
     }
 
@@ -496,7 +517,7 @@ mod tests {
     fn helper_agents_only_write_their_scopes() {
         let (_rt, t) = tools();
         let scopes: &[&str] = &["agent", "project:*"];
-        let ctx = CallContext { run: None, call_id: "", write_scopes: Some(scopes) };
+        let ctx = CallContext { run: None, call_id: "", write_scopes: Some(scopes), read_scopes: None };
         let denied: Value = serde_json::from_str(&t.run("memory_remember", r#"{"content":"The user likes tea.","scope":"user"}"#, ctx)).unwrap();
         assert!(denied["error"].as_str().unwrap().contains("may not write"));
         let ok: Value = serde_json::from_str(&t.run("memory_remember", r#"{"content":"Builds use cargo.","scope":"project:api"}"#, ctx)).unwrap();

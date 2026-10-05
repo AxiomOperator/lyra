@@ -25,6 +25,10 @@ pub struct Skill {
     pub status: SkillStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// The subagent this skill belongs to; `None` means a global skill
+    /// every agent may use.
+    #[serde(default)]
+    pub agent: Option<String>,
     #[serde(skip)]
     pub usage: Usage,
 }

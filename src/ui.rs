@@ -59,6 +59,8 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
             "user" => ("you", Color::Cyan),
             "assistant" => ("lyra", Color::Green),
             "info" => ("system", Color::Magenta),
+            // A specialist agent working for lyra (UI only; not in the history).
+            "agent" => ("↪ agent", Color::LightBlue),
             _ => ("error", Color::Red),
         };
         lines.push(Line::from(label.bold().fg(color)));
@@ -80,7 +82,11 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         match &m.rendered {
             Some((_, rendered)) if m.role == "assistant" => lines.extend(rendered.iter().cloned()),
             _ => {
-                let body = if m.role == "info" { dim } else { Style::default() };
+                let body = match m.role.as_str() {
+                    "info" => dim,
+                    "agent" => Style::default().fg(Color::Blue),
+                    _ => Style::default(),
+                };
                 lines.extend(m.content.lines().map(|l| Line::styled(l.to_string(), body)));
             }
         }
@@ -99,10 +105,14 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
             let text = format!("used skills: {}", m.skills.join(", "));
             lines.push(Line::styled(text, Style::default().fg(Color::Magenta)));
         }
+        if !m.agents.is_empty() {
+            let text = format!("handled with: {}", m.agents.join(", "));
+            lines.push(Line::styled(text, Style::default().fg(Color::LightBlue)));
+        }
         lines.push(Line::default());
     }
     // Show "thinking..." until the first token arrives, and while waiting on a tool.
-    if app.waiting && app.messages.last().is_some_and(|m| m.role == "user" || m.role == "tool") {
+    if app.waiting && app.messages.last().is_some_and(|m| matches!(m.role.as_str(), "user" | "tool" | "agent")) {
         lines.push(Line::from("thinking...".italic().dark_gray()));
     }
 
@@ -127,13 +137,15 @@ fn draw_panels(f: &mut Frame, app: &App, area: Rect) {
     let width = area.width.saturating_sub(2) as usize;
     let session = session_panel(app, width);
     let agent = agent_panel(app, width);
+    let (agents_title, agents) = agents_panel(app, width);
     let (skills_title, skills) = skills_panel(app, width);
     let (plan_title, plan) = plan_panel(app, width);
     let (evolution_title, evolution) = evolution_panel(app, width);
     let (goals_title, goals) = goals_panel(app, width);
-    let [session_area, agent_area, memory_area, skills_area, goals_area, plan_area, evolution_area, activity_area] = Layout::vertical([
+    let [session_area, agent_area, agents_area, memory_area, skills_area, goals_area, plan_area, evolution_area, activity_area] = Layout::vertical([
         Constraint::Length(session.len() as u16 + 2),
         Constraint::Length(agent.len() as u16 + 2),
+        Constraint::Length(if agents.is_empty() { 0 } else { agents.len() as u16 + 2 }),
         Constraint::Fill(1),
         Constraint::Length(skills.len() as u16 + 2),
         Constraint::Length(if goals.is_empty() { 0 } else { goals.len() as u16 + 2 }),
@@ -152,6 +164,9 @@ fn draw_panels(f: &mut Frame, app: &App, area: Rect) {
 
     f.render_widget(Paragraph::new(session).block(Block::bordered().title(" Session ")), session_area);
     f.render_widget(Paragraph::new(agent).block(Block::bordered().title(" Agent ")), agent_area);
+    if !agents.is_empty() {
+        f.render_widget(Paragraph::new(agents).block(Block::bordered().title(agents_title)), agents_area);
+    }
     draw_memory(f, app, memory_area, width);
     let block = Block::bordered().title(skills_title);
     f.render_widget(Paragraph::new(skills).block(block), skills_area);
@@ -406,6 +421,49 @@ fn plan_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
     (title, lines)
 }
 
+/// The main agent and its specialists: who's working right now (A1, and
+/// "the TUI must show when the main agent is interacting with subagents").
+fn agents_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
+    let dim = Style::default().fg(Color::DarkGray);
+    let Some(agents) = &app.agents else { return (String::new(), Vec::new()) };
+    let active = agents.active.lock().map(|a| a.clone()).unwrap_or_default();
+    let title = if active.is_empty() { format!(" Agents · {} ", app.agents_panel.len()) } else { format!(" Agents · {} working ", active.len()) };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(if active.is_empty() { "● " } else { "◆ " }, Style::default().fg(Color::Green)),
+        Span::raw("main"),
+        Span::styled(if active.is_empty() { "" } else { " → delegating" }, Style::default().fg(Color::LightBlue)),
+    ])];
+    for a in &app.agents_panel {
+        let working = active.contains(&a.title);
+        let (mark, style) = match (working, a.enabled) {
+            (true, _) => ("↪ ", Style::default().fg(Color::LightBlue).bold()),
+            (false, true) => ("· ", Style::default()),
+            (false, false) => ("‖ ", dim),
+        };
+        let mut info = String::new();
+        if a.delegations > 0 {
+            info += &format!(" {}×", a.delegations);
+        }
+        if a.corrected > 0 {
+            info += &format!(" {} corrected", a.corrected);
+        }
+        if !a.auto && a.enabled {
+            info += " on request";
+        }
+        if working {
+            info = " working…".into();
+        }
+        let name_width = width.saturating_sub(2 + info.chars().count());
+        lines.push(Line::from(vec![Span::styled(mark, style), Span::styled(truncate(&a.title, name_width), style), Span::styled(info, dim)]));
+    }
+    if app.wizard_busy {
+        lines.push(Line::styled("building a new agent…", Style::default().fg(Color::Yellow)));
+    } else if app.wizard_active() {
+        lines.push(Line::styled("creating an agent (answer in chat)", Style::default().fg(Color::Yellow)));
+    }
+    (title, lines)
+}
+
 /// Most goals shown; /goals lists them all.
 const MAX_GOALS: usize = 5;
 
@@ -601,6 +659,7 @@ fn draw_activity(f: &mut Frame, app: &App, area: Rect, width: usize) {
                 Level::Memory => Style::default().fg(Color::Cyan),
                 Level::Plan => Style::default().fg(Color::Blue),
                 Level::Evolve => Style::default().fg(Color::Green),
+                Level::Agent => Style::default().fg(Color::LightBlue),
                 Level::Error => Style::default().fg(Color::Red),
             };
             Line::from(vec![
@@ -622,6 +681,7 @@ fn phase_span(app: &App) -> Span<'static> {
     match app.phase {
         Phase::Idle => text.dark_gray(),
         Phase::Tools(_) => text.yellow(),
+        Phase::Delegating(_) => text.light_blue(),
         _ => text.green(),
     }
 }
@@ -634,6 +694,7 @@ fn phase_text(app: &App) -> String {
         Phase::Thinking => format!("◐ thinking {since}"),
         Phase::Streaming => format!("▸ streaming {since}"),
         Phase::Tools(names) => format!("⚙ {names}"),
+        Phase::Delegating(agent) => format!("↪ {agent} {since}"),
     }
 }
 

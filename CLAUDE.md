@@ -14,6 +14,9 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
   safety scan, working memory). `src/mem.rs` is lyra's side (embeddings, model calls, /memory).
 - `learning/` — `lyra-learning` crate: skills behind `SkillManager` (Markdown files + SQLite ledger
   of versions, usage, relationships, proposals, audit log). Design: `docs/done/skill_learning.md`.
+- `agents/` — `lyra-agents` crate: user-defined subagents (profiles as TOML files, registry with
+  versions and delegation log, rule/semantic/model routing, the creation wizard, the delegation
+  contract and permission checks). `src/agents.rs` is lyra's side (delegation, wizard, /agent).
 - `execution/` — `lyra-execution` crate: goals, plans and the execution `Engine` (task graph,
   verification, retry, replanning, approvals, budgets, checkpoints, events) behind a `Runtime`
   trait; `src/plan.rs` is lyra's runtime and `/plan` text.
@@ -33,7 +36,8 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
   `docs/done/`.
 - Runtime files live in `~/.lyra` (`$LYRA_HOME`): `config/config.toml`, `context/`
   (SOUL/USER/AGENT.md), `memory/lance/` (LanceDB), `plans/plans.db`, `skills/<name>.md` (one Markdown file per skill) + `skills/ledger.db`,
-  `evolution/evolution.db`, `config/behavior.toml`, `workflows/<name>.toml`, `tools/<name>.toml` (evolved state).
+  `evolution/evolution.db`, `config/behavior.toml`, `workflows/<name>.toml`, `tools/<name>.toml` (evolved state),
+  `agents/<name>.toml` (one file per subagent) + `agents/agents.db` + `agents/index/` (routing, LanceDB).
   `src/migrate.rs` brings older layouts up to date on startup.
 
 ## Checks
@@ -58,8 +62,9 @@ cargo test --workspace
    idea around it; never undo or migrate away from it because a doc says so. Established
    decisions are what the code and this file already do, for example:
    - everything lyra keeps lives in `~/.lyra` (`config/`, `context/`, `memory/`, `skills/`, `plans/`,
-     `evolution/`, `workflows/`, `tools/`, `capabilities/`, `goals/`)
+     `evolution/`, `workflows/`, `tools/`, `capabilities/`, `goals/`, `agents/`)
    - skills are Markdown files, one per skill; their history/evidence is in the ledger
+   - subagents are TOML files, one per agent; versions and delegations are in `agents.db`
    - memory is LanceDB behind `MemoryManager` (vectors + FTS); other state (plans, skills ledger,
      evolution) stays SQLite
    Only the user changes an established decision. If a doc's approach seems clearly better,

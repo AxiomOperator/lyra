@@ -54,9 +54,23 @@ impl Learning {
         self.runtime.block_on(f).map_err(|e| format!("{e:#}"))
     }
 
-    /// Skills to add to the prompt for `message`, best first.
+    /// Skills to add to the main agent's prompt for `message`, best first:
+    /// global skills only (subagents' own skills stay theirs).
     pub fn relevant(&self, message: &str) -> Result<Vec<Ranked>, String> {
-        self.run(self.manager.search(message, self.manager.settings().max_skills))
+        self.relevant_for(None, message)
+    }
+
+    /// Skills for an agent: global ones and its own (A11, A15).
+    pub fn relevant_for(&self, agent: Option<&str>, message: &str) -> Result<Vec<Ranked>, String> {
+        let limit = self.manager.settings().max_skills;
+        let found = self.run(self.manager.search(message, limit * 3))?;
+        Ok(found.into_iter().filter(|r| r.skill.agent.is_none() || r.skill.agent.as_deref() == agent).take(limit).collect())
+    }
+
+    /// Make a skill an agent's own (or global again with `None`).
+    pub fn assign(&self, key: &str, agent: Option<&str>) -> Result<Skill, String> {
+        let skill = self.find(key)?;
+        self.run(self.manager.set_agent(skill.id, agent))
     }
 
     pub fn active_skills(&self) -> Result<Vec<Skill>, String> {

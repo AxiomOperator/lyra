@@ -3780,6 +3780,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "lyra-agents",
  "lyra-capabilities",
  "lyra-evolution",
  "lyra-execution",
@@ -3793,6 +3794,23 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "lyra-agents"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "lyra-capabilities",
+ "lyra-memory",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sqlx",
+ "tokio",
+ "toml",
+ "uuid",
 ]
 
 [[package]]

@@ -300,6 +300,7 @@ impl<S: SkillStore> SkillManager<S> {
             status: SkillStatus::Proposed,
             created_at: now,
             updated_at: now,
+            agent: None,
             usage: Default::default(),
         };
         let skill = self.store.create(skill).await?;
@@ -337,6 +338,17 @@ impl<S: SkillStore> SkillManager<S> {
             .record(&Event::new("updated", Some(id), reason).states(format!("v{}", version - 1), format!("v{version}")).run(run))
             .await?;
         Ok(version)
+    }
+
+    /// Make a skill belong to one subagent (`None`: global, for every agent).
+    pub async fn set_agent(&self, id: Uuid, agent: Option<&str>) -> Result<Skill> {
+        let mut skill = self.get(id).await?.ok_or_else(|| anyhow!("no skill with id {id}"))?;
+        skill.agent = agent.map(str::to_string);
+        skill.updated_at = Utc::now();
+        self.store.save(&skill).await?;
+        let reason = agent.map_or("now a global skill".to_string(), |a| format!("now belongs to the {a} agent"));
+        self.ledger.record(&Event::new("assigned", Some(id), &reason)).await?;
+        Ok(skill)
     }
 
     /// Restore an earlier version's text (the previous one by default). The

@@ -83,6 +83,9 @@ pub fn embed(endpoint: &Endpoint, texts: &[&str]) -> Result<Embeddings, String> 
 const QUERY_INSTRUCTION: &str = "Instruct: Given a user message, retrieve stored memories that are relevant to it\nQuery: ";
 
 /// Instruction for finding capabilities (tools, workflows) for a task.
+/// Matching a request to the specialist agent that handles that kind of work.
+pub const ROUTING_INSTRUCTION: &str = "Instruct: Given a user request, retrieve examples of requests handled by the same specialist\nQuery: ";
+
 pub const CAPABILITY_INSTRUCTION: &str = "Instruct: Given a task to do, retrieve the tools and procedures that can do it\nQuery: ";
 
 /// Embed a search query with a given retrieval instruction.

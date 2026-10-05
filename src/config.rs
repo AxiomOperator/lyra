@@ -41,6 +41,8 @@ pub struct Config {
     pub capabilities: CapabilitiesConfig,
     /// `[goals]` table: long-lived goals, their scheduling and autonomy.
     pub goals: GoalsConfig,
+    /// `[agents]` table: specialist subagents and how work is handed to them.
+    pub agents: crate::agents::Settings,
 }
 
 #[derive(Deserialize)]
@@ -295,6 +297,7 @@ impl Default for Config {
             evolution: EvolutionConfig::default(),
             capabilities: CapabilitiesConfig::default(),
             goals: GoalsConfig::default(),
+            agents: crate::agents::Settings::default(),
         }
     }
 }

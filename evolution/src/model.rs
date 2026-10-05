@@ -111,6 +111,8 @@ pub enum Category {
     Tool,
     /// A source-code patch (sandboxed, never deployed automatically).
     Code,
+    /// Revised instructions for a specialist subagent (a new agent version).
+    Agent,
 }
 
 /// How dangerous a mutation is, and so what approval it needs.
@@ -148,6 +150,7 @@ impl Level {
             Category::Skill => Level::Skill,
             Category::Tool => Level::Tool,
             Category::Code => Level::Code,
+            Category::Agent => Level::Behavior,
         }
     }
 
@@ -185,6 +188,7 @@ pub enum Change {
     Skill { skill: String, instructions: String },
     Tool { tool: CompositeTool },
     Code { base_commit: String, diff: String },
+    Agent { agent: String, instructions: String },
 }
 
 impl Change {
@@ -196,6 +200,7 @@ impl Change {
             Change::Skill { .. } => Category::Skill,
             Change::Tool { .. } => Category::Tool,
             Change::Code { .. } => Category::Code,
+            Change::Agent { .. } => Category::Agent,
         }
     }
 
@@ -212,6 +217,7 @@ impl Change {
                 format!("workflow {}: {}", workflow.name, workflow.phases.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(" → "))
             }
             Change::Skill { skill, .. } => format!("refine skill {skill}"),
+            Change::Agent { agent, .. } => format!("refine agent {agent}'s instructions"),
             Change::Tool { tool } => format!(
                 "tool {}({}) = {}",
                 tool.name,
@@ -301,6 +307,9 @@ pub struct SkillRevision {
     pub name: String,
     pub from_version: i64,
     pub to_version: i64,
+    /// A subagent's version rather than a skill's.
+    #[serde(default)]
+    pub agent: bool,
 }
 
 /// How good a version of the agent is on a benchmark (E7). All 0–1.

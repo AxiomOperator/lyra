@@ -35,6 +35,8 @@ pub struct Caps {
     mcp: Vec<McpClient>,
     /// Long-lived goals: the model can read them and note progress.
     goals: std::sync::OnceLock<Arc<crate::goals::Goals>>,
+    /// Specialist agents (plans can give them steps).
+    agents: std::sync::OnceLock<Arc<crate::agents::Agents>>,
 }
 
 /// Native tools: risk, permissions, prerequisites and how to check them.
@@ -209,10 +211,18 @@ impl Caps {
     }
 
     pub fn new(manager: CapabilityManager, rt: Handle, openapi: Vec<OpenApiClient>, mcp: Vec<McpClient>) -> Self {
-        Self { manager, rt, tools: None, learning: None, evolution: None, openapi, mcp, goals: std::sync::OnceLock::new() }
+        Self { manager, rt, tools: None, learning: None, evolution: None, openapi, mcp, goals: std::sync::OnceLock::new(), agents: std::sync::OnceLock::new() }
     }
 
     /// Add the goal tools (goal_list, goal_get, goal_create, goal_note).
+    pub fn set_agents(&self, agents: Arc<crate::agents::Agents>) {
+        let _ = self.agents.set(agents);
+    }
+
+    pub fn agents(&self) -> Option<&Arc<crate::agents::Agents>> {
+        self.agents.get()
+    }
+
     pub fn set_goals(&self, goals: Arc<crate::goals::Goals>) {
         let _ = self.goals.set(goals);
         self.refresh();
@@ -265,10 +275,10 @@ impl Caps {
                 caps.push(c);
             }
         }
-        for (name, description, tools) in crate::plan::AGENTS {
-            let risk = if tools.iter().all(|t| crate::plan::risk(t) == Risk::ReadOnly) { RiskLevel::ReadOnly } else { RiskLevel::LowWrite };
-            let mut c = Capability::new(&format!("agent.{name}"), CapabilityKind::Subagent, description, risk);
+        for a in self.agents.get().map(|a| a.registry.enabled()).unwrap_or_default() {
+            let mut c = Capability::new(&format!("agent.{}", a.name), CapabilityKind::Subagent, &a.description, lyra_agents::delegation::max_risk(&a));
             c.source = "agents".into();
+            c.tags = a.delegation.keywords.clone();
             caps.push(c);
         }
         caps
@@ -651,6 +661,8 @@ mod tests {
         let manager = rt.block_on(CapabilityManager::open(&dir.join("caps"), Default::default())).unwrap();
         let mut caps = Caps::new(manager, rt.handle().clone(), Vec::new(), Vec::new());
         caps.tools = Some(Arc::new(Tools::new(Arc::new(mem))));
+        let agents = crate::agents::Agents::open(&dir.join("agents"), rt.handle().clone(), Default::default()).unwrap();
+        caps.set_agents(Arc::new(agents));
         caps.refresh();
         (rt, caps)
     }

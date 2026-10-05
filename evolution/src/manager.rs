@@ -245,11 +245,13 @@ impl EvolutionManager {
         skills: &[SkillHealth],
         capabilities: &[detect::CapabilityRecord],
         goals: &[detect::GoalRecord],
+        agents: &[detect::AgentRecord],
     ) -> Result<Vec<Opportunity>, String> {
         let runs = self.runs(self.settings.window)?;
         let mut ops = detect::detect(&runs, skills, &self.settings.thresholds);
         ops.extend(detect::detect_capabilities(&runs, capabilities, &self.settings.thresholds));
         ops.extend(detect::detect_goals(goals, &self.settings.thresholds));
+        ops.extend(detect::detect_agents(agents, &self.settings.thresholds));
         Ok(ops)
     }
 
@@ -385,7 +387,9 @@ impl EvolutionManager {
             Change::Tool { tool } => {
                 next.tools.insert(tool.name.clone(), tool.render());
             }
-            Change::Skill { .. } | Change::Code { .. } => return Err("skill and code changes deploy through their own systems".into()),
+            Change::Skill { .. } | Change::Code { .. } | Change::Agent { .. } => {
+                return Err("skill, agent and code changes deploy through their own systems".into());
+            }
         }
         Ok(next)
     }
@@ -711,7 +715,7 @@ mod tests {
             .propose(&op(), vec![proposal(Change::Skill { skill: "rust-commit".into(), instructions: "run clippy first".into() })])
             .unwrap()
             .remove(0);
-        let revision = SkillRevision { name: "rust-commit".into(), from_version: 2, to_version: 3 };
+        let revision = SkillRevision { name: "rust-commit".into(), from_version: 2, to_version: 3, agent: false };
         let g = m.deploy_skill(c, revision.clone(), "approved").unwrap();
         assert_eq!((g.number, g.skill.clone()), (2, Some(revision.clone())));
         assert_eq!(m.candidates(5).unwrap()[0].status, CandidateStatus::Deployed);

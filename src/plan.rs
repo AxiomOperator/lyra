@@ -7,7 +7,7 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use lyra_execution::{
-    AgentInfo, Engine, ExecutionEvent, Goal, Plan, PlanStep, PlanningContext, ReasonError, Reasoned, Risk, Runtime, StepAction,
+    Engine, ExecutionEvent, Goal, Plan, PlanStep, PlanningContext, ReasonError, Reasoned, Risk, Runtime, StepAction,
     StepStatus, Task, ToolInfo, Uuid, budget, short,
 };
 use serde_json::{Value, json};
@@ -16,16 +16,6 @@ use crate::StreamEvent;
 use crate::evolve::Evolution;
 use crate::learn::Learning;
 use crate::tools::{CallContext, Tools};
-
-/// Scopes each helper agent may write to (M16); unlisted agents write nowhere
-/// they couldn't anyway. Facts about the user come from the user, not agents.
-const AGENT_SCOPES: &[(&str, &[&str])] = &[("archivist", &["agent", "project:*"])];
-
-/// Helper agents for subagent steps (P13): each sees only its task and these tools.
-pub(crate) const AGENTS: &[(&str, &str, &[&str])] = &[
-    ("researcher", "looks things up in memory and reports what it finds (read-only)", &["memory_recall", "memory_list", "memory_inspect"]),
-    ("archivist", "records findings and decisions in memory (agent and project scopes)", &["memory_recall", "memory_list", "memory_inspect", "memory_remember", "memory_correct", "memory_supersede"]),
-];
 
 /// How risky each tool is. Declared here, by the runtime, never by the model.
 /// Composite tools are `Mutating` unless they're only reads: they never
@@ -78,11 +68,14 @@ impl LyraRuntime {
     /// `approved`: a person approved this call (an approved tool step).
     /// `verify`: check writes here (off for tool steps; the engine verifies those).
     fn run_tool(&self, name: &str, arguments: &str, call_id: &str, agent: Option<&str>, approved: bool, verify: bool) -> String {
-        let write_scopes = agent.and_then(|a| AGENT_SCOPES.iter().find(|(n, _)| *n == a)).map(|(_, scopes)| *scopes);
         if self.forbidden_tools.iter().any(|f| f == name) {
             return json!({ "error": format!("tool {name} isn't available") }).to_string();
         }
-        let ctx = CallContext { run: None, call_id, write_scopes };
+        // A specialist's step stays within its memory scopes (A10, M16).
+        let (write, read) = agent.map_or((None, None), |a| crate::agents::scopes(self.caps.as_deref(), a));
+        let write_refs: Option<Vec<&str>> = write.as_ref().map(|w| w.iter().map(String::as_str).collect());
+        let read_refs: Option<Vec<&str>> = read.as_ref().map(|r| r.iter().map(String::as_str).collect());
+        let ctx = CallContext { run: None, call_id, write_scopes: write_refs.as_deref(), read_scopes: read_refs.as_deref() };
         match (&self.caps, &self.tools) {
             (Some(caps), _) => caps.invoke(name, arguments, ctx, approved, verify),
             (None, Some(tools)) => tools.run(name, arguments, ctx),
@@ -120,6 +113,50 @@ impl LyraRuntime {
 
     fn risk_of(&self, name: &str) -> Risk {
         self.caps.as_ref().map_or_else(|| risk(name), |c| c.risk_of(name))
+    }
+
+    fn reason_with(&self, task: &Task, system: &str, url: &str, model: &str, options: &ChatOptions, tools: &[Value]) -> Result<Reasoned, ReasonError> {
+        let mut messages = vec![json!({ "role": "system", "content": system }), json!({ "role": "user", "content": task.instruction })];
+        let mut out = Reasoned::default();
+        let failed = |out: &Reasoned, error: String| ReasonError { error, changes: out.changes.clone() };
+        // Steps get a few rounds of tool use, not an open-ended conversation.
+        let rounds = self.evolution.as_ref().map_or(6, |e| e.behavior().plan_step_rounds);
+        // Never more model calls than the plan's budget has left (P11).
+        let rounds = task.max_model_calls.map_or(rounds, |left| rounds.min(left)) as usize;
+        for _ in 0..rounds {
+            let (message, tokens) = chat_with(url, model, &messages, tools, options).map_err(|e| failed(&out, e))?;
+            out.model_calls += 1;
+            out.tokens += tokens;
+            let calls = message["tool_calls"].as_array().cloned().unwrap_or_default();
+            if calls.is_empty() {
+                out.text = message["content"].as_str().unwrap_or("").trim().to_string();
+                if out.text.is_empty() {
+                    return Err(failed(&out, "the model returned nothing".into()));
+                }
+                return Ok(out);
+            }
+            messages.push(json!({ "role": "assistant", "content": message["content"].as_str().unwrap_or(""), "tool_calls": calls }));
+            for call in &calls {
+                let name = call["function"]["name"].as_str().unwrap_or("");
+                let arguments = call["function"]["arguments"].as_str().unwrap_or("{}");
+                let allowed = tools.iter().any(|d| d["function"]["name"] == name);
+                let result = if allowed {
+                    out.tool_calls += 1;
+                    out.tools_used.push(name.to_string());
+                    let result = self.run_tool(name, arguments, call["id"].as_str().unwrap_or(""), task.agent.as_deref(), false, true);
+                    // Record what changed (successfully), so a retry doesn't redo it.
+                    let ok = serde_json::from_str::<Value>(&result).map_or(true, |v| v.get("error").is_none());
+                    if self.risk_of(name) != Risk::ReadOnly && ok {
+                        out.changes.push(format!("{name} {}", arguments.chars().take(300).collect::<String>()));
+                    }
+                    result
+                } else {
+                    json!({ "error": format!("{name} isn't available for this step") }).to_string()
+                };
+                messages.push(json!({ "role": "tool", "tool_call_id": call["id"], "content": result }));
+            }
+        }
+        Err(failed(&out, format!("the step didn't finish within {rounds} rounds")))
     }
 }
 
@@ -167,14 +204,7 @@ impl Runtime for LyraRuntime {
             .and_then(|l| l.active_skills().ok())
             .map(|all| all.into_iter().map(|s| s.name).collect())
             .unwrap_or_default();
-        let agents = AGENTS
-            .iter()
-            .map(|(n, d, tools)| AgentInfo {
-                name: n.to_string(),
-                description: d.to_string(),
-                changes_things: tools.iter().any(|t| risk(t) != Risk::ReadOnly),
-            })
-            .collect();
+        let agents = crate::agents::plan_agents(self.caps.as_deref());
         PlanningContext {
             memories,
             skills,
@@ -228,53 +258,36 @@ impl Runtime for LyraRuntime {
                 Risk::Destructive => false,
             })
             .collect();
-        let system = format!(
+        let mut system = format!(
             "You are carrying out one step of a larger plan. Do only this step, using the tools if \
              it helps, then reply with the result: the facts, findings or text it produced, \
              concisely. If you can't do it, say exactly why.\n\n{}",
             task.context
         );
-        let mut messages = vec![json!({ "role": "system", "content": system }), json!({ "role": "user", "content": task.instruction })];
-        let mut out = Reasoned::default();
-        let failed = |out: &Reasoned, error: String| ReasonError { error, changes: out.changes.clone() };
-        // Steps get a few rounds of tool use, not an open-ended conversation.
-        let rounds = self.evolution.as_ref().map_or(6, |e| e.behavior().plan_step_rounds);
-        // Never more model calls than the plan's budget has left (P11).
-        let rounds = task.max_model_calls.map_or(rounds, |left| rounds.min(left)) as usize;
-        for _ in 0..rounds {
-            let (message, tokens) = chat(&self.url, &self.model, &messages, &tools).map_err(|e| failed(&out, e))?;
-            out.model_calls += 1;
-            out.tokens += tokens;
-            let calls = message["tool_calls"].as_array().cloned().unwrap_or_default();
-            if calls.is_empty() {
-                out.text = message["content"].as_str().unwrap_or("").trim().to_string();
-                if out.text.is_empty() {
-                    return Err(failed(&out, "the model returned nothing".into()));
-                }
-                return Ok(out);
+        // A specialist's step (A12): its instructions, model and record.
+        let profile = task.agent.as_deref().and_then(|a| crate::agents::step_profile(self.caps.as_deref(), a));
+        let (mut url, mut model, mut options) = (self.url.clone(), self.model.clone(), ChatOptions::default());
+        if let Some(p) = &profile {
+            system = format!("You are {}: {}\n{}\n\n{system}", p.title, p.role, p.instructions);
+            if let Some(u) = &p.model_policy.url {
+                url = format!("{}/chat/completions", u.trim_end_matches('/'));
             }
-            messages.push(json!({ "role": "assistant", "content": message["content"].as_str().unwrap_or(""), "tool_calls": calls }));
-            for call in &calls {
-                let name = call["function"]["name"].as_str().unwrap_or("");
-                let arguments = call["function"]["arguments"].as_str().unwrap_or("{}");
-                let allowed = tools.iter().any(|d| d["function"]["name"] == name);
-                let result = if allowed {
-                    out.tool_calls += 1;
-                    out.tools_used.push(name.to_string());
-                    let result = self.run_tool(name, arguments, call["id"].as_str().unwrap_or(""), task.agent.as_deref(), false, true);
-                    // Record what changed (successfully), so a retry doesn't redo it.
-                    let ok = serde_json::from_str::<Value>(&result).map_or(true, |v| v.get("error").is_none());
-                    if self.risk_of(name) != Risk::ReadOnly && ok {
-                        out.changes.push(format!("{name} {}", arguments.chars().take(300).collect::<String>()));
-                    }
-                    result
-                } else {
-                    json!({ "error": format!("{name} isn't available for this step") }).to_string()
-                };
-                messages.push(json!({ "role": "tool", "tool_call_id": call["id"], "content": result }));
+            if let Some(m) = &p.model_policy.model {
+                model = m.clone();
             }
+            options = ChatOptions { max_tokens: p.model_policy.max_tokens, thinking: p.model_policy.thinking, temperature: p.model_policy.temperature };
+            crate::agents::step_started(&self.tx, self.caps.as_deref(), p, &task.instruction);
         }
-        Err(failed(&out, format!("the step didn't finish within {rounds} rounds")))
+        let started = std::time::Instant::now();
+        let result = self.reason_with(task, &system, &url, &model, &options, &tools);
+        if let Some(p) = &profile {
+            let (out, calls) = match &result {
+                Ok(r) => (Ok(r.text.as_str()), (r.model_calls, r.tool_calls, r.tokens)),
+                Err(e) => (Err(e.error.as_str()), (0, 0, 0)),
+            };
+            crate::agents::step_finished(&self.tx, self.caps.as_deref(), p, &task.instruction, out, started.elapsed().as_millis() as u64, calls);
+        }
+        result
     }
 
     fn workflow(&self, name: &str) -> Option<String> {
@@ -282,7 +295,7 @@ impl Runtime for LyraRuntime {
     }
 
     fn agent_tools(&self, agent: &str) -> Option<Vec<String>> {
-        AGENTS.iter().find(|(n, _, _)| *n == agent).map(|(_, _, tools)| tools.iter().map(|t| t.to_string()).collect())
+        crate::agents::step_tools(self.caps.as_deref(), agent)
     }
 
     fn emit(&self, event: &ExecutionEvent) {
@@ -290,8 +303,20 @@ impl Runtime for LyraRuntime {
     }
 }
 
+/// Per-call model settings (a subagent's model policy).
+#[derive(Debug, Clone, Default)]
+pub struct ChatOptions {
+    pub max_tokens: Option<u32>,
+    pub thinking: Option<bool>,
+    pub temperature: Option<f32>,
+}
+
 /// One non-streaming chat completion with tools; returns the message and tokens used.
 pub(crate) fn chat(url: &str, model: &str, messages: &[Value], tools: &[Value]) -> Result<(Value, u64), String> {
+    chat_with(url, model, messages, tools, &ChatOptions::default())
+}
+
+pub(crate) fn chat_with(url: &str, model: &str, messages: &[Value], tools: &[Value], o: &ChatOptions) -> Result<(Value, u64), String> {
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(600))
@@ -300,6 +325,15 @@ pub(crate) fn chat(url: &str, model: &str, messages: &[Value], tools: &[Value]) 
     let mut body = json!({ "model": model, "messages": messages });
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools.to_vec());
+    }
+    if let Some(n) = o.max_tokens {
+        body["max_tokens"] = json!(n);
+    }
+    if o.thinking == Some(false) {
+        body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    }
+    if let Some(t) = o.temperature {
+        body["temperature"] = json!(t);
     }
     let resp = client.post(url).json(&body).send().map_err(|e| e.to_string())?;
     let status = resp.status();

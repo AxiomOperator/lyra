@@ -201,3 +201,20 @@ currency = "$"
 # importance = 0.1
 # progress = 0.1
 # cost = 0.05
+
+# Specialist subagents (~/.lyra/agents/<name>.toml). /agent new creates one.
+[agents]
+enabled = true
+auto_delegate = true        # hand matching requests over without being asked
+max_depth = 2               # main → agent → agent, no further
+show_handled_by = true      # "handled with: Writer" under replies
+
+[agents.routing]
+rule_threshold = 0.75
+semantic_threshold = 0.85
+semantic_floor = 0.5
+model_fallback = true       # ask the model when routing is unsure
+
+[agents.budget]
+max_model_calls = 6         # per delegation
+max_tool_calls = 12

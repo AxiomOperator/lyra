@@ -43,6 +43,36 @@ pub fn detect_goals(goals: &[GoalRecord], t: &Thresholds) -> Vec<Opportunity> {
         .collect()
 }
 
+/// How a specialist subagent has been doing (A15).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentRecord {
+    pub name: String,
+    pub delegations: u32,
+    /// Delegations that didn't complete.
+    pub failed: u32,
+    /// Delegations whose result the user corrected.
+    pub corrected: u32,
+    /// Recent tasks it got wrong, with the user's reaction if any.
+    pub examples: Vec<String>,
+}
+
+/// Agents whose work keeps failing or getting corrected: their instructions
+/// (or the routing that sends them work) should change.
+pub fn detect_agents(agents: &[AgentRecord], t: &Thresholds) -> Vec<Opportunity> {
+    agents
+        .iter()
+        .filter(|a| a.delegations >= t.agent_min_delegations)
+        .filter(|a| (a.failed + a.corrected) as f32 / a.delegations.max(1) as f32 >= t.agent_trouble_share)
+        .map(|a| Opportunity {
+            kind: "struggling_agent".into(),
+            problem: format!("agent {} is struggling: {} failed and {} corrected of {} delegations", a.name, a.failed, a.corrected, a.delegations),
+            categories: vec![Category::Agent, Category::Prompt],
+            evidence: Vec::new(),
+            details: json!({ "agent": a.name, "failed": a.failed, "corrected": a.corrected, "delegations": a.delegations, "examples": a.examples }),
+        })
+        .collect()
+}
+
 /// A capability's track record, for spotting tools that fail or crawl (C12).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CapabilityRecord {
@@ -97,6 +127,10 @@ pub struct Thresholds {
     pub capability_slow_ms: u64,
     /// A goal blocked (or with failed plans) this often is stuck.
     pub goal_blocks: u32,
+    /// An agent with at least this many delegations...
+    pub agent_min_delegations: u32,
+    /// ...that failed or was corrected this share of the time is struggling.
+    pub agent_trouble_share: f32,
 }
 
 impl Default for Thresholds {
@@ -118,6 +152,8 @@ impl Default for Thresholds {
             capability_success: 0.6,
             capability_slow_ms: 15_000,
             goal_blocks: 3,
+            agent_min_delegations: 4,
+            agent_trouble_share: 0.4,
         }
     }
 }
@@ -297,6 +333,17 @@ fn repeated_sequence(runs: &[RunRecord], min_runs: usize) -> Option<(Vec<String>
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn struggling_agents_are_found() {
+        let t = Thresholds::default();
+        let rec = |name: &str, delegations, failed, corrected| AgentRecord { name: name.into(), delegations, failed, corrected, examples: vec![] };
+        let ops = detect_agents(&[rec("writer", 6, 1, 2), rec("researcher", 10, 1, 0), rec("new", 2, 2, 0)], &t);
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].kind, "struggling_agent");
+        assert!(ops[0].categories.contains(&Category::Agent));
+    }
+
     use super::*;
     use crate::model::RunOutcome;
 

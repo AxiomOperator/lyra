@@ -19,6 +19,8 @@ pub struct Context<'a> {
     pub tools: &'a [(String, String, bool)],
     /// `(name, instructions)` of learned skills.
     pub skills: &'a [(String, String)],
+    /// `(name, instructions)` of the specialist subagents.
+    pub agents: &'a [(String, String)],
 }
 
 pub const EVOLVER_PROMPT: &str = "\
@@ -35,6 +37,7 @@ Kinds of change (use only the ones listed as allowed):
 - skill: complete revised instructions for an existing learned skill
 - tool: a composite tool that calls existing non-destructive tools in sequence, with \
 \"{{input}}\" placeholders in their arguments
+- agent: complete revised instructions for an existing specialist agent
 
 Never weaken safety: no guidelines about skipping approval or verification, and no \
 destructive tools inside composite tools.
@@ -45,6 +48,7 @@ Respond with only a JSON object: {\"candidates\": [ one of
  {\"category\": \"workflow\", \"workflow\": {\"name\": \"kebab-name\", \"description\": \"...\", \"triggers\": [\"word\"], \
 \"phases\": [{\"name\": \"...\", \"instruction\": \"...\"}]}, \"rationale\": \"...\", \"confidence\": 0.7}
  {\"category\": \"skill\", \"skill\": \"existing-skill-name\", \"instructions\": \"complete revised instructions\", \"rationale\": \"...\", \"confidence\": 0.7}
+ {\"category\": \"agent\", \"agent\": \"existing-agent-name\", \"instructions\": \"complete revised instructions\", \"rationale\": \"...\", \"confidence\": 0.7}
  {\"category\": \"tool\", \"tool\": {\"name\": \"snake_name\", \"description\": \"...\", \"inputs\": [{\"name\": \"...\", \
 \"description\": \"...\"}], \"steps\": [{\"tool\": \"existing_tool\", \"arguments\": {...}}]}, \"rationale\": \"...\", \"confidence\": 0.7}
 ]}";
@@ -95,6 +99,12 @@ pub fn prompt(op: &Opportunity, evidence: &[RunRecord], ctx: &Context, allowed: 
             out += &format!("- {name}: {}\n", instructions.chars().take(300).collect::<String>());
         }
     }
+    if !ctx.agents.is_empty() {
+        out += "\nSpecialist agents (name: current instructions):\n";
+        for (name, instructions) in ctx.agents {
+            out += &format!("- {name}: {}\n", instructions.chars().take(800).collect::<String>());
+        }
+    }
     out
 }
 
@@ -110,6 +120,7 @@ struct Draft {
     value: Value,
     workflow: Option<WorkflowDef>,
     skill: String,
+    agent: String,
     instructions: String,
     tool: Option<CompositeTool>,
 }
@@ -192,6 +203,18 @@ fn build(d: &Draft, ctx: &Context, allowed: &[Category]) -> Result<Change, Strin
             let tools: Vec<(String, bool)> = ctx.tools.iter().map(|(n, _, destructive)| (n.clone(), *destructive)).collect();
             t.validate(&Available { tools: &tools })?;
             Ok(Change::Tool { tool: t })
+        }
+        Category::Agent => {
+            if !ctx.agents.iter().any(|(n, _)| n == &d.agent) {
+                return Err(format!("no agent named {}", d.agent));
+            }
+            if d.instructions.trim().is_empty() {
+                return Err("no instructions given".into());
+            }
+            if crate::safety_scan(&d.instructions).is_some() {
+                return Err("the instructions look like they contain a secret".into());
+            }
+            Ok(Change::Agent { agent: d.agent.clone(), instructions: d.instructions.trim().to_string() })
         }
         Category::Code => unreachable!(),
     }
@@ -296,9 +319,23 @@ mod tests {
     }
 
     #[test]
+    fn agent_candidates_need_an_existing_agent() {
+        let (b, w, t, s) = ctx_parts();
+        let agents = vec![("writer".to_string(), "You rewrite text.".to_string())];
+        let ctx = Context { behavior: &b, workflows: &w, tools: &t, skills: &s, agents: &agents };
+        let reply = r#"{"candidates":[
+            {"category":"agent","agent":"writer","instructions":"You rewrite text. Keep every fact and number.","rationale":"r","confidence":0.7},
+            {"category":"agent","agent":"ghost","instructions":"x"}
+        ]}"#;
+        let (ok, rejected) = parse(reply, &ctx, &[Category::Agent]).unwrap();
+        assert!(matches!(&ok[..], [Proposal { change: Change::Agent { agent, .. }, .. }] if agent == "writer"));
+        assert!(rejected[0].contains("no agent named ghost"));
+    }
+
+    #[test]
     fn parses_valid_candidates_and_rejects_the_rest() {
         let (b, w, t, s) = ctx_parts();
-        let ctx = Context { behavior: &b, workflows: &w, tools: &t, skills: &s };
+        let ctx = Context { behavior: &b, workflows: &w, tools: &t, skills: &s, agents: &[] };
         let allowed = [Category::Prompt, Category::Configuration, Category::Tool, Category::Skill];
         let reply = r#"{"candidates":[
             {"category":"prompt","add":["Answer in at most three sentences unless asked for more."],"rationale":"users correct verbosity","confidence":0.8},

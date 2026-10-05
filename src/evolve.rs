@@ -205,6 +205,14 @@ fn rollback_to(env: &Env, to: Option<u32>, why: &str) -> Result<Vec<String>, Str
     let (g, skills) = ev.manager.rollback(to, why)?;
     let mut notes = vec![format!("↩ {} — now generation {}", g.reason, g.number)];
     for r in skills {
+        if r.agent {
+            match env.caps.as_ref().and_then(|c| c.agents()).map(|a| a.registry.rollback(&r.name, Some(r.from_version as u32))) {
+                Some(Ok(p)) => notes.push(format!("  agent {} restored (now v{})", p.title, p.version)),
+                Some(Err(e)) => notes.push(format!("  ✗ couldn't restore agent {} v{}: {e}", r.name, r.from_version)),
+                None => notes.push(format!("  ✗ agents are off; {} wasn't restored to v{}", r.name, r.from_version)),
+            }
+            continue;
+        }
         match env.learning.as_ref().map(|l| l.rollback(&format!("{} {}", r.name, r.from_version))) {
             Some(Ok(note)) => notes.push(format!("  {note}")),
             Some(Err(e)) => notes.push(format!("  ✗ couldn't restore skill {} v{}: {e}", r.name, r.from_version)),
@@ -301,7 +309,9 @@ fn review_inner(env: &Env, done: &mut Done) -> Result<(), String> {
             )
         })
         .unwrap_or_default();
-    let ops = ev.manager.detect(&skills.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>(), &records, &goal_records)?;
+    let agents = env.caps.as_ref().and_then(|c| c.agents().cloned());
+    let agent_records = agents.as_deref().map(crate::agents::evolution_records).unwrap_or_default();
+    let ops = ev.manager.detect(&skills.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>(), &records, &goal_records, &agent_records)?;
     if ops.is_empty() {
         let note = format!("no problems found in the last {} runs", ev.manager.settings.window);
         ev.manager.note_review(&note)?;
@@ -312,7 +322,8 @@ fn review_inner(env: &Env, done: &mut Done) -> Result<(), String> {
     let (workflows, _) = ev.manager.workflows();
     let tool_list = tool_list(env.tools.as_deref());
     let skill_list: Vec<(String, String)> = skills.into_iter().map(|(h, instructions)| (h.name, instructions)).collect();
-    let ctx = evolver::Context { behavior: &behavior, workflows: &workflows, tools: &tool_list, skills: &skill_list };
+    let agent_list: Vec<(String, String)> = agents.as_ref().map(|a| a.registry.enabled().into_iter().map(|p| (p.name, p.instructions)).collect()).unwrap_or_default();
+    let ctx = evolver::Context { behavior: &behavior, workflows: &workflows, tools: &tool_list, skills: &skill_list, agents: &agent_list };
     let mut created: Vec<Candidate> = Vec::new();
     for op in ops.iter().take(ev.manager.settings.max_problems.max(1)) {
         done.notes.push(format!("problem: {}", op.problem));
@@ -324,6 +335,7 @@ fn review_inner(env: &Env, done: &mut Done) -> Result<(), String> {
                 Category::Code => false,
                 Category::Skill => env.learning.is_some() && !skill_list.is_empty(),
                 Category::Tool => env.tools.is_some(),
+                Category::Agent => !agent_list.is_empty(),
                 _ => true,
             })
             .collect();
@@ -499,6 +511,10 @@ fn test_inner(env: &Env, c: Candidate, t: &mut Tested) -> Result<Candidate, Stri
             }
             current.clone()
         }
+        Change::Agent { agent, instructions } => {
+            // A15: tried on the agent's own recent tasks, old instructions vs new.
+            return validate_agent(env, c.clone(), agent, instructions, v, t);
+        }
         change => match ev.manager.apply(&current, change) {
             Ok(next) => next,
             Err(e) => {
@@ -552,6 +568,65 @@ fn test_inner(env: &Env, c: Candidate, t: &mut Tested) -> Result<Candidate, Stri
     t.notes.push(format!("  {}", describe_fitness("baseline", &fb)));
     t.notes.push(format!("  {}", describe_fitness("candidate", &fa)));
     v.notes.push(format!("benchmarked on {} task(s): {verdict}", tasks.len()));
+    v.fitness_before = Some(fb);
+    v.fitness_after = Some(fa);
+    ev.manager.save_validation(c, v)
+}
+
+/// Benchmark an agent change (A15): its recent tasks (and test task), done
+/// with the current instructions and the proposed ones, without tools (a
+/// benchmark must not change anything), judged by the model.
+fn validate_agent(env: &Env, c: Candidate, agent: &str, instructions: &str, mut v: Validation, t: &mut Tested) -> Result<Candidate, String> {
+    let ev = &env.evolution;
+    let agents = env.caps.as_ref().and_then(|c| c.agents()).ok_or("agents are off")?;
+    let current = match agents.registry.find(agent) {
+        Ok(p) => p,
+        Err(e) => {
+            v.valid = false;
+            v.notes.push(e);
+            return ev.manager.save_validation(c, v);
+        }
+    };
+    if lyra_evolution::safety_scan(instructions).is_some() {
+        v.valid = false;
+        v.notes.push("instructions look like they contain a secret".into());
+        return ev.manager.save_validation(c, v);
+    }
+    let mut next = current.clone();
+    next.instructions = instructions.to_string();
+    let tasks = crate::agents::bench_tasks(agents, &current, ev.benchmark_tasks);
+    if tasks.is_empty() {
+        v.notes.push("no tasks to benchmark the agent with".into());
+        t.notes.push(format!("{}: ✓ checks passed; no tasks to benchmark the agent with", c.short()));
+        return ev.manager.save_validation(c, v);
+    }
+    t.notes.push(format!("{}: benchmarking {} on {} task(s), current vs revised instructions…", c.short(), current.title, tasks.len()));
+    let mut before = Vec::new();
+    let mut after = Vec::new();
+    for (task, expect) in &tasks {
+        for (p, out) in [(&current, &mut before), (&next, &mut after)] {
+            let start = Instant::now();
+            let mut r = BenchResult::default();
+            match crate::agents::bench_answer(&env.url, &env.model, p, task) {
+                Ok((answer, tokens)) => {
+                    r.model_calls = 1;
+                    r.tokens = tokens;
+                    judge(env, task, expect, &answer, &mut r, t);
+                }
+                Err(e) => {
+                    r.errors += 1;
+                    t.notes.push(format!("  benchmark call failed: {e}"));
+                }
+            }
+            r.seconds = start.elapsed().as_secs_f32();
+            out.push(r);
+        }
+    }
+    let weights = &ev.manager.settings.fitness;
+    let (fb, fa) = (fitness::fitness(&before, weights), fitness::fitness(&after, weights));
+    let verdict = if fitness::improves(&fb, &fa) { "improves on the baseline" } else { "doesn't beat the baseline" };
+    t.notes.push(format!("  fitness {:.2} → {:.2}: {verdict}", fb.total, fa.total));
+    v.notes.push(format!("benchmarked {} on {} task(s): {verdict}", current.title, tasks.len()));
     v.fitness_before = Some(fb);
     v.fitness_after = Some(fa);
     ev.manager.save_validation(c, v)
@@ -811,14 +886,7 @@ impl lyra_execution::Runtime for BenchRuntime<'_> {
             .and_then(|t| t.mem.recall(None, goal, 6, false).ok())
             .map(|found| found.into_iter().map(|r| r.memory.content).collect())
             .unwrap_or_default();
-        let agents = crate::plan::AGENTS
-            .iter()
-            .map(|(n, d, tools)| lyra_execution::AgentInfo {
-                name: n.to_string(),
-                description: d.to_string(),
-                changes_things: tools.iter().any(|t| crate::plan::risk(t) != lyra_execution::Risk::ReadOnly),
-            })
-            .collect();
+        let agents = crate::agents::plan_agents(self.env.caps.as_deref());
         lyra_execution::PlanningContext {
             memories,
             skills,
@@ -914,7 +982,7 @@ impl lyra_execution::Runtime for BenchRuntime<'_> {
     }
 
     fn agent_tools(&self, agent: &str) -> Option<Vec<String>> {
-        crate::plan::AGENTS.iter().find(|(n, _, _)| *n == agent).map(|(_, _, tools)| tools.iter().map(|t| t.to_string()).collect())
+        crate::agents::step_tools(self.env.caps.as_deref(), agent)
     }
 }
 
@@ -1030,10 +1098,20 @@ fn deploy(env: &Env, c: Candidate, why: &str, done: &mut Done) -> Result<String,
         let base = tools.base_tools();
         tool.validate(&lyra_evolution::composite::Available { tools: &base })?;
     }
+    if let Change::Agent { agent, instructions } = c.change.clone() {
+        let agents = env.caps.as_ref().and_then(|c| c.agents()).ok_or("agents are off")?;
+        let mut p = agents.registry.find(&agent)?;
+        let from = p.version;
+        p.instructions = instructions;
+        let p = agents.registry.update(p, &format!("evolution: {}", c.rationale))?;
+        let revision = lyra_evolution::SkillRevision { name: p.name.clone(), from_version: from as i64, to_version: p.version as i64, agent: true };
+        let g = ev.manager.deploy_skill(c, revision, why)?;
+        return Ok(format!("✓ refined agent {} to v{} — generation {} (/evolve rollback undoes it)", p.title, p.version, g.number));
+    }
     if let Change::Skill { skill, instructions } = c.change.clone() {
         let learning = env.learning.as_ref().ok_or("learning is off")?;
         let to = learning.refine(&skill, &instructions, &format!("evolution: {}", c.rationale))?;
-        let revision = lyra_evolution::SkillRevision { name: skill.clone(), from_version: to - 1, to_version: to };
+        let revision = lyra_evolution::SkillRevision { name: skill.clone(), from_version: to - 1, to_version: to, agent: false };
         let g = ev.manager.deploy_skill(c, revision, why)?;
         return Ok(format!("✓ refined skill {skill} to v{to} — generation {} (/evolve rollback undoes it)", g.number));
     }
@@ -1248,7 +1326,7 @@ pub fn show(ev: &Evolution, key: &str) -> Result<String, String> {
     match &c.change {
         Change::Workflow { workflow } => out.push(workflow.render()),
         Change::Tool { tool } => out.push(tool.render()),
-        Change::Skill { instructions, .. } => out.push(instructions.clone()),
+        Change::Skill { instructions, .. } | Change::Agent { instructions, .. } => out.push(instructions.clone()),
         Change::Code { base_commit, diff } => {
             out.push(format!("against {}", &base_commit[..base_commit.len().min(10)]));
             out.push(diff.clone());
