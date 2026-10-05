@@ -1339,4 +1339,39 @@ mod tests {
         assert!(section.contains("1. check: run the tests"));
         assert!(!chat_section(&behavior, &[w], "hello").unwrap().contains("Workflow"));
     }
+
+    /// The plan-mode benchmark against a real model. Opt in with
+    /// `LYRA_LIVE_URL=http://host:port/v1 LYRA_LIVE_MODEL=name cargo test live_plan_benchmark -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_plan_benchmark() {
+        let (Ok(url), Ok(model)) = (std::env::var("LYRA_LIVE_URL"), std::env::var("LYRA_LIVE_MODEL")) else { return };
+        crate::learn::configure(crate::learn::Structured { max_tokens: 8192, thinking: false });
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let home = std::env::temp_dir().join(format!("lyra-live-{}", Uuid::new_v4()));
+        let manager = EvolutionManager::open(&home, rt.handle().clone(), Default::default()).unwrap();
+        let ev = Arc::new(Evolution::new(manager, rt.handle().clone(), None, 1));
+        let mut run = RunRecord::new(lyra_evolution::RunKind::Plan, "Write a three-line haiku about autumn and check it has three lines", 1);
+        run.outcome = lyra_evolution::RunOutcome::Partial;
+        ev.manager.record_run(&run).unwrap();
+        let op = lyra_evolution::Opportunity {
+            kind: "plans_need_rework".into(),
+            problem: "plans need rework".into(),
+            categories: vec![Category::Configuration],
+            evidence: vec![run.id],
+            details: json!({}),
+        };
+        let change = Change::Configuration { key: "verify_reasoning_steps".into(), from: json!(false), to: json!(true) };
+        let c = ev.manager.propose(&op, vec![evolver::Proposal { change, rationale: "verify".into(), confidence: 0.6 }]).unwrap().remove(0);
+        let env = Env { url: format!("{}/chat/completions", url.trim_end_matches('/')), model, evolution: ev, tools: None, learning: None, system_prompt: None };
+        let t = test(&env, c);
+        for n in &t.notes {
+            println!("{n}");
+        }
+        let v = t.candidate.expect("tested").validation.expect("validated");
+        assert!(v.valid);
+        assert!(t.notes.iter().any(|n| n.contains("as plans")), "planner-only change benchmarked as plans");
+        assert!(v.fitness_before.is_some() && v.fitness_after.is_some());
+        let _ = std::fs::remove_dir_all(home);
+    }
 }
