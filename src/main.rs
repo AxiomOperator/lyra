@@ -11,6 +11,7 @@ mod mem;
 mod plan;
 mod migrate;
 mod retrieval;
+mod sessions;
 mod stats;
 mod tools;
 mod ui;
@@ -96,7 +97,7 @@ impl Message {
 }
 
 /// A complete tool call, as sent back to the model in the conversation history.
-#[derive(Clone, Default, Serialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct ToolCall {
     id: String,
     #[serde(rename = "type")]
@@ -104,7 +105,7 @@ struct ToolCall {
     function: FunctionCall,
 }
 
-#[derive(Clone, Default, Serialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct FunctionCall {
     name: String,
     /// JSON text, streamed in pieces.
@@ -363,6 +364,8 @@ struct App {
     wizard_busy: bool,
     /// A message to send once the current command is handled (`/agent ask`).
     pending_input: Option<String>,
+    /// This conversation's id (`~/.lyra/sessions/<id>.json`).
+    session_id: String,
     /// Agents' actions waiting for the user's y / n / a, oldest first.
     approvals: Vec<agents::ApprovalRequest>,
     /// The highlighted entry in the command palette, and whether Esc closed it.
@@ -482,6 +485,7 @@ impl App {
             show_handled_by,
             wizard_busy: false,
             pending_input: None,
+            session_id: sessions::new_id(),
             approvals: Vec::new(),
             palette: 0,
             palette_hidden: false,
@@ -669,6 +673,7 @@ impl App {
                     self.reply().agents = handled;
                 }
                 self.last_run = self.run.take().map(|id| LastRun { id, skills, memories: memories.len(), evo });
+                self.save_session();
                 self.review(false);
                 self.capture(false);
             }
@@ -689,6 +694,7 @@ impl App {
                 self.set_phase(Phase::Idle);
                 self.log(Level::Error, e.clone());
                 self.messages.push(Message::new("error", e));
+                self.save_session();
             }
             StreamEvent::Log(text) => self.log(Level::Info, text),
             StreamEvent::Models(results) => {
@@ -1204,6 +1210,10 @@ impl App {
             "/caps" => self.caps_command(arg),
             "/goals" | "/goal" => self.goals_command(name, arg),
             "/agents" | "/agent" => self.agents_command(name, arg),
+            "/sessions" => sessions::dir().ok_or("no home directory".to_string()).map(|d| {
+                format!("this one: {}\n{}\n\nlyra -c continues the latest here · /resume <id> or lyra -r <id> resumes one", self.session_id, sessions::describe(&sessions::list(&d), 20))
+            }),
+            "/resume" => self.resume(arg),
             "/memory" => {
                 let mem = self.mem().ok_or_else(|| match &self.memory_status {
                     Err(why) => why.clone(),
@@ -1239,7 +1249,10 @@ impl App {
             Ok(text) => ("info", text),
             Err(e) => ("error", e),
         };
-        self.messages.push(Message::new(role, format!("> {line}\n{text}")));
+        // A resumed conversation already says so.
+        if !(ok && name == "/resume" && text.is_empty()) {
+            self.messages.push(Message::new(role, format!("> {line}\n{text}")));
+        }
         let memory_sub = arg.split_whitespace().next().unwrap_or("");
         match name {
             "/memory" if ok && memory_sub == "curate" => self.memory_curate(),
@@ -2263,6 +2276,48 @@ impl App {
     }
 
     /// The assistant message being streamed into, created on the first token.
+    /// Save this conversation (after every reply and on the way out).
+    fn save_session(&mut self) {
+        if !self.messages.iter().any(|m| m.role == "user") {
+            return;
+        }
+        let Some(dir) = sessions::dir() else { return };
+        let s = sessions::Session::from_messages(&self.session_id, self.session_started, &self.messages);
+        if let Err(e) = sessions::save(&dir, &s) {
+            self.log(Level::Error, format!("couldn't save the session: {e}"));
+        }
+    }
+
+    /// Carry on a saved conversation (`lyra -c`, `lyra -r <id>`, `/resume <id>`).
+    fn resume_session(&mut self, s: sessions::Session) {
+        let (id, turns, when) = (s.id.clone(), s.user_turns(), s.updated.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string());
+        self.session_id = id.clone();
+        self.session_started = s.started;
+        self.messages = s.into_messages();
+        self.messages.push(Message::new("info", format!("resumed session {id} · {turns} turns · last active {when}")));
+        self.scroll = None;
+        self.last_run = None;
+        self.log(Level::Info, format!("resumed session {id} ({turns} turns)"));
+    }
+
+    /// `/resume <id>`: switch to a saved conversation (this one is saved first).
+    fn resume(&mut self, arg: &str) -> Result<String, String> {
+        if self.waiting {
+            return Err("wait for the reply to finish".into());
+        }
+        let dir = sessions::dir().ok_or("no home directory")?;
+        if arg.trim().is_empty() {
+            return Ok(format!("{}\n\n/resume <id> to switch", sessions::describe(&sessions::list(&dir), 20)));
+        }
+        let s = sessions::find(&dir, arg)?;
+        if s.id == self.session_id {
+            return Err("that's this session".into());
+        }
+        self.save_session();
+        self.resume_session(s);
+        Ok(String::new())
+    }
+
     /// What the command palette shows for the input (nothing when closed).
     fn palette_entries(&self) -> Vec<&'static commands::Entry> {
         if self.palette_hidden { Vec::new() } else { commands::matching(&self.input) }
@@ -2293,6 +2348,8 @@ pub(crate) const COMMANDS: &str = "\
 /reject <id>                 discard a proposal or proposed skill for good
 /deprecate <id>              stop using a skill without deleting it
 /forget-skill <id>           delete a skill's file (its history is kept)
+/sessions                    saved conversations (lyra -c continues the latest)
+/resume <id>                 switch to a saved conversation
 /history <id>                a skill's versions and audit trail
 /rollback <id> [version]     restore an earlier version (the previous one by default)
 /outcome good|bad|partial    how the last reply's skills worked out
@@ -2585,8 +2642,58 @@ fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>) -> Result<Round, St
     Ok(Round { stats, content, tool_calls })
 }
 
+const USAGE: &str = "\
+lyra — a terminal chat client for a local LLM
+
+usage: lyra [options]
+
+  -c, --continue          continue the latest conversation (started in this folder, else any)
+  -r, --resume [id]       resume a saved conversation; without an id, list them
+  --restore-memory <dir>  put a memory backup in place, then exit
+  -h, --help              this help
+
+Conversations are saved in ~/.lyra/sessions/ ($LYRA_HOME/sessions).";
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        println!("{USAGE}");
+        return;
+    }
+    // -c / --continue: the latest conversation (here); -r / --resume <id>: that one.
+    let resume = match args.iter().position(|a| a == "-r" || a == "--resume") {
+        Some(i) => {
+            let dir = config::home().map(|h| h.join("sessions"));
+            match (args.get(i + 1).filter(|a| !a.starts_with('-')), dir) {
+                (Some(key), Some(dir)) => match sessions::find(&dir, key) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        eprintln!("lyra: {e}");
+                        std::process::exit(1);
+                    }
+                },
+                (None, dir) => {
+                    let all = dir.map(|d| sessions::list(&d)).unwrap_or_default();
+                    println!("{}\n\nlyra -r <id> resumes one · lyra -c continues the latest", sessions::describe(&all, 20));
+                    return;
+                }
+                (_, None) => {
+                    eprintln!("lyra: no home directory");
+                    std::process::exit(1);
+                }
+            }
+        }
+        None if args.iter().any(|a| a == "-c" || a == "--continue") => {
+            match config::home().map(|h| h.join("sessions")).and_then(|d| sessions::latest(&d)) {
+                Some(s) => Some(s),
+                None => {
+                    eprintln!("lyra: no saved conversation to continue yet");
+                    std::process::exit(1);
+                }
+            }
+        }
+        None => None,
+    };
     if let Some(i) = args.iter().position(|a| a == "--restore-memory") {
         let Some(backup) = args.get(i + 1) else {
             eprintln!("usage: lyra --restore-memory <backup directory>");
@@ -2659,8 +2766,12 @@ fn main() {
     for note in caps_notes {
         app.log(Level::Tool, note);
     }
+    if let Some(s) = resume {
+        app.resume_session(s);
+    }
     app.start();
     ratatui::run(|terminal| run(terminal, &mut app)).expect("terminal error");
+    app.save_session();
 }
 
 /// Open the evolution records and make sure there's a first generation.

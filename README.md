@@ -18,6 +18,7 @@ Everything lyra keeps lives in one folder, `~/.lyra` (set `LYRA_HOME` to use ano
 ├── goals/     goals.db (long-lived goals, their plans, blockers, triggers)
 ├── memory/    lance/ (LanceDB: memories, vectors, history)
 ├── plans/     plans.db
+├── sessions/  <id>.json, saved conversations (lyra -c / -r)
 ├── skills/    <name>.md, one file per skill
 ├── tools/     <name>.toml, composite tools
 └── workflows/ <name>.toml
@@ -802,6 +803,20 @@ output tokens are estimated from the stream and marked `~`.
 ```sh
 cargo run
 ```
+
+Every conversation is saved in `~/.lyra/sessions/` after each reply and when
+you quit, so you can pick it up again:
+
+```sh
+lyra -c              # continue the latest conversation started in this folder (else the latest)
+lyra -r              # list saved conversations
+lyra -r 20261005-1234  # resume one (any unique part of its id)
+lyra --help
+```
+
+Inside lyra, `/sessions` lists them and `/resume <id>` switches to one (the
+current one is saved first). Resuming brings back the whole chat, tool calls
+included, and the model sees it as before.
 
 Building needs `protoc`, the Protocol Buffers compiler, for LanceDB
 (`dnf install protobuf-compiler` / `apt install protobuf-compiler`, or a

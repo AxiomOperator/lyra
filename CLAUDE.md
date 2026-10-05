@@ -4,7 +4,7 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
 
 ## Layout
 
-- `src/` — the TUI binary: `main.rs` (app state, streaming, tool loop), `ui.rs` (all drawing), `markdown.rs` (replies as styled lines), `commands.rs` (the `/` command palette),
+- `src/` — the TUI binary: `main.rs` (app state, streaming, tool loop), `ui.rs` (all drawing), `markdown.rs` (replies as styled lines), `commands.rs` (the `/` command palette), `sessions.rs` (saved conversations, `-c`/`-r`),
   `config.rs`, `context.rs` (SOUL/USER/AGENT.md), `tools.rs` (memory tools + composite tools), `caps.rs` (capabilities glue), `goals.rs` (goals glue), `mem.rs` (memory glue), `plan.rs` (planning glue), `learn.rs`
   (self-learning glue), `evolve.rs` (evolution glue: evolved state, benchmark, `/evolve`), `retrieval.rs` (embedding/reranker clients), `stats.rs`.
 - `memory/` — `lyra-memory` crate: memory behind `MemoryManager` (LanceDB by default: typed memory rows with
@@ -40,6 +40,7 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
 - Runtime files live in `~/.lyra` (`$LYRA_HOME`): `config/config.toml`, `context/`
   (SOUL/USER/AGENT.md), `memory/lance/` (LanceDB), `plans/plans.db`, `skills/<name>.md` (one Markdown file per skill) + `skills/ledger.db`,
   `evolution/evolution.db`, `config/behavior.toml`, `workflows/<name>.toml`, `tools/<name>.toml` (evolved state),
+  `sessions/<id>.json` (saved conversations, `lyra -c` / `-r`),
   `agents/<name>.toml` (one file per subagent) + `agents/agents.db` + `agents/index/` (routing, LanceDB).
   `src/migrate.rs` brings older layouts up to date on startup.
 
@@ -65,7 +66,7 @@ cargo test --workspace
    idea around it; never undo or migrate away from it because a doc says so. Established
    decisions are what the code and this file already do, for example:
    - everything lyra keeps lives in `~/.lyra` (`config/`, `context/`, `memory/`, `skills/`, `plans/`,
-     `evolution/`, `workflows/`, `tools/`, `capabilities/`, `goals/`, `agents/`)
+     `evolution/`, `workflows/`, `tools/`, `capabilities/`, `goals/`, `agents/`, `sessions/`)
    - skills are Markdown files, one per skill; their history/evidence is in the ledger
    - subagents are TOML files, one per agent; versions and delegations are in `agents.db`
    - memory is LanceDB behind `MemoryManager` (vectors + FTS); other state (plans, skills ledger,
