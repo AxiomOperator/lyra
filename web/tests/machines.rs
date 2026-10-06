@@ -119,3 +119,63 @@ fn a_headless_machine_pairs_when_a_device_approves() {
     assert_eq!(get("/manifest.webmanifest").status(), 200);
     assert_eq!(get("/nope.js").status(), 404);
 }
+
+#[test]
+fn devices_only_see_their_own_conversation() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let dir = std::env::temp_dir().join(format!("lyra-sessions-hub-{}", std::process::id()));
+    let (tx, inbound) = std::sync::mpsc::channel();
+    let settings = Settings { listen: "127.0.0.1:0".into(), ..Settings::default() };
+    let hub = Hub::start(rt.handle(), &settings, &dir, tx).unwrap();
+    let token = pair(&dir, "phone", "device");
+    // A pretend app loop: snapshots name their conversation ("" = "main").
+    let (conns_tx, conns_rx) = std::sync::mpsc::channel::<u64>();
+    std::thread::spawn(move || {
+        while let Ok(msg) = inbound.recv() {
+            match msg {
+                Inbound::Snapshot { session, reply } => {
+                    let s = if session.is_empty() { "main".to_string() } else { session };
+                    let _ = reply.send(json!({ "type": "snapshot", "session_id": s }));
+                }
+                Inbound::Send { conn, .. } => {
+                    let _ = conns_tx.send(conn);
+                }
+                _ => {}
+            }
+        }
+    });
+    let addr = hub.address;
+    let open = |session: &str| {
+        let (ws, _) = rt.block_on(tokio_tungstenite::connect_async(format!("ws://{addr}/ws?token={token}&session={session}"))).unwrap();
+        ws
+    };
+    let next = |ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>| -> Value {
+        let m = rt.block_on(async { tokio::time::timeout(Duration::from_secs(5), ws.next()).await }).unwrap().unwrap().unwrap();
+        serde_json::from_str(m.to_text().unwrap()).unwrap()
+    };
+    let mut a = open("");
+    let mut b = open("other");
+    assert_eq!(next(&mut a)["session_id"], "main");
+    assert_eq!(next(&mut b)["session_id"], "other");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(hub.attached_sessions(), vec!["main".to_string(), "other".to_string()]);
+
+    hub.publish(Some("other"), json!({ "type": "add", "text": "for other" }));
+    hub.publish(Some("main"), json!({ "type": "add", "text": "for main" }));
+    hub.publish(None, json!({ "type": "status", "text": "for everyone" }));
+    assert_eq!(next(&mut a)["text"], "for main");
+    assert_eq!(next(&mut a)["text"], "for everyone");
+    assert_eq!(next(&mut b)["text"], "for other");
+    assert_eq!(next(&mut b)["text"], "for everyone");
+
+    // `a` asks for something; the app moves it to another conversation.
+    rt.block_on(a.send(Message::Text(json!({ "type": "send", "text": "/new" }).to_string().into()))).unwrap();
+    let conn = conns_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    hub.attach(conn, "fresh");
+    assert_eq!(next(&mut a)["session_id"], "fresh", "a new snapshot for the new conversation");
+    hub.publish(Some("main"), json!({ "type": "add", "text": "old" }));
+    hub.publish(Some("fresh"), json!({ "type": "add", "text": "new" }));
+    assert_eq!(next(&mut a)["text"], "new", "the old conversation's updates no longer arrive");
+    let d = hub.devices().list().into_iter().find(|d| d.name == "phone").unwrap();
+    assert!(matches!(d.last_session.as_deref(), Some("fresh") | Some("other")), "the device remembers where it was");
+}

@@ -644,8 +644,15 @@ end-to-end encrypted (RFC 8291) and signed with lyra's own VAPID key
 (`~/.lyra/web/vapid.key`); the push service sees only that something arrived.
 That needs outbound internet from the computer, not inbound.
 
-The server keeps one conversation going for every device and carries on the
-latest one after a restart. `/new`, `/sessions` and `/resume <id>` work from
+**Conversations run in parallel.** Each device shows its own conversation and
+comes back to it (the server remembers which); `/new` starts another one for
+that device only, and `/resume <id>` (or More → Conversations) switches.
+Several can be answering at once — your phone in one, the terminal in
+another — and two devices showing the same conversation see it live. They
+all share memory, skills, agents and machines; background work (schedules,
+goals) runs once. A conversation nobody has open is saved and put away after
+15 minutes, and comes back when you resume it. After a restart the server
+carries on the latest one. `/new`, `/sessions` and `/resume <id>` work from
 the phone (⋯ has New conversation and Saved conversations), and so do all
 the other commands (type `/`). `lyra -c` at the desk continues the same saved
 conversations, but don't run the TUI and `lyra serve` on the same

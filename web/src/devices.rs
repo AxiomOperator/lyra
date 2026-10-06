@@ -29,6 +29,9 @@ pub struct Device {
     pub last_seen: DateTime<Utc>,
     #[serde(default)]
     pub push: Option<Subscription>,
+    /// The conversation it had open last (it returns to it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_session: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -148,6 +151,7 @@ impl Devices {
             created: Utc::now(),
             last_seen: Utc::now(),
             push: None,
+            last_session: None,
         };
         all.push(device.clone());
         self.save(&all)?;
@@ -169,6 +173,16 @@ impl Devices {
             return Some(found);
         }
         Some(d.clone())
+    }
+
+    pub fn set_last_session(&self, id: &str, session: &str) -> Result<(), String> {
+        let mut all = self.list();
+        let d = all.iter_mut().find(|d| d.id == id).ok_or("no such device")?;
+        if d.last_session.as_deref() == Some(session) {
+            return Ok(());
+        }
+        d.last_session = Some(session.to_string());
+        self.save(&all)
     }
 
     pub fn set_push(&self, id: &str, sub: Option<Subscription>) -> Result<(), String> {

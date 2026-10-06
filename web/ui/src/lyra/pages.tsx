@@ -357,7 +357,10 @@ export function MorePage({ toChat, update }: { toChat: () => void; update: () =>
                   {s.turns} turns · {ago(s.updated)}
                 </span>
               </span>
-              {s.current && <Badge className="bg-teal-600/80 text-white">open</Badge>}
+              <span className="flex shrink-0 gap-1.5">
+                {s.answering && <Badge className="bg-sky-600/80 text-white">answering</Badge>}
+                {s.current && <Badge className="bg-teal-600/80 text-white">here</Badge>}
+              </span>
             </button>
           ))}
         </CardContent>

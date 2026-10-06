@@ -101,7 +101,14 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
     let timer: number | undefined;
     const connect = () => {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      const sock = new WebSocket(`${proto}//${location.host}/ws?token=${encodeURIComponent(token)}`);
+      // Back to the conversation this device had open (the server remembers too).
+      let session = "";
+      try {
+        session = localStorage.getItem("lyra-session") ?? "";
+      } catch {
+        // no storage: the server's memory of it will do
+      }
+      const sock = new WebSocket(`${proto}//${location.host}/ws?token=${encodeURIComponent(token)}&session=${encodeURIComponent(session)}`);
       ws.current = sock;
       sock.onopen = () => {
         retry.current = 0;
@@ -118,6 +125,13 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
         if (msg.type === "resync") {
           sock.close();
           return;
+        }
+        if (msg.type === "snapshot" && typeof msg.session_id === "string") {
+          try {
+            localStorage.setItem("lyra-session", msg.session_id);
+          } catch {
+            // fine
+          }
         }
         if (msg.type !== "pong") dispatch(msg);
       };

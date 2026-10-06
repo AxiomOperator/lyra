@@ -89,6 +89,10 @@ export interface Session {
   turns: number;
   updated: string;
   current: boolean;
+  /** Loaded on the server (some device has it open, or recently). */
+  open?: boolean;
+  /** lyra is writing a reply in it right now. */
+  answering?: boolean;
 }
 
 export interface ActivityLine {

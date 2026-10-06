@@ -50,14 +50,16 @@ impl Default for Settings {
 
 /// What the devices ask of the app.
 pub enum Inbound {
-    /// A chat message or a /command.
-    Send { text: String, device: String },
-    /// Stop the reply being written.
-    Stop { device: String },
+    /// A chat message or a /command, for the conversation the connection
+    /// shows (`conn` can be moved to another one: `/new`, `/resume`).
+    Send { text: String, device: String, session: String, conn: u64 },
+    /// Stop the reply being written in that conversation.
+    Stop { device: String, session: String },
     /// An answer to an approval (`y`, `n`, `a`).
     Approve { id: u64, answer: String, device: String },
-    /// The whole current state, for a device that just connected.
-    Snapshot(oneshot::Sender<Value>),
+    /// The whole current state of a conversation ("" = the device's usual
+    /// one), for a device that just connected or switched.
+    Snapshot { session: String, reply: oneshot::Sender<Value> },
     /// Is the app's loop alive? (`/health`)
     Health(oneshot::Sender<Value>),
     /// A machine (`lyra node`) connected or went away.
@@ -69,7 +71,7 @@ pub enum Inbound {
     /// Something to say in the conversation (who approved a pairing, …).
     Note(String),
     /// A device asks for a list (sessions, devices, activity…) for a page.
-    Get { what: String, reply: oneshot::Sender<Value> },
+    Get { what: String, arg: Value, session: String, reply: oneshot::Sender<Value> },
 }
 
 /// A headless machine asking to pair (`lyra-node pair <url>` without a code).
@@ -139,7 +141,10 @@ struct Shared {
     devices: Devices,
     vapid: Vapid,
     subject: String,
-    out: broadcast::Sender<Arc<String>>,
+    /// Updates: the conversation they belong to (none: everyone's), the JSON.
+    out: broadcast::Sender<Arc<(Option<String>, String)>>,
+    /// Device connections: which conversation each shows, and how to move it.
+    conns: Mutex<HashMap<u64, ConnState>>,
     seq: AtomicU64,
     inbound: std::sync::mpsc::Sender<Inbound>,
     /// Connections and when each last said it was visible on screen.
@@ -198,6 +203,7 @@ impl Hub {
             machines: Mutex::new(HashMap::new()),
             next_call: AtomicU64::new(1),
             online: Mutex::new(HashMap::new()),
+            conns: Mutex::new(HashMap::new()),
             requests: Mutex::new(Vec::new()),
             node_binary: if settings.node_binary.trim().is_empty() {
                 std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("lyra-node"))).unwrap_or_default()
@@ -225,11 +231,30 @@ impl Hub {
         self.shared.seq.load(Ordering::SeqCst)
     }
 
-    /// Send a message to every connected device.
-    pub fn publish(&self, mut msg: Value) {
+    /// Send an update to the devices showing `session` (all of them: None).
+    pub fn publish(&self, session: Option<&str>, mut msg: Value) {
         let seq = self.shared.seq.fetch_add(1, Ordering::SeqCst) + 1;
         msg["seq"] = json!(seq);
-        let _ = self.shared.out.send(Arc::new(msg.to_string()));
+        if let Some(s) = session {
+            msg["session"] = json!(s);
+        }
+        let _ = self.shared.out.send(Arc::new((session.map(str::to_string), msg.to_string())));
+    }
+
+    /// Move a connection to another conversation (it gets a fresh snapshot).
+    pub fn attach(&self, conn: u64, session: &str) {
+        if let Some(c) = self.shared.conns.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&conn) {
+            c.session = session.to_string();
+            let _ = c.moved.send(session.to_string());
+        }
+    }
+
+    /// Conversations some device is showing now.
+    pub fn attached_sessions(&self) -> Vec<String> {
+        let mut all: Vec<String> = self.shared.conns.lock().unwrap_or_else(|e| e.into_inner()).values().map(|c| c.session.clone()).collect();
+        all.sort();
+        all.dedup();
+        all
     }
 
     /// Devices (phones, browsers, terminals) connected now: (id, name), once each.
@@ -504,42 +529,77 @@ async fn approve(State(s): State<Arc<Shared>>, headers: HeaderMap, Json(b): Json
 struct WsQuery {
     #[serde(default)]
     token: String,
+    /// The conversation to show (empty: the one the device had open last).
+    #[serde(default)]
+    session: String,
+}
+
+struct ConnState {
+    session: String,
+    /// Tells the connection's task it was moved.
+    moved: tokio::sync::mpsc::UnboundedSender<String>,
 }
 
 async fn ws(State(s): State<Arc<Shared>>, Query(q): Query<WsQuery>, upgrade: WebSocketUpgrade) -> Response {
     let Some(d) = s.devices.authenticate(&q.token).filter(|d| d.kind == "device") else { return error(StatusCode::UNAUTHORIZED, "not paired") };
-    let mut r = upgrade.on_upgrade(move |socket| connection(s, d, socket));
+    let session = if q.session.is_empty() { d.last_session.clone().unwrap_or_default() } else { q.session.clone() };
+    let mut r = upgrade.on_upgrade(move |socket| connection(s, d, session, socket));
     r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     r
 }
 
-/// One device's live connection: the current state, then every update; its
-/// messages go to the app.
-async fn connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
+/// A conversation's snapshot, with the device's details.
+async fn snapshot(s: &Shared, d: &Device, session: &str) -> Option<Value> {
+    let (tx, rx) = oneshot::channel();
+    s.inbound.send(Inbound::Snapshot { session: session.to_string(), reply: tx }).ok()?;
+    let mut snap = rx.await.ok()?;
+    snap["device"] = json!({ "id": d.id, "name": d.name, "push": d.push.is_some() });
+    Some(snap)
+}
+
+/// One device's live connection: a conversation's state, then its updates
+/// (and everyone's); its messages go to that conversation.
+async fn connection(s: Arc<Shared>, d: Device, session: String, mut socket: WebSocket) {
     let conn = s.next_conn.fetch_add(1, Ordering::SeqCst);
+    let (moved_tx, mut moved) = tokio::sync::mpsc::unbounded_channel::<String>();
     s.visible.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, Some(Instant::now()));
     s.online.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, (d.id.clone(), d.name.clone()));
-    let _ = s.inbound.send(Inbound::DevicesChanged);
     // Subscribe before asking for the snapshot, so nothing falls in between.
     let mut updates = s.out.subscribe();
-    let (tx, rx) = oneshot::channel();
-    if s.inbound.send(Inbound::Snapshot(tx)).is_err() {
-        return;
-    }
-    let Ok(snapshot) = rx.await else { return };
-    let mut snapshot = snapshot;
-    snapshot["device"] = json!({ "id": d.id, "name": d.name, "push": d.push.is_some() });
-    if socket.send(Message::Text(snapshot.to_string().into())).await.is_err() {
+    let Some(first) = snapshot(&s, &d, &session).await else { return };
+    // The app says which conversation "" turned out to be.
+    let mut session = first["session_id"].as_str().unwrap_or(&session).to_string();
+    s.conns.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, ConnState { session: session.clone(), moved: moved_tx });
+    let _ = s.devices.set_last_session(&d.id, &session);
+    let _ = s.inbound.send(Inbound::DevicesChanged);
+    let forget = |s: &Shared| {
         s.visible.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn);
         s.online.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn);
+        s.conns.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn);
         let _ = s.inbound.send(Inbound::DevicesChanged);
+    };
+    if socket.send(Message::Text(first.to_string().into())).await.is_err() {
+        forget(&s);
         return;
     }
     loop {
         tokio::select! {
+            to = moved.recv() => {
+                let Some(to) = to else { break };
+                session = to;
+                let _ = s.devices.set_last_session(&d.id, &session);
+                let Some(snap) = snapshot(&s, &d, &session).await else { break };
+                if socket.send(Message::Text(snap.to_string().into())).await.is_err() {
+                    break;
+                }
+            }
             update = updates.recv() => match update {
-                Ok(text) => {
-                    if socket.send(Message::Text(text.as_str().into())).await.is_err() {
+                Ok(item) => {
+                    // Another conversation's update: not for this device.
+                    if item.0.as_ref().is_some_and(|x| *x != session) {
+                        continue;
+                    }
+                    if socket.send(Message::Text(item.1.as_str().into())).await.is_err() {
                         break;
                     }
                 }
@@ -558,11 +618,11 @@ async fn connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
                     "send" => {
                         let text = v["text"].as_str().unwrap_or("").trim().to_string();
                         if !text.is_empty() {
-                            let _ = s.inbound.send(Inbound::Send { text, device: d.name.clone() });
+                            let _ = s.inbound.send(Inbound::Send { text, device: d.name.clone(), session: session.clone(), conn });
                         }
                     }
                     "stop" => {
-                        let _ = s.inbound.send(Inbound::Stop { device: d.name.clone() });
+                        let _ = s.inbound.send(Inbound::Stop { device: d.name.clone(), session: session.clone() });
                     }
                     "approve" => {
                         let _ = s.inbound.send(Inbound::Approve {
@@ -590,10 +650,11 @@ async fn connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
                     "get" => {
                         let what = v["what"].as_str().unwrap_or("").to_string();
                         let (tx, rx) = oneshot::channel();
-                        if s.inbound.send(Inbound::Get { what: what.clone(), reply: tx }).is_ok()
+                        let ask = Inbound::Get { what: what.clone(), arg: v["arg"].clone(), session: session.clone(), reply: tx };
+                        if s.inbound.send(ask).is_ok()
                             && let Ok(data) = rx.await
                         {
-                            let msg = json!({ "type": "data", "what": what, "data": data });
+                            let msg = json!({ "type": "data", "what": what, "arg": v["arg"], "data": data });
                             if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
                                 break;
                             }
@@ -604,9 +665,7 @@ async fn connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
             }
         }
     }
-    s.visible.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn);
-    s.online.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn);
-    let _ = s.inbound.send(Inbound::DevicesChanged);
+    forget(&s);
 }
 
 // ---- machines (`lyra node`): a machine connects out and runs lyra's

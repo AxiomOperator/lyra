@@ -138,7 +138,7 @@ impl Mirror {
             .iter()
             .map(|e| json!({ "usage": e.usage, "description": e.description, "completion": crate::commands::completion(e) }))
             .collect();
-        json!({ "type": "snapshot", "seq": seq, "messages": self.sent, "status": self.status, "commands": commands, "app_version": app_version })
+        json!({ "type": "snapshot", "seq": seq, "messages": self.sent, "status": self.status, "commands": commands, "app_version": app_version, "session_id": self.session })
     }
 }
 
@@ -163,87 +163,122 @@ fn preview(text: &str) -> String {
     if plain.chars().count() > 160 { format!("{}…", plain.chars().take(160).collect::<String>()) } else { plain }
 }
 
-/// Run lyra for the devices until the process is stopped.
-pub fn run(app: &mut App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>, notify: bool) {
-    let mut mirror = Mirror::default();
+/// One open conversation: its lyra and what its devices were last sent.
+struct Conv {
+    app: App,
+    mirror: Mirror,
+    printed: u64,
+    changed: bool,
+    last_status: Instant,
+    /// Since when no device has shown it and it isn't answering.
+    quiet_since: Instant,
+}
+
+impl Conv {
+    fn new(app: App) -> Conv {
+        let printed = app.logged;
+        Conv { app, mirror: Mirror::default(), printed, changed: true, last_status: Instant::now(), quiet_since: Instant::now() }
+    }
+}
+
+/// Unopened conversations nobody looks at are put away after this long.
+const IDLE: Duration = Duration::from_secs(15 * 60);
+
+/// The conversation for `session`: open already, or loaded from its saved
+/// file; "" or an unknown one is the primary's.
+fn conv_for(convs: &mut Vec<Conv>, session: &str) -> usize {
+    if session.is_empty() {
+        return 0;
+    }
+    if let Some(i) = convs.iter().position(|c| c.app.session_id == session) {
+        return i;
+    }
+    let Some(saved) = crate::sessions::dir().and_then(|d| crate::sessions::find(&d, session).ok()) else { return 0 };
+    if let Some(i) = convs.iter().position(|c| c.app.session_id == saved.id) {
+        return i;
+    }
+    let mut app = convs[0].app.fork();
+    app.resume_session(saved);
+    convs.push(Conv::new(app));
+    convs.len() - 1
+}
+
+/// Run lyra for the devices until the process is stopped: one lyra per open
+/// conversation (each device shows one; several can answer at once), all
+/// sharing memory, skills, agents and tools. The first one also runs lyra's
+/// background work.
+pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>, notify: bool) {
     // The lyra-node this server hands out (compared with machines' builds).
     let node_build = hub.node_build();
-    mirror.machines = hub.machines().into_iter().map(|m| m.name).collect();
-    mirror.extra = hub_status(hub, node_build.as_deref());
+    let mut machines: Vec<String> = hub.machines().into_iter().map(|m| m.name).collect();
+    let mut extra = hub_status(hub, node_build.as_deref());
     let mut last_extra = Instant::now();
-    let mut printed = app.logged;
-    let mut last_status = Instant::now();
     let started = Instant::now();
+    let mut convs = vec![Conv::new(primary)];
     loop {
-        let mut changed = false;
-        // Events from lyra's own work (replies streaming, agents, plans…).
-        match app.rx.recv_timeout(Duration::from_millis(40)) {
-            Ok(first) => {
-                let mut next = Some(first);
-                while let Some(event) = next.take() {
-                    let note = notification(&event);
-                    let done = matches!(event, StreamEvent::Done(_));
-                    app.handle(event);
-                    if done && notify {
-                        // The reply is in the chat now.
-                        let body = app.messages.iter().rev().find(|m| m.role == "assistant").map(|m| preview(&m.content)).unwrap_or_default();
-                        if !hub.someone_watching() {
-                            hub.notify(Notification { title: "lyra replied".into(), body, tag: "reply".into(), approval: None });
-                        }
-                    }
-                    if let (Some(n), true) = (note, notify)
-                        && !hub.someone_watching()
-                    {
-                        hub.notify(n);
-                    }
-                    changed = true;
-                    next = app.rx.try_recv().ok();
-                }
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
-        }
-        // What the devices ask for.
-        while let Ok(msg) = inbound.try_recv() {
-            changed = true;
+        let mut everyone = false;
+        // What the devices ask for (waiting a little when there's nothing).
+        let mut next = inbound.recv_timeout(Duration::from_millis(40)).ok();
+        while let Some(msg) = next.take() {
             match msg {
-                Inbound::Send { text, device } => {
-                    if app.waiting && !text.starts_with('/') && app.approvals.is_empty() {
-                        app.messages.push(Message::new("info", "lyra is still answering — send it again when the reply is done".into()));
-                        continue;
+                Inbound::Send { text, device, session, conn } => {
+                    let i = conv_for(&mut convs, &session);
+                    // A new conversation, or another one, for this device only.
+                    if text == "/new" {
+                        let app = convs[0].app.fork();
+                        let id = app.session_id.clone();
+                        convs.push(Conv::new(app));
+                        hub.attach(conn, &id);
+                        convs[0].app.log(Level::Info, format!("{device} started a new conversation"));
+                    } else if let Some(key) = text.strip_prefix("/resume ").map(str::trim).filter(|k| !k.is_empty()) {
+                        let before = convs.len();
+                        let j = conv_for(&mut convs, key);
+                        if j == 0 && convs.len() == before && !convs[0].app.session_id.starts_with(key) {
+                            convs[i].app.messages.push(Message::new("error", format!("> {text}\nno saved conversation {key:?}")));
+                            convs[i].changed = true;
+                        } else {
+                            let id = convs[j].app.session_id.clone();
+                            hub.attach(conn, &id);
+                        }
+                    } else {
+                        let c = &mut convs[i];
+                        if c.app.waiting && !text.starts_with('/') && c.app.approvals.is_empty() {
+                            c.app.messages.push(Message::new("info", "lyra is still answering here — send it again when the reply is done (or start a new conversation)".into()));
+                        } else {
+                            c.app.log(Level::Info, format!("from {device}: {}", text.chars().take(80).collect::<String>()));
+                            c.app.input = text;
+                            c.app.send();
+                        }
+                        c.changed = true;
                     }
-                    app.log(Level::Info, format!("from {device}: {}", text.chars().take(80).collect::<String>()));
-                    app.input = text;
-                    app.send();
                 }
-                Inbound::Stop { device } => {
-                    app.log(Level::Info, format!("{device} pressed stop"));
-                    let _ = app.stop();
+                Inbound::Stop { device, session } => {
+                    let i = conv_for(&mut convs, &session);
+                    convs[i].app.log(Level::Info, format!("{device} pressed stop"));
+                    let _ = convs[i].app.stop();
+                    convs[i].changed = true;
                 }
                 Inbound::Approve { id, answer, device } => {
-                    app.log(Level::Agent, format!("{device} answered approval {id}: {answer}"));
-                    app.answer_approval_id(id, &answer);
+                    if let Some(c) = convs.iter_mut().find(|c| c.app.approvals.iter().any(|r| r.id == id)) {
+                        c.app.log(Level::Agent, format!("{device} answered approval {id}: {answer}"));
+                        c.app.answer_approval_id(id, &answer);
+                        c.changed = true;
+                    }
                 }
                 Inbound::Note(text) => {
-                    app.log(Level::Info, text.clone());
-                    app.messages.push(Message::new("info", text));
-                    mirror.extra = hub_status(hub, node_build.as_deref());
+                    convs[0].app.log(Level::Info, text);
+                    extra = hub_status(hub, node_build.as_deref());
+                    everyone = true;
                 }
-                Inbound::DevicesChanged => mirror.extra = hub_status(hub, node_build.as_deref()),
+                Inbound::DevicesChanged => {
+                    extra = hub_status(hub, node_build.as_deref());
+                    everyone = true;
+                }
                 Inbound::PairRequested(p) => {
                     let what = if p.kind == "node" { "machine" } else { "device" };
-                    let text = format!(
-                        "🔗 {} ({}{}) asks to pair as a {what}. Code {} — approve: /devices approve {} · deny: /devices deny {}",
-                        p.name,
-                        p.hostname,
-                        if p.os.is_empty() { String::new() } else { format!(", {}", p.os) },
-                        p.code,
-                        p.code,
-                        p.code
-                    );
-                    app.log(Level::Agent, text.clone());
-                    app.messages.push(Message::new("info", text));
-                    mirror.extra = hub_status(hub, node_build.as_deref());
+                    convs[0].app.log(Level::Agent, format!("🔗 {} ({}) asks to pair as a {what}, code {}: /devices approve {}", p.name, p.hostname, p.code, p.code));
+                    extra = hub_status(hub, node_build.as_deref());
+                    everyone = true;
                     if notify {
                         hub.notify(Notification {
                             title: format!("{} wants to pair", p.name),
@@ -253,21 +288,24 @@ pub fn run(app: &mut App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>
                         });
                     }
                 }
-                Inbound::Get { what, reply } => {
-                    let _ = reply.send(data(app, hub, &what, node_build.as_deref()));
+                Inbound::Get { what, arg: _, session, reply } => {
+                    let loaded: Loaded = convs.iter().map(|c| (c.app.session_id.clone(), c.app.waiting)).collect();
+                    let i = conv_for(&mut convs, &session);
+                    let _ = reply.send(data(&mut convs[i].app, hub, &what, node_build.as_deref(), &loaded));
                 }
                 Inbound::MachinesChanged => {
                     let now: Vec<String> = hub.machines().into_iter().map(|m| m.name).collect();
-                    for m in now.iter().filter(|m| !mirror.machines.contains(m)) {
-                        app.log(Level::Agent, format!("machine {m} connected: the Operator can work on it"));
+                    for m in now.iter().filter(|m| !machines.contains(m)) {
+                        convs[0].app.log(Level::Agent, format!("machine {m} connected: the Operator can work on it"));
                     }
-                    for m in mirror.machines.iter().filter(|m| !now.contains(m)) {
-                        app.log(Level::Agent, format!("machine {m} disconnected"));
+                    for m in machines.iter().filter(|m| !now.contains(m)) {
+                        convs[0].app.log(Level::Agent, format!("machine {m} disconnected"));
                     }
-                    mirror.machines = now;
-                    mirror.extra = hub_status(hub, node_build.as_deref());
+                    machines = now;
+                    extra = hub_status(hub, node_build.as_deref());
+                    everyone = true;
                     // The system tools' `machine` choices follow.
-                    if let Some(caps) = app.caps.clone() {
+                    if let Some(caps) = convs[0].app.caps.clone() {
                         std::thread::spawn(move || {
                             caps.refresh();
                         });
@@ -277,49 +315,106 @@ pub fn run(app: &mut App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>
                     let _ = reply.send(json!({
                         "version": env!("CARGO_PKG_VERSION"),
                         "uptime_seconds": started.elapsed().as_secs(),
-                        "busy": app.waiting,
-                        "approvals_waiting": app.approvals.len(),
+                        "busy": convs.iter().any(|c| c.app.waiting),
+                        "conversations": convs.len(),
+                        "approvals_waiting": convs.iter().map(|c| c.app.approvals.len()).sum::<usize>(),
                     }));
                 }
-                Inbound::Snapshot(reply) => {
-                    for u in mirror.updates(app) {
-                        hub.publish(u);
+                Inbound::Snapshot { session, reply } => {
+                    let i = conv_for(&mut convs, &session);
+                    let c = &mut convs[i];
+                    c.mirror.machines = machines.clone();
+                    c.mirror.extra = extra.clone();
+                    for u in c.mirror.updates(&mut c.app) {
+                        hub.publish(Some(&c.app.session_id), u);
                     }
-                    let _ = reply.send(mirror.snapshot(hub.seq(), hub.app_version()));
+                    c.changed = false;
+                    let _ = reply.send(c.mirror.snapshot(hub.seq(), hub.app_version()));
+                }
+            }
+            next = inbound.try_recv().ok();
+        }
+        // Each conversation's own work: replies streaming, agents, plans…
+        let many = convs.len() > 1;
+        for c in convs.iter_mut() {
+            while let Ok(event) = c.app.rx.try_recv() {
+                let note = notification(&event);
+                let done = matches!(event, StreamEvent::Done(_));
+                c.app.handle(event);
+                c.changed = true;
+                if !notify || hub.someone_watching() {
+                    continue;
+                }
+                // With several conversations, say which one.
+                let about = |title: String| match c.app.messages.iter().find(|m| m.role == "user") {
+                    Some(m) if many => format!("{title} · {}", m.content.lines().next().unwrap_or("").chars().take(40).collect::<String>()),
+                    _ => title,
+                };
+                if done {
+                    let body = c.app.messages.iter().rev().find(|m| m.role == "assistant").map(|m| preview(&m.content)).unwrap_or_default();
+                    hub.notify(Notification { title: about("lyra replied".into()), body, tag: format!("reply-{}", c.app.session_id), approval: None });
+                }
+                if let Some(mut n) = note {
+                    n.title = about(n.title);
+                    hub.notify(n);
                 }
             }
         }
-        if !app.waiting && app.last_schedule_check.elapsed() > Duration::from_secs(10 * 60) {
-            app.scheduled();
-            changed = true;
-        }
-        if !app.waiting && !app.plan_busy && app.goals_checked.elapsed() > app.goals_every {
-            app.goals_tick();
-            changed = true;
+        // lyra's background work, on the primary.
+        {
+            let p = &mut convs[0];
+            if !p.app.waiting && p.app.last_schedule_check.elapsed() > Duration::from_secs(10 * 60) {
+                p.app.scheduled();
+                p.changed = true;
+            }
+            if !p.app.waiting && !p.app.plan_busy && p.app.goals_checked.elapsed() > p.app.goals_every {
+                p.app.goals_tick();
+                p.changed = true;
+            }
         }
         // Pairing requests expire and devices come and go: refresh now and then.
         if last_extra.elapsed() > Duration::from_secs(10) {
             last_extra = Instant::now();
-            let extra = hub_status(hub, node_build.as_deref());
-            if extra != mirror.extra {
-                mirror.extra = extra;
-                changed = true;
+            let now = hub_status(hub, node_build.as_deref());
+            if now != extra {
+                extra = now;
+                everyone = true;
             }
         }
-        // The phase timer ("thinking 4s") ticks while something is happening.
-        if changed || (app.waiting && last_status.elapsed() > Duration::from_secs(1)) {
-            last_status = Instant::now();
-            for u in mirror.updates(app) {
-                hub.publish(u);
+        let attached = hub.attached_sessions();
+        for c in convs.iter_mut() {
+            // The phase timer ("thinking 4s") ticks while something is happening.
+            if everyone || c.changed || (c.app.waiting && c.last_status.elapsed() > Duration::from_secs(1)) {
+                c.last_status = Instant::now();
+                c.changed = false;
+                c.mirror.machines = machines.clone();
+                c.mirror.extra = extra.clone();
+                for u in c.mirror.updates(&mut c.app) {
+                    hub.publish(Some(&c.app.session_id), u);
+                }
+            }
+            // The activity log goes to stdout (the systemd journal).
+            if c.app.logged > c.printed {
+                let new = ((c.app.logged - c.printed) as usize).min(c.app.activity.len());
+                for a in &c.app.activity[c.app.activity.len() - new..] {
+                    println!("{} {}", a.time, a.text);
+                }
+                c.printed = c.app.logged;
+            }
+            if c.app.waiting || attached.contains(&c.app.session_id) {
+                c.quiet_since = Instant::now();
             }
         }
-        // The activity log goes to stdout (the systemd journal).
-        if app.logged > printed {
-            let new = ((app.logged - printed) as usize).min(app.activity.len());
-            for a in &app.activity[app.activity.len() - new..] {
-                println!("{} {}", a.time, a.text);
+        // Put away conversations nobody has looked at for a while (saved first).
+        let mut i = 1;
+        while i < convs.len() {
+            if convs[i].quiet_since.elapsed() > IDLE {
+                let mut c = convs.remove(i);
+                c.app.save_session();
+                println!("put away conversation {} (idle)", c.app.session_id);
+            } else {
+                i += 1;
             }
-            printed = app.logged;
         }
     }
 }
@@ -376,13 +471,17 @@ fn level_name(level: Level) -> &'static str {
 }
 
 /// The lists the web app's pages show.
-fn data(app: &mut App, hub: &Hub, what: &str, node_build: Option<&str>) -> Value {
+/// Conversations loaded now: (session, answering).
+type Loaded = Vec<(String, bool)>;
+
+fn data(app: &mut App, hub: &Hub, what: &str, node_build: Option<&str>, loaded: &Loaded) -> Value {
     let text = |r: Result<String, String>| json!({ "text": r.unwrap_or_else(|e| e) });
     match what {
         "sessions" => {
             let all = crate::sessions::dir().map(|d| crate::sessions::list(&d)).unwrap_or_default();
             json!(all.iter().take(60).map(|s| json!({
                 "id": s.id, "title": s.title, "turns": s.user_turns(), "updated": s.updated, "current": s.id == app.session_id,
+                "open": loaded.iter().any(|(id, _)| *id == s.id), "answering": loaded.iter().any(|(id, w)| *id == s.id && *w),
             })).collect::<Vec<_>>())
         }
         "devices" => {

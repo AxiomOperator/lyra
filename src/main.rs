@@ -236,7 +236,8 @@ enum StreamEvent {
     AgentBuilt(agents::Built),
 }
 
-/// What `main` opened before the UI starts.
+/// What `main` opened before the UI starts (shared by every conversation).
+#[derive(Clone)]
 struct Services {
     tools: Option<Arc<Tools>>,
     /// Where memory lives, or why it's off.
@@ -389,6 +390,11 @@ struct App {
     logged: u64,
     /// The web server, when this lyra is `lyra serve` (machines, devices).
     hub: Option<lyra_web::Hub>,
+    /// Everything opened at startup, for starting another conversation.
+    shared: Services,
+    /// Runs lyra's background work (schedules, goals); a conversation forked
+    /// for another device doesn't.
+    primary: bool,
     /// Stops the run in progress (a fresh one per run).
     cancel: Cancel,
     /// Agents' actions waiting for the user's y / n / a, oldest first.
@@ -441,6 +447,7 @@ struct App {
 
 impl App {
     fn new(config: Config, context: Context, services: Services) -> Self {
+        let shared = services.clone();
         let Services {
             tools,
             memory_status,
@@ -515,6 +522,8 @@ impl App {
             session_id: sessions::new_id(),
             logged: 0,
             hub: None,
+            shared,
+            primary: true,
             cancel: Cancel::default(),
             approvals: Vec::new(),
             palette: 0,
@@ -2394,6 +2403,17 @@ impl App {
         Ok(String::new())
     }
 
+    /// Another conversation next to this one (`lyra serve`: one per device or
+    /// as asked), sharing memory, skills, agents, tools and the server.
+    fn fork(&self) -> App {
+        let config = Config::load().unwrap_or_default();
+        let mut app = App::new(config, Context::load(), self.shared.clone());
+        app.hub = self.hub.clone();
+        app.primary = false;
+        app.refresh_agents();
+        app
+    }
+
     /// Stop the reply being written (and any agent working for it).
     pub(crate) fn stop(&mut self) -> Result<String, String> {
         if !self.waiting {
@@ -2943,14 +2963,14 @@ fn main() {
     }
     app.start();
     if serving {
-        return serve_main(&mut app, &web, runtime.handle());
+        return serve_main(app, &web, runtime.handle());
     }
     ratatui::run(|terminal| run(terminal, &mut app)).expect("terminal error");
     app.save_session();
 }
 
 /// `lyra serve`: no terminal UI; phones and browsers connect over the web.
-fn serve_main(app: &mut App, web: &lyra_web::Settings, rt: &tokio::runtime::Handle) {
+fn serve_main(mut app: App, web: &lyra_web::Settings, rt: &tokio::runtime::Handle) {
     let Some(dir) = config::home().map(|h| h.join("web")) else {
         eprintln!("lyra: no home directory");
         std::process::exit(1);
