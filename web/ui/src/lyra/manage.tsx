@@ -14,7 +14,7 @@ import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from
 import { ago } from "./push";
 import { Page, useConfirm } from "./parts";
 import { useLyra } from "./store";
-import type { GoalRow, GoalsPageData, MemoryPageData, ModelsData, RulesData, SkillRow, SkillsPageData, SystemRules } from "./types";
+import type { GoalRow, GoalsPageData, MemoryPageData, ModelsData, Routine, RoutineRun, RulesData, SkillRow, SkillsPageData, SystemRules } from "./types";
 
 /** Load a page's data, again after every change. */
 function usePage<T>(what: string, arg?: unknown) {
@@ -571,5 +571,209 @@ export function RulesDialog({ machine, onClose }: { machine: string | null; onCl
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ---- routines
+
+const examples = ["every day at 07:00", "weekdays at 8:30", "monday at 9:00", "every 6h"];
+
+/** "in 3 h" / "in 12 min" */
+function until(iso: string) {
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms <= 0) return "now";
+  const m = Math.round(ms / 60000);
+  return m < 60 ? `in ${m} min` : m < 48 * 60 ? `in ${Math.round(m / 60)} h` : `in ${Math.round(m / 1440)} d`;
+}
+
+/** A routine's settings, edited in a dialog (new when `routine` is null). */
+function RoutineDialog({ open, routine, onClose, act }: { open: boolean; routine: Routine | null; onClose: () => void; act: (c: string) => Promise<boolean> }) {
+  const [name, setName] = useState("");
+  const [schedule, setSchedule] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [notify, setNotify] = useState<Routine["notify"]>("problems");
+  const [changes, setChanges] = useState(false);
+  useEffect(() => {
+    setChanges(routine?.changes ?? false);
+    setName(routine?.name ?? "");
+    setSchedule(routine?.schedule ?? "every day at 07:00");
+    setPrompt(routine?.prompt ?? "");
+    setNotify(routine?.notify ?? "problems");
+  }, [routine, open]);
+  // One line each: the command separates fields with "|".
+  const clean = (t: string) => t.replace(/\s+/g, " ").replace(/\|/g, "/").trim();
+  const save = async () => {
+    let ok: boolean;
+    if (!routine) {
+      ok = await act(`/routine new ${clean(name)} | ${clean(schedule)} | ${clean(prompt)} | notify ${notify}${changes ? " | changes" : ""}`);
+    } else {
+      ok = true;
+      if (clean(schedule) !== routine.schedule) ok = (await act(`/routine edit ${routine.name} schedule ${clean(schedule)}`)) && ok;
+      if (ok && clean(prompt) !== routine.prompt) ok = (await act(`/routine edit ${routine.name} prompt ${clean(prompt)}`)) && ok;
+      if (ok && notify !== routine.notify) ok = (await act(`/routine notify ${routine.name} ${notify}`)) && ok;
+      if (ok && changes !== routine.changes) ok = (await act(`/routine edit ${routine.name} changes ${changes ? "on" : "off"}`)) && ok;
+    }
+    if (ok) onClose();
+  };
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{routine ? `Edit ${routine.name}` : "New routine"}</DialogTitle>
+          <DialogDescription>Something lyra does on a schedule, by itself. You hear about it only when it matters.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          {!routine && <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name, e.g. morning-check" />}
+          <div className="space-y-1.5">
+            <Input value={schedule} onChange={(e) => setSchedule(e.target.value)} placeholder="When" />
+            <div className="flex flex-wrap gap-1.5">
+              {examples.map((x) => (
+                <button key={x} type="button" onClick={() => setSchedule(x)} className="rounded-full border px-2 py-0.5 text-muted-foreground text-xs hover:bg-accent/50">
+                  {x}
+                </button>
+              ))}
+            </div>
+          </div>
+          <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} placeholder="What to do, e.g. check disk space, pending updates and failed services on @all" />
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-0.5 size-4 accent-teal-500" checked={changes} onChange={(e) => setChanges(e.target.checked)} />
+            <span>
+              It may change things
+              <span className="block text-muted-foreground text-xs">Each change still asks you. Off: it only checks and reports, so it never waits on you.</span>
+            </span>
+          </label>
+          <label className="flex items-center justify-between gap-3 text-sm">
+            <span>Tell me</span>
+            <select value={notify} onChange={(e) => setNotify(e.target.value as Routine["notify"])} className="rounded-md border bg-background px-2 py-1.5 text-sm">
+              <option value="problems">only when something needs me</option>
+              <option value="always">after every run</option>
+              <option value="never">never (Activity only)</option>
+            </select>
+          </label>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button disabled={!clean(prompt) || !clean(schedule) || (!routine && !clean(name))} onClick={save}>
+            {routine ? "Save" : "Create"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RunLine({ run, open }: { run: RoutineRun; open: (session: string) => void }) {
+  const [more, setMore] = useState(false);
+  const mark = run.outcome !== "ok" ? `✗ ${run.outcome}` : run.needs_user ? "⚠ needs you" : "✓ all clear";
+  return (
+    <div className="rounded-md border px-3 py-2 text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <span className={cn("font-medium", run.outcome !== "ok" || run.needs_user ? "text-red-300" : "text-emerald-300")}>{mark}</span>
+        <span className="text-muted-foreground text-xs">
+          {ago(run.at)} · {run.seconds}s · {run.decided_by}
+        </span>
+      </div>
+      <p className={cn("mt-1 whitespace-pre-wrap break-words text-muted-foreground text-xs", !more && "line-clamp-3")}>{run.summary}</p>
+      <div className="mt-1 flex gap-3 text-xs">
+        <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setMore(!more)}>
+          {more ? "less" : "more"}
+        </button>
+        <button type="button" className="text-teal-300 hover:text-teal-200" onClick={() => open(run.session)}>
+          open the conversation
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function RoutinesPage({ onBack, toChat }: { onBack: () => void; toChat: () => void }) {
+  const { status, say } = useLyra();
+  // Follows runs starting and finishing.
+  const [data, reload] = usePage<Routine[] | { error: string }>("routines", JSON.stringify(status.routines ?? null));
+  const { act, busy, note } = useAction(reload);
+  const [confirm, dialog] = useConfirm();
+  const [editing, setEditing] = useState<{ routine: Routine | null } | null>(null);
+  const [history, setHistory] = useState<string | null>(null);
+  const routines = Array.isArray(data) ? data : [];
+  const open = (session: string) => {
+    say(`/resume ${session}`);
+    toChat();
+  };
+  return (
+    <Page
+      title="Routines"
+      description="Things lyra does on a schedule — it tells you only when something needs you."
+      action={
+        <div className="flex gap-1">
+          <Button size="sm" onClick={() => setEditing({ routine: null })}>
+            <Plus /> New
+          </Button>
+          <Back onBack={onBack} />
+        </div>
+      }
+    >
+      {data && !Array.isArray(data) && <Failed error={data.error} />}
+      {note}
+      {data && routines.length === 0 && (
+        <p className="text-muted-foreground text-sm">
+          No routines yet. Add one here, or just ask lyra: "every morning at 7, check disk space and failed services on @all and tell me if anything's wrong".
+        </p>
+      )}
+      {routines.map((r) => {
+        const last = r.runs[0];
+        return (
+          <Card key={r.name} className={cn("gap-2 py-3", !r.enabled && "opacity-70")}>
+            <CardHeader className="px-4">
+              <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
+                {r.name}
+                {r.running && <Badge className="bg-sky-600/80 text-white">running</Badge>}
+                {!r.enabled && <Badge variant="secondary">paused</Badge>}
+                {r.changes && <Badge variant="outline">may change things</Badge>}
+                {!r.valid && <Badge className="bg-red-500/20 text-red-300">bad schedule</Badge>}
+              </CardTitle>
+              <CardDescription className="break-words">
+                {r.schedule}
+                {r.next && ` · next ${until(r.next)} (${new Date(r.next).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })})`}
+                {` · tells you ${r.notify === "problems" ? "when something needs you" : r.notify === "always" ? "after every run" : "never"}`}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 px-4">
+              <p className="whitespace-pre-wrap break-words text-sm">{r.prompt}</p>
+              {last ? <RunLine run={last} open={open} /> : <p className="text-muted-foreground text-xs">Not run yet.</p>}
+              {history === r.name && r.runs.slice(1).map((x) => <RunLine key={x.at} run={x} open={open} />)}
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" disabled={busy || r.running} onClick={() => act(`/routine run ${r.name}`)}>
+                  <Play /> Run now
+                </Button>
+                <Button size="sm" variant="ghost" disabled={busy} onClick={() => act(`/routine ${r.enabled ? "pause" : "resume"} ${r.name}`)}>
+                  {r.enabled ? <Pause /> : <Play />} {r.enabled ? "Pause" : "Resume"}
+                </Button>
+                <Button size="sm" variant="ghost" disabled={busy} onClick={() => setEditing({ routine: r })}>
+                  <Pencil /> Edit
+                </Button>
+                {r.runs.length > 1 && (
+                  <Button size="sm" variant="ghost" onClick={() => setHistory(history === r.name ? null : r.name)}>
+                    <ChevronDown className={cn(history === r.name && "rotate-180")} /> {r.runs.length - 1} earlier
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-red-400 hover:text-red-300"
+                  disabled={busy}
+                  onClick={() => confirm({ title: `Delete ${r.name}?`, text: "It stops running; its past runs stay in your conversations.", action: "Delete", run: () => void act(`/routine delete ${r.name}`) })}
+                >
+                  <Trash2 /> Delete
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })}
+      <RoutineDialog open={!!editing} routine={editing?.routine ?? null} onClose={() => setEditing(null)} act={act} />
+      {dialog}
+    </Page>
   );
 }

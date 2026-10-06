@@ -151,6 +151,11 @@ fn forbidden(line: &str) -> Option<String> {
     None
 }
 
+/// A command's verb: its first word that's neither an option nor a redirection (`2>&1`).
+fn verb(args: &[String]) -> Option<&str> {
+    args.iter().map(String::as_str).find(|a| !a.starts_with('-') && !a.contains('>') && !a.contains('<'))
+}
+
 /// Whether one simple command (first word and the rest) only reads.
 fn reads_only(cmd: &str, args: &[String]) -> Result<(), String> {
     let has = |flags: &[&str]| args.iter().any(|a| flags.iter().any(|f| a == f || a.starts_with(&format!("{f}="))));
@@ -160,14 +165,21 @@ fn reads_only(cmd: &str, args: &[String]) -> Result<(), String> {
         "sed" => !args.iter().any(|a| a.starts_with("-i") || a == "--in-place"),
         "awk" => !args.iter().any(|a| a.contains("system(") || a.contains("print >") || a.contains("| getline")),
         "git" => matches!(sub, "status" | "log" | "diff" | "show" | "branch" | "remote" | "tag" | "blame" | "rev-parse" | "ls-files" | "describe" | "shortlog" | "ls-remote" | "grep"),
-        "systemctl" => matches!(sub, "status" | "list-units" | "list-unit-files" | "list-timers" | "is-active" | "is-enabled" | "is-failed" | "show" | "cat"),
+        // The verb is the first word that isn't an option; options alone (`--failed`) list units.
+        "systemctl" => matches!(
+            verb(args).unwrap_or("list-units"),
+            "status" | "list-units" | "list-unit-files" | "list-timers" | "list-sockets" | "list-jobs" | "list-dependencies" | "is-active" | "is-enabled" | "is-failed" | "is-system-running" | "get-default" | "show" | "cat"
+        ),
         "docker" | "podman" => matches!(sub, "ps" | "images" | "logs" | "inspect" | "version" | "info" | "top" | "port") || (sub == "stats" && has(&["--no-stream"])),
         "kubectl" => matches!(sub, "get" | "describe" | "logs" | "version" | "top" | "explain" | "api-resources"),
         "ip" => matches!(sub, "addr" | "a" | "address" | "route" | "r" | "link" | "l" | "neigh" | "n" | "-br" | "-4" | "-6" | "-s") && !has(&["add", "del", "delete", "set", "flush", "change", "replace"]),
         "ping" => has(&["-c"]),
         "top" => has(&["-b", "-bn1"]) || args.iter().any(|a| a.starts_with("-b")),
         "curl" => !has(&["-X", "--request", "-d", "--data", "--data-raw", "--data-binary", "--data-urlencode", "-F", "--form", "-T", "--upload-file", "-o", "--output", "-O", "--remote-name"]),
-        "apt" | "dnf" => matches!(sub, "list" | "search" | "info" | "show" | "history" | "repolist"),
+        "apt" | "dnf" => matches!(
+            verb(args).unwrap_or(""),
+            "list" | "search" | "info" | "show" | "history" | "repolist" | "check-update" | "updateinfo" | "repoquery" | "provides"
+        ),
         "rpm" => args.iter().all(|a| !a.starts_with("-e") && !a.starts_with("-i") && !a.starts_with("-U")),
         "dpkg" => has(&["-l", "-L", "-s", "--list", "--status", "--listfiles"]),
         "timedatectl" | "hostnamectl" | "loginctl" => sub.is_empty() || matches!(sub, "status" | "show" | "list-sessions" | "list-users"),
@@ -309,6 +321,10 @@ mod tests {
             "ps aux | grep nginx | head -5",
             "git status",
             "systemctl status nginx",
+            "systemctl --failed --no-pager --no-legend",
+            "systemctl --failed --no-legend --no-pager 2>&1; echo \"EXIT:$?\"",
+            "systemctl --user list-timers",
+            "dnf -q check-update",
             "find . -name '*.rs' | wc -l",
             "cat /etc/os-release 2>/dev/null",
             "ping -c 3 172.99.99.11",
@@ -325,6 +341,8 @@ mod tests {
         assert!(matches!(class("sed -i s/a/b/ f"), Class::Change(_)));
         assert!(matches!(class("find . -name '*.tmp' -delete"), Class::Change(_)));
         assert!(matches!(class("systemctl restart nginx"), Class::Change(_)));
+        assert!(matches!(class("systemctl --now enable nginx"), Class::Change(_)), "options first, then a changing verb");
+        assert!(matches!(class("dnf -y upgrade"), Class::Change(_)));
         assert!(matches!(class("ls $(cat list)"), Class::Change(_)));
         assert!(matches!(class("curl -X POST http://x"), Class::Change(_)));
         assert!(matches!(class("ls && rm -r build"), Class::Dangerous(w) if w.contains("deletes")));

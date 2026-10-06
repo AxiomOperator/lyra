@@ -632,6 +632,43 @@ ssh_hosts = []               # e.g. ["web1", "deploy@10.0.0.5"]
 approval_timeout_seconds = 300
 ```
 
+## Routines
+
+A routine is something lyra does on a schedule, by itself, and tells you about only when it
+matters. Just ask:
+
+> every morning at 7, check disk space, pending updates and failed services on @all and tell me
+> only if something's wrong
+
+The Operator creates it with `routine_create` after you approve it once. You can also create
+one by hand:
+
+```
+/routine new morning-check | every day at 07:00 | check disk, updates and failed services on @all
+```
+
+- **Schedules:** `every day at 07:00`, `every morning at 7`, `weekdays at 8:30`,
+  `monday and friday at 9pm`, `at 6:15am`, `every 30m`, `every 6h`, `hourly` (at most every
+  5 minutes). A run missed while lyra was down happens once when it's back.
+- **Running:** `lyra serve` runs each due routine in its own conversation, which you can open
+  from the routine. The reply starts with a verdict. The decision model (or the chat model)
+  then answers "does this need the user?".
+- **`notify = problems` (the default):** you get a push only for a "yes", like a failed unit,
+  a full disk, or a check that couldn't run. `always` pushes every run, and `never` only logs it.
+- **Only looking:** routines only look unless you turn on `changes`. A look-only run is told to
+  use read-only checks, and anything it asks to change is declined at once, so a 7 a.m. run
+  never waits on you. With `changes`, each change asks you as usual.
+- **Commands:** `/routine` lists them with their next and last runs.
+  `/routine run|pause|resume|delete|show <name>` and
+  `/routine edit <name> schedule|prompt|notify|changes <value>` manage them.
+- **Storage:** each routine is a TOML file in `~/.lyra/routines/`, and its last 20 runs are in
+  `runs.json`.
+
+In the app, Routines (sidebar, or More → Routines on a phone) lists each routine with its next
+run and last verdict, and has **New**, **Run now**, Pause/Resume, Edit, Delete and earlier
+runs. A routine whose last run needs you gets a badge. `lyra connect`'s side panel lists them
+too (✓ all clear, ⚠ needs you, ↻ running).
+
 ## Backups
 
 lyra backs itself up every night: memory, skills, goals, plans, agents, saved conversations,

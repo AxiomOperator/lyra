@@ -112,6 +112,11 @@ fn alert(app: &mut App, hub: &Hub, machine: &str, text: &str, problem: bool) {
     }
 }
 
+/// A routine was asked to run now (checked every loop, cheaply).
+fn routines_wanted() -> bool {
+    crate::routines::has_requests()
+}
+
 /// A conversation's title: its first message's first line.
 fn title(app: &App) -> Option<String> {
     app.messages.iter().find(|m| m.role == "user").map(|m| m.content.lines().next().unwrap_or("").chars().take(60).collect::<String>())
@@ -261,12 +266,14 @@ struct Conv {
     last_status: Instant,
     /// Since when no device has shown it and it isn't answering.
     quiet_since: Instant,
+    /// A routine running here, and since when.
+    routine: Option<(crate::routines::Routine, Instant)>,
 }
 
 impl Conv {
     fn new(app: App) -> Conv {
         let printed = app.logged;
-        Conv { app, mirror: Mirror::default(), printed, changed: true, last_status: Instant::now(), quiet_since: Instant::now() }
+        Conv { app, mirror: Mirror::default(), printed, changed: true, last_status: Instant::now(), quiet_since: Instant::now(), routine: None }
     }
 }
 
@@ -308,6 +315,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let (health_tx, health_rx) = std::sync::mpsc::channel::<Value>();
     let mut server_health = Value::Null;
     let mut last_checkup: Option<Instant> = None;
+    // Routines: when they were last looked at, and finished runs coming back.
+    let mut last_routines = Instant::now() - Duration::from_secs(60);
+    let (routine_tx, routine_rx) = std::sync::mpsc::channel::<(crate::routines::Routine, crate::routines::Run)>();
+    let mut routines_view = Value::Null;
     let started = Instant::now();
     let mut convs = vec![Conv::new(primary)];
     loop {
@@ -481,6 +492,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     c.mirror.extra = extra.clone();
                     c.mirror.extra["conversations"] = last_open.clone();
                     c.mirror.extra["server_health"] = server_health.clone();
+                    c.mirror.extra["routines"] = routines_view.clone();
                     for u in c.mirror.updates(&mut c.app) {
                         hub.publish(Some(&c.app.session_id), u);
                     }
@@ -497,9 +509,43 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         for c in convs.iter_mut() {
             while let Ok(event) = c.app.rx.try_recv() {
                 let note = notification(&event);
-                let done = matches!(event, StreamEvent::Done(_));
+                let done = matches!(event, StreamEvent::Done(_) | StreamEvent::Error(_));
                 c.app.handle(event);
                 c.changed = true;
+                // A routine's run: judged and told by its own rules, not "lyra replied".
+                if let Some((r, started)) = c.routine.clone() {
+                    let may_change = r.changes;
+                    // One that only looks: anything asking to change something is refused at once.
+                    if !r.changes {
+                        let asked: Vec<u64> = c.app.approvals.iter().map(|a| a.id).collect();
+                        for id in asked {
+                            c.app.answer_approval_id(id, "n");
+                            c.app.log(Level::Plan, format!("routine {}: declined a change (it only looks; /routine edit {} changes on lets it ask)", r.name, r.name));
+                        }
+                    }
+                    if done && !c.app.waiting {
+                        c.routine = None;
+                        let reply = c.app.messages.iter().rev().find(|m| matches!(m.role.as_str(), "assistant" | "error")).map(|m| (m.role.clone(), m.content.clone()));
+                        let outcome = match &reply {
+                            Some((role, _)) if role == "error" => "error",
+                            Some((_, content)) if content.ends_with("_(stopped)_") => "stopped",
+                            _ => "ok",
+                        };
+                        let text = reply.map(|m| m.1).unwrap_or_default();
+                        let (url, model, session, tx) = (format!("{}/chat/completions", c.app.base_url.trim_end_matches('/')), c.app.model.clone(), c.app.session_id.clone(), routine_tx.clone());
+                        std::thread::spawn(move || {
+                            let (needs_user, decided_by) = if outcome == "ok" { crate::routines::needs_user(&url, &model, &r, &text) } else { (true, "it didn't finish".into()) };
+                            let summary: String = text.trim().chars().take(400).collect();
+                            let run = crate::routines::Run { at: chrono::Utc::now(), seconds: started.elapsed().as_secs(), needs_user, outcome: outcome.into(), summary, session, decided_by };
+                            let _ = tx.send((r, run));
+                        });
+                    }
+                    // Only a routine allowed to change things asks the user.
+                    if let Some(n) = note.filter(|_| may_change) {
+                        hub.notify(n);
+                    }
+                    continue;
+                }
                 if !notify || hub.someone_watching() {
                     continue;
                 }
@@ -528,6 +574,59 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             if !p.app.waiting && !p.app.plan_busy && p.app.goals_checked.elapsed() > p.app.goals_every {
                 p.app.goals_tick();
                 p.changed = true;
+            }
+        }
+        // Routines: due ones and ones asked for, each in its own conversation.
+        if last_routines.elapsed() >= Duration::from_secs(20) || routines_wanted() {
+            last_routines = Instant::now();
+            let mut start: Vec<crate::routines::Routine> = crate::routines::due(chrono::Local::now());
+            for name in crate::routines::take_requests() {
+                if let Ok(r) = crate::routines::find(&name)
+                    && !start.iter().any(|x| x.name == r.name)
+                {
+                    start.push(r);
+                }
+            }
+            for r in start {
+                if convs.iter().any(|c| c.routine.as_ref().is_some_and(|(x, _)| x.name == r.name)) {
+                    continue;
+                }
+                let mut app = convs[0].app.fork();
+                app.input = crate::routines::message(&r);
+                app.send();
+                convs[0].app.log(Level::Plan, format!("routine {} started", r.name));
+                let mut c = Conv::new(app);
+                c.routine = Some((r, Instant::now()));
+                convs.push(c);
+            }
+        }
+        while let Ok((r, run)) = routine_rx.try_recv() {
+            let verdict = if run.outcome != "ok" { format!("{} ({})", run.outcome, run.decided_by) } else if run.needs_user { "needs you".into() } else { "all clear".into() };
+            let first = run.summary.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(140).collect::<String>();
+            convs[0].app.log(if run.needs_user { Level::Error } else { Level::Plan }, format!("routine {}: {verdict} ({}s, by {}) — {first}", r.name, run.seconds, run.decided_by));
+            let tell = match r.notify {
+                crate::routines::Notify::Always => true,
+                crate::routines::Notify::Problems => run.needs_user,
+                crate::routines::Notify::Never => false,
+            };
+            if tell {
+                hub.notify(Notification {
+                    title: format!("{} {}", if run.needs_user { "⚠" } else { "✓" }, r.name),
+                    body: preview(&run.summary),
+                    tag: format!("routine-{}", r.name),
+                    approval: None,
+                });
+            }
+            crate::routines::record(&r.name, run);
+            everyone = true;
+        }
+        // What the panels show: each routine's next run, last result, running now.
+        if last_routines.elapsed() < Duration::from_millis(50) || everyone {
+            let running: Vec<String> = convs.iter().filter_map(|c| c.routine.as_ref().map(|(r, _)| r.name.clone())).collect();
+            let now = crate::routines::view(&running, 1);
+            if now != routines_view {
+                routines_view = now;
+                everyone = true;
             }
         }
         // The server's own health, like a machine's.
@@ -572,6 +671,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         let mut extra_now = extra.clone();
         extra_now["conversations"] = open;
         extra_now["server_health"] = server_health.clone();
+        extra_now["routines"] = routines_view.clone();
         let attached = hub.attached_sessions();
         for c in convs.iter_mut() {
             // The phase timer ("thinking 4s") ticks while something is happening.
@@ -757,6 +857,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
                 "current": h.id == app.session_id,
             })).collect::<Vec<_>>())
         }
+        "routines" => crate::routines::view(&[], 10),
         "devices" => {
             let online: Vec<String> = hub.online_devices().into_iter().map(|(id, _)| id).collect();
             let machines: Vec<String> = hub.machines().into_iter().map(|m| m.name.to_lowercase()).collect();

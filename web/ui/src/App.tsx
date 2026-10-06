@@ -6,10 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { Brain, Cpu, Ellipsis, GraduationCap, MessageSquare, MessageSquarePlus, ScrollText, Server, Smartphone, Sparkles, Target, WifiOff } from "lucide-react";
+import { AlarmClock, Brain, Cpu, Ellipsis, GraduationCap, MessageSquare, MessageSquarePlus, ScrollText, Server, Smartphone, Sparkles, Target, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
-import { GoalsPage, MemoryPage, ModelsPage, SkillsPage } from "./lyra/manage";
+import { GoalsPage, MemoryPage, ModelsPage, RoutinesPage, SkillsPage } from "./lyra/manage";
 import { ActivityPage, DevicesPage, MachinesPage, MorePage } from "./lyra/pages";
 import { ago } from "./lyra/push";
 import { SearchBox, SearchHits, useConversationSearch } from "./lyra/search";
@@ -20,8 +20,8 @@ import { loadToken, saveToken, takeShared } from "./lyra/token";
 type Tab = "chat" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "memory" | "skills" | "goals" | "model";
-const manage: Manage[] = ["memory", "skills", "goals", "model"];
+type Manage = "routines" | "memory" | "skills" | "goals" | "model";
+const manage: Manage[] = ["routines", "memory", "skills", "goals", "model"];
 
 type TabItem = {
   id: Tab;
@@ -152,6 +152,7 @@ function Shell() {
   };
 
   const more: TabItem[] = [
+    { id: "routines", label: "Routines", icon: AlarmClock, badge: (status.routines ?? []).filter((r) => r.runs[0]?.needs_user).length },
     { id: "memory", label: "Memory", icon: Brain },
     { id: "skills", label: "Skills", icon: GraduationCap },
     { id: "goals", label: "Goals", icon: Target },
@@ -218,6 +219,7 @@ function Shell() {
           {tab === "devices" && <DevicesPage />}
           {tab === "activity" && <ActivityPage />}
           {tab === "more" && <MorePage toChat={() => setTab("chat")} open={setTab} update={updateApp} />}
+          {tab === "routines" && <RoutinesPage onBack={toMore} toChat={() => setTab("chat")} />}
           {tab === "memory" && <MemoryPage onBack={toMore} />}
           {tab === "skills" && <SkillsPage onBack={toMore} />}
           {tab === "goals" && <GoalsPage onBack={toMore} />}

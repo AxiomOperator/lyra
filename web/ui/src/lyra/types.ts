@@ -86,6 +86,8 @@ export interface Status {
   conversations?: { session: string; title: string | null; answering: boolean }[];
   /** The decision model (`[decide]`), with what it has done since lyra started. */
   decide?: { model: string; decided: number; to_chat: number; ms: number } | null;
+  /** Routines with their next run and last result (`runs` holds the latest one). */
+  routines?: Routine[] | null;
   /** The newest backup of lyra, and whether one is being made. */
   backup?: { name: string; made: string; size: number } | null;
   backing_up?: boolean;
@@ -232,4 +234,28 @@ export interface RulesData {
   system?: SystemRules;
   path?: string;
   error?: string;
+}
+
+export interface RoutineRun {
+  at: string;
+  seconds: number;
+  needs_user: boolean;
+  outcome: string;
+  summary: string;
+  session: string;
+  decided_by: string;
+}
+
+export interface Routine {
+  name: string;
+  schedule: string;
+  prompt: string;
+  notify: "problems" | "always" | "never";
+  enabled: boolean;
+  /** It may change things (asking first); otherwise it only looks. */
+  changes: boolean;
+  valid: boolean;
+  next: string | null;
+  running: boolean;
+  runs: RoutineRun[];
 }

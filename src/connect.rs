@@ -565,6 +565,28 @@ fn draw_panel(f: &mut Frame, s: &Screen, area: Rect) {
         }
         lines.push(Line::styled(truncate("  /sessions · /resume <id>", width), dim));
     }
+    let routines = st["routines"].as_array().cloned().unwrap_or_default();
+    if !routines.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from("Routines".bold()));
+        for r in &routines {
+            let last = &r["runs"][0];
+            let (mark, color) = if r["running"] == true {
+                ("↻", Color::LightBlue)
+            } else if last.is_null() {
+                ("·", Color::DarkGray)
+            } else if last["needs_user"] == true {
+                ("⚠", Color::Red)
+            } else {
+                ("✓", Color::Green)
+            };
+            let next = r["next"].as_str().and_then(|n| chrono::DateTime::parse_from_rfc3339(n).ok()).map_or_else(
+                || if r["enabled"] == true { String::new() } else { " · paused".into() },
+                |n| format!(" · {}", n.with_timezone(&chrono::Local).format("%a %H:%M")),
+            );
+            lines.push(Line::from(vec![Span::styled(format!("{mark} "), Style::default().fg(color)), Span::raw(truncate(&format!("{}{next}", str_of(&r["name"])), width.saturating_sub(2)))]));
+        }
+    }
     lines.push(Line::default());
     lines.push(Line::from("Backup".bold()));
     let backed = if st["backing_up"] == true {

@@ -346,6 +346,7 @@ impl Caps {
         if self.search.as_ref().is_some_and(|s| s.enabled) {
             caps.extend(crate::websearch::capabilities());
         }
+        caps.extend(crate::routines::capabilities());
         if self.system.as_ref().is_some_and(|s| s.settings().enabled) {
             caps.extend(system_tools(&self.machines()));
         }
@@ -560,6 +561,7 @@ impl Caps {
                 Some(client) => client.call(&c.id, &args),
                 None => Err(format!("{} has no provider", c.id)),
             },
+            _ if c.source == "routines" => crate::routines::call(&c.name, &args),
             _ if c.source == "web" => match &self.search {
                 Some(s) => crate::websearch::call(s, &c.name, &args),
                 None => Err("web search is off".into()),

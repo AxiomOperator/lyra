@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { Archive, Bell, BellOff, Bot, Brain, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, Unplug } from "lucide-react";
+import { AlarmClock, Archive, Bell, BellOff, Bot, Brain, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, Unplug } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PairCard } from "./chat";
 import { RulesDialog } from "./manage";
@@ -324,7 +324,7 @@ function Notifications() {
   );
 }
 
-export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "memory" | "skills" | "goals" | "model") => void; update: () => void }) {
+export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "routines" | "memory" | "skills" | "goals" | "model") => void; update: () => void }) {
   const { say, unpaired, token, serverVersion, status } = useLyra();
   const [sessions] = useData<Session[]>("sessions");
   // Asked again when a backup starts or finishes.
@@ -399,6 +399,9 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
           <CardDescription>What lyra knows and can do.</CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-2 gap-2 px-4 sm:grid-cols-3">
+          <Button variant="secondary" onClick={() => open("routines")}>
+            <AlarmClock /> Routines
+          </Button>
           <Button variant="secondary" onClick={() => open("memory")}>
             <Brain /> Memory
           </Button>
