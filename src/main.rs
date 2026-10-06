@@ -3101,7 +3101,7 @@ fn pair_command(args: &[String]) {
             let url = Config::load().map(|c| c.web.public_url).unwrap_or_default();
             let shown = format!("{}-{}", &code[..4], &code[4..]);
             println!("Pairing code: {shown}");
-            println!("Valid for {minutes} minutes, once.");
+            println!("Valid for {minutes} minute{}, once.", if minutes == 1 { "" } else { "s" });
             if url.is_empty() {
                 println!("Open lyra's address on the device and enter it (set [web] public_url for a link and QR code).");
             } else {
