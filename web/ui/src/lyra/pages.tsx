@@ -10,6 +10,7 @@ import { Bell, BellOff, Bot, Brain, Check, Copy, Cpu, Download, GraduationCap, M
 import { useEffect, useState } from "react";
 import { PairCard } from "./chat";
 import { RulesDialog } from "./manage";
+import { SearchBox, SearchHits, useConversationSearch } from "./search";
 import { Dot, Page, useConfirm } from "./parts";
 import { ago, blocker, disable, enable, test } from "./push";
 import { APP_VERSION, useData, useLyra } from "./store";
@@ -285,6 +286,7 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
   const { ask, onData } = useLyra();
   const [text, setText] = useState<{ title: string; body: string } | null>(null);
   const [confirm, dialog] = useConfirm();
+  const search = useConversationSearch();
   useEffect(() => onData((w, d) => w === "agents" && setText({ title: "Agents", body: (d as { text: string }).text })), [onData]);
   const newer = serverVersion && serverVersion !== APP_VERSION;
   return (
@@ -305,8 +307,18 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
           </CardAction>
         </CardHeader>
         <CardContent className="space-y-1.5 px-4">
-          {(sessions ?? []).length === 0 && <p className="text-muted-foreground text-sm">No saved conversations yet.</p>}
-          {(sessions ?? []).map((s) => (
+          <SearchBox query={search.query} setQuery={search.setQuery} className="mb-2" />
+          {search.hits && (
+            <SearchHits
+              hits={search.hits}
+              open={(id, current) => {
+                if (!current) say(`/resume ${id}`);
+                toChat();
+              }}
+            />
+          )}
+          {!search.hits && (sessions ?? []).length === 0 && <p className="text-muted-foreground text-sm">No saved conversations yet.</p>}
+          {!search.hits && (sessions ?? []).map((s) => (
             <button
               key={s.id}
               type="button"

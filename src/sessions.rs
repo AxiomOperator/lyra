@@ -152,6 +152,91 @@ pub fn find(dir: &Path, key: &str) -> Result<Session, String> {
     }
 }
 
+/// A conversation that matched a search, with where.
+pub struct Hit {
+    pub id: String,
+    pub title: String,
+    pub updated: DateTime<Utc>,
+    /// How many times the words appear (more is better).
+    pub score: usize,
+    /// The best-matching message, shortened around the first word found.
+    pub role: String,
+    pub snippet: String,
+}
+
+/// Full-text search over saved conversations: every word must appear in the
+/// conversation (any case); best matches first, newer first on ties.
+pub fn search(sessions: &[Session], query: &str, limit: usize) -> Vec<Hit> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).filter(|w| !w.is_empty()).collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let mut hits: Vec<Hit> = sessions
+        .iter()
+        .filter_map(|s| {
+            let texts: Vec<(&str, String)> = std::iter::once(("title", s.title.to_lowercase()))
+                .chain(s.messages.iter().filter(|m| matches!(m.role.as_str(), "user" | "assistant" | "info")).map(|m| (m.role.as_str(), m.content.to_lowercase())))
+                .collect();
+            if !words.iter().all(|w| texts.iter().any(|(_, t)| t.contains(w.as_str()))) {
+                return None;
+            }
+            let count = |t: &str| words.iter().map(|w| t.matches(w.as_str()).count()).sum::<usize>();
+            let score = texts.iter().map(|(_, t)| count(t)).sum();
+            // The message with the most of the words, user and assistant ones first.
+            let best = s
+                .messages
+                .iter()
+                .filter(|m| matches!(m.role.as_str(), "user" | "assistant" | "info"))
+                .max_by_key(|m| (words.iter().filter(|w| m.content.to_lowercase().contains(w.as_str())).count(), count(&m.content.to_lowercase())));
+            let (role, snippet) = best.map_or(("title".to_string(), s.title.clone()), |m| (m.role.clone(), snippet(&m.content, &words)));
+            Some(Hit { id: s.id.clone(), title: s.title.clone(), updated: s.updated, score, role, snippet })
+        })
+        .collect();
+    hits.sort_by(|a, b| b.score.cmp(&a.score).then(b.updated.cmp(&a.updated)));
+    hits.truncate(limit);
+    hits
+}
+
+/// About 160 characters of `text` around the first of `words` found.
+fn snippet(text: &str, words: &[String]) -> String {
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = flat.to_lowercase();
+    let at = words.iter().filter_map(|w| lower.find(w.as_str())).min().unwrap_or(0);
+    let chars: Vec<char> = flat.chars().collect();
+    let at = lower[..at].chars().count();
+    let start = at.saturating_sub(60).min(chars.len());
+    let end = (start + 160).min(chars.len());
+    let mut out: String = chars[start..end].iter().collect();
+    if start > 0 {
+        out = format!("…{out}");
+    }
+    if end < chars.len() {
+        out.push('…');
+    }
+    out
+}
+
+/// `/sessions search` as text.
+pub fn describe_hits(hits: &[Hit], query: &str) -> String {
+    if hits.is_empty() {
+        return format!("no conversation mentions {query:?}");
+    }
+    hits.iter()
+        .map(|h| {
+            format!(
+                "{}  {}  {}\n    {}: {}",
+                h.id,
+                h.updated.with_timezone(&Local).format("%m-%d %H:%M"),
+                if h.title.is_empty() { "(untitled)" } else { &h.title },
+                h.role,
+                h.snippet
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n\n/resume <id> opens one"
+}
+
 /// A list for `lyra -r` and `/sessions`.
 pub fn describe(sessions: &[Session], limit: usize) -> String {
     if sessions.is_empty() {
@@ -179,6 +264,42 @@ pub fn describe(sessions: &[Session], limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn convo(id: &str, lines: &[(&str, &str)]) -> Session {
+        let messages: Vec<SavedMessage> = lines
+            .iter()
+            .map(|(role, content)| SavedMessage {
+                role: role.to_string(),
+                content: content.to_string(),
+                tool_calls: vec![],
+                tool_call_id: None,
+                reasoning: String::new(),
+                memories: vec![],
+                skills: vec![],
+                agents: vec![],
+            })
+            .collect();
+        Session { id: id.into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: lines[0].1.into(), messages }
+    }
+
+    #[test]
+    fn search_finds_conversations_by_what_was_said() {
+        let all = vec![
+            convo("a", &[("user", "nginx keeps restarting on web1"), ("assistant", "The NGINX config had a typo in the upstream block; fixed and reloaded.")]),
+            convo("b", &[("user", "what's the weather"), ("assistant", "Sunny.")]),
+            convo("c", &[("user", "set up nginx on web2"), ("assistant", "Installed.")]),
+            convo("d", &[("user", "İstanbul notes"), ("assistant", "ok")]),
+        ];
+        let hits = search(&all, "nginx typo", 10);
+        assert_eq!(hits.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), vec!["a"], "every word must appear");
+        assert!(hits[0].snippet.contains("typo"), "{}", hits[0].snippet);
+        let hits = search(&all, "NGINX", 10);
+        assert_eq!(hits[0].id, "a", "more mentions first");
+        assert_eq!(hits.len(), 2);
+        assert!(search(&all, "  ", 10).is_empty());
+        assert_eq!(search(&all, "notes", 10).len(), 1, "unicode text doesn't trip the snippet");
+        assert!(describe_hits(&[], "zzz").contains("no conversation"));
+    }
 
     #[test]
     fn sessions_round_trip_and_the_latest_wins() {

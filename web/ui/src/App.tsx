@@ -12,6 +12,7 @@ import { ChatPage } from "./lyra/chat";
 import { GoalsPage, MemoryPage, ModelsPage, SkillsPage } from "./lyra/manage";
 import { ActivityPage, DevicesPage, MachinesPage, MorePage } from "./lyra/pages";
 import { ago } from "./lyra/push";
+import { SearchBox, SearchHits, useConversationSearch } from "./lyra/search";
 import { APP_VERSION, LyraProvider, useData, useLyra } from "./lyra/store";
 import type { Session } from "./lyra/types";
 import { loadToken, saveToken, takeShared } from "./lyra/token";
@@ -37,10 +38,12 @@ function Sidebar({ tabs, more, tab, setTab }: { tabs: TabItem[]; more: TabItem[]
   const live = status.conversations ?? [];
   const [sessions] = useData<Session[]>("sessions", [status.title, JSON.stringify(live)]);
   const answering = (id: string) => live.some((c) => c.session === id && c.answering);
-  const open = (s: Session) => {
-    if (!s.current) say(`/resume ${s.id}`);
+  const resume = (id: string, current: boolean) => {
+    if (!current) say(`/resume ${id}`);
     setTab("chat");
   };
+  const open = (s: Session) => resume(s.id, s.current);
+  const search = useConversationSearch();
   const item = (t: TabItem) => (
     <button
       key={t.id}
@@ -80,8 +83,10 @@ function Sidebar({ tabs, more, tab, setTab }: { tabs: TabItem[]; more: TabItem[]
           <MessageSquarePlus />
         </Button>
       </div>
+      <SearchBox query={search.query} setQuery={search.setQuery} className="mx-2 mb-1.5" />
       <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
-        {(sessions ?? []).slice(0, 40).map((s) => (
+        {search.hits && <SearchHits hits={search.hits} open={resume} />}
+        {!search.hits && (sessions ?? []).slice(0, 40).map((s) => (
           <button
             key={s.id}
             type="button"

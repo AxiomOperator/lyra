@@ -685,6 +685,14 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
                 "open": loaded.iter().any(|(id, _)| *id == s.id), "answering": loaded.iter().any(|(id, w)| *id == s.id && *w),
             })).collect::<Vec<_>>())
         }
+        "search" => {
+            let query = arg["query"].as_str().unwrap_or("").trim();
+            let all = crate::sessions::dir().map(|d| crate::sessions::list(&d)).unwrap_or_default();
+            json!(crate::sessions::search(&all, query, 30).iter().map(|h| json!({
+                "id": h.id, "title": h.title, "updated": h.updated, "role": h.role, "snippet": h.snippet, "score": h.score,
+                "current": h.id == app.session_id,
+            })).collect::<Vec<_>>())
+        }
         "devices" => {
             let online: Vec<String> = hub.online_devices().into_iter().map(|(id, _)| id).collect();
             let machines: Vec<String> = hub.machines().into_iter().map(|m| m.name.to_lowercase()).collect();

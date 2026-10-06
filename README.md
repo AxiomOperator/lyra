@@ -711,6 +711,11 @@ conversations, but don't run the TUI and `lyra serve` on the same
 conversation at the same time: each keeps its own copy and the last to save
 wins.
 
+**Finding a conversation:** `/sessions search <words>` lists the saved conversations that
+contain every word, best match first, with the line that matched. In the app, the search box
+above the conversation list (the sidebar on a desktop, More → Conversations on a phone) does
+the same as you type. Click a result to open it.
+
 ### Moving to an always-on server (Fedora)
 
 Build lyra on the server itself: a binary is tied to the glibc it was built

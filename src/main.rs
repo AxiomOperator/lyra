@@ -1353,6 +1353,14 @@ impl App {
             "/caps" => self.caps_command(arg),
             "/goals" | "/goal" => self.goals_command(name, arg),
             "/agents" | "/agent" => self.agents_command(name, arg),
+            "/sessions" if arg.trim_start().starts_with("search") => {
+                let query = arg.trim_start().trim_start_matches("search").trim();
+                if query.is_empty() {
+                    Err("usage: /sessions search <words>".into())
+                } else {
+                    sessions::dir().ok_or("no home directory".to_string()).map(|d| sessions::describe_hits(&sessions::search(&sessions::list(&d), query, 15), query))
+                }
+            }
             "/sessions" => sessions::dir().ok_or("no home directory".to_string()).map(|d| {
                 format!("this one: {}\n{}\n\nlyra -c continues the latest here · /resume <id> or lyra -r <id> resumes one", self.session_id, sessions::describe(&sessions::list(&d), 20))
             }),
@@ -2606,6 +2614,7 @@ pub(crate) const COMMANDS: &str = "\
 /devices [approve|deny <code>]    paired phones, browsers, terminals and machines; pairing requests
 /devices remove <name>       unpair a device or machine
 /sessions                    saved conversations (lyra -c continues the latest)
+/sessions search <words>     find a conversation by what was said in it
 /model [name]                the model in use and the ones on offer; switch (saved to config.toml)
 /resume <id>                 switch to a saved conversation
 /history <id>                a skill's versions and audit trail
