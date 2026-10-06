@@ -241,8 +241,11 @@ fn notification(event: &StreamEvent) -> Option<Notification> {
     }
 }
 
-/// `~/.lyra/systemd` unit for running `lyra serve` all the time.
-pub fn service_unit(binary: &str) -> String {
+/// A systemd unit for running `lyra serve` all the time (a user service, or
+/// a system one when lyra runs as root).
+pub fn service_unit(binary: &str, system: bool) -> String {
+    let install = if system { "multi-user.target" } else { "default.target" };
+    let user = if system { "User=root\nEnvironment=HOME=/root\n" } else { "" };
     format!(
         "[Unit]\n\
          Description=lyra (web and phone access)\n\
@@ -250,13 +253,13 @@ pub fn service_unit(binary: &str) -> String {
          Wants=network-online.target\n\
          \n\
          [Service]\n\
-         ExecStart={binary} serve\n\
+         {user}ExecStart={binary} serve\n\
          Restart=on-failure\n\
          RestartSec=5\n\
          # Environment=LYRA_HOME=%h/.lyra\n\
          \n\
          [Install]\n\
-         WantedBy=default.target\n"
+         WantedBy={install}\n"
     )
 }
 
@@ -274,6 +277,8 @@ mod tests {
         let rewritten = json!({ "role": "assistant", "content": "Bye", "reasoning": "", "tools": [] });
         assert_eq!(change(3, &now, &rewritten)["type"], "replace");
         assert_eq!(preview("**Bold** and `code`\n\nnext"), "Bold and code next");
-        assert!(service_unit("/home/me/.cargo/bin/lyra").contains("ExecStart=/home/me/.cargo/bin/lyra serve"));
+        assert!(service_unit("/home/me/.cargo/bin/lyra", false).contains("ExecStart=/home/me/.cargo/bin/lyra serve"));
+        let system = service_unit("/usr/local/bin/lyra", true);
+        assert!(system.contains("User=root") && system.contains("WantedBy=multi-user.target"));
     }
 }

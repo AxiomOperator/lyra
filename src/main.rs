@@ -2911,19 +2911,38 @@ fn devices_command(args: &[String]) {
     }
 }
 
-/// `lyra service`: install a systemd user service that runs `lyra serve`.
+/// `lyra service`: install a systemd service that runs `lyra serve` (a user
+/// service; a system service when run as root).
 fn service_command() {
     let binary = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "lyra".into());
-    let Some(dir) = std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config/systemd/user")) else {
-        eprintln!("lyra: no home directory");
-        std::process::exit(1);
+    let root = std::fs::read_to_string("/proc/self/status").is_ok_and(|s| s.lines().any(|l| l.starts_with("Uid:") && l.split_whitespace().nth(1) == Some("0")));
+    let dir = if root {
+        std::path::PathBuf::from("/etc/systemd/system")
+    } else {
+        match std::env::var_os("HOME") {
+            Some(h) => std::path::PathBuf::from(h).join(".config/systemd/user"),
+            None => {
+                eprintln!("lyra: no home directory");
+                std::process::exit(1);
+            }
+        }
     };
     let path = dir.join("lyra.service");
-    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, serve::service_unit(&binary))) {
+    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, serve::service_unit(&binary, root))) {
         eprintln!("lyra: couldn't write {}: {e}", path.display());
         std::process::exit(1);
     }
     println!("wrote {}", path.display());
+    if root {
+        println!("start it now and at every boot:");
+        println!("  systemctl daemon-reload");
+        println!("  systemctl enable --now lyra");
+        println!("logs: journalctl -u lyra -f");
+        if binary.starts_with("/root/") {
+            println!("note: SELinux won't let systemd run {binary}; install with --root /usr/local");
+        }
+        return;
+    }
     println!("start it now and at every boot:");
     println!("  systemctl --user daemon-reload");
     println!("  systemctl --user enable --now lyra");

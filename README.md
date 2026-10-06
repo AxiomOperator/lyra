@@ -651,7 +651,7 @@ against, so one built on a newer Fedora won't start on an older one.
 
 ```sh
 # on the server
-sudo dnf install -y gcc git protobuf-compiler
+sudo dnf install -y gcc git protobuf-compiler protobuf-devel
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # current Rust (needs 1.88+)
 git clone https://github.com/AxiomOperator/lyra.git ~/Projects/lyra
 cd ~/Projects/lyra && cargo install --path . --locked
@@ -664,6 +664,11 @@ Then move the data (it's all in `~/.lyra`; paths in it use `~`):
 # on the old machine: stop lyra (and lyra serve) first
 rsync -a --exclude lyra.pid ~/.lyra/ server:~/.lyra/
 ```
+
+As root, install to `/usr/local/bin` instead (`cargo install --path . --locked --root /usr/local`):
+SELinux doesn't let systemd run programs from root's home, and `lyra service`
+then writes a system service (`/etc/systemd/system/lyra.service`) rather than a
+user one.
 
 On the server: check `config.toml` (model URLs reachable from there,
 `[web] listen`, `source_repo` if the checkout lives elsewhere), then
