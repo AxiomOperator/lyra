@@ -9,6 +9,8 @@ use crate::retrieval::Endpoint;
 pub struct Config {
     pub url: String,
     pub model: String,
+    /// The model can see images (attached photos go to it as images).
+    pub vision: bool,
     /// Price per million prompt tokens (0 for a free local model).
     pub input_cost_per_mtok: f64,
     /// Price per million cached prompt tokens; defaults to the input price.
@@ -289,6 +291,7 @@ impl Default for Config {
         Self {
             url: "http://localhost:11434/v1".into(),
             model: "llama3.2".into(),
+            vision: false,
             input_cost_per_mtok: 0.0,
             cached_input_cost_per_mtok: None,
             output_cost_per_mtok: 0.0,

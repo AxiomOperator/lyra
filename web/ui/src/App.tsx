@@ -7,11 +7,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { Ellipsis, MessageSquare, ScrollText, Server, Smartphone, Sparkles, WifiOff } from "lucide-react";
-import { useCallback, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
 import { ActivityPage, DevicesPage, MachinesPage, MorePage } from "./lyra/pages";
 import { APP_VERSION, LyraProvider, useLyra } from "./lyra/store";
-import { loadToken, saveToken } from "./lyra/token";
+import { loadToken, saveToken, takeShared } from "./lyra/token";
 
 type Tab = "chat" | "machines" | "devices" | "activity" | "more";
 
@@ -27,6 +27,14 @@ async function updateApp() {
 
 function Shell() {
   const { status, connected, banner, serverVersion, ready } = useLyra();
+  // Opened from Android's share sheet: hand what was shared to the composer.
+  useEffect(() => {
+    if (!ready || !new URLSearchParams(location.search).has("shared")) return;
+    history.replaceState(null, "", "/");
+    void takeShared().then((shared) => {
+      if (shared) window.dispatchEvent(new CustomEvent("lyra-share", { detail: shared }));
+    });
+  }, [ready]);
   const [tab, setTab] = useState<Tab>("chat");
   const pairing = status.pairing?.length ?? 0;
   const updates = (status.machines_detail ?? []).filter((m) => m.update_available).length;

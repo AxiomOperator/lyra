@@ -101,7 +101,7 @@ pub fn template(name: &str) -> Option<AgentProfile> {
             };
             p.memory_policy = MemoryPolicy { mode: MemoryMode::Scoped, read: strs(&["user", "project:*"]), write: Vec::new() };
             p.tools = strs(&[
-                "system_info", "shell_run", "file_read", "file_list", "file_write", "file_delete", "http_request", "ssh_run", "memory_recall",
+                "system_info", "shell_run", "file_read", "file_list", "file_write", "file_delete", "upload_place", "http_request", "ssh_run", "memory_recall",
             ]);
             p.permission_policy.max_risk = "destructive".into();
             p.test_task = Some("Report this machine's OS, uptime, CPU count and free disk space.".into());

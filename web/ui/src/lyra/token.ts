@@ -40,3 +40,24 @@ export function saveToken(t: string | null) {
   }
   void idbSet("token", t);
 }
+
+/** What was shared to lyra from another app (once), if anything. */
+export async function takeShared(): Promise<{ text: string; files: File[] } | null> {
+  try {
+    const db = await idb();
+    return await new Promise((resolve) => {
+      const tx = db.transaction("kv", "readwrite");
+      const store = tx.objectStore("kv");
+      const get = store.get("share");
+      get.onsuccess = () => {
+        const v = get.result as { text?: string; files?: File[]; at?: number } | undefined;
+        store.delete("share");
+        // Only a fresh share (an old leftover is dropped).
+        resolve(v && Date.now() - (v.at ?? 0) < 10 * 60 * 1000 ? { text: v.text ?? "", files: v.files ?? [] } : null);
+      };
+      get.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}

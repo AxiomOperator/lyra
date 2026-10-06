@@ -58,6 +58,10 @@ impl crate::caps::Remote for HubRemote {
     fn call(&self, machine: &str, request: Value, timeout: Duration) -> Result<Value, String> {
         self.0.call_machine(machine, request, timeout)
     }
+
+    fn upload_path(&self, id: &str) -> Option<std::path::PathBuf> {
+        self.0.upload(id).map(|(_, path)| path)
+    }
 }
 
 /// The status line, pending approvals, agents and connected machines.
@@ -163,6 +167,55 @@ fn preview(text: &str) -> String {
     if plain.chars().count() > 160 { format!("{}…", plain.chars().take(160).collect::<String>()) } else { plain }
 }
 
+/// Text files lyra reads whole (up to this size).
+const READ_UP_TO: u64 = 200 * 1024;
+
+fn size_text(n: u64) -> String {
+    match n {
+        n if n >= 1024 * 1024 => format!("{:.1} MB", n as f64 / 1024.0 / 1024.0),
+        n if n >= 1024 => format!("{:.0} KB", n as f64 / 1024.0),
+        n => format!("{n} bytes"),
+    }
+}
+
+/// What a message says about its attached files: a text file's content, or
+/// what the file is (the Operator can put it on a machine); images go to a
+/// model that can see.
+pub fn attachments(hub: &Hub, files: &[String], vision: bool) -> (String, Vec<String>) {
+    use base64::Engine;
+    let mut text = String::new();
+    let mut images = Vec::new();
+    for id in files {
+        let Some((up, path)) = hub.upload(id) else {
+            text += &format!("\n\n(an attachment, {id}, couldn't be found)");
+            continue;
+        };
+        let name = &up.name;
+        let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
+        let texty = up.mime.starts_with("text/")
+            || ["json", "xml", "yaml", "x-yaml", "toml", "csv", "x-sh", "javascript"].iter().any(|t| up.mime.ends_with(t))
+            || ["txt", "md", "log", "conf", "cfg", "ini", "toml", "yaml", "yml", "json", "csv", "sh", "py", "rs", "js", "ts", "sql", "xml", "html", "css", "env"].contains(&ext.as_str());
+        let head = format!("**Attached: {name}** ({}, {}, upload `{}`)", up.mime, size_text(up.size), up.id);
+        if texty && up.size <= READ_UP_TO
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            let lang = if ext.len() <= 5 { ext.as_str() } else { "" };
+            text += &format!("\n\n{head}\n```{lang}\n{}\n```", content.trim_end());
+        } else if up.mime.starts_with("image/") && vision {
+            if let Ok(bytes) = std::fs::read(&path) {
+                images.push(format!("data:{};base64,{}", up.mime, base64::engine::general_purpose::STANDARD.encode(bytes)));
+            }
+            text += &format!("\n\n{head} — the image is attached.");
+        } else {
+            text += &format!(
+                "\n\n{head} — you can't see its contents{}; the Operator can put it on a machine (upload_place).",
+                if up.mime.starts_with("image/") { " (this model has no vision)" } else { "" }
+            );
+        }
+    }
+    (text, images)
+}
+
 /// One open conversation: its lyra and what its devices were last sent.
 struct Conv {
     app: App,
@@ -221,8 +274,12 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         let mut next = inbound.recv_timeout(Duration::from_millis(40)).ok();
         while let Some(msg) = next.take() {
             match msg {
-                Inbound::Send { text, device, session, conn } => {
+                Inbound::Send { text, device, session, conn, files } => {
                     let i = conv_for(&mut convs, &session);
+                    // Attached files: described (or read) in the message itself.
+                    let (about, images) = attachments(hub, &files, convs[i].app.vision);
+                    let text = format!("{text}{about}").trim().to_string();
+                    convs[i].app.attach_images = images;
                     // A new conversation, or another one, for this device only.
                     if text == "/new" {
                         let app = convs[0].app.fork();

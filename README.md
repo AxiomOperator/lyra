@@ -725,6 +725,25 @@ ones that work from your network in SearXNG's `settings.yml`.
 app ends the reply being written — including an agent's work and any approval
 it's waiting for. What was written so far stays, marked *(stopped)*.
 
+## Sending files, voice and sharing (the app)
+
+- **Attachments:** the paperclip in the app uploads files (up to 25 MB each)
+  to `~/.lyra/uploads/<id>/`. Text files up to 200 KB are put into the message
+  so lyra reads them; other files are described (name, type, size, upload id).
+  Photos go to the model only with `vision = true` in `config.toml` (a model
+  that reads images).
+- **Putting a file on a machine:** ask, e.g. "put the photo I sent at
+  ~/Pictures/x.png on @desktop". The Operator's `upload_place` tool copies it
+  there, checked like `file_write` (asks unless the folder is in
+  `write_roots`). The machine downloads the upload itself with its node token;
+  node tokens can read uploads only, never the chat. The model never chooses
+  the source file, only the upload id.
+- **Voice:** the microphone button dictates into the message box where the
+  browser supports speech recognition (Chrome/Edge on Android, Safari on iOS).
+- **Share to lyra (Android):** with the app installed, lyra appears in the
+  share sheet; shared text, links and files land in the message box, ready to
+  send. iOS doesn't support sharing to web apps.
+
 ## Other machines and terminals: `lyra-node` and `lyra connect`
 
 With lyra on a server, other machines join it in two ways.

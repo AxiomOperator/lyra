@@ -78,7 +78,7 @@ pub struct Spec {
     pub risk: Risk,
 }
 
-pub const TOOLS: &[&str] = &["system_info", "shell_run", "file_read", "file_list", "file_write", "file_delete", "http_request", "ssh_run"];
+pub const TOOLS: &[&str] = &["system_info", "shell_run", "file_read", "file_list", "file_write", "file_delete", "upload_place", "http_request", "ssh_run"];
 
 pub fn specs() -> Vec<Spec> {
     let s = |v: &str| json!({ "type": "string", "description": v });
@@ -127,6 +127,15 @@ pub fn specs() -> Vec<Spec> {
                 "content": s("The text to write."),
                 "append": { "type": "boolean", "description": "Add to the end instead of replacing." },
             }, "required": ["path", "content"] }),
+            risk: Risk::Write,
+        },
+        Spec {
+            name: "upload_place",
+            description: "Put a file the user sent (an upload id from their message) at a path on a machine, creating folders as needed. Outside the work folders it waits for the user's approval.",
+            parameters: json!({ "type": "object", "properties": {
+                "upload": s("The upload id from the user's message."),
+                "path": s("Where to put it (a full file path)."),
+            }, "required": ["upload", "path"] }),
             risk: Risk::Write,
         },
         Spec {
@@ -287,14 +296,15 @@ impl System {
                     Err(e) => Check::Forbidden(e),
                 }
             }
-            "file_read" | "file_list" | "file_write" | "file_delete" => {
+            "file_read" | "file_list" | "file_write" | "file_delete" | "upload_place" => {
                 let Ok(raw) = arg(args, "path") else { return Check::Forbidden("path is required".into()) };
                 let path = self.resolve(raw);
                 if let Some(why) = self.denied(&path) {
                     return Check::Forbidden(why);
                 }
                 match tool {
-                    "file_write" if self.under(&path, &self.settings.write_roots) => Check::Auto,
+                    "file_write" | "upload_place" if self.under(&path, &self.settings.write_roots) => Check::Auto,
+                    "upload_place" => Check::Ask { why: format!("writes {}", path.display()), dangerous: path.exists() },
                     "file_write" => Check::Ask { why: format!("writes {}", path.display()), dangerous: path.exists() && args["append"] != true },
                     "file_delete" => Check::Ask { why: format!("deletes {}", path.display()), dangerous: true },
                     _ => Check::Auto,
@@ -322,6 +332,7 @@ impl System {
                 ("run a command on this machine".into(), format!("{}\nin {}", s("command"), cwd.display()))
             }
             "ssh_run" => (format!("run a command on the server {}", s("host")), s("command")),
+            "upload_place" => ("put a file you sent".into(), format!("{} (upload {})", self.resolve(&s("path")).display(), s("upload"))),
             "file_write" => (
                 if args["append"] == true { "add to a file".into() } else { "write a file".into() },
                 format!("{} ({} characters)", self.resolve(&s("path")).display(), s("content").chars().count()),
@@ -365,6 +376,16 @@ impl System {
             }
             "file_read" => self.read(args),
             "file_list" => self.list(args),
+            // `from`: the uploaded file, given by the caller (never by the model).
+            "upload_place" => {
+                let path = self.resolve(arg(args, "path")?);
+                let from = args["from"].as_str().ok_or("the upload isn't available here")?;
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| format!("couldn't create {}: {e}", parent.display()))?;
+                }
+                let bytes = std::fs::copy(from, &path).map_err(|e| format!("couldn't write {}: {e}", path.display()))?;
+                Ok(json!({ "result": "placed", "path": path.display().to_string(), "bytes": bytes }))
+            }
             "file_write" => {
                 let path = self.resolve(arg(args, "path")?);
                 let content = args["content"].as_str().ok_or("content is required")?;

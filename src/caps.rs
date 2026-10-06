@@ -63,6 +63,11 @@ pub trait Remote: Send + Sync {
     fn machines(&self) -> Vec<(String, bool)>;
     /// Send a request to a machine and wait for its answer.
     fn call(&self, machine: &str, request: Value, timeout: std::time::Duration) -> Result<Value, String>;
+    /// Where a file a device sent is on this server.
+    fn upload_path(&self, id: &str) -> Option<std::path::PathBuf> {
+        let _ = id;
+        None
+    }
 }
 
 /// What the machine lyra itself runs on is called in the `machine` argument.
@@ -540,7 +545,11 @@ impl Caps {
         if self.manager.health(&c) == CapabilityHealth::Unavailable {
             return json!({ "error": format!("{} is unavailable right now", c.id) }).to_string();
         }
-        let args: Value = serde_json::from_str(if arguments.trim().is_empty() { "{}" } else { arguments }).unwrap_or(json!({}));
+        let mut args: Value = serde_json::from_str(if arguments.trim().is_empty() { "{}" } else { arguments }).unwrap_or(json!({}));
+        // Only lyra says where an upload is.
+        if let Some(map) = args.as_object_mut() {
+            map.remove("from");
+        }
         let start = Instant::now();
         let outcome: Result<Value, String> = match c.kind {
             CapabilityKind::OpenApi => match self.openapi.iter().find(|o| o.has(&c.id)) {
@@ -560,6 +569,18 @@ impl Caps {
                     Some(remote) => remote.call(&machine, json!({ "type": "call", "tool": c.name, "args": args, "approved": approved }), self.remote_timeout()),
                     None => Err(format!("{machine} isn't reachable: other machines connect to `lyra serve`")),
                 },
+                (None, Some(system)) if c.name == "upload_place" => {
+                    // The source is the upload the user sent, never a path the model picks.
+                    let mut args = args.clone();
+                    let from = args["upload"].as_str().and_then(|id| self.remote.get().and_then(|r| r.upload_path(id)));
+                    match (from, args.as_object_mut()) {
+                        (Some(from), Some(map)) => {
+                            map.insert("from".into(), json!(from.display().to_string()));
+                            system.call(&c.name, &args)
+                        }
+                        _ => Err("no such upload (the id is in the user's message)".into()),
+                    }
+                }
                 (None, Some(system)) => system.call(&c.name, &args),
                 (None, None) => Err("system access is off".into()),
             },

@@ -19,8 +19,40 @@ self.addEventListener("activate", (e) => {
 
 // The app: network first (always the latest), the cache when offline. The
 // bundle's files have content hashes in their names, so caching them is safe.
+// "Share to lyra" (Android): keep what was shared, then open lyra, which
+// puts it in the composer (the token stays with the page).
+function keepShared(value) {
+  return new Promise((resolve) => {
+    const r = indexedDB.open("lyra", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("kv");
+    r.onerror = () => resolve();
+    r.onsuccess = () => {
+      const tx = r.result.transaction("kv", "readwrite");
+      tx.objectStore("kv").put(value, "share");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    };
+  });
+}
+
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
+  if (e.request.method === "POST" && url.pathname === "/share") {
+    e.respondWith(
+      (async () => {
+        try {
+          const form = await e.request.formData();
+          const text = ["title", "text", "url"].map((k) => form.get(k)).filter((v) => typeof v === "string" && v.trim()).join("\n");
+          const files = form.getAll("files").filter((f) => typeof f === "object" && f.size > 0);
+          await keepShared({ text, files, at: Date.now() });
+        } catch (err) {
+          // nothing kept: lyra just opens
+        }
+        return Response.redirect("/?shared=1", 303);
+      })(),
+    );
+    return;
+  }
   if (e.request.method !== "GET" || url.origin !== location.origin || url.pathname.startsWith("/api/") || url.pathname === "/ws") return;
   const keep = SHELL.includes(url.pathname) || url.pathname.startsWith("/assets/");
   e.respondWith(

@@ -72,6 +72,9 @@ struct Message {
     /// Specialist agents that worked on this reply.
     #[serde(skip)]
     agents: Vec<String>,
+    /// Images sent with it (data URLs), for a model that can see.
+    #[serde(skip)]
+    images: Vec<String>,
     /// The content rendered as Markdown, and the content length it was
     /// rendered from (re-rendered when a streaming reply grows).
     #[serde(skip)]
@@ -90,6 +93,7 @@ impl Message {
             memories: Vec::new(),
             skills: Vec::new(),
             agents: Vec::new(),
+            images: Vec::new(),
             rendered: None,
         }
     }
@@ -388,6 +392,10 @@ struct App {
     session_id: String,
     /// Activity lines logged so far (`lyra serve` prints the new ones).
     logged: u64,
+    /// The chat model can see images (`vision` in the config).
+    vision: bool,
+    /// Images for the next message sent (from a device's attachments).
+    attach_images: Vec<String>,
     /// The web server, when this lyra is `lyra serve` (machines, devices).
     hub: Option<lyra_web::Hub>,
     /// Everything opened at startup, for starting another conversation.
@@ -522,6 +530,8 @@ impl App {
             session_id: sessions::new_id(),
             logged: 0,
             hub: None,
+            vision: config.vision,
+            attach_images: Vec::new(),
             shared,
             primary: true,
             cancel: Cancel::default(),
@@ -594,7 +604,9 @@ impl App {
         }
         self.judge_last_run(&content);
         self.handled_by.clear();
-        self.messages.push(Message::new("user", content.clone()));
+        let mut user = Message::new("user", content.clone());
+        user.images = std::mem::take(&mut self.attach_images);
+        self.messages.push(user);
         self.applied_skills.clear();
         self.applied_skills_tokens = 0;
         self.applied_memories.clear();
@@ -610,7 +622,16 @@ impl App {
         let history: Vec<Value> = system
             .iter()
             .chain(self.messages.iter().filter(|m| m.is_history()))
-            .map(|m| serde_json::to_value(m).expect("message serializes"))
+            .map(|m| {
+                let mut v = serde_json::to_value(m).expect("message serializes");
+                // A model that can see gets the images as parts of the message.
+                if self.vision && !m.images.is_empty() {
+                    let mut parts = vec![json!({ "type": "text", "text": m.content })];
+                    parts.extend(m.images.iter().map(|url| json!({ "type": "image_url", "image_url": { "url": url } })));
+                    v["content"] = Value::Array(parts);
+                }
+                v
+            })
             .collect();
         let (model, tools, tx) = (self.model.clone(), self.tools.clone(), self.tx.clone());
         self.cancel = Cancel::default();
@@ -3211,6 +3232,14 @@ fn open_agents(config: &Config, runtime: &tokio::runtime::Handle) -> (Option<Arc
                 && let Some(p) = lyra_agents::templates::template("operator")
             {
                 let _ = a.registry.create(p, "installed with system access");
+            }
+            // System tools added since the Operator was installed from its template.
+            if let Some(mut op) = a.registry.get("operator").filter(|p| p.template.as_deref() == Some("operator")) {
+                let missing: Vec<String> = ["upload_place"].iter().filter(|t| !op.tools.iter().any(|x| x == *t)).map(|t| t.to_string()).collect();
+                if !missing.is_empty() {
+                    op.tools.extend(missing.iter().cloned());
+                    let _ = a.registry.update(op, &format!("new system tools: {}", missing.join(", ")));
+                }
             }
             (Some(Arc::new(a)), Ok(format!("agents · {}", context::show(&dir))))
         }

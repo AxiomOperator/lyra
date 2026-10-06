@@ -5,6 +5,7 @@
 //! comes from the reverse proxy in front (Zoraxy, Caddy, nginx).
 
 pub mod devices;
+pub mod uploads;
 pub mod push;
 
 use std::collections::HashMap;
@@ -52,7 +53,7 @@ impl Default for Settings {
 pub enum Inbound {
     /// A chat message or a /command, for the conversation the connection
     /// shows (`conn` can be moved to another one: `/new`, `/resume`).
-    Send { text: String, device: String, session: String, conn: u64 },
+    Send { text: String, device: String, session: String, conn: u64, files: Vec<String> },
     /// Stop the reply being written in that conversation.
     Stop { device: String, session: String },
     /// An answer to an approval (`y`, `n`, `a`).
@@ -139,6 +140,7 @@ pub struct Notification {
 
 struct Shared {
     devices: Devices,
+    uploads: uploads::Uploads,
     vapid: Vapid,
     subject: String,
     /// Updates: the conversation they belong to (none: everyone's), the JSON.
@@ -204,6 +206,7 @@ impl Hub {
             next_call: AtomicU64::new(1),
             online: Mutex::new(HashMap::new()),
             conns: Mutex::new(HashMap::new()),
+            uploads: uploads::Uploads::new(&dir.parent().unwrap_or(dir).join("uploads")),
             requests: Mutex::new(Vec::new()),
             node_binary: if settings.node_binary.trim().is_empty() {
                 std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("lyra-node"))).unwrap_or_default()
@@ -263,6 +266,11 @@ impl Hub {
         all.sort();
         all.dedup();
         all
+    }
+
+    /// A file a device sent, and where it is.
+    pub fn upload(&self, id: &str) -> Option<(uploads::Upload, std::path::PathBuf)> {
+        self.shared.uploads.get(id)
     }
 
     /// Headless machines waiting for approval.
@@ -371,6 +379,8 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/api/push", post(set_push))
         .route("/api/test-push", post(test_push))
         .route("/api/approve", post(approve))
+        .route("/api/files", post(upload).layer(axum::extract::DefaultBodyLimit::max(uploads::MAX_BYTES + 1024)))
+        .route("/api/files/{id}", get(download))
         .route("/ws", get(ws))
         .route("/health", get(health))
         .route("/node", get(node_ws))
@@ -509,6 +519,55 @@ async fn test_push(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Response
     }
 }
 
+/// A file from a device: the body is the file, `X-Filename` its name.
+async fn upload(State(s): State<Arc<Shared>>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    let d = match device(&s, &headers) {
+        Ok(d) => d,
+        Err(r) => return *r,
+    };
+    let raw = headers.get("x-filename").and_then(|v| v.to_str().ok()).unwrap_or("file");
+    let name = percent_decode(raw);
+    let mime = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let saved = tokio::task::spawn_blocking(move || s.uploads.save(&name, &mime, &d.name, &body)).await;
+    match saved {
+        Ok(Ok(up)) => Json(json!({ "id": up.id, "name": up.name, "mime": up.mime, "size": up.size })).into_response(),
+        Ok(Err(e)) => error(StatusCode::PAYLOAD_TOO_LARGE, &e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+/// `%20`-style escapes (file names travel in a header).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(b) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+        {
+            out.push(b);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// A device or a machine (placing a file the user sent) fetches an upload.
+async fn download(State(s): State<Arc<Shared>>, headers: HeaderMap, axum::extract::Path(id): axum::extract::Path<String>) -> Response {
+    if s.devices.authenticate(&bearer(&headers)).is_none() {
+        return error(StatusCode::UNAUTHORIZED, "not paired");
+    }
+    let Some((up, path)) = s.uploads.get(&id) else { return error(StatusCode::NOT_FOUND, "no such file") };
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, up.mime.clone())], bytes).into_response(),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
 #[derive(Deserialize)]
 struct ApproveBody {
     id: u64,
@@ -617,8 +676,9 @@ async fn connection(s: Arc<Shared>, d: Device, session: String, mut socket: WebS
                 match v["type"].as_str().unwrap_or("") {
                     "send" => {
                         let text = v["text"].as_str().unwrap_or("").trim().to_string();
-                        if !text.is_empty() {
-                            let _ = s.inbound.send(Inbound::Send { text, device: d.name.clone(), session: session.clone(), conn });
+                        let files: Vec<String> = v["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(str::to_string)).take(10).collect();
+                        if !text.is_empty() || !files.is_empty() {
+                            let _ = s.inbound.send(Inbound::Send { text, device: d.name.clone(), session: session.clone(), conn, files });
                         }
                     }
                     "stop" => {

@@ -226,6 +226,25 @@ pub fn handle(system: &lyra_system::System, machine: &str, request: &Value) -> R
     }
 }
 
+/// Download a file the user sent to lyra (for `upload_place`) to a temp file.
+fn fetch_upload(base: &str, token: &str, id: &str) -> Result<PathBuf, String> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err("no such upload".into());
+    }
+    let resp = http()?
+        .get(format!("{}/api/files/{id}", base.trim_end_matches('/')))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .map_err(|e| format!("couldn't fetch the upload: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("couldn't fetch the upload: {}", resp.status()));
+    }
+    let bytes = resp.bytes().map_err(|e| e.to_string())?;
+    let tmp = std::env::temp_dir().join(format!("lyra-upload-{id}-{}", std::process::id()));
+    std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
+    Ok(tmp)
+}
+
 /// Fetch the server's current `lyra-node`, check it, and put it in place of
 /// this program. Returns what happened; the caller restarts into it.
 fn update(config: &NodeConfig) -> Result<Value, String> {
@@ -382,9 +401,33 @@ async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System
                     "welcome" => println!("connected to {} as {}", config.url, config.name),
                     "check" | "call" => {
                         let (system, machine, out) = (system.clone(), config.name.clone(), out_tx.clone());
+                        let (url, token) = (config.url.clone(), config.token.clone());
                         // Calls can take a while; keep the connection (and pings) going.
                         tokio::task::spawn_blocking(move || {
+                            let mut v = v;
+                            // A file the user sent: fetched from lyra here (only lyra names the source).
+                            let mut fetched: Option<PathBuf> = None;
+                            if v["tool"] == "upload_place" {
+                                if let Some(map) = v["args"].as_object_mut() {
+                                    map.remove("from");
+                                }
+                                if v["type"] == "call" && matches!(system.check("upload_place", &v["args"]), lyra_system::Check::Auto) || v["approved"] == true {
+                                    match fetch_upload(&url, &token, v["args"]["upload"].as_str().unwrap_or("")) {
+                                        Ok(tmp) => {
+                                            v["args"]["from"] = json!(tmp.display().to_string());
+                                            fetched = Some(tmp);
+                                        }
+                                        Err(e) => {
+                                            let _ = out.send((reply(&v["id"], Err(e)), None));
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
                             let result = handle(&system, &machine, &v);
+                            if let Some(tmp) = fetched {
+                                let _ = std::fs::remove_file(tmp);
+                            }
                             if v["type"] == "call" {
                                 let tool = v["tool"].as_str().unwrap_or("");
                                 let summary = v["args"]["command"].as_str().or(v["args"]["path"].as_str()).or(v["args"]["url"].as_str()).unwrap_or("");

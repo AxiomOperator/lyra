@@ -1,6 +1,7 @@
 # Copy to ~/.lyra/config/config.toml
 url = "http://localhost:11434/v1"   # any OpenAI-compatible endpoint
 model = "llama3.2"
+# vision = false   # true if the model reads images: photos sent from the app go to it
 
 # lyra's internal JSON calls (planning, verification, memory capture, skill
 # reviews, curation): cap their tokens, and optionally skip the model's thinking

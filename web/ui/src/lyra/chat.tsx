@@ -3,7 +3,8 @@
 
 import { Conversation, ConversationContent, ConversationEmptyState, ConversationScrollButton } from "@/components/ai-elements/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
-import { PromptInput, PromptInputBody, PromptInputFooter, PromptInputSubmit, PromptInputTextarea, PromptInputTools } from "@/components/ai-elements/prompt-input";
+import { PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, PromptInputHeader, PromptInputSubmit, PromptInputTextarea, PromptInputTools } from "@/components/ai-elements/prompt-input";
+import { SpeechInput } from "@/components/ai-elements/speech-input";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool";
@@ -11,7 +12,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { AtSign, Bot, Link2, ShieldAlert, ShieldCheck, ShieldX, Slash, TriangleAlert } from "lucide-react";
+import { AtSign, Bot, FileIcon, Link2, Paperclip, ShieldAlert, ShieldCheck, ShieldX, Slash, TriangleAlert, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useLyra } from "./store";
 import type { Approval, ChatMessage, PairRequest } from "./types";
@@ -255,9 +256,41 @@ function usePalette(text: string): Entry[] {
   }, [text, commands, status.machines_detail]);
 }
 
+/** Can this browser turn speech into text itself? (no server transcription) */
+const canDictate = typeof window !== "undefined" && ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
+
+function sizeText(n: number) {
+  return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`;
+}
+
+/** Send a file to lyra; returns its upload id. */
+async function upload(token: string, file: File): Promise<string> {
+  const r = await fetch("/api/files", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": file.type || "application/octet-stream", "X-Filename": encodeURIComponent(file.name) },
+    body: file,
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || r.statusText);
+  return body.id as string;
+}
+
 function Composer() {
-  const { say, send, status } = useLyra();
+  const { say, send, status, token } = useLyra();
   const [text, setText] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [busy, setBusy] = useState("");
+  const fileInput = useRef<HTMLInputElement>(null);
+  // Shared from another app (Android's share sheet): text and files.
+  useEffect(() => {
+    const take = (e: Event) => {
+      const d = (e as CustomEvent<{ text: string; files: File[] }>).detail;
+      if (d.text) setText((t) => (t ? `${t}\n${d.text}` : d.text));
+      if (d.files?.length) setFiles((f) => [...f, ...d.files]);
+    };
+    window.addEventListener("lyra-share", take);
+    return () => window.removeEventListener("lyra-share", take);
+  }, []);
   const [selected, setSelected] = useState(0);
   const [hidden, setHidden] = useState(false);
   const entries = usePalette(hidden ? "" : text);
@@ -280,10 +313,27 @@ function Composer() {
       if (say(e.completion)) setText("");
     }
   };
-  const submit = () => {
+  const submit = async () => {
     const t = text.trim();
-    if (!t) return;
-    if (say(t)) setText("");
+    if (!t && !files.length) return;
+    let ids: string[] = [];
+    if (files.length) {
+      try {
+        for (const [i, f] of files.entries()) {
+          setBusy(`Sending ${f.name} (${i + 1}/${files.length})…`);
+          ids.push(await upload(token, f));
+        }
+      } catch (e) {
+        setBusy(`Couldn't send the file: ${(e as Error).message}`);
+        ids = [];
+        return;
+      }
+      setBusy("");
+    }
+    if (send({ type: "send", text: t, files: ids })) {
+      setText("");
+      setFiles([]);
+    }
   };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (!entries.length) return;
@@ -322,7 +372,33 @@ function Composer() {
           ))}
         </div>
       )}
-      <PromptInput onSubmit={submit}>
+      <input
+        ref={fileInput}
+        type="file"
+        multiple
+        hidden
+        onChange={(e) => {
+          const picked = Array.from(e.currentTarget.files ?? []);
+          setFiles((f) => [...f, ...picked]);
+          e.currentTarget.value = "";
+        }}
+      />
+      <PromptInput onSubmit={() => void submit()}>
+        {(files.length > 0 || busy) && (
+          <PromptInputHeader className="flex flex-wrap gap-1.5 px-3 pt-2">
+            {files.map((f, i) => (
+              <span key={`${f.name}-${i}`} className="flex max-w-full items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1 text-xs">
+                <FileIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate">{f.name}</span>
+                <span className="text-muted-foreground">{sizeText(f.size)}</span>
+                <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFiles((all) => all.filter((_, j) => j !== i))}>
+                  <X className="size-3.5" />
+                </button>
+              </span>
+            ))}
+            {busy && <span className="w-full text-muted-foreground text-xs">{busy}</span>}
+          </PromptInputHeader>
+        )}
         <PromptInputBody>
           <PromptInputTextarea
             value={text}
@@ -336,10 +412,14 @@ function Composer() {
         </PromptInputBody>
         <PromptInputFooter>
           <PromptInputTools>
-            <span className="px-2 text-muted-foreground text-xs">{status.model}</span>
+            <PromptInputButton aria-label="Attach files" onClick={() => fileInput.current?.click()}>
+              <Paperclip className="size-4" />
+            </PromptInputButton>
+            {canDictate && <SpeechInput size="icon-sm" variant="ghost" onTranscriptionChange={(t) => setText((x) => (x ? `${x} ${t}` : t))} />}
+            <span className="truncate px-1 text-muted-foreground text-xs">{status.model}</span>
           </PromptInputTools>
           {/* While a reply is being written the button stops it. */}
-          <PromptInputSubmit disabled={!status.waiting && !text.trim()} status={status.waiting ? "streaming" : undefined} onStop={() => send({ type: "stop" })} />
+          <PromptInputSubmit disabled={!status.waiting && !text.trim() && !files.length} status={status.waiting ? "streaming" : undefined} onStop={() => send({ type: "stop" })} />
         </PromptInputFooter>
       </PromptInput>
     </div>
