@@ -33,6 +33,9 @@ html2text = "0.17"
 toml = "1.1.6"
 toml_edit = "0.25.15"
 qrcode = { version = "0.14.1", default-features = false }
+tar = "0.4.46"
+flate2 = "1.1.10"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite"] }
 
 [profile.release]
 strip = true

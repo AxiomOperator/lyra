@@ -266,3 +266,11 @@ currency = "$"
 # searxng_url = "http://127.0.0.1:8080"
 # max_results = 8
 # fetch_max_chars = 20000
+
+# Nightly backups of the lyra home (see README): lyra-<time>.tar.gz files.
+# [backup]
+# dir = ""              # default: next to the lyra home (~/.lyra-backups); a NAS mount is better
+# at = "03:30"
+# keep = 7
+# include_uploads = false
+# enabled = true

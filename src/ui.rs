@@ -278,6 +278,12 @@ fn session_panel(app: &App, width: usize) -> Vec<Line<'static>> {
         Line::from(vec![label("model"), Span::raw(truncate(&app.model, width.saturating_sub(8)))]),
         Line::from(vec![label("server"), Span::raw(truncate(&host(&app.base_url), width.saturating_sub(8)))]),
     ];
+    let backed = match crate::backup::last() {
+        _ if crate::backup::running() => "backing up…".to_string(),
+        Some(b) => format!("{} · {}", b.made.format("%m-%d %H:%M"), crate::backup::size_text(b.size)),
+        None => "none yet (/backup now)".into(),
+    };
+    lines.push(Line::from(vec![label("backup"), Span::raw(truncate(&backed, width.saturating_sub(8)))]));
     if let Some(model) = crate::decide::model() {
         let (calls, fallbacks, ms) = crate::decide::stats();
         let text = format!("{model} · {calls} decided{} · {ms} ms", if fallbacks > 0 { format!(", {fallbacks} to chat") } else { String::new() });

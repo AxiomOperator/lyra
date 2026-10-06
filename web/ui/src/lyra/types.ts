@@ -69,6 +69,9 @@ export interface Status {
   conversations?: { session: string; title: string | null; answering: boolean }[];
   /** The decision model (`[decide]`), with what it has done since lyra started. */
   decide?: { model: string; decided: number; to_chat: number; ms: number } | null;
+  /** The newest backup of lyra, and whether one is being made. */
+  backup?: { name: string; made: string; size: number } | null;
+  backing_up?: boolean;
 }
 
 export interface Command {
@@ -112,6 +115,14 @@ export interface About {
   model: string;
   /** The decision model (`[decide]`), when one is set up. */
   decide: string | null;
+  backups: {
+    dir: string;
+    enabled: boolean;
+    at: string;
+    keep: number;
+    count: number;
+    last: { name: string; made: string; size: number } | null;
+  } | null;
   session: string;
   devices: number;
 }

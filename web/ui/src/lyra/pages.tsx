@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { Bell, BellOff, Bot, Brain, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, Unplug } from "lucide-react";
+import { Archive, Bell, BellOff, Bot, Brain, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, Unplug } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PairCard } from "./chat";
 import { RulesDialog } from "./manage";
@@ -232,6 +232,11 @@ export function ActivityPage() {
   );
 }
 
+/** "2.1 MB" */
+function sizeText(n: number) {
+  return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} bytes`;
+}
+
 // ---- more
 
 function Notifications() {
@@ -282,11 +287,14 @@ function Notifications() {
 export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "memory" | "skills" | "goals" | "model") => void; update: () => void }) {
   const { say, unpaired, token, serverVersion, status } = useLyra();
   const [sessions] = useData<Session[]>("sessions");
-  const [about] = useData<About>("about");
+  // Asked again when a backup starts or finishes.
+  const [about] = useData<About>("about", [status.backup?.name, status.backing_up]);
   const { ask, onData } = useLyra();
   const [text, setText] = useState<{ title: string; body: string } | null>(null);
   const [confirm, dialog] = useConfirm();
   const search = useConversationSearch();
+  const { run } = useLyra();
+  const [backupNote, setBackupNote] = useState("");
   useEffect(() => onData((w, d) => w === "agents" && setText({ title: "Agents", body: (d as { text: string }).text })), [onData]);
   const newer = serverVersion && serverVersion !== APP_VERSION;
   return (
@@ -380,7 +388,52 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
             lyra-node on offer: {about?.node_build ?? "none"} · {about?.devices ?? 0} paired devices
           </CardDescription>
         </CardHeader>
+        <CardContent className="space-y-1 px-4 text-muted-foreground text-sm">
+          <div>
+            <span className="text-foreground">Backups:</span>{" "}
+            {status.backing_up
+              ? "backing up now…"
+              : about?.backups?.last
+                ? `last ${ago(about.backups.last.made)} (${sizeText(about.backups.last.size)})`
+                : "none yet"}
+            {about?.backups && ` · ${about.backups.enabled ? `nightly at ${about.backups.at}` : "nightly off"}, keeping ${about.backups.keep} in ${about.backups.dir}`}
+          </div>
+          {backupNote && <div className="text-xs">{backupNote}</div>}
+        </CardContent>
         <CardContent className="flex flex-wrap gap-2 px-4">
+          <Button
+            variant="secondary"
+            disabled={status.backing_up}
+            onClick={async () => {
+              const r = await run("/backup now");
+              setBackupNote(r.text);
+            }}
+          >
+            <Archive /> Back up now
+          </Button>
+          {about?.backups?.last && (
+            <Button
+              variant="secondary"
+              onClick={async () => {
+                setBackupNote("downloading…");
+                try {
+                  const r = await fetch("/api/backups/latest", { headers: { Authorization: "Bearer " + token } });
+                  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+                  const url = URL.createObjectURL(await r.blob());
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = about.backups?.last?.name ?? "lyra-backup.tar.gz";
+                  a.click();
+                  setTimeout(() => URL.revokeObjectURL(url), 10000);
+                  setBackupNote("Saved. Keep it somewhere other than the server.");
+                } catch (e) {
+                  setBackupNote(`Couldn't download it: ${(e as Error).message}`);
+                }
+              }}
+            >
+              <Download /> Download latest
+            </Button>
+          )}
           <Button variant="secondary" onClick={update}>
             <RefreshCw /> {newer ? "Update the app" : "Check for app update"}
           </Button>

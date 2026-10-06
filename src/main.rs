@@ -1,4 +1,5 @@
 mod agents;
+mod backup;
 mod caps;
 mod commands;
 mod config;
@@ -181,6 +182,8 @@ enum StreamEvent {
     /// The decision model found nothing for a memory capture (`memory`) or a
     /// skill review to look at.
     GateClosed { memory: bool },
+    /// A backup finished (`nightly` ones only log).
+    BackedUp { nightly: bool, result: backup::Made },
     /// The main agent is working with a subagent (routing, progress, result).
     Agent(agents::AgentEvent),
     /// An agent waits for the user's approval before changing something.
@@ -396,6 +399,9 @@ struct App {
     session_id: String,
     /// Activity lines logged so far (`lyra serve` prints the new ones).
     logged: u64,
+    /// `[backup]`, and where the memory store is (backed up through it).
+    backup: backup::Settings,
+    memory_store: Option<std::path::PathBuf>,
     /// The chat model can see images (`vision` in the config).
     vision: bool,
     /// Images for the next message sent (from a device's attachments).
@@ -533,6 +539,8 @@ impl App {
             touched: None,
             session_id: sessions::new_id(),
             logged: 0,
+            backup: config.backup.clone(),
+            memory_store: (config.memory.backend == config::MemoryBackend::Lance).then(|| config.memory.path()).flatten(),
             hub: None,
             vision: config.vision,
             attach_images: Vec::new(),
@@ -882,6 +890,21 @@ impl App {
                 self.applied_memories = ids;
                 self.applied_memories_tokens = tokens;
             }
+            StreamEvent::BackedUp { nightly, result } => {
+                let text = match &result {
+                    Ok((b, notes)) => {
+                        for n in notes {
+                            self.log(Level::Info, format!("backup: {n}"));
+                        }
+                        format!("💾 backed up lyra: {} ({})", b.name, backup::size_text(b.size))
+                    }
+                    Err(e) => format!("backup failed: {e}"),
+                };
+                self.log(if result.is_ok() { Level::Info } else { Level::Error }, text.clone());
+                if !nightly {
+                    self.messages.push(Message::new(if result.is_ok() { "info" } else { "error" }, text));
+                }
+            }
             StreamEvent::GateClosed { memory } => {
                 if memory {
                     self.capturing = false;
@@ -1101,6 +1124,15 @@ impl App {
     /// minutes while lyra is open (a long session still gets its daily runs).
     fn scheduled(&mut self) {
         self.last_schedule_check = Instant::now();
+        if let Some(home) = config::home() {
+            backup::refresh(&self.backup.dir(&home));
+            if !backup::running() && backup::due(&self.backup, backup::last().map(|b| b.made), chrono::Local::now()) {
+                self.log(Level::Info, "the nightly backup is due".into());
+                if let Err(e) = self.backup_now(true) {
+                    self.log(Level::Error, format!("backup: {e}"));
+                }
+            }
+        }
         if self.evolving.is_none()
             && let Some(evolution) = &self.evolution
             && evolution.review_due(self.evolution_review_every)
@@ -1282,7 +1314,7 @@ impl App {
     /// the answer goes back to the page instead of into the conversation.
     pub fn quiet_command(&mut self, line: &str) -> Result<String, String> {
         let name = line.split_whitespace().next().unwrap_or("");
-        if !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate" | "/goal" | "/goals" | "/model") {
+        if !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate" | "/goal" | "/goals" | "/model" | "/backup") {
             return Err(format!("{name} can't be run from a page"));
         }
         let result = self.command_result(line);
@@ -1397,6 +1429,7 @@ impl App {
                 })
             }
             "/model" => self.model_command(arg),
+            "/backup" => self.backup_command(arg),
             _ => Err(format!("unknown command {name} — try /help")),
         }
     }
@@ -1471,6 +1504,39 @@ impl App {
             n => format!("loaded {n} context file{}", if n == 1 { "" } else { "s" }),
         };
         self.log(Level::Info, text);
+    }
+
+    /// Back up the lyra home in the background (`/backup now`, nightly).
+    fn backup_now(&mut self, nightly: bool) -> Result<String, String> {
+        let home = config::home().ok_or("no lyra home")?;
+        if backup::running() {
+            return Err("a backup is already running".into());
+        }
+        let (settings, tx, mem, store) = (self.backup.clone(), self.tx.clone(), self.mem(), self.memory_store.clone());
+        let dir = settings.dir(&home);
+        thread::spawn(move || {
+            let copy = |to: &std::path::Path| -> Result<(), String> {
+                let mem = mem.as_ref().ok_or("memory is off")?;
+                mem.run(mem.manager.backup(to))
+            };
+            let memory = match (&store, &mem) {
+                (Some(path), Some(_)) if path.exists() => Some((path.as_path(), &copy as &dyn Fn(&std::path::Path) -> Result<(), String>)),
+                _ => None,
+            };
+            let result = backup::run(&home, &settings, memory);
+            let _ = tx.send(StreamEvent::BackedUp { nightly, result });
+        });
+        Ok(format!("backing up to {}…", context::show(&dir)))
+    }
+
+    /// `/backup [now|list]`.
+    fn backup_command(&mut self, arg: &str) -> Result<String, String> {
+        let home = config::home().ok_or("no lyra home")?;
+        match arg.trim() {
+            "" | "list" => Ok(backup::describe(&self.backup.dir(&home), &self.backup)),
+            "now" => self.backup_now(false),
+            _ => Err("usage: /backup [now|list]".into()),
+        }
     }
 
     /// What the decision model decided (or that it's down), into Activity.
@@ -2615,6 +2681,7 @@ pub(crate) const COMMANDS: &str = "\
 /devices remove <name>       unpair a device or machine
 /sessions                    saved conversations (lyra -c continues the latest)
 /sessions search <words>     find a conversation by what was said in it
+/backup [now|list]           back up lyra (memory, skills, goals, sessions, config); nightly by itself
 /model [name]                the model in use and the ones on offer; switch (saved to config.toml)
 /resume <id>                 switch to a saved conversation
 /history <id>                a skill's versions and audit trail
@@ -2962,6 +3029,8 @@ fn main() {
     let sub = args.get(1).map(String::as_str);
     match sub {
         Some("pair") => return pair_command(&args[2..]),
+        Some("backup") => return backup_cli(&args[2..]),
+        Some("restore") => return restore_cli(&args[2..]),
         Some("devices") => return devices_command(&args[2..]),
         Some("service") => return service_command(),
         Some("node") => return lyra_node::main(&args[2..]),
@@ -3131,6 +3200,9 @@ fn serve_main(mut app: App, web: &lyra_web::Settings, rt: &tokio::runtime::Handl
         }
     };
     app.hub = Some(hub.clone());
+    if let Some(home) = config::home() {
+        hub.set_backups(app.backup.dir(&home));
+    }
     if let Some(caps) = &app.caps {
         caps.set_remote(Arc::new(serve::HubRemote(hub.clone())));
         // Paired machines show in the tools' choices even before they connect.
@@ -3195,6 +3267,62 @@ fn qr(text: &str) -> String {
     match qrcode::QrCode::new(text.as_bytes()) {
         Ok(code) => code.render::<qrcode::render::unicode::Dense1x2>().dark_color(qrcode::render::unicode::Dense1x2::Light).light_color(qrcode::render::unicode::Dense1x2::Dark).build() + "\n",
         Err(_) => String::new(),
+    }
+}
+
+/// `lyra backup [list]`: back up now (lyra stopped; while it runs, `/backup now`).
+fn backup_cli(args: &[String]) {
+    let (Some(home), Ok(config)) = (config::home(), Config::load()) else {
+        eprintln!("lyra: no lyra home or config");
+        std::process::exit(1);
+    };
+    let dir = config.backup.dir(&home);
+    if args.first().map(String::as_str) == Some("list") {
+        println!("{}", backup::describe(&dir, &config.backup));
+        return;
+    }
+    if let Some((pid, mode)) = lock::holder(&home) {
+        eprintln!("lyra: {mode} is running (pid {pid}); back up from it so the copy is consistent: /backup now (or the app's About → Back up now)");
+        std::process::exit(1);
+    }
+    match backup::run(&home, &config.backup, None) {
+        Ok((b, notes)) => {
+            for n in notes {
+                println!("{n}");
+            }
+            println!("backed up to {} ({})", b.path.display(), backup::size_text(b.size));
+        }
+        Err(e) => {
+            eprintln!("lyra: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `lyra restore <file|latest>`: put a backup in place of the lyra home.
+fn restore_cli(args: &[String]) {
+    let (Some(home), Some(which)) = (config::home(), args.first()) else {
+        eprintln!("usage: lyra restore <backup file|latest>   (lyra backup list shows them)");
+        std::process::exit(2);
+    };
+    let settings = Config::load().map(|c| c.backup).unwrap_or_default();
+    let archive = if which == "latest" {
+        match backup::list(&settings.dir(&home)).into_iter().next() {
+            Some(b) => b.path,
+            None => {
+                eprintln!("lyra: no backups in {}", settings.dir(&home).display());
+                std::process::exit(1);
+            }
+        }
+    } else {
+        std::path::PathBuf::from(which)
+    };
+    match backup::restore(&home, &archive) {
+        Ok(note) => println!("{note}\nstart lyra again (systemctl start lyra)"),
+        Err(e) => {
+            eprintln!("lyra: {e}");
+            std::process::exit(1);
+        }
     }
 }
 

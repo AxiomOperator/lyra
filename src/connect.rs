@@ -552,6 +552,16 @@ fn draw_panel(f: &mut Frame, s: &Screen, area: Rect) {
         }
         lines.push(Line::styled(truncate("  /sessions · /resume <id>", width), dim));
     }
+    lines.push(Line::default());
+    lines.push(Line::from("Backup".bold()));
+    let backed = if st["backing_up"] == true {
+        "backing up…".to_string()
+    } else if let Some(made) = st["backup"]["made"].as_str().and_then(|m| chrono::DateTime::parse_from_rfc3339(m).ok()) {
+        format!("{} · {}", made.with_timezone(&chrono::Local).format("%m-%d %H:%M"), crate::backup::size_text(st["backup"]["size"].as_u64().unwrap_or(0)))
+    } else {
+        "none yet · /backup now".into()
+    };
+    lines.push(Line::styled(truncate(&backed, width), dim));
     if let Some(d) = st["decide"].as_object() {
         lines.push(Line::default());
         lines.push(Line::from("Decisions".bold()));

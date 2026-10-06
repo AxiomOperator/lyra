@@ -140,6 +140,8 @@ pub struct Notification {
 
 struct Shared {
     devices: Devices,
+    /// Where lyra's own backups are (`[backup] dir`), for downloading the latest.
+    backups: Mutex<Option<std::path::PathBuf>>,
     uploads: uploads::Uploads,
     vapid: Vapid,
     subject: String,
@@ -195,6 +197,7 @@ impl Hub {
         let (out, _) = broadcast::channel(4096);
         let shared = Arc::new(Shared {
             devices,
+            backups: Mutex::new(None),
             vapid,
             subject,
             out,
@@ -298,6 +301,11 @@ impl Hub {
     }
 
     /// sha256 of the `lyra-node` program this server hands out, if it has one.
+    /// Where lyra's backups are, so a paired device can download the latest.
+    pub fn set_backups(&self, dir: std::path::PathBuf) {
+        *self.shared.backups.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir);
+    }
+
     pub fn node_build(&self) -> Option<String> {
         node_build(&self.shared.node_binary)
     }
@@ -381,6 +389,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/api/approve", post(approve))
         .route("/api/files", post(upload).layer(axum::extract::DefaultBodyLimit::max(uploads::MAX_BYTES + 1024)))
         .route("/api/files/{id}", get(download))
+        .route("/api/backups/latest", get(latest_backup))
         .route("/ws", get(ws))
         .route("/health", get(health))
         .route("/node", get(node_ws))
@@ -564,6 +573,38 @@ async fn download(State(s): State<Arc<Shared>>, headers: HeaderMap, axum::extrac
     let Some((up, path)) = s.uploads.get(&id) else { return error(StatusCode::NOT_FOUND, "no such file") };
     match tokio::fs::read(&path).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, up.mime.clone())], bytes).into_response(),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+}
+
+/// The newest backup of lyra, for a paired phone or browser (not a machine)
+/// to keep a copy off the server.
+async fn latest_backup(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Response {
+    if let Err(r) = device(&s, &headers) {
+        return *r;
+    }
+    let Some(dir) = s.backups.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        return error(StatusCode::NOT_FOUND, "backups aren't set up");
+    };
+    // `lyra-<YYYYmmdd-HHMMSS>.tar.gz`: the newest sorts last.
+    let newest = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with("lyra-") && n.ends_with(".tar.gz"))
+        .max();
+    let Some(name) = newest else { return error(StatusCode::NOT_FOUND, "no backup yet") };
+    match tokio::fs::read(dir.join(&name)).await {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, "application/gzip".to_string()),
+                (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\"")),
+                (header::CACHE_CONTROL, "no-store".to_string()),
+            ],
+            bytes,
+        )
+            .into_response(),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
 }

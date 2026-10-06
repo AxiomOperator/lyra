@@ -632,6 +632,33 @@ ssh_hosts = []               # e.g. ["web1", "deploy@10.0.0.5"]
 approval_timeout_seconds = 300
 ```
 
+## Backups
+
+lyra backs itself up every night: memory, skills, goals, plans, agents, saved conversations,
+config and paired devices. Each backup is one `lyra-<date-time>.tar.gz` in `~/.lyra-backups`,
+next to `~/.lyra` rather than inside it. SQLite databases are copied with `VACUUM INTO` and
+memory through its own backup, so a backup made while lyra runs is consistent. Files sent
+from the app (`uploads/`) aren't included unless you ask.
+
+```toml
+[backup]
+# dir = "/mnt/nas/lyra-backups"   # another disk or a NAS survives this one failing
+at = "03:30"                      # nightly, local time
+keep = 7
+# include_uploads = false
+# enabled = true
+```
+
+- `/backup now` and `/backup list` work in a terminal and from the app's command palette.
+  The app's About card shows the last backup and has **Back up now** and **Download latest**,
+  so you can keep a copy off the server.
+- `lyra backup [list]` backs up from a shell (with lyra stopped; while it runs, use `/backup now`).
+- `lyra restore <file|latest>` puts one back. Stop lyra first (`systemctl stop lyra`). What it
+  replaces is kept as `~/.lyra.before-restore-<time>`.
+
+The TUI's Session panel, `lyra connect`'s side panel and the app all show when the last
+backup was made.
+
 ## Phones and browsers (`lyra serve`)
 
 `lyra serve` runs the same lyra (memory, skills, agents, plans, goals) without

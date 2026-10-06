@@ -73,6 +73,8 @@ fn status(app: &App, machines: &[String]) -> Value {
         "model": app.model,
         "session": app.session_id,
         "title": title(app),
+        "backup": crate::backup::last().map(|b| json!({ "name": b.name, "made": b.made.to_rfc3339(), "size": b.size })),
+        "backing_up": crate::backup::running(),
         "decide": crate::decide::model().map(|model| {
             let (decided, to_chat, ms) = crate::decide::stats();
             json!({ "model": model, "decided": decided, "to_chat": to_chat, "ms": ms })
@@ -713,6 +715,14 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
             "path": crate::config::path().map(|p| crate::context::show(&p)),
         }),
         "about" => json!({
+            "backups": crate::config::home().map(|home| {
+                let dir = app.backup.dir(&home);
+                let all = crate::backup::list(&dir);
+                json!({
+                    "dir": crate::context::show(&dir), "enabled": app.backup.enabled, "at": app.backup.at, "keep": app.backup.keep,
+                    "count": all.len(), "last": all.first().map(|b| json!({ "name": b.name, "made": b.made.to_rfc3339(), "size": b.size })),
+                })
+            }),
             "lyra": env!("CARGO_PKG_VERSION"),
             "app": hub.app_version(),
             "node_build": node_build.map(|b| b.chars().take(12).collect::<String>()),
