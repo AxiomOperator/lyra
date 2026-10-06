@@ -289,3 +289,10 @@ currency = "$"
 # with one approval. @all is the server and every online machine.
 # [groups]
 # web = ["web1", "web2"]
+
+# Status (see README): everything lyra depends on, checked every minute by lyra
+# serve; down twice in a row is pushed, and again when it's back.
+# [status]
+# every_seconds = 60
+# notify = true
+# mute = []

@@ -317,6 +317,13 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut last_open = Value::Null;
     // Machine health: what's been reported, and the server's own checkups.
     let mut alerts = crate::health::Alerts::default();
+    // Status: everything lyra depends on, checked off this loop every minute.
+    let serving_since = Instant::now();
+    let (status_tx, status_rx) = crate::status::worker(crate::config::home().unwrap_or_default().join("status"));
+    let mut status_alerts = crate::status::Alerts::default();
+    let mut status_view = Value::Null;
+    let mut status_busy = false;
+    let mut last_status: Option<Instant> = None;
     let (health_tx, health_rx) = std::sync::mpsc::channel::<Value>();
     let mut server_health = Value::Null;
     let mut last_checkup: Option<Instant> = None;
@@ -498,6 +505,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     c.mirror.extra["conversations"] = last_open.clone();
                     c.mirror.extra["server_health"] = server_health.clone();
                     c.mirror.extra["routines"] = routines_view.clone();
+                    c.mirror.extra["status"] = status_view.clone();
                     for u in c.mirror.updates(&mut c.app) {
                         hub.publish(Some(&c.app.session_id), u);
                     }
@@ -634,6 +642,49 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 everyone = true;
             }
         }
+        let ss = convs[0].app.status.clone();
+        if ss.enabled && !status_busy && (last_status.is_none_or(|t| t.elapsed() >= Duration::from_secs(ss.every_seconds.max(15))) || crate::status::take_request()) {
+            last_status = Some(Instant::now());
+            let mut i = convs[0].app.status_inputs();
+            let (sent, failed, error) = hub.take_push_counts();
+            i.push = Some((hub.push_devices(), sent, failed, error));
+            let up = serving_since.elapsed().as_secs();
+            i.serving = Some(format!(
+                "v{} · up {}d {}h {}m · {} conversation{} open · {} device{} connected",
+                env!("CARGO_PKG_VERSION"),
+                up / 86400,
+                up % 86400 / 3600,
+                up % 3600 / 60,
+                convs.len(),
+                if convs.len() == 1 { "" } else { "s" },
+                hub.connections(),
+                if hub.connections() == 1 { "" } else { "s" }
+            ));
+            i.machines = machines_detail(hub, node_build.as_deref());
+            i.server_health = server_health.clone();
+            status_busy = status_tx.send(i).is_ok();
+        }
+        while let Ok(board) = status_rx.try_recv() {
+            status_busy = false;
+            match board {
+                Ok(board) => {
+                    for (_, problem, text) in crate::status::alerts(&mut status_alerts, &board, &ss) {
+                        convs[0].app.log(if problem { Level::Error } else { Level::Agent }, format!("{} {text}", if problem { "⚠" } else { "✓" }));
+                        if ss.notify {
+                            hub.notify(Notification {
+                                title: if problem { "⚠ lyra needs a look".into() } else { "✓ lyra".into() },
+                                body: text,
+                                tag: "status".into(),
+                                approval: None,
+                            });
+                        }
+                    }
+                    status_view = json!(board);
+                    everyone = true;
+                }
+                Err(e) => convs[0].app.log(Level::Error, format!("status: {e}")),
+            }
+        }
         // The server's own health, like a machine's.
         if last_checkup.is_none_or(|t| t.elapsed() >= lyra_node::health::EVERY) {
             last_checkup = Some(Instant::now());
@@ -677,6 +728,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         extra_now["conversations"] = open;
         extra_now["server_health"] = server_health.clone();
         extra_now["routines"] = routines_view.clone();
+        extra_now["status"] = status_view.clone();
         let attached = hub.attached_sessions();
         for c in convs.iter_mut() {
             // The phase timer ("thinking 4s") ticks while something is happening.
@@ -863,6 +915,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
             })).collect::<Vec<_>>())
         }
         "routines" => crate::routines::view(&[], 10),
+        "status" => crate::status::latest().map_or(Value::Null, |b| json!(b)),
         "devices" => {
             let online: Vec<String> = hub.online_devices().into_iter().map(|(id, _)| id).collect();
             let machines: Vec<String> = hub.machines().into_iter().map(|m| m.name.to_lowercase()).collect();

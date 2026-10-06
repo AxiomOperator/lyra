@@ -455,6 +455,14 @@ impl Caps {
         Ok(json!({ "machines": results.len(), "ok": ok, "failed": results.len() - ok, "results": results }))
     }
 
+    /// Every OpenAPI and MCP provider, checked now: (kind, name, where, health,
+    /// how many capabilities it gives). Blocking: call from a worker thread.
+    pub fn providers(&self) -> Vec<(&'static str, String, String, lyra_capabilities::CapabilityHealth, usize)> {
+        let mut out: Vec<_> = self.openapi.iter().map(|c| ("OpenAPI", c.config.name.clone(), c.base_url().to_string(), c.health(), c.capabilities().len())).collect();
+        out.extend(self.mcp.iter().map(|c| ("MCP", c.config.name.clone(), format!("{} {}", c.config.command, c.config.args.join(" ")).trim().to_string(), c.health(), c.capabilities().len())));
+        out
+    }
+
     pub fn set_agents(&self, agents: Arc<crate::agents::Agents>) {
         let _ = self.agents.set(agents);
     }

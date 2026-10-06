@@ -575,6 +575,16 @@ fn draw_panel(f: &mut Frame, s: &Screen, area: Rect) {
         }
         lines.push(Line::styled(truncate("  /sessions · /resume <id>", width), dim));
     }
+    // What lyra depends on: only what isn't up is listed.
+    if let Some(rows) = st["status"]["rows"].as_array() {
+        lines.push(Line::default());
+        let bad: Vec<&Value> = rows.iter().filter(|r| matches!(r["state"].as_str(), Some("down" | "degraded"))).collect();
+        lines.push(Line::from(vec!["Status ".bold(), if bad.is_empty() { Span::styled("all normal", Style::default().fg(Color::Green)) } else { Span::raw("") }]));
+        for r in bad {
+            let color = if r["state"] == "down" { Color::Red } else { Color::Yellow };
+            lines.push(Line::styled(truncate(&format!("{} {}: {}", if r["state"] == "down" { "✗" } else { "◐" }, str_of(&r["name"]), str_of(&r["detail"])), width), Style::default().fg(color)));
+        }
+    }
     let routines = st["routines"].as_array().cloned().unwrap_or_default();
     if !routines.is_empty() {
         lines.push(Line::default());

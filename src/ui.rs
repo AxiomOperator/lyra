@@ -297,6 +297,14 @@ fn session_panel(app: &App, width: usize) -> Vec<Line<'static>> {
         Line::from(vec![label("model"), Span::raw(truncate(&app.model, width.saturating_sub(8)))]),
         Line::from(vec![label("server"), Span::raw(truncate(&host(&app.base_url), width.saturating_sub(8)))]),
     ];
+    if let Some(board) = crate::status::latest() {
+        let color = match board.overall {
+            crate::status::State::Down => Color::Red,
+            crate::status::State::Degraded => Color::Yellow,
+            _ => Color::Green,
+        };
+        lines.push(Line::from(vec![label("status"), Span::styled(truncate(&crate::status::line(&board), width.saturating_sub(8)), Style::default().fg(color))]));
+    }
     let backed = match crate::backup::last() {
         _ if crate::backup::running() => "backing up…".to_string(),
         Some(b) => format!("{} · {}", b.made.format("%m-%d %H:%M"), crate::backup::size_text(b.size)),

@@ -80,6 +80,8 @@ export interface Status {
   online?: { id: string; name: string }[];
   pairing?: PairRequest[];
   machines_detail?: Machine[];
+  /** Everything lyra depends on, checked every minute. */
+  status?: StatusBoard | null;
   /** Named sets of machines (`[groups]`), for @group. */
   groups?: { name: string; machines: string[] }[] | null;
   /** The server's own health (as a machine's). */
@@ -260,4 +262,27 @@ export interface Routine {
   next: string | null;
   running: boolean;
   runs: RoutineRun[];
+}
+
+export type CheckState = "up" | "degraded" | "down" | "off";
+
+export interface StatusRow {
+  id: string;
+  group: string;
+  name: string;
+  target: string;
+  state: CheckState;
+  latency_ms: number | null;
+  detail: string;
+  uptime_24h: number | null;
+  uptime_7d: number | null;
+  spark: (number | null)[];
+  since: string | null;
+  changes: { at: string; from: CheckState; to: CheckState; detail: string }[];
+}
+
+export interface StatusBoard {
+  at: string;
+  overall: CheckState;
+  rows: StatusRow[];
 }

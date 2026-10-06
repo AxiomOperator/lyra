@@ -20,6 +20,7 @@ mod routines;
 mod serve;
 mod sessions;
 mod stats;
+mod status;
 mod tools;
 mod websearch;
 mod ui;
@@ -401,6 +402,8 @@ struct App {
     session_id: String,
     /// Activity lines logged so far (`lyra serve` prints the new ones).
     logged: u64,
+    /// `[status]`.
+    status: status::Settings,
     /// `[backup]`, and where the memory store is (backed up through it).
     backup: backup::Settings,
     memory_store: Option<std::path::PathBuf>,
@@ -542,6 +545,7 @@ impl App {
             session_id: sessions::new_id(),
             logged: 0,
             backup: config.backup.clone(),
+            status: config.status.clone(),
             memory_store: (config.memory.backend == config::MemoryBackend::Lance).then(|| config.memory.path()).flatten(),
             hub: None,
             vision: config.vision,
@@ -1116,6 +1120,11 @@ impl App {
         self.sync_agents();
         self.reload_evolution();
         self.check_models();
+        // A first look at everything lyra depends on (lyra serve keeps checking).
+        if self.status.enabled {
+            let inputs = self.status_inputs();
+            thread::spawn(move || status::set_latest(&status::Board::plain(status::pass(inputs))));
+        }
         self.refresh_caps(true);
         self.refresh_goals();
         self.memory_upkeep();
@@ -1318,7 +1327,7 @@ impl App {
     /// the answer goes back to the page instead of into the conversation.
     pub fn quiet_command(&mut self, line: &str) -> Result<String, String> {
         let name = line.split_whitespace().next().unwrap_or("");
-        if !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate" | "/goal" | "/goals" | "/model" | "/backup" | "/routine" | "/routines") {
+        if !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate" | "/goal" | "/goals" | "/model" | "/backup" | "/routine" | "/routines" | "/status") {
             return Err(format!("{name} can't be run from a page"));
         }
         let result = self.command_result(line);
@@ -1435,6 +1444,7 @@ impl App {
             "/model" => self.model_command(arg),
             "/backup" => self.backup_command(arg),
             "/routine" | "/routines" => self.routine_command(arg),
+            "/status" => self.status_command(arg),
             _ => Err(format!("unknown command {name} — try /help")),
         }
     }
@@ -1532,6 +1542,33 @@ impl App {
             let _ = tx.send(StreamEvent::BackedUp { nightly, result });
         });
         Ok(format!("backing up to {}…", context::show(&dir)))
+    }
+
+    /// `/status [now]`: everything lyra depends on.
+    fn status_command(&mut self, arg: &str) -> Result<String, String> {
+        let now = arg.trim() == "now";
+        if !now && !arg.trim().is_empty() {
+            return Err("usage: /status [now]".into());
+        }
+        if self.hub.is_some() {
+            // lyra serve checks every minute and keeps the history.
+            if now || status::latest().is_none() {
+                status::request();
+                return Ok("checking everything now — /status in a moment shows it (the app's Status page updates by itself)".into());
+            }
+            return Ok(status::latest().map(|b| status::describe(&b)).unwrap_or_default());
+        }
+        if !now && let Some(b) = status::latest() {
+            return Ok(status::describe(&b));
+        }
+        // The terminal on its own: one check, no history.
+        let (inputs, tx) = (self.status_inputs(), self.tx.clone());
+        thread::spawn(move || {
+            let board = status::Board::plain(status::pass(inputs));
+            status::set_latest(&board);
+            let _ = tx.send(StreamEvent::Notice(status::describe(&board)));
+        });
+        Ok("checking everything lyra depends on…".into())
     }
 
     /// `/routine …`: scheduled things to ask lyra.
@@ -2750,6 +2787,7 @@ pub(crate) const COMMANDS: &str = "\
 /routine [list]              scheduled things to ask lyra; runs tell you only when something needs you
 /routine new <name> | <schedule> | <what to do> [| notify problems|always|never] [| changes]
 /routine run|pause|resume|delete|show <name> · /routine edit <name> schedule|prompt|notify|changes <value>
+/status [now]                everything lyra depends on: models, search, APIs, address, storage, backups, machines
 /backup [now|list]           back up lyra (memory, skills, goals, sessions, config); nightly by itself
 /model [name]                the model in use and the ones on offer; switch (saved to config.toml)
 /resume <id>                 switch to a saved conversation

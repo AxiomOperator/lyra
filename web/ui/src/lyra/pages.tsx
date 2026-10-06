@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { AlarmClock, Archive, Bell, BellOff, Bot, Brain, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, Unplug } from "lucide-react";
+import { Activity as ActivityIcon, AlarmClock, Archive, Bell, BellOff, Bot, Brain, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, Unplug } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PairCard } from "./chat";
 import { RulesDialog } from "./manage";
@@ -51,7 +51,7 @@ function HealthRow({ h }: { h: Health }) {
 
 // ---- machines
 
-export function MachinesPage({ mention }: { mention: (name: string) => void }) {
+export function MachinesPage({ mention, toStatus }: { mention: (name: string) => void; toStatus: () => void }) {
   const { status, say } = useLyra();
   const [confirm, dialog] = useConfirm();
   const [copied, setCopied] = useState(false);
@@ -59,7 +59,15 @@ export function MachinesPage({ mention }: { mention: (name: string) => void }) {
   const machines = status.machines_detail ?? [];
   const install = `curl -fsSL ${location.origin}/install.sh | sh -s -- --name NAME`;
   return (
-    <Page title="Machines" description="Where lyra's Operator can work. Mention one in chat with @name.">
+    <Page
+      title="Machines"
+      description="Where lyra's Operator can work. Mention one in chat with @name."
+      action={
+        <Button size="sm" variant="ghost" onClick={toStatus}>
+          <ActivityIcon /> Status
+        </Button>
+      }
+    >
       {(status.pairing ?? []).map((p) => (
         <PairCard key={p.id} p={p} />
       ))}
@@ -324,7 +332,7 @@ function Notifications() {
   );
 }
 
-export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "routines" | "memory" | "skills" | "goals" | "model") => void; update: () => void }) {
+export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "routines" | "memory" | "skills" | "goals" | "model" | "devices") => void; update: () => void }) {
   const { say, unpaired, token, serverVersion, status } = useLyra();
   const [sessions] = useData<Session[]>("sessions");
   // Asked again when a backup starts or finishes.
@@ -399,6 +407,9 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
           <CardDescription>What lyra knows and can do.</CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-2 gap-2 px-4 sm:grid-cols-3">
+          <Button variant="secondary" className="md:hidden" onClick={() => open("devices")}>
+            <Smartphone /> Devices
+          </Button>
           <Button variant="secondary" onClick={() => open("routines")}>
             <AlarmClock /> Routines
           </Button>

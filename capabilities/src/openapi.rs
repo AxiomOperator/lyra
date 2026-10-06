@@ -262,6 +262,11 @@ impl OpenApiClient {
         }
     }
 
+    /// Where its calls go.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     /// Reachable at all? Any HTTP answer counts.
     pub fn health(&self) -> CapabilityHealth {
         let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(5)).build();

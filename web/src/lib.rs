@@ -158,6 +158,10 @@ struct Shared {
     /// Connections and when each last said it was visible on screen.
     visible: Mutex<HashMap<u64, Option<Instant>>>,
     next_conn: AtomicU64,
+    /// Pushes sent and failed since the last look (lyra's Status), and the last error.
+    push_sent: AtomicU64,
+    push_failed: AtomicU64,
+    push_error: Mutex<String>,
     machines: Mutex<HashMap<String, MachineConn>>,
     next_call: AtomicU64,
     /// Devices connected now: connection → (device id, name).
@@ -209,6 +213,9 @@ impl Hub {
             inbound,
             visible: Mutex::new(HashMap::new()),
             next_conn: AtomicU64::new(1),
+            push_sent: AtomicU64::new(0),
+            push_failed: AtomicU64::new(0),
+            push_error: Mutex::new(String::new()),
             machines: Mutex::new(HashMap::new()),
             next_call: AtomicU64::new(1),
             online: Mutex::new(HashMap::new()),
@@ -305,6 +312,24 @@ impl Hub {
     }
 
     /// sha256 of the `lyra-node` program this server hands out, if it has one.
+    /// The address devices use (`[web] public_url`), "" when not set.
+    pub fn public_url(&self) -> String {
+        self.shared.public_url.clone()
+    }
+
+    /// Pushes (sent, failed) since the last call, and the last failure.
+    pub fn take_push_counts(&self) -> (u64, u64, String) {
+        let sent = self.shared.push_sent.swap(0, Ordering::Relaxed);
+        let failed = self.shared.push_failed.swap(0, Ordering::Relaxed);
+        let error = if failed > 0 { self.shared.push_error.lock().unwrap_or_else(|e| e.into_inner()).clone() } else { String::new() };
+        (sent, failed, error)
+    }
+
+    /// Devices with notifications on.
+    pub fn push_devices(&self) -> usize {
+        self.shared.devices.list().iter().filter(|d| d.push.is_some()).count()
+    }
+
     /// Where lyra's backups are, so a paired device can download the latest.
     pub fn set_backups(&self, dir: std::path::PathBuf) {
         *self.shared.backups.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir);
@@ -369,8 +394,17 @@ impl Hub {
             let payload = json!({ "title": n.title, "body": n.body, "tag": n.tag, "approval": n.approval }).to_string();
             for d in shared.devices.list() {
                 let Some(sub) = &d.push else { continue };
-                if push::send(&shared.vapid, &shared.subject, sub, payload.as_bytes()) == push::Sent::Gone {
-                    let _ = shared.devices.set_push(&d.id, None);
+                match push::send(&shared.vapid, &shared.subject, sub, payload.as_bytes()) {
+                    push::Sent::Ok => {
+                        shared.push_sent.fetch_add(1, Ordering::Relaxed);
+                    }
+                    push::Sent::Gone => {
+                        let _ = shared.devices.set_push(&d.id, None);
+                    }
+                    push::Sent::Failed(e) => {
+                        shared.push_failed.fetch_add(1, Ordering::Relaxed);
+                        *shared.push_error.lock().unwrap_or_else(|e| e.into_inner()) = format!("{}: {e}", d.name);
+                    }
                 }
             }
         });

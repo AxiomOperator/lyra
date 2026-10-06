@@ -200,6 +200,17 @@ pub fn ask(what: &str, state: &str, questions: &[(String, Question)]) -> Option<
     }
 }
 
+/// For Status: one tiny question, timed, without counting or logging it.
+pub fn probe() -> Option<Result<(u64, String), String>> {
+    let settings = SETTINGS.read().unwrap_or_else(|e| e.into_inner()).clone()?;
+    let started = Instant::now();
+    Some(call(&settings, "The server answered the health check.", &[("q".into(), Question::Yes("Did the server answer?".into()))]).map(|_| (started.elapsed().as_millis() as u64, settings.model.clone())))
+}
+
+pub fn url() -> Option<String> {
+    SETTINGS.read().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| s.url.clone())
+}
+
 /// The answer to `id`, if the model was sure enough; counts a fallback when not.
 pub fn confident<'a>(answers: &'a HashMap<String, Answer>, id: &str) -> Option<&'a Answer> {
     let min = SETTINGS.read().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(1.0, |s| s.min_confidence);

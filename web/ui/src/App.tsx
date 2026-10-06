@@ -6,10 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { AlarmClock, Brain, Cpu, Ellipsis, GraduationCap, MessageSquare, MessageSquarePlus, ScrollText, Server, Smartphone, Sparkles, Target, WifiOff } from "lucide-react";
+import { Activity, AlarmClock, Brain, Cpu, Ellipsis, GraduationCap, MessageSquare, MessageSquarePlus, ScrollText, Server, Smartphone, Sparkles, Target, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
 import { GoalsPage, MemoryPage, ModelsPage, RoutinesPage, SkillsPage } from "./lyra/manage";
+import { StatusPage } from "./lyra/status";
 import { ActivityPage, DevicesPage, MachinesPage, MorePage } from "./lyra/pages";
 import { ago } from "./lyra/push";
 import { SearchBox, SearchHits, useConversationSearch } from "./lyra/search";
@@ -17,7 +18,7 @@ import { APP_VERSION, LyraProvider, useData, useLyra } from "./lyra/store";
 import type { Session } from "./lyra/types";
 import { loadToken, saveToken, takeShared } from "./lyra/token";
 
-type Tab = "chat" | "machines" | "devices" | "activity" | "more" | Manage;
+type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
 type Manage = "routines" | "memory" | "skills" | "goals" | "model";
@@ -161,6 +162,7 @@ function Shell() {
   const toMore = () => setTab("more");
   const tabs: TabItem[] = [
     { id: "chat", label: "Chat", icon: MessageSquare, badge: asking ? 1 : 0 },
+    { id: "status", label: "Status", icon: Activity, badge: (status.status?.rows ?? []).filter((r) => r.state === "down" && r.group !== "Machines").length },
     {
       id: "machines",
       label: "Machines",
@@ -215,7 +217,8 @@ function Shell() {
 
         <main className="flex min-h-0 flex-1 flex-col">
           {tab === "chat" && <ChatPage />}
-          {tab === "machines" && <MachinesPage mention={mention} />}
+          {tab === "status" && <StatusPage toMachines={() => setTab("machines")} />}
+          {tab === "machines" && <MachinesPage mention={mention} toStatus={() => setTab("status")} />}
           {tab === "devices" && <DevicesPage />}
           {tab === "activity" && <ActivityPage />}
           {tab === "more" && <MorePage toChat={() => setTab("chat")} open={setTab} update={updateApp} />}
@@ -227,12 +230,13 @@ function Shell() {
         </main>
 
         <nav className="grid grid-cols-5 border-t bg-card/60 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
-          {tabs.map((t) => (
+          {/* Five fit: Devices lives under More on a phone. */}
+          {tabs.filter((t) => t.id !== "devices").map((t) => (
             <button
               key={t.id}
               type="button"
               onClick={() => setTab(t.id)}
-              className={cn("relative flex flex-col items-center gap-0.5 pt-2 pb-2 text-[11px]", tab === t.id || (t.id === "more" && manage.includes(tab as Manage)) ? "text-teal-400" : "text-muted-foreground")}
+              className={cn("relative flex flex-col items-center gap-0.5 pt-2 pb-2 text-[11px]", tab === t.id || (t.id === "more" && (manage.includes(tab as Manage) || tab === "devices")) ? "text-teal-400" : "text-muted-foreground")}
             >
               <t.icon className="size-5" />
               {t.label}

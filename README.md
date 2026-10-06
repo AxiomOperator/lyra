@@ -669,6 +669,41 @@ run and last verdict, and has **New**, **Run now**, Pause/Resume, Edit, Delete a
 runs. A routine whose last run needs you gets a badge. `lyra connect`'s side panel lists them
 too (✓ all clear, ⚠ needs you, ↻ running).
 
+## Status
+
+The **Status** page (first in the app's sidebar, a tab on a phone), `/status` in a terminal and
+the TUI's Session line show everything lyra depends on. `lyra serve` checks it every minute:
+
+- **Models:** the chat model (it answers, and offers the configured model), embedding,
+  reranker, and the decision model
+- **Tools & APIs:** web search (SearXNG returns results), and each OpenAPI and MCP provider
+- **lyra:**
+  - lyra serve itself
+  - the public address through the proxy (`public_url/health`)
+  - notifications (devices with push on, and failed sends)
+  - storage (each store opened, memory count, disk space)
+  - backups (the last one is under 26 h old)
+  - routines (none failed to finish)
+- **Machines:** online, with their health
+
+Each check shows up / degraded / down / off with its latency, a sparkline of the last hour, and
+uptime for 24 h and 7 days. Tap one for its recent state changes. History is in
+`~/.lyra/status/status.db`, kept 8 days.
+
+When a check is down twice in a row, it's logged and pushed ("⚠ Chat model is down: …"), and
+pushed again when it's back. Machines alert through `[health]` instead. `/status now` (or
+**Check now**) checks right away.
+
+```toml
+[status]
+every_seconds = 60
+notify = true
+mute = []            # checks never pushed about, e.g. ["Web search"]
+# enabled = true
+```
+
+`lyra connect`'s side panel lists whatever isn't up.
+
 ## Backups
 
 lyra backs itself up every night: memory, skills, goals, plans, agents, saved conversations,
