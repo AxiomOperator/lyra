@@ -41,6 +41,31 @@ pub struct Settings {
     pub approval_timeout_seconds: u64,
 }
 
+impl Settings {
+    /// Rules as the user typed them, tidied (blank entries dropped) and
+    /// checked; an error says what's wrong.
+    pub fn cleaned(mut self) -> Result<Self, String> {
+        for list in [&mut self.allow_commands, &mut self.write_roots, &mut self.deny_paths, &mut self.ssh_hosts] {
+            *list = list.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            list.dedup();
+        }
+        self.shell = self.shell.trim().to_string();
+        if self.shell.is_empty() {
+            return Err("the shell can't be empty".into());
+        }
+        if self.write_roots.iter().any(|r| r == "/") {
+            return Err("\"/\" as a write root would let every file be written without asking".into());
+        }
+        if self.allow_commands.iter().any(|c| c == "*" || c == "sudo" || c.starts_with("sudo ")) {
+            return Err("allowed commands can't be everything or sudo; those always ask".into());
+        }
+        if self.timeout_seconds == 0 || self.http_timeout_seconds == 0 || self.approval_timeout_seconds == 0 {
+            return Err("timeouts must be at least a second".into());
+        }
+        Ok(self)
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -183,7 +208,8 @@ pub enum Check {
 }
 
 pub struct System {
-    pub settings: Settings,
+    /// Changed at runtime when the user edits the rules from the app.
+    settings: std::sync::RwLock<Settings>,
     expand: fn(&str) -> PathBuf,
 }
 
@@ -223,7 +249,19 @@ fn arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
 
 impl System {
     pub fn new(settings: Settings, expand: fn(&str) -> PathBuf) -> Self {
-        Self { settings, expand }
+        Self { settings: std::sync::RwLock::new(settings), expand }
+    }
+
+    /// The rules in effect.
+    pub fn settings(&self) -> Settings {
+        self.settings.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// New rules, checked first (see [`Settings::cleaned`]).
+    pub fn set_settings(&self, settings: Settings) -> Result<Settings, String> {
+        let settings = settings.cleaned()?;
+        *self.settings.write().unwrap_or_else(|e| e.into_inner()) = settings.clone();
+        Ok(settings)
     }
 
     /// The home directory (where relative paths and commands start).
@@ -263,12 +301,12 @@ impl System {
     }
 
     fn denied(&self, path: &Path) -> Option<String> {
-        self.under(path, &self.settings.deny_paths).then(|| format!("{} is off limits ([system] deny_paths)", path.display()))
+        self.under(path, &self.settings().deny_paths).then(|| format!("{} is off limits ([system] deny_paths)", path.display()))
     }
 
     /// What this call may do, decided before it runs.
     pub fn check(&self, tool: &str, args: &Value) -> Check {
-        if !self.settings.enabled {
+        if !self.settings().enabled {
             return Check::Forbidden("system access is off ([system] enabled)".into());
         }
         let from_class = |c: Class| match c {
@@ -280,19 +318,19 @@ impl System {
         match tool {
             "system_info" => Check::Auto,
             "shell_run" => match arg(args, "command") {
-                Ok(c) => from_class(classify(c, &self.settings.allow_commands)),
+                Ok(c) => from_class(classify(c, &self.settings().allow_commands)),
                 Err(e) => Check::Forbidden(e),
             },
             "ssh_run" => {
                 let host = args["host"].as_str().unwrap_or("").trim();
-                if host.is_empty() || host.starts_with('-') || !self.settings.ssh_hosts.iter().any(|h| h == host) {
+                if host.is_empty() || host.starts_with('-') || !self.settings().ssh_hosts.iter().any(|h| h == host) {
                     return Check::Forbidden(format!(
                         "{host:?} isn't a configured server; add it to [system] ssh_hosts (configured: {})",
-                        if self.settings.ssh_hosts.is_empty() { "none".into() } else { self.settings.ssh_hosts.join(", ") }
+                        if self.settings().ssh_hosts.is_empty() { "none".into() } else { self.settings().ssh_hosts.join(", ") }
                     ));
                 }
                 match arg(args, "command") {
-                    Ok(c) => from_class(classify(c, &self.settings.allow_commands)),
+                    Ok(c) => from_class(classify(c, &self.settings().allow_commands)),
                     Err(e) => Check::Forbidden(e),
                 }
             }
@@ -303,7 +341,7 @@ impl System {
                     return Check::Forbidden(why);
                 }
                 match tool {
-                    "file_write" | "upload_place" if self.under(&path, &self.settings.write_roots) => Check::Auto,
+                    "file_write" | "upload_place" if self.under(&path, &self.settings().write_roots) => Check::Auto,
                     "upload_place" => Check::Ask { why: format!("writes {}", path.display()), dangerous: path.exists() },
                     "file_write" => Check::Ask { why: format!("writes {}", path.display()), dangerous: path.exists() && args["append"] != true },
                     "file_delete" => Check::Ask { why: format!("deletes {}", path.display()), dangerous: true },
@@ -351,20 +389,20 @@ impl System {
             return Err(why);
         }
         let timeout = |args: &Value| {
-            let max = self.settings.timeout_seconds.max(1);
+            let max = self.settings().timeout_seconds.max(1);
             Duration::from_secs(args["timeout_seconds"].as_u64().map_or(max, |t| t.clamp(1, max)))
         };
         match tool {
             "system_info" => Ok(self.info()),
             "shell_run" => {
-                let mut cmd = Command::new(&self.settings.shell);
+                let mut cmd = Command::new(&self.settings().shell);
                 cmd.arg("-c").arg(arg(args, "command")?);
                 let cwd = args["cwd"].as_str().filter(|c| !c.trim().is_empty()).map_or_else(|| self.home(), |c| self.resolve(c));
                 if !cwd.is_dir() {
                     return Err(format!("{} isn't a directory", cwd.display()));
                 }
                 cmd.current_dir(cwd);
-                shell::run(cmd, timeout(args), self.settings.max_output)
+                shell::run(cmd, timeout(args), self.settings().max_output)
             }
             "ssh_run" => {
                 let mut cmd = Command::new("ssh");
@@ -372,7 +410,7 @@ impl System {
                     .arg(arg(args, "host")?)
                     .arg("--")
                     .arg(arg(args, "command")?);
-                shell::run(cmd, timeout(args), self.settings.max_output)
+                shell::run(cmd, timeout(args), self.settings().max_output)
             }
             "file_read" => self.read(args),
             "file_list" => self.list(args),
@@ -431,7 +469,7 @@ impl System {
         let start = args["start_line"].as_u64().unwrap_or(1).max(1) as usize;
         let max = args["max_lines"].as_u64().unwrap_or(400).clamp(1, 5000) as usize;
         let chunk: Vec<&str> = text.lines().skip(start - 1).take(max).collect();
-        let (content, truncated) = shell::clip(&chunk.join("\n"), self.settings.max_output);
+        let (content, truncated) = shell::clip(&chunk.join("\n"), self.settings().max_output);
         Ok(json!({
             "path": path.display().to_string(),
             "lines": format!("{start}-{} of {total}", (start - 1 + chunk.len()).max(start)),
@@ -488,7 +526,7 @@ impl System {
         }
         let method = reqwest::Method::from_bytes(args["method"].as_str().unwrap_or("GET").to_uppercase().as_bytes()).map_err(|e| e.to_string())?;
         let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(self.settings.http_timeout_seconds.max(1)))
+            .timeout(Duration::from_secs(self.settings().http_timeout_seconds.max(1)))
             .build()
             .map_err(|e| e.to_string())?;
         let mut req = client.request(method, url);
@@ -510,7 +548,7 @@ impl System {
         let status = resp.status().as_u16();
         let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
         let text = resp.text().unwrap_or_default();
-        let (body, truncated) = shell::clip(&text, self.settings.max_output);
+        let (body, truncated) = shell::clip(&text, self.settings().max_output);
         Ok(json!({ "status": status, "content_type": content_type, "body": body, "truncated": truncated }))
     }
 

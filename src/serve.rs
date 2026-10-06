@@ -345,10 +345,60 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         });
                     }
                 }
-                Inbound::Get { what, arg: _, session, reply } => {
+                Inbound::Get { what, arg, session, reply } => {
                     let loaded: Loaded = convs.iter().map(|c| (c.app.session_id.clone(), c.app.waiting)).collect();
                     let i = conv_for(&mut convs, &session);
-                    let _ = reply.send(data(&mut convs[i].app, hub, &what, node_build.as_deref(), &loaded));
+                    let machine = arg["machine"].as_str().unwrap_or("server").to_string();
+                    match what.as_str() {
+                        // A machine's rules: it answers (and checks changes) itself, off this loop.
+                        "rules" | "set_rules" if machine != "server" => {
+                            let hub = hub.clone();
+                            let mut request = json!({ "type": "rules" });
+                            if what == "set_rules" {
+                                request["set"] = arg["system"].clone();
+                                convs[0].app.log(Level::Agent, format!("rules for {machine} changed from the app"));
+                            }
+                            std::thread::spawn(move || {
+                                let answer = hub.call_machine(&machine, request, Duration::from_secs(20));
+                                let _ = reply.send(answer.unwrap_or_else(|e| json!({ "error": e })));
+                            });
+                        }
+                        "set_rules" => {
+                            let answer = set_server_rules(&mut convs[0].app, &arg["system"]);
+                            let _ = reply.send(answer.unwrap_or_else(|e| json!({ "error": e })));
+                        }
+                        "models" => {
+                            let (url, current) = (convs[i].app.base_url.clone(), convs[i].app.model.clone());
+                            std::thread::spawn(move || {
+                                let answer = match crate::models(&url) {
+                                    Ok(list) => json!({ "current": current, "models": list }),
+                                    Err(e) => json!({ "current": current, "models": [], "error": e }),
+                                };
+                                let _ = reply.send(answer);
+                            });
+                        }
+                        // A page's button: memory, skills, goals, model commands, answered to the page.
+                        "do" => {
+                            let line = arg["command"].as_str().unwrap_or("").trim().to_string();
+                            let result = convs[i].app.quiet_command(&line);
+                            if result.is_ok() && line.starts_with("/model ") {
+                                let model = convs[i].app.model.clone();
+                                for c in convs.iter_mut() {
+                                    c.app.model = model.clone();
+                                }
+                            }
+                            for c in convs.iter_mut() {
+                                c.changed = true;
+                            }
+                            let _ = reply.send(match result {
+                                Ok(text) => json!({ "ok": true, "text": text }),
+                                Err(e) => json!({ "ok": false, "text": e }),
+                            });
+                        }
+                        _ => {
+                            let _ = reply.send(data(&mut convs[i].app, hub, &what, &arg, node_build.as_deref(), &loaded));
+                        }
+                    }
                 }
                 Inbound::MachinesChanged => {
                     let now: Vec<String> = hub.machines().into_iter().map(|m| m.name).collect();
@@ -527,12 +577,33 @@ fn level_name(level: Level) -> &'static str {
     }
 }
 
+/// The server's own `[system]` rules changed from the app: checked, saved
+/// to config.toml, in effect at once.
+fn set_server_rules(app: &mut App, wanted: &Value) -> Result<Value, String> {
+    let system = app.caps.as_ref().and_then(|c| c.system.as_ref()).ok_or("system access isn't set up")?;
+    let wanted: lyra_system::Settings = serde_json::from_value(wanted.clone()).map_err(|e| format!("those rules don't read: {e}"))?;
+    let wanted = wanted.cleaned()?;
+    let path = crate::config::update(|doc| {
+        crate::config::set_system(doc, &wanted);
+        Ok(())
+    })?;
+    let switched = system.settings().enabled != wanted.enabled;
+    system.set_settings(wanted)?;
+    if switched && let Some(caps) = &app.caps {
+        caps.refresh();
+    }
+    let answer = json!({ "system": system.settings(), "path": crate::context::show(&path) });
+    app.log(Level::Agent, "the server's rules changed from the app".to_string());
+    Ok(answer)
+}
+
 /// The lists the web app's pages show.
 /// Conversations loaded now: (session, answering).
 type Loaded = Vec<(String, bool)>;
 
-fn data(app: &mut App, hub: &Hub, what: &str, node_build: Option<&str>, loaded: &Loaded) -> Value {
+fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&str>, loaded: &Loaded) -> Value {
     let text = |r: Result<String, String>| json!({ "text": r.unwrap_or_else(|e| e) });
+    let page = |r: Result<Value, String>| r.unwrap_or_else(|e| json!({ "error": e }));
     match what {
         "sessions" => {
             let all = crate::sessions::dir().map(|d| crate::sessions::list(&d)).unwrap_or_default();
@@ -553,9 +624,13 @@ fn data(app: &mut App, hub: &Hub, what: &str, node_build: Option<&str>, loaded: 
         "machines" => json!(machines_detail(hub, node_build)),
         "activity" => json!(app.activity.iter().rev().take(200).map(|a| json!({ "time": a.time, "level": level_name(a.level), "text": a.text })).collect::<Vec<_>>()),
         "agents" => text(app.agents.as_deref().map(crate::agents::list).ok_or("agents are off".into())),
-        "goals" => text(app.goals_command("/goals", "")),
-        "skills" => text(app.learning.clone().ok_or("learning is off".to_string()).and_then(|l| l.describe())),
-        "memory" => text(app.mem().ok_or("memory is off".to_string()).and_then(|m| m.command(""))),
+        "goals" => page(app.goals.clone().ok_or("goals are off ([goals] enabled)".to_string()).and_then(|g| crate::goals::page(&g))),
+        "skills" => page(app.learning.clone().ok_or("learning is off".to_string()).and_then(|l| l.page())),
+        "memory" => page(app.mem().ok_or("memory is off".to_string()).and_then(|m| m.page(arg["query"].as_str().unwrap_or(""), arg["scope"].as_str().unwrap_or("")))),
+        "rules" => json!({
+            "system": app.caps.as_ref().and_then(|c| c.system.as_ref()).map(|s| s.settings()).unwrap_or_default(),
+            "path": crate::config::path().map(|p| crate::context::show(&p)),
+        }),
         "about" => json!({
             "lyra": env!("CARGO_PKG_VERSION"),
             "app": hub.app_version(),

@@ -115,3 +115,87 @@ export interface ThisDevice {
   name: string;
   push: boolean;
 }
+
+export interface MemoryRow {
+  id: string;
+  kind: string;
+  scope: string;
+  content: string;
+  importance: number;
+  confidence: number;
+  status: string;
+  updated: string;
+  tags: string[];
+  score: number | null;
+}
+
+export interface MemoryPageData {
+  memories: MemoryRow[];
+  proposals: { id: string; text: string }[];
+  scopes: { scope: string; count: number }[];
+  active: number;
+  error?: string;
+}
+
+export interface SkillRow {
+  id: string;
+  name: string;
+  description: string;
+  instructions: string;
+  status: "proposed" | "active" | "deprecated" | "rejected";
+  confidence: number;
+  agent: string | null;
+  record: string;
+  updated: string;
+}
+
+export interface SkillsPageData {
+  mode: string;
+  skills: SkillRow[];
+  proposals: { id: string; change: string; reason: string; detail: string }[];
+  error?: string;
+}
+
+export interface GoalRow {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  priority: number;
+  progress: number;
+  score: number | null;
+  parent: boolean;
+  due: string | null;
+  blocked: string | null;
+}
+
+export interface GoalsPageData {
+  goals: GoalRow[];
+  mode: string;
+  error?: string;
+}
+
+export interface ModelsData {
+  current: string;
+  models: string[];
+  error?: string;
+}
+
+export interface SystemRules {
+  enabled: boolean;
+  shell: string;
+  timeout_seconds: number;
+  max_output: number;
+  allow_commands: string[];
+  write_roots: string[];
+  deny_paths: string[];
+  ssh_hosts: string[];
+  http_timeout_seconds: number;
+  approval_timeout_seconds: number;
+}
+
+export interface RulesData {
+  system?: SystemRules;
+  path?: string;
+  error?: string;
+}

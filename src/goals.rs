@@ -390,6 +390,29 @@ pub fn show(goals: &Goals, key: &str) -> Result<String, String> {
     Ok(out.join("\n"))
 }
 
+/// The app's Goals page: open goals best first, then the rest.
+pub fn page(goals: &Goals) -> Result<serde_json::Value, String> {
+    let m = &goals.manager;
+    let ranked = m.ranked()?;
+    let all = m.all()?;
+    let row = |g: &Goal, score: Option<f32>| -> Result<serde_json::Value, String> {
+        Ok(serde_json::json!({
+            "id": g.short(), "title": g.title, "description": g.description, "status": g.status.to_string(),
+            "priority": g.priority, "progress": g.progress, "score": score, "parent": g.parent_goal_id.is_some(),
+            "due": g.due_at.map(|d| d.to_rfc3339()),
+            "blocked": m.blockers(Some(g.id), true)?.first().map(|b| b.reason.clone()),
+        }))
+    };
+    let mut out = Vec::new();
+    for (g, s) in &ranked {
+        out.push(row(g, Some(s.total))?);
+    }
+    for g in all.iter().filter(|g| !g.status.is_open()).rev().take(30) {
+        out.push(row(g, None)?);
+    }
+    Ok(serde_json::json!({ "goals": out, "mode": goals.mode().as_str() }))
+}
+
 /// `/goal new <title> [-- description]`.
 pub fn create(goals: &Goals, text: &str) -> Result<String, String> {
     let (title, description) = text.split_once(" -- ").unwrap_or((text, ""));

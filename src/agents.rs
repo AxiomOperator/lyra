@@ -100,7 +100,7 @@ pub fn approve(env: &Env, profile: &AgentProfile, tool: &str, ask: crate::caps::
     if env.agents.allowed.lock().unwrap_or_else(|e| e.into_inner()).contains(&key) {
         return Ok(());
     }
-    let timeout = env.caps.as_ref().and_then(|c| c.system.as_ref()).map_or(300, |s| s.settings.approval_timeout_seconds).max(10);
+    let timeout = env.caps.as_ref().and_then(|c| c.system.as_ref()).map_or(300, |s| s.settings().approval_timeout_seconds).max(10);
     let (reply, answer) = std::sync::mpsc::channel();
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

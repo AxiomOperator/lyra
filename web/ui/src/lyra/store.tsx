@@ -74,7 +74,11 @@ interface Lyra extends State {
   banner: string;
   send: (obj: object) => boolean;
   say: (text: string) => boolean;
-  ask: (what: string) => void;
+  ask: (what: string, arg?: unknown) => void;
+  /** Ask lyra for something and wait for the answer. */
+  call: <T = unknown>(what: string, arg?: unknown) => Promise<T>;
+  /** Run a page's command (memory, skills, goals, model) and get lyra's answer. */
+  run: (command: string) => Promise<{ ok: boolean; text: string }>;
   onData: (fn: Listener) => () => void;
   setPush: (on: boolean) => void;
   unpaired: () => void;
@@ -95,6 +99,8 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
   const ws = useRef<WebSocket | null>(null);
   const listeners = useRef(new Set<Listener>());
   const retry = useRef(0);
+  const waiting = useRef(new Map<number, (data: unknown) => void>());
+  const nextId = useRef(1);
 
   useEffect(() => {
     let stopped = false;
@@ -119,6 +125,11 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
       sock.onmessage = (e) => {
         const msg = JSON.parse(e.data) as Update;
         if (msg.type === "data") {
+          const done = typeof msg.id === "number" ? waiting.current.get(msg.id) : undefined;
+          if (done) {
+            waiting.current.delete(msg.id as number);
+            done(msg.data);
+          }
           listeners.current.forEach((fn) => fn(msg.what as string, msg.data));
           return;
         }
@@ -137,6 +148,9 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
       };
       sock.onclose = () => {
         setConnected(false);
+        // Nothing comes back for questions asked on this connection.
+        waiting.current.forEach((done) => done({ error: "lost the connection to lyra", ok: false, text: "lost the connection to lyra" }));
+        waiting.current.clear();
         dispatch({ type: "lost" });
         if (stopped || ws.current !== sock) return;
         ws.current = null;
@@ -185,7 +199,20 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
     return false;
   }, []);
   const say = useCallback((text: string) => send({ type: "send", text }), [send]);
-  const ask = useCallback((what: string) => void send({ type: "get", what }), [send]);
+  const ask = useCallback((what: string, arg?: unknown) => void send({ type: "get", what, arg }), [send]);
+  const call = useCallback(
+    <T,>(what: string, arg?: unknown) =>
+      new Promise<T>((resolve) => {
+        const id = nextId.current++;
+        waiting.current.set(id, resolve as (data: unknown) => void);
+        if (!send({ type: "get", what, arg, id })) {
+          waiting.current.delete(id);
+          resolve({ error: "not connected", ok: false, text: "not connected to lyra" } as T);
+        }
+      }),
+    [send],
+  );
+  const run = useCallback((command: string) => call<{ ok: boolean; text: string }>("do", { command }), [call]);
   const onData = useCallback((fn: Listener) => {
     listeners.current.add(fn);
     return () => void listeners.current.delete(fn);
@@ -198,8 +225,8 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
   }, [onUnpaired]);
 
   const value = useMemo<Lyra>(
-    () => ({ ...state, token, connected, banner, send, say, ask, onData, setPush, unpaired }),
-    [state, token, connected, banner, send, say, ask, onData, setPush, unpaired],
+    () => ({ ...state, token, connected, banner, send, say, ask, call, run, onData, setPush, unpaired }),
+    [state, token, connected, banner, send, say, ask, call, run, onData, setPush, unpaired],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

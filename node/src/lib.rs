@@ -226,6 +226,22 @@ pub fn handle(system: &lyra_system::System, machine: &str, request: &Value) -> R
     }
 }
 
+/// This machine's rules, for the app's Rules page; with `set`, new rules
+/// from the user: checked here, saved to node.toml, in effect at once.
+pub fn rules(system: &lyra_system::System, path: &Path, request: &Value) -> Result<Value, String> {
+    if request["set"].is_object() {
+        let wanted: lyra_system::Settings = serde_json::from_value(request["set"].clone()).map_err(|e| format!("those rules don't read: {e}"))?;
+        let wanted = wanted.cleaned()?;
+        let text = std::fs::read_to_string(path).map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
+        let mut config: NodeConfig = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        config.system = wanted.clone();
+        toml::to_string_pretty(&config).map_err(|e| e.to_string()).and_then(|t| write_private(path, &t))?;
+        system.set_settings(wanted)?;
+        println!("rules changed from lyra (saved to {})", path.display());
+    }
+    Ok(json!({ "system": system.settings(), "path": path.display().to_string() }))
+}
+
 /// Download a file the user sent to lyra (for `upload_place`) to a temp file.
 fn fetch_upload(base: &str, token: &str, id: &str) -> Result<PathBuf, String> {
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
@@ -436,6 +452,10 @@ async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System
                             let _ = out.send((reply(&v["id"], result), None));
                         });
                     }
+                    "rules" => {
+                        let result = rules(&system, &config_path(), &v);
+                        let _ = out_tx.send((reply(&v["id"], result), None));
+                    }
                     "update" => {
                         let out = out_tx.clone();
                         let (url, token, name) = (config.url.clone(), config.token.clone(), config.name.clone());
@@ -602,6 +622,33 @@ mod tests {
 
     fn system() -> lyra_system::System {
         lyra_system::System::new(lyra_system::Settings::default(), expand)
+    }
+
+    #[test]
+    fn rules_changed_from_lyra_are_checked_saved_and_used() {
+        let dir = std::env::temp_dir().join(format!("lyra-node-rules-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("node.toml");
+        std::fs::write(&path, "url = \"https://lyra.example.com\"\ntoken = \"secret\"\nname = \"desktop\"\n").unwrap();
+        let s = system();
+        let touch = json!({ "type": "check", "tool": "shell_run", "args": { "command": "touch /tmp/lyra-node-y" } });
+        assert_eq!(handle(&s, "desktop", &touch).unwrap()["check"], "ask");
+
+        let read = rules(&s, &path, &json!({ "type": "rules" })).unwrap();
+        assert!(read["system"]["deny_paths"].as_array().unwrap().iter().any(|p| p == "~/.ssh"));
+        let mut wanted = read["system"].clone();
+        wanted["allow_commands"] = json!(["touch", " ", "touch"]);
+        rules(&s, &path, &json!({ "type": "rules", "set": wanted })).unwrap();
+        assert_eq!(handle(&s, "desktop", &touch).unwrap()["check"], "auto", "in effect at once");
+        assert_eq!(s.settings().allow_commands, vec!["touch"], "tidied");
+        let saved: NodeConfig = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!((saved.token.as_str(), saved.system.allow_commands.len()), ("secret", 1), "saved, pairing kept");
+
+        let mut bad = read["system"].clone();
+        bad["write_roots"] = json!(["/"]);
+        assert!(rules(&s, &path, &json!({ "type": "rules", "set": bad })).is_err());
+        assert_eq!(s.settings().allow_commands, vec!["touch"], "a refused change leaves the rules alone");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

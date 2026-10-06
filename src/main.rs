@@ -1237,6 +1237,36 @@ impl App {
 
     /// Handle a `/command` typed in the input box.
     fn command(&mut self, line: &str) {
+        let (name, _) = line.split_once(' ').unwrap_or((line, ""));
+        let result = self.command_result(line);
+        let ok = result.is_ok();
+        let (role, text) = match result {
+            Ok(text) => ("info", text),
+            Err(e) => ("error", e),
+        };
+        // A resumed conversation already says so.
+        if !(ok && matches!(name, "/resume" | "/new") && text.is_empty()) {
+            self.messages.push(Message::new(role, format!("> {line}\n{text}")));
+        }
+        self.after_command(line, ok);
+    }
+
+    /// Commands the web app's pages run (memory, skills, goals, model):
+    /// the answer goes back to the page instead of into the conversation.
+    pub fn quiet_command(&mut self, line: &str) -> Result<String, String> {
+        let name = line.split_whitespace().next().unwrap_or("");
+        if !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate" | "/goal" | "/goals" | "/model") {
+            return Err(format!("{name} can't be run from a page"));
+        }
+        let result = self.command_result(line);
+        self.after_command(line, result.is_ok());
+        if result.is_ok() && !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate") {
+            self.log(Level::Info, format!("from the app: {line}"));
+        }
+        result
+    }
+
+    fn command_result(&mut self, line: &str) -> Result<String, String> {
         let (name, arg) = line.split_once(' ').unwrap_or((line, ""));
         let learning = self.learning.clone();
         let need = || -> Result<Arc<Learning>, String> {
@@ -1246,7 +1276,7 @@ impl App {
             })
         };
         let last_run = self.last_run.clone();
-        let result = match name {
+        match name {
             "/help" => Ok(format!("{COMMANDS}\n{}\n{}\n{}\n{}\n{HELP_END}", goals::COMMANDS, agents::COMMANDS, evolve::COMMANDS, caps::COMMANDS)),
             "/skills" => need().and_then(|l| l.describe()),
             "/approve" => need().and_then(|l| l.approve(arg)),
@@ -1331,17 +1361,44 @@ impl App {
                     _ => m.command(arg),
                 })
             }
+            "/model" => self.model_command(arg),
             _ => Err(format!("unknown command {name} — try /help")),
-        };
-        let ok = result.is_ok();
-        let (role, text) = match result {
-            Ok(text) => ("info", text),
-            Err(e) => ("error", e),
-        };
-        // A resumed conversation already says so.
-        if !(ok && matches!(name, "/resume" | "/new") && text.is_empty()) {
-            self.messages.push(Message::new(role, format!("> {line}\n{text}")));
         }
+    }
+
+    /// `/model [name]`: the model in use and what the endpoint offers, or a
+    /// switch to another one (every conversation; saved to config.toml).
+    fn model_command(&mut self, arg: &str) -> Result<String, String> {
+        let name = arg.trim();
+        let offered = models(&self.base_url);
+        if name.is_empty() {
+            return Ok(match offered {
+                Ok(list) if !list.is_empty() => format!("model: {}\navailable: {}\n/model <name> switches", self.model, list.join(", ")),
+                Ok(_) => format!("model: {} (the endpoint lists none)", self.model),
+                Err(e) => format!("model: {} ({e})", self.model),
+            });
+        }
+        if let Ok(list) = &offered
+            && !list.is_empty()
+            && !list.iter().any(|m| m == name)
+        {
+            return Err(format!("{name} isn't one the endpoint offers: {}", list.join(", ")));
+        }
+        let saved = config::update(|doc| {
+            doc["model"] = toml_edit::value(name);
+            Ok(())
+        });
+        self.model = name.to_string();
+        self.log(Level::Info, format!("model: {name}"));
+        Ok(match saved {
+            Ok(_) => format!("now using {name} (saved to config.toml)"),
+            Err(e) => format!("now using {name} until lyra restarts (not saved: {e})"),
+        })
+    }
+
+    /// What follows a command that worked: background work it starts, panels to refresh.
+    fn after_command(&mut self, line: &str, ok: bool) {
+        let (name, arg) = line.split_once(' ').unwrap_or((line, ""));
         let memory_sub = arg.split_whitespace().next().unwrap_or("");
         match name {
             "/memory" if ok && memory_sub == "curate" => self.memory_curate(),
@@ -2491,6 +2548,7 @@ pub(crate) const COMMANDS: &str = "\
 /devices [approve|deny <code>]    paired phones, browsers, terminals and machines; pairing requests
 /devices remove <name>       unpair a device or machine
 /sessions                    saved conversations (lyra -c continues the latest)
+/model [name]                the model in use and the ones on offer; switch (saved to config.toml)
 /resume <id>                 switch to a saved conversation
 /history <id>                a skill's versions and audit trail
 /rollback <id> [version]     restore an earlier version (the previous one by default)
@@ -3284,15 +3342,30 @@ fn open_capabilities(
     caps.tools = tools.clone();
     caps.learning = learning.clone();
     caps.evolution = evolution.clone();
-    if config.system.enabled {
-        caps.system = Some(lyra_system::System::new(config.system.clone(), config::expand_path));
-    }
+    // Always there, so the rules can be switched on from the app; while
+    // `enabled` is off every check says so and no system tools are offered.
+    caps.system = Some(lyra_system::System::new(config.system.clone(), config::expand_path));
     if config.search.enabled {
         caps.search = Some(config.search.clone());
     }
     notes.extend(caps.refresh());
     notes.push(format!("capabilities · {} ({} callable)", caps.manager.all().len(), caps.manager.all().iter().filter(|c| c.kind.callable()).count()));
     (Some(Arc::new(caps)), notes)
+}
+
+/// The models an OpenAI-compatible endpoint offers (`GET /models`).
+pub fn models(base_url: &str) -> Result<Vec<String>, String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let body: Value = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?
+        .get(&url)
+        .send()
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.json())
+        .map_err(|e| format!("couldn't list models: {e}"))?;
+    Ok(body["data"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str().map(str::to_string)).collect())
 }
 
 /// `lyra --restore-memory <backup>`: put a memory backup in place before

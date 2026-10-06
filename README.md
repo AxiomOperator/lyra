@@ -744,6 +744,33 @@ it's waiting for. What was written so far stays, marked *(stopped)*.
   share sheet; shared text, links and files land in the message box, ready to
   send. iOS doesn't support sharing to web apps.
 
+## Managing lyra from the app
+
+More → **Memory**, **Skills**, **Goals** and **Model** are working pages, not
+just read-outs. They run lyra's own commands, so they do exactly what the
+terminal does:
+
+- **Memory:** search (with match scores), filter by scope, correct a memory
+  (the old version is kept), archive or forget it, approve or reject the
+  curator's suggestions.
+- **Skills:** approve or reject proposed skills and changes, stop using a
+  skill, or use a deprecated one again.
+- **Goals:** add a goal, set its priority, pause/resume, mark it done or
+  cancel it.
+- **Model:** the models the endpoint offers (`GET /models`). Switching applies
+  to every conversation and is saved to `config.toml` (`/model <name>` does the
+  same in a terminal).
+- **Machines → Rules:** what lyra may do without asking on a machine (or on
+  the server): commands that run without asking, folders it may write in,
+  paths that are off limits, SSH hosts, timeouts. A machine checks the new
+  rules itself and saves them to its `node.toml`. The server's go to
+  `[system]` in `config.toml`. Both apply at once. Rules that would open
+  everything (`/` as a write root, allowing `sudo` or `*`) are refused. Only a
+  person changes rules, from a paired device; the model has no tool for it.
+
+Page answers go back to the page, not into the conversation. Changes are
+logged in the Activity panel.
+
 ## Other machines and terminals: `lyra-node` and `lyra connect`
 
 With lyra on a server, other machines join it in two ways.

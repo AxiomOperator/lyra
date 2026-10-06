@@ -334,6 +334,38 @@ impl Mem {
         }
     }
 
+    /// The app's Memory page: memories (matching `query`, else the latest,
+    /// optionally one scope), what's waiting for approval, and the scopes.
+    pub fn page(&self, query: &str, scope: &str) -> Result<serde_json::Value, String> {
+        let found: Vec<(Memory, Option<f32>)> = if query.trim().is_empty() {
+            let filter = Filter { scope: (!scope.is_empty()).then(|| scope.to_string()), statuses: vec![MemoryStatus::Active], kind: None };
+            self.run(self.manager.list(&filter, 200))?.into_iter().map(|m| (m, None)).collect()
+        } else {
+            self.recall_all(query.trim(), 30)?
+                .into_iter()
+                .filter(|r| scope.is_empty() || r.memory.scope == scope)
+                .map(|r| (r.memory, Some(r.score.total)))
+                .collect()
+        };
+        let stats = self.run(self.manager.stats())?;
+        let recent = self.run(self.manager.list(&Filter::active(), 30))?;
+        let proposals: Vec<serde_json::Value> = self
+            .run(self.manager.proposals())?
+            .iter()
+            .map(|p| serde_json::json!({ "id": p.id.to_string()[..8], "text": describe_proposal(&p.change, &p.id, &recent) }))
+            .collect();
+        Ok(serde_json::json!({
+            "memories": found.iter().map(|(m, score)| serde_json::json!({
+                "id": m.short_id(), "kind": m.kind.as_str(), "scope": m.scope, "content": m.content,
+                "importance": m.importance, "confidence": m.confidence, "status": m.status.as_str(),
+                "updated": m.updated_at.to_rfc3339(), "tags": m.tags, "score": score,
+            })).collect::<Vec<_>>(),
+            "proposals": proposals,
+            "scopes": stats.by_scope.iter().map(|(s, n)| serde_json::json!({ "scope": s, "count": n })).collect::<Vec<_>>(),
+            "active": stats.active,
+        }))
+    }
+
     fn stats_text(&self) -> Result<String, String> {
         let s = self.run(self.manager.stats())?;
         let pairs = |v: Vec<String>| if v.is_empty() { "—".into() } else { v.join(" · ") };

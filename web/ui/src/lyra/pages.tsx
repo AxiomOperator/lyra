@@ -4,63 +4,16 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { Bell, BellOff, Check, Copy, MessageSquarePlus, RefreshCw, Server, Smartphone, Terminal, Trash2, Unplug, Download } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { Bell, BellOff, Bot, Brain, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, Unplug } from "lucide-react";
+import { useEffect, useState } from "react";
 import { PairCard } from "./chat";
+import { GoalsPage, MemoryPage, ModelsPage, RulesDialog, SkillsPage } from "./manage";
+import { Dot, Page, useConfirm } from "./parts";
 import { ago, blocker, disable, enable, test } from "./push";
 import { APP_VERSION, useData, useLyra } from "./store";
 import type { About, ActivityLine, Device, Session } from "./types";
-
-function Page({ title, description, action, children }: { title: string; description?: string; action?: ReactNode; children: ReactNode }) {
-  return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-8">
-      <div className="mx-auto max-w-2xl space-y-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h1 className="font-semibold text-xl">{title}</h1>
-            {description && <p className="text-muted-foreground text-sm">{description}</p>}
-          </div>
-          {action}
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function Dot({ on }: { on: boolean }) {
-  return <span className={cn("inline-block size-2.5 shrink-0 rounded-full", on ? "bg-emerald-500 shadow-[0_0_8px] shadow-emerald-500/60" : "bg-muted-foreground/40")} />;
-}
-
-/** Ask before something that can't be undone. */
-function useConfirm() {
-  const [ask, setAsk] = useState<{ title: string; text: string; action: string; run: () => void } | null>(null);
-  const dialog = (
-    <Dialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{ask?.title}</DialogTitle>
-          <DialogDescription>{ask?.text}</DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setAsk(null)}>Cancel</Button>
-          <Button
-            variant="destructive"
-            onClick={() => {
-              ask?.run();
-              setAsk(null);
-            }}
-          >
-            {ask?.action}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-  return [setAsk, dialog] as const;
-}
 
 // ---- machines
 
@@ -68,6 +21,7 @@ export function MachinesPage({ mention }: { mention: (name: string) => void }) {
   const { status, say } = useLyra();
   const [confirm, dialog] = useConfirm();
   const [copied, setCopied] = useState(false);
+  const [rules, setRules] = useState<string | null>(null);
   const machines = status.machines_detail ?? [];
   const install = `curl -fsSL ${location.origin}/install.sh | sh -s -- --name NAME`;
   return (
@@ -85,6 +39,11 @@ export function MachinesPage({ mention }: { mention: (name: string) => void }) {
             <Badge variant="secondary">home</Badge>
           </CardAction>
         </CardHeader>
+        <CardContent className="px-4">
+          <Button size="sm" variant="secondary" onClick={() => setRules("server")}>
+            <ShieldCheck /> Rules
+          </Button>
+        </CardContent>
       </Card>
       {machines.map((m) => (
         <Card key={m.id} className="py-4">
@@ -108,6 +67,11 @@ export function MachinesPage({ mention }: { mention: (name: string) => void }) {
             {m.online && (
               <Button size="sm" variant="secondary" onClick={() => mention(m.name)}>
                 <Terminal /> Ask on @{m.name}
+              </Button>
+            )}
+            {m.online && (
+              <Button size="sm" variant="secondary" onClick={() => setRules(m.name)}>
+                <ShieldCheck /> Rules
               </Button>
             )}
             {m.online && m.self_update && (
@@ -157,6 +121,7 @@ export function MachinesPage({ mention }: { mention: (name: string) => void }) {
           </Button>
         </CardContent>
       </Card>
+      <RulesDialog machine={rules} onClose={() => setRules(null)} />
       {dialog}
     </Page>
   );
@@ -319,9 +284,15 @@ export function MorePage({ toChat, update }: { toChat: () => void; update: () =>
   const [about] = useData<About>("about");
   const { ask, onData } = useLyra();
   const [text, setText] = useState<{ title: string; body: string } | null>(null);
+  const [sub, setSub] = useState<"memory" | "skills" | "goals" | "model" | null>(null);
   const [confirm, dialog] = useConfirm();
-  useEffect(() => onData((w, d) => ["agents", "goals", "skills", "memory"].includes(w) && setText({ title: w[0].toUpperCase() + w.slice(1), body: (d as { text: string }).text })), [onData]);
+  useEffect(() => onData((w, d) => w === "agents" && setText({ title: "Agents", body: (d as { text: string }).text })), [onData]);
   const newer = serverVersion && serverVersion !== APP_VERSION;
+  const back = () => setSub(null);
+  if (sub === "memory") return <MemoryPage onBack={back} />;
+  if (sub === "skills") return <SkillsPage onBack={back} />;
+  if (sub === "goals") return <GoalsPage onBack={back} />;
+  if (sub === "model") return <ModelsPage onBack={back} />;
   return (
     <Page title="More">
       <Card className="py-4">
@@ -373,12 +344,22 @@ export function MorePage({ toChat, update }: { toChat: () => void; update: () =>
           <CardTitle className="text-base">Lyra</CardTitle>
           <CardDescription>What lyra knows and can do.</CardDescription>
         </CardHeader>
-        <CardContent className="grid grid-cols-2 gap-2 px-4 sm:grid-cols-4">
-          {["agents", "goals", "skills", "memory"].map((w) => (
-            <Button key={w} variant="secondary" onClick={() => ask(w)} className="capitalize">
-              {w}
-            </Button>
-          ))}
+        <CardContent className="grid grid-cols-2 gap-2 px-4 sm:grid-cols-3">
+          <Button variant="secondary" onClick={() => setSub("memory")}>
+            <Brain /> Memory
+          </Button>
+          <Button variant="secondary" onClick={() => setSub("skills")}>
+            <GraduationCap /> Skills
+          </Button>
+          <Button variant="secondary" onClick={() => setSub("goals")}>
+            <Target /> Goals
+          </Button>
+          <Button variant="secondary" onClick={() => setSub("model")}>
+            <Cpu /> Model
+          </Button>
+          <Button variant="secondary" onClick={() => ask("agents")}>
+            <Bot /> Agents
+          </Button>
         </CardContent>
       </Card>
 

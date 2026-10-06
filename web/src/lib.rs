@@ -714,7 +714,7 @@ async fn connection(s: Arc<Shared>, d: Device, session: String, mut socket: WebS
                         if s.inbound.send(ask).is_ok()
                             && let Ok(data) = rx.await
                         {
-                            let msg = json!({ "type": "data", "what": what, "arg": v["arg"], "data": data });
+                            let msg = json!({ "type": "data", "what": what, "arg": v["arg"], "id": v["id"], "data": data });
                             if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
                                 break;
                             }

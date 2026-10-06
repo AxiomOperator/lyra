@@ -31,6 +31,7 @@ base64 = "0.22"
 futures-util = "0.3"
 html2text = "0.17"
 toml = "1.1.6"
+toml_edit = "0.25.15"
 
 [profile.release]
 strip = true

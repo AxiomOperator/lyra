@@ -196,6 +196,24 @@ impl Learning {
         })
     }
 
+    /// The app's Skills page: every skill and the changes waiting for review.
+    pub fn page(&self) -> Result<Value, String> {
+        let all = self.run(self.manager.list(None))?;
+        let proposals = self.run(self.manager.proposals())?;
+        Ok(json!({
+            "mode": self.mode().as_str(),
+            "skills": all.iter().map(|s| json!({
+                "id": short_id(s.id), "name": s.name, "description": s.description, "instructions": s.instructions,
+                "status": s.status.as_str(), "confidence": s.confidence, "agent": s.agent, "record": track_record(s),
+                "updated": s.updated_at.to_rfc3339(),
+            })).collect::<Vec<_>>(),
+            "proposals": proposals.iter().map(|p| json!({
+                "id": short_id(p.id), "change": self.describe_change(&p.change, &all), "reason": p.reason,
+                "detail": match &p.change { Change::Update { instructions, .. } => instructions.clone(), _ => String::new() },
+            })).collect::<Vec<_>>(),
+        }))
+    }
+
     /// Text for `/skills`: what needs review in full, the rest briefly.
     pub fn describe(&self) -> Result<String, String> {
         let all = self.run(self.manager.list(None))?;

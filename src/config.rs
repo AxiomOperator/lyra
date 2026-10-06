@@ -375,3 +375,83 @@ pub fn context_dir() -> Option<PathBuf> {
 pub fn path() -> Option<PathBuf> {
     Some(dir()?.join("config.toml"))
 }
+
+/// Change values in config.toml from inside lyra (`/model`, the app's rules
+/// pages), keeping the rest of the file and its comments as they are.
+/// `edit` gets the document; tables it names are created when missing.
+pub fn update(edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), String>) -> Result<PathBuf, String> {
+    let path = path().ok_or("no home directory")?;
+    update_file(&path, edit)?;
+    Ok(path)
+}
+
+pub fn update_file(path: &std::path::Path, edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), String>) -> Result<(), String> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{} doesn't parse: {e}", path.display()))?;
+    edit(&mut doc)?;
+    let out = doc.to_string();
+    // Never write something lyra couldn't read back.
+    toml::from_str::<Config>(&out).map_err(|e| format!("the change would break {}: {e}", path.display()))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, out).map_err(|e| format!("couldn't write {}: {e}", tmp.display()))?;
+    // It may hold keys: keep its permissions.
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    std::fs::rename(&tmp, path).map_err(|e| format!("couldn't replace {}: {e}", path.display()))
+}
+
+/// A list of strings as a TOML array.
+pub fn strings(list: &[String]) -> toml_edit::Item {
+    toml_edit::value(list.iter().map(String::as_str).collect::<toml_edit::Array>())
+}
+
+/// `[system]` written from settings, keeping comments around the table.
+pub fn set_system(doc: &mut toml_edit::DocumentMut, s: &lyra_system::Settings) {
+    let table = doc.entry("system").or_insert(toml_edit::table());
+    if let Some(t) = table.as_table_mut() {
+        t["enabled"] = toml_edit::value(s.enabled);
+        t["shell"] = toml_edit::value(s.shell.as_str());
+        t["timeout_seconds"] = toml_edit::value(s.timeout_seconds as i64);
+        t["max_output"] = toml_edit::value(s.max_output as i64);
+        t["allow_commands"] = strings(&s.allow_commands);
+        t["write_roots"] = strings(&s.write_roots);
+        t["deny_paths"] = strings(&s.deny_paths);
+        t["ssh_hosts"] = strings(&s.ssh_hosts);
+        t["http_timeout_seconds"] = toml_edit::value(s.http_timeout_seconds as i64);
+        t["approval_timeout_seconds"] = toml_edit::value(s.approval_timeout_seconds as i64);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edits_keep_the_rest_of_config_toml() {
+        let dir = std::env::temp_dir().join(format!("lyra-config-edit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "# my endpoint\nurl = \"http://x/v1\"\nmodel = \"a\"   # the usual one\n\n[search]\nmax_results = 3\n").unwrap();
+        update_file(&path, |doc| {
+            doc["model"] = toml_edit::value("b");
+            set_system(doc, &lyra_system::Settings { allow_commands: vec!["git status".into()], ..Default::default() });
+            Ok(())
+        })
+        .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# my endpoint") && text.contains("max_results = 3"), "{text}");
+        let c: Config = toml::from_str(&text).unwrap();
+        assert_eq!((c.model.as_str(), c.system.allow_commands.len()), ("b", 1));
+        assert!(update_file(&path, |doc| {
+            doc["model"] = toml_edit::value(3);
+            Ok(())
+        })
+        .is_err(), "a change lyra couldn't read back isn't written");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("model = \"b\""));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -300,7 +300,7 @@ impl Caps {
 
     /// How long a call on another machine may take: its command, plus the trip.
     fn remote_timeout(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.system.as_ref().map_or(60, |s| s.settings.timeout_seconds).max(60) + 30)
+        std::time::Duration::from_secs(self.system.as_ref().map_or(60, |s| s.settings().timeout_seconds).max(60) + 30)
     }
 
     pub fn set_agents(&self, agents: Arc<crate::agents::Agents>) {
@@ -346,7 +346,7 @@ impl Caps {
         if self.search.as_ref().is_some_and(|s| s.enabled) {
             caps.extend(crate::websearch::capabilities());
         }
-        if self.system.as_ref().is_some_and(|s| s.settings.enabled) {
+        if self.system.as_ref().is_some_and(|s| s.settings().enabled) {
             caps.extend(system_tools(&self.machines()));
         }
         caps.extend(self.openapi.iter().flat_map(OpenApiClient::capabilities));
