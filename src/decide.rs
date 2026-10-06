@@ -121,6 +121,13 @@ pub fn parse(body: &Value) -> Result<HashMap<String, Answer>, String> {
     let answers = body["answers"].as_object().ok_or("no answers in the reply")?;
     let mut out = HashMap::new();
     for (id, a) in answers {
+        // Yes/no comes as the probability of yes; its confidence is the margin
+        // between yes and no, as a choice's is between its top two options.
+        if let Some(p) = a["noul"].as_f64() {
+            let p = p as f32;
+            out.insert(id.clone(), Answer { choice: (p >= 0.5).to_string(), confidence: (2.0 * p - 1.0).abs() });
+            continue;
+        }
         // The choice, or else the most likely option.
         let probs: Vec<(String, f32)> =
             a["probabilities"].as_object().into_iter().flatten().filter_map(|(k, v)| v.as_f64().map(|p| (k.clone(), p as f32))).collect();
@@ -265,11 +272,17 @@ pub(crate) mod tests {
         let body = json!({ "model": "clef-flash", "answers": {
             "dept": { "choice": "technical", "confidence": 0.93, "probabilities": { "technical": 0.93, "billing": 0.07 } },
             "outage": { "choice": true, "confidence": 0.81 },
+            // As llama-server answers yes/no: the probability of yes.
+            "down": { "type": "noul", "noul": 0.9 },
+            "fine": { "type": "noul", "noul": 0.2 },
             "urgency": { "probabilities": { "0": 0.1, "1": 0.2, "2": 0.7 } },
         }});
         let a = parse(&body).unwrap();
         assert_eq!(a["dept"], Answer { choice: "technical".into(), confidence: 0.93 });
         assert_eq!(a["outage"].yes(), Some(true));
+        assert_eq!(a["down"].yes(), Some(true));
+        assert!((a["down"].confidence - 0.8).abs() < 1e-6, "the margin between yes and no");
+        assert_eq!(a["fine"].yes(), Some(false));
         assert_eq!((a["urgency"].choice.as_str(), a["urgency"].confidence), ("2", 0.7), "the most likely option");
         assert!(parse(&json!({ "error": "x" })).is_err());
     }
@@ -280,14 +293,14 @@ pub(crate) mod tests {
         configure(None);
         assert!(yes("test", "state", "anything?").is_none(), "no [decide]: the caller uses the chat model");
 
-        let (url, server) = fake(json!({ "answers": { "q": { "choice": "yes", "confidence": 0.9 } } }));
+        let (url, server) = fake(json!({ "answers": { "q": { "type": "noul", "noul": 0.95 } } }));
         configure(Some(settings(&url)));
-        assert_eq!(yes("test", "the disk is full", "is something broken?"), Some((true, 0.9)));
+        assert_eq!(yes("test", "the disk is full", "is something broken?").map(|(y, c)| (y, (c * 100.0).round())), Some((true, 90.0)));
         let request: Value = serde_json::from_str(server.join().unwrap().split_once("\r\n\r\n").unwrap().1).unwrap();
         assert_eq!(request["questions"]["q"]["type"], "noul");
         assert_eq!(request["state"], "the disk is full");
 
-        let (url, _server) = fake(json!({ "answers": { "q": { "choice": "yes", "confidence": 0.6 } } }));
+        let (url, _server) = fake(json!({ "answers": { "q": { "type": "noul", "noul": 0.7 } } }));
         configure(Some(settings(&url)));
         assert!(yes("test", "s", "q?").is_none(), "not sure enough: the chat model decides");
 
