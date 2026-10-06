@@ -142,7 +142,7 @@ pub fn template(name: &str) -> Option<AgentProfile> {
                 exclusions: Vec::new(),
             };
             p.memory_policy = MemoryPolicy { mode: MemoryMode::SharedReadOnly, ..Default::default() };
-            p.tools = strs(&["memory_recall", "memory_list", "memory_inspect"]);
+            p.tools = strs(&["memory_recall", "memory_list", "memory_inspect", "web_search", "web_fetch"]);
             p.test_task = Some("What do we know about the user's preferences?".into());
             p
         }

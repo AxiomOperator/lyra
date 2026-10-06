@@ -52,6 +52,8 @@ impl Default for Settings {
 pub enum Inbound {
     /// A chat message or a /command.
     Send { text: String, device: String },
+    /// Stop the reply being written.
+    Stop { device: String },
     /// An answer to an approval (`y`, `n`, `a`).
     Approve { id: u64, answer: String, device: String },
     /// The whole current state, for a device that just connected.
@@ -558,6 +560,9 @@ async fn connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
                         if !text.is_empty() {
                             let _ = s.inbound.send(Inbound::Send { text, device: d.name.clone() });
                         }
+                    }
+                    "stop" => {
+                        let _ = s.inbound.send(Inbound::Stop { device: d.name.clone() });
                     }
                     "approve" => {
                         let _ = s.inbound.send(Inbound::Approve {

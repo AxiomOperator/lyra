@@ -17,6 +17,7 @@ mod serve;
 mod sessions;
 mod stats;
 mod tools;
+mod websearch;
 mod ui;
 
 use std::io::{BufRead, BufReader};
@@ -159,6 +160,15 @@ struct Round {
     stats: Stats,
     content: String,
     tool_calls: Vec<ToolCall>,
+    /// The user stopped it partway.
+    stopped: bool,
+}
+
+/// Set to stop the run in progress (`/stop`, the stop button, Ctrl-X).
+type Cancel = Arc<std::sync::atomic::AtomicBool>;
+
+fn stopped(cancel: &Cancel) -> bool {
+    cancel.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 enum StreamEvent {
@@ -379,6 +389,8 @@ struct App {
     logged: u64,
     /// The web server, when this lyra is `lyra serve` (machines, devices).
     hub: Option<lyra_web::Hub>,
+    /// Stops the run in progress (a fresh one per run).
+    cancel: Cancel,
     /// Agents' actions waiting for the user's y / n / a, oldest first.
     approvals: Vec<agents::ApprovalRequest>,
     /// The highlighted entry in the command palette, and whether Esc closed it.
@@ -503,6 +515,7 @@ impl App {
             session_id: sessions::new_id(),
             logged: 0,
             hub: None,
+            cancel: Cancel::default(),
             approvals: Vec::new(),
             palette: 0,
             palette_hidden: false,
@@ -540,6 +553,16 @@ impl App {
             self.input.clear();
             self.scroll = None;
             self.answer_approval(&content);
+            return;
+        }
+        // Stopping works while a reply is running (nothing else does).
+        if content == "/stop" {
+            self.input.clear();
+            let text = match self.stop() {
+                Ok(t) => t,
+                Err(e) => e,
+            };
+            self.messages.push(Message::new("info", format!("> /stop\n{text}")));
             return;
         }
         if content.is_empty() || self.waiting {
@@ -581,6 +604,8 @@ impl App {
             .map(|m| serde_json::to_value(m).expect("message serializes"))
             .collect();
         let (model, tools, tx) = (self.model.clone(), self.tools.clone(), self.tx.clone());
+        self.cancel = Cancel::default();
+        let cancel = self.cancel.clone();
         let (learning, evolution, caps) = (self.learning.clone(), self.evolution.clone(), self.caps.clone());
         let goals_section = self.goals.as_ref().and_then(|g| g.prompt_section());
         let mut agent_env = self.agent_env();
@@ -618,7 +643,7 @@ impl App {
                     add_to_system(&mut history, agents::MAIN_NOTE);
                 }
             }
-            let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref(), &content, max_rounds, run, &tx) {
+            let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref(), &content, max_rounds, run, &tx, &cancel) {
                 Ok(stats) => StreamEvent::Done(stats),
                 Err(e) => StreamEvent::Error(e),
             };
@@ -670,6 +695,10 @@ impl App {
                 self.messages.push(result);
             }
             StreamEvent::Done(stats) => {
+                if stopped(&self.cancel) {
+                    let reply = self.reply();
+                    reply.content.push_str(if reply.content.is_empty() { "_(stopped)_" } else { "\n\n_(stopped)_" });
+                }
                 self.waiting = false;
                 self.started = None;
                 self.set_phase(Phase::Idle);
@@ -2365,6 +2394,21 @@ impl App {
         Ok(String::new())
     }
 
+    /// Stop the reply being written (and any agent working for it).
+    pub(crate) fn stop(&mut self) -> Result<String, String> {
+        if !self.waiting {
+            return Err("nothing is running".into());
+        }
+        self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        // An agent waiting for a yes gets a no, so it can stop too.
+        let pending: Vec<u64> = self.approvals.iter().map(|r| r.id).collect();
+        for id in pending {
+            self.answer_approval_id(id, "n");
+        }
+        self.log(Level::Info, "stopping…".into());
+        Ok("stopping…".into())
+    }
+
     /// A message further back changed (an agent's card): devices must hear.
     fn touch(&mut self, i: usize) {
         self.touched = Some(self.touched.map_or(i, |t| t.min(i)));
@@ -2400,6 +2444,7 @@ pub(crate) const COMMANDS: &str = "\
 /reject <id>                 discard a proposal or proposed skill for good
 /deprecate <id>              stop using a skill without deleting it
 /forget-skill <id>           delete a skill's file (its history is kept)
+/stop                        stop the reply being written (also Ctrl-X)
 /new                         start a new conversation (this one is saved)
 /machines [update|remove <name>]  machines lyra works on (lyra-node): online, version, update, remove
 /devices [approve|deny <code>]    paired phones, browsers, terminals and machines; pairing requests
@@ -2550,9 +2595,15 @@ fn converse(
     max_rounds: usize,
     run: Uuid,
     tx: &Sender<StreamEvent>,
+    cancel: &Cancel,
 ) -> Result<Stats, String> {
     let start = Instant::now();
     let mut total: Option<Stats> = None;
+    let finish = |total: Option<Stats>| {
+        let mut stats = total.unwrap_or(Stats { ttft: None, elapsed: Duration::ZERO, input: 0, cached: 0, output: 0, estimated: true });
+        stats.elapsed = start.elapsed();
+        stats
+    };
     // Capabilities the model found with the search tool, offered from then on.
     let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
     for round in 1..=max_rounds.max(1) {
@@ -2578,15 +2629,16 @@ fn converse(
                 body["tools"] = Value::Array(definitions);
             }
         }
-        let round = stream(url, &body, tx)?;
+        if stopped(cancel) {
+            return Ok(finish(total));
+        }
+        let round = stream(url, &body, tx, cancel)?;
         match &mut total {
             Some(total) => total.absorb(round.stats),
             None => total = Some(round.stats),
         }
-        let Some(caps) = caps.filter(|_| !round.tool_calls.is_empty()) else {
-            let mut stats = total.expect("at least one round");
-            stats.elapsed = start.elapsed();
-            return Ok(stats);
+        let Some(caps) = caps.filter(|_| !round.tool_calls.is_empty() && !round.stopped) else {
+            return Ok(finish(total));
         };
 
         tx.send(StreamEvent::ToolCalls(round.tool_calls.clone())).map_err(|e| e.to_string())?;
@@ -2596,6 +2648,11 @@ fn converse(
             "tool_calls": round.tool_calls,
         }));
         for call in &round.tool_calls {
+            // Stopped: the calls not made yet answer so (the history stays well-formed).
+            if stopped(cancel) {
+                history.push(json!({ "role": "tool", "tool_call_id": call.id, "content": "{\"error\":\"stopped by the user\"}" }));
+                continue;
+            }
             let ctx = CallContext::new(Some(run), &call.id);
             // Policy, usage tracking and verification happen in there.
             let content = if let (Some(env), "delegate") = (agents, call.function.name.as_str()) {
@@ -2616,7 +2673,7 @@ fn converse(
 }
 
 /// POST the request, forward each delta as it arrives, and measure the reply.
-fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>) -> Result<Round, String> {
+fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: &Cancel) -> Result<Round, String> {
     // No overall timeout: a long generation is fine as long as tokens keep coming.
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(10))
@@ -2635,7 +2692,13 @@ fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>) -> Result<Round, St
         return Err(format!("{status}: {}", resp.text().unwrap_or_default()));
     }
     let mut logged_first = false;
+    let mut was_stopped = false;
     for line in BufReader::new(resp).lines() {
+        // Dropping the response closes the connection, and the server stops generating.
+        if stopped(cancel) {
+            was_stopped = true;
+            break;
+        }
         if !logged_first && let Some(ttft) = ttft {
             logged_first = true;
             tx.send(StreamEvent::Log(format!("first token after {}", secs(ttft))))
@@ -2695,7 +2758,12 @@ fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>) -> Result<Round, St
         // Most servers send one token per chunk, so the chunk count is a fair guess.
         None => Stats { ttft, elapsed, input: 0, cached: 0, output: chunks, estimated: true },
     };
-    Ok(Round { stats, content, tool_calls })
+    if was_stopped {
+        let _ = tx.send(StreamEvent::Log("stopped".into()));
+        // Half-streamed tool calls aren't run.
+        return Ok(Round { stats, content, tool_calls: Vec::new(), stopped: true });
+    }
+    Ok(Round { stats, content, tool_calls, stopped: false })
 }
 
 const USAGE: &str = "\
@@ -3170,6 +3238,9 @@ fn open_capabilities(
     if config.system.enabled {
         caps.system = Some(lyra_system::System::new(config.system.clone(), config::expand_path));
     }
+    if config.search.enabled {
+        caps.search = Some(config.search.clone());
+    }
     notes.extend(caps.refresh());
     notes.push(format!("capabilities · {} ({} callable)", caps.manager.all().len(), caps.manager.all().iter().filter(|c| c.kind.callable()).count()));
     (Some(Arc::new(caps)), notes)
@@ -3253,6 +3324,9 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
                 app.show_reasoning = !app.show_reasoning;
             }
             KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => app.reload(),
+            KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let _ = app.stop();
+            }
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.show_panels = !app.show_panels;
             }
@@ -3273,5 +3347,51 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::*;
+    use std::io::Write;
+
+    /// A chat server that streams a token every 30 ms for ~3 s.
+    fn slow_server() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let Ok((mut s, _)) = listener.accept() else { return };
+            let mut buf = [0u8; 65536];
+            let _ = std::io::Read::read(&mut s, &mut buf);
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n");
+            for i in 0..100 {
+                let chunk = json!({ "choices": [{ "delta": { "content": format!("w{i} ") } }] });
+                if s.write_all(format!("data: {chunk}\n\n").as_bytes()).is_err() {
+                    return; // the client hung up: stop generating
+                }
+                std::thread::sleep(Duration::from_millis(30));
+            }
+            let _ = s.write_all(b"data: [DONE]\n\n");
+        });
+        url
+    }
+
+    #[test]
+    fn stopping_ends_a_reply_partway() {
+        let url = slow_server();
+        let (tx, _rx) = mpsc::channel();
+        let cancel = Cancel::default();
+        let flag = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let start = Instant::now();
+        let round = stream(&url, &json!({ "model": "m", "messages": [] }), &tx, &cancel).unwrap();
+        assert!(round.stopped);
+        assert!(round.content.starts_with("w0 "), "what arrived is kept: {:?}", round.content);
+        assert!(!round.content.contains("w99"), "it didn't run to the end");
+        assert!(start.elapsed() < Duration::from_secs(2), "it stopped promptly");
+        assert!(round.tool_calls.is_empty());
     }
 }

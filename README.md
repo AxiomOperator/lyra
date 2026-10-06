@@ -697,6 +697,27 @@ at it. Only one lyra runs per `~/.lyra`: starting the TUI while `lyra serve`
 is running (say, over SSH) is refused with a note, because each would keep
 its own copy of the conversation (`--force` overrides).
 
+## Web search
+
+lyra can look things up: **`web_search`** asks a SearXNG instance and
+**`web_fetch`** reads a page as plain text (scripts, styles and menus
+dropped). Both only read, so the main agent uses them directly (and the
+Researcher agent has them too); replies cite the pages they used as links.
+
+```toml
+[search]
+searxng_url = "http://127.0.0.1:8080"   # SearXNG with `formats: [html, json]`
+max_results = 8
+```
+
+SearXNG's engines get rate-limited or CAPTCHA'd from time to time; when a
+search finds nothing, lyra's result says which engines didn't answer. Enable
+ones that work from your network in SearXNG's `settings.yml`.
+
+**Stopping a reply:** `/stop`, Ctrl-X (terminal), or the stop button in the
+app ends the reply being written — including an agent's work and any approval
+it's waiting for. What was written so far stays, marked *(stopped)*.
+
 ## Other machines and terminals: `lyra-node` and `lyra connect`
 
 With lyra on a server, other machines join it in two ways.

@@ -330,7 +330,7 @@ fn draw(f: &mut Frame, s: &mut Screen) {
             Span::raw(" allow for this session "),
         ])
     } else {
-        Line::from(format!(" {} · Enter send · / commands · @ machines · PgUp PgDn · ^R reasoning · ^B panel · Esc quit ", s.url))
+        Line::from(format!(" {} · Enter send · / commands · @ machines · ^X stop · PgUp PgDn · ^R reasoning · ^B panel · Esc quit ", s.url))
     };
     let border = if s.approval().is_some() { Style::default().fg(Color::Yellow) } else { Style::default() };
     f.render_widget(Paragraph::new(s.input.as_str()).block(Block::bordered().title(title).border_style(border)), input_area);
@@ -600,6 +600,7 @@ fn ui_loop(terminal: &mut DefaultTerminal, s: &mut Screen, incoming: mpsc::Recei
             KeyCode::Char('c') if ctrl => return Ok(()),
             KeyCode::Char('r') if ctrl => s.show_reasoning = !s.show_reasoning,
             KeyCode::Char('b') if ctrl => s.show_panel = !s.show_panel,
+            KeyCode::Char('x') if ctrl => s.send(json!({ "type": "stop" })),
             KeyCode::Up => s.scroll = Some(s.scroll.unwrap_or(s.max_scroll).saturating_sub(1)),
             KeyCode::Down => s.scroll = s.scroll.map(|t| t + 1).filter(|&t| t < s.max_scroll),
             KeyCode::PageUp => s.scroll = Some(s.scroll.unwrap_or(s.max_scroll).saturating_sub(s.page)),

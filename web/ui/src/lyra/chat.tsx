@@ -256,7 +256,7 @@ function usePalette(text: string): Entry[] {
 }
 
 function Composer() {
-  const { say, status } = useLyra();
+  const { say, send, status } = useLyra();
   const [text, setText] = useState("");
   const [selected, setSelected] = useState(0);
   const [hidden, setHidden] = useState(false);
@@ -338,7 +338,8 @@ function Composer() {
           <PromptInputTools>
             <span className="px-2 text-muted-foreground text-xs">{status.model}</span>
           </PromptInputTools>
-          <PromptInputSubmit disabled={!text.trim()} status={status.waiting ? "streaming" : undefined} />
+          {/* While a reply is being written the button stops it. */}
+          <PromptInputSubmit disabled={!status.waiting && !text.trim()} status={status.waiting ? "streaming" : undefined} onStop={() => send({ type: "stop" })} />
         </PromptInputFooter>
       </PromptInput>
     </div>

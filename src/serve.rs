@@ -216,6 +216,10 @@ pub fn run(app: &mut App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>
                     app.input = text;
                     app.send();
                 }
+                Inbound::Stop { device } => {
+                    app.log(Level::Info, format!("{device} pressed stop"));
+                    let _ = app.stop();
+                }
                 Inbound::Approve { id, answer, device } => {
                     app.log(Level::Agent, format!("{device} answered approval {id}: {answer}"));
                     app.answer_approval_id(id, &answer);

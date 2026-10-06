@@ -14,7 +14,7 @@ use crate::{App, Level, Phase};
 const MIN_WIDTH_FOR_PANELS: u16 = 100;
 const PANEL_WIDTH: u16 = 46;
 
-const HELP: &str = " Enter send · / commands · ↑↓ PgUp PgDn scroll · ^R reasoning · ^B panels · ^L reload · Esc quit ";
+const HELP: &str = " Enter send · / commands · ↑↓ PgUp PgDn scroll · ^X stop · ^R reasoning · ^B panels · ^L reload · Esc quit ";
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     // An agent waiting for approval gets its own box above the input, so the

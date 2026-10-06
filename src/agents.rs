@@ -129,6 +129,8 @@ pub struct Env {
     pub tx: Sender<StreamEvent>,
     /// A machine the user named with `@desktop`: system tools default to it.
     pub machine: Option<String>,
+    /// Set when the user stops the run.
+    pub cancel: crate::Cancel,
 }
 
 /// The machine a message names with `@name` (one of `known`, or `server`).
@@ -355,6 +357,10 @@ pub fn delegate(
         notes: Some("ran out of model calls".into()),
     };
     for _ in 0..s.budget.max_model_calls.max(1) {
+        if crate::stopped(&env.cancel) {
+            result.notes = Some("stopped by the user".into());
+            break;
+        }
         let reply = crate::plan::chat_with(&url, &model, &messages, &defs, &options);
         let (message, used) = match reply {
             Ok(r) => r,
@@ -377,7 +383,9 @@ pub fn delegate(
             // Shown in the chat as this delegation's own tool card.
             let shown_id = format!("{task_id}-{}", call["id"].as_str().unwrap_or(""));
             emit(&env.tx, AgentEvent::Tool { agent: profile.title.clone(), tool: name.to_string(), id: shown_id.clone(), args: with_machine(env, name, args) });
-            let out = if tool_calls >= s.budget.max_tool_calls {
+            let out = if crate::stopped(&env.cancel) {
+                json!({ "error": "stopped by the user" }).to_string()
+            } else if tool_calls >= s.budget.max_tool_calls {
                 json!({ "error": "this delegation's tool budget is used up" }).to_string()
             } else if name == "delegate" && can_delegate {
                 tool_calls += 1;
@@ -690,6 +698,7 @@ impl crate::App {
             agents,
             tx: self.tx.clone(),
             machine: None,
+            cancel: self.cancel.clone(),
         })
     }
 
@@ -1323,7 +1332,7 @@ mod tests {
         caps.set_agents(agents.clone());
         caps.refresh();
         let (tx, events) = mpsc::channel();
-        let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx, machine: None };
+        let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx, machine: None, cancel: Default::default() };
         Fixture { _rt: rt, env, events }
     }
 

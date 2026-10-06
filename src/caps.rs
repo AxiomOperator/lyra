@@ -39,6 +39,8 @@ pub struct Caps {
     agents: std::sync::OnceLock<Arc<crate::agents::Agents>>,
     /// Shell, files, network, servers (`[system]`): for agents only.
     pub system: Option<lyra_system::System>,
+    /// Web search and page reading (`[search]`).
+    pub search: Option<crate::websearch::Settings>,
     /// Other machines' system tools (`lyra node`), when serving.
     remote: std::sync::OnceLock<Arc<dyn Remote>>,
 }
@@ -278,7 +280,7 @@ impl Caps {
     }
 
     pub fn new(manager: CapabilityManager, rt: Handle, openapi: Vec<OpenApiClient>, mcp: Vec<McpClient>) -> Self {
-        Self { manager, rt, tools: None, learning: None, evolution: None, openapi, mcp, goals: std::sync::OnceLock::new(), agents: std::sync::OnceLock::new(), system: None, remote: std::sync::OnceLock::new() }
+        Self { manager, rt, tools: None, learning: None, evolution: None, openapi, mcp, goals: std::sync::OnceLock::new(), agents: std::sync::OnceLock::new(), system: None, remote: std::sync::OnceLock::new(), search: None }
     }
 
     /// Add the goal tools (goal_list, goal_get, goal_create, goal_note).
@@ -335,6 +337,9 @@ impl Caps {
         }
         if self.goals.get().is_some() {
             caps.extend(goal_tools());
+        }
+        if self.search.as_ref().is_some_and(|s| s.enabled) {
+            caps.extend(crate::websearch::capabilities());
         }
         if self.system.as_ref().is_some_and(|s| s.settings.enabled) {
             caps.extend(system_tools(&self.machines()));
@@ -545,6 +550,10 @@ impl Caps {
             CapabilityKind::Mcp => match self.mcp.iter().find(|m| m.has(&c.id)) {
                 Some(client) => client.call(&c.id, &args),
                 None => Err(format!("{} has no provider", c.id)),
+            },
+            _ if c.source == "web" => match &self.search {
+                Some(s) => crate::websearch::call(s, &c.name, &args),
+                None => Err("web search is off".into()),
             },
             _ if c.source == "system" => match (remote_machine(&args), &self.system) {
                 (Some(machine), _) => match self.remote.get() {

@@ -47,6 +47,8 @@ pub struct Config {
     pub system: lyra_system::Settings,
     /// `[web]` table: `lyra serve` for phones and browsers.
     pub web: lyra_web::Settings,
+    /// `[search]` table: web search (SearXNG) and reading pages.
+    pub search: crate::websearch::Settings,
 }
 
 #[derive(Deserialize)]
@@ -304,6 +306,7 @@ impl Default for Config {
             agents: crate::agents::Settings::default(),
             system: lyra_system::Settings::default(),
             web: lyra_web::Settings::default(),
+            search: crate::websearch::Settings::default(),
         }
     }
 }

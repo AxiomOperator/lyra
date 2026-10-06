@@ -248,3 +248,11 @@ currency = "$"
 # listen = "127.0.0.1:8484"     # the proxy's upstream; use the LAN IP if the proxy runs elsewhere
 # public_url = ""               # e.g. "https://lyra.example.com" (needed to install the app and for notifications)
 # notify = true                 # push notifications when no device has lyra open
+
+# Web search (see README): web_search asks a SearXNG instance (JSON format on),
+# web_fetch reads a page as text. Both only read; replies cite their sources.
+# [search]
+# enabled = true
+# searxng_url = "http://127.0.0.1:8080"
+# max_results = 8
+# fetch_max_chars = 20000
