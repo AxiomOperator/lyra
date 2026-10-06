@@ -375,7 +375,7 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
                     let used = disk.as_ref().and_then(|d| d["used_pct"].as_u64()).unwrap_or(0);
                     let mut parts = Vec::new();
                     if let Some(n) = memories {
-                        parts.push(format!("{n} memories"));
+                        parts.push(format!("{n} memor{}", if n == 1 { "y" } else { "ies" }));
                     }
                     if disk.is_some() {
                         parts.push(format!("disk {used}% used"));
