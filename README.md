@@ -615,8 +615,14 @@ public_url = "https://lyra.example.com"
 `loginctl enable-linger $USER` so it runs while you're logged out). Logs:
 `journalctl --user -u lyra -f`. Or just run `lyra serve` in a terminal.
 
-**3. Pair each device.** Run `lyra pair` on the computer; it prints a code
-valid for 10 minutes, once. Open `public_url` on the phone and enter it. Only
+**3. Pair each device.** Run `lyra pair` on the computer (`--minutes N` for
+1–60 instead of 10). It prints a code that works once, a link with the code
+filled in, and a QR code of that link. Scan it with the phone (or open
+`public_url` and type the code), then tap Pair. On a server, `scripts/lyra-pair`
+does the same from any shell: it finds the data `lyra serve` uses (the
+service's `LYRA_HOME` or its user's `~/.lyra`). Install it with
+`install -m 755 scripts/lyra-pair /usr/local/bin/` and run `lyra-pair` (or
+`sudo lyra-pair`). Only
 paired devices get in (each gets its own token; lyra keeps only its hash), and
 `lyra devices` / `lyra devices remove <name>` manage them. Five wrong codes
 cancel a code.

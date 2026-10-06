@@ -2894,7 +2894,7 @@ fn main() {
     }
     let sub = args.get(1).map(String::as_str);
     match sub {
-        Some("pair") => return pair_command(),
+        Some("pair") => return pair_command(&args[2..]),
         Some("devices") => return devices_command(&args[2..]),
         Some("service") => return service_command(),
         Some("node") => return lyra_node::main(&args[2..]),
@@ -3080,18 +3080,53 @@ fn serve_main(mut app: App, web: &lyra_web::Settings, rt: &tokio::runtime::Handl
 }
 
 /// `lyra pair`: a code for pairing a phone or browser (valid 10 minutes).
-fn pair_command() {
+fn pair_command(args: &[String]) {
+    let minutes = match args {
+        [] => 10,
+        [flag, n] if flag == "--minutes" => match n.parse::<i64>() {
+            Ok(n) if (1..=60).contains(&n) => n,
+            _ => {
+                eprintln!("lyra: --minutes takes 1 to 60");
+                std::process::exit(2);
+            }
+        },
+        _ => {
+            eprintln!("usage: lyra pair [--minutes N]");
+            std::process::exit(2);
+        }
+    };
     let dir = config::home().map(|h| h.join("web")).expect("a home directory");
-    match lyra_web::Devices::open(&dir).and_then(|d| d.new_code(10)) {
+    match lyra_web::Devices::open(&dir).and_then(|d| d.new_code(minutes)) {
         Ok(code) => {
             let url = Config::load().map(|c| c.web.public_url).unwrap_or_default();
-            println!("Pairing code: {}-{}", &code[..4], &code[4..]);
-            println!("Valid for 10 minutes, once. Open {} on the device and enter it.", if url.is_empty() { "lyra's address" } else { &url });
+            let shown = format!("{}-{}", &code[..4], &code[4..]);
+            println!("Pairing code: {shown}");
+            println!("Valid for {minutes} minutes, once.");
+            if url.is_empty() {
+                println!("Open lyra's address on the device and enter it (set [web] public_url for a link and QR code).");
+            } else {
+                let link = pair_link(&url, &shown);
+                println!("Open {link} on the device (or scan this), then tap Pair:\n");
+                print!("{}", qr(&link));
+            }
         }
         Err(e) => {
             eprintln!("lyra: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+/// The app's address with the code filled in.
+fn pair_link(public_url: &str, code: &str) -> String {
+    format!("{}/?pair={code}", public_url.trim_end_matches('/'))
+}
+
+/// A QR code for a terminal: two rows per character, light quiet zone.
+fn qr(text: &str) -> String {
+    match qrcode::QrCode::new(text.as_bytes()) {
+        Ok(code) => code.render::<qrcode::render::unicode::Dense1x2>().dark_color(qrcode::render::unicode::Dense1x2::Light).light_color(qrcode::render::unicode::Dense1x2::Dark).build() + "\n",
+        Err(_) => String::new(),
     }
 }
 

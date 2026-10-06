@@ -118,7 +118,11 @@ function Shell() {
 
 function Pair({ onPaired, message }: { onPaired: (token: string) => void; message?: string }) {
   const ua = navigator.userAgent;
-  const [code, setCode] = useState("");
+  // Opened from `lyra pair`'s link or QR code: the code is already filled in.
+  const [code, setCode] = useState(() => new URLSearchParams(location.search).get("pair") ?? "");
+  useEffect(() => {
+    if (new URLSearchParams(location.search).has("pair")) history.replaceState(null, "", "/");
+  }, []);
   const [name, setName] = useState(/iphone/i.test(ua) ? "iPhone" : /ipad/i.test(ua) ? "iPad" : /android/i.test(ua) ? "Android" : "Browser");
   const [error, setError] = useState(message ?? "");
   const [busy, setBusy] = useState(false);
@@ -143,7 +147,7 @@ function Pair({ onPaired, message }: { onPaired: (token: string) => void; messag
           <img src="/icon-192.png" alt="" className="mx-auto mb-2 size-16 rounded-2xl" />
           <CardTitle className="text-xl">Pair this device</CardTitle>
           <CardDescription>
-            On the computer running lyra, run <code className="rounded bg-muted px-1">lyra pair</code> and enter the code it shows.
+            On the computer running lyra, run <code className="rounded bg-muted px-1">lyra pair</code> (or <code className="rounded bg-muted px-1">lyra-pair</code> on the server) and enter the code it shows, or scan its QR code.
           </CardDescription>
         </CardHeader>
         <CardContent>

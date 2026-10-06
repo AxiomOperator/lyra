@@ -1,0 +1,43 @@
+#!/bin/sh
+# lyra-pair: make a one-time code to pair a phone or browser with the lyra
+# running on this server (`lyra serve`). Prints the code, a link with it
+# filled in, and a QR code of that link.
+#
+#   lyra-pair                 code valid for 10 minutes
+#   lyra-pair --minutes 30    longer (1-60)
+#
+# Install: install -m 755 scripts/lyra-pair /usr/local/bin/lyra-pair
+# The code goes into the data lyra serve uses: LYRA_HOME if set, else the
+# service user's (root here). Override with LYRA_PAIR_HOME=/path/to/.lyra.
+set -eu
+
+LYRA=${LYRA_BIN:-$(command -v lyra 2>/dev/null || echo /usr/local/bin/lyra)}
+if [ ! -x "$LYRA" ]; then
+    echo "lyra-pair: lyra isn't installed ($LYRA)" >&2
+    exit 1
+fi
+
+# The data lyra serve uses: the service's LYRA_HOME, else its user's ~/.lyra.
+home=${LYRA_PAIR_HOME:-${LYRA_HOME:-}}
+if [ -z "$home" ] && command -v systemctl >/dev/null 2>&1; then
+    env=$(systemctl show lyra -p Environment --value 2>/dev/null || true)
+    for kv in $env; do
+        case $kv in LYRA_HOME=*) home=${kv#LYRA_HOME=} ;; esac
+    done
+    if [ -z "$home" ]; then
+        user=$(systemctl show lyra -p User --value 2>/dev/null || true)
+        [ -n "$user" ] && home=$(getent passwd "$user" | cut -d: -f6)/.lyra
+    fi
+fi
+home=${home:-$HOME/.lyra}
+
+if [ ! -d "$home" ]; then
+    echo "lyra-pair: no lyra data at $home (set LYRA_PAIR_HOME)" >&2
+    exit 1
+fi
+if [ ! -w "$home" ]; then
+    echo "lyra-pair: can't write to $home — run it as its owner (e.g. sudo lyra-pair)" >&2
+    exit 1
+fi
+
+LYRA_HOME=$home exec "$LYRA" pair "$@"
