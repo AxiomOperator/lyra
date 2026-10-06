@@ -112,8 +112,9 @@ Activity says so.
 The per-turn memory and lesson checks also run when the keyword triggers don't fire. That
 catches turns the keywords miss, and the chat model is still called only on a yes.
 
-Each decision is logged in Activity with its answer, confidence and time. The Session panel
-shows the model, how many decisions it made and their average time. Approvals and system
+Each decision is logged in Activity with its answer, confidence and time. The model, how many
+decisions it made and their average time are shown in the TUI's Session panel, in
+`lyra connect`'s side panel ("Decisions"), and in the app's sidebar and About card. Approvals and system
 checks never depend on it.
 
 ## Personality and context files
@@ -795,6 +796,10 @@ it's waiting for. What was written so far stays, marked *(stopped)*.
   share sheet; shared text, links and files land in the message box, ready to
   send. iOS doesn't support sharing to web apps.
 
+- **From `lyra connect`:** `/attach <path>` uploads a file from that machine. It goes with your
+  next message (📎 shows in the input box's title). `/attach` lists what's attached and
+  `/attach clear` drops it.
+
 ## Managing lyra from the app
 
 More → **Memory**, **Skills**, **Goals** and **Model** are working pages, not
@@ -818,6 +823,9 @@ terminal does:
   `[system]` in `config.toml`. Both apply at once. Rules that would open
   everything (`/` as a write root, allowing `sudo` or `*`) are refused. Only a
   person changes rules, from a paired device; the model has no tool for it.
+  In a terminal: `/machines rules <name|server>` shows them, and e.g.
+  `/machines rules desktop allow add git pull` or `… write remove ~/tmp` or
+  `… off` changes them, with the same checks.
 
 Page answers go back to the page, not into the conversation. Changes are
 logged in the Activity panel.

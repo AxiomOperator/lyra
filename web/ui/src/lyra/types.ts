@@ -65,6 +65,10 @@ export interface Status {
   online?: { id: string; name: string }[];
   pairing?: PairRequest[];
   machines_detail?: Machine[];
+  /** Conversations loaded on the server, and which are answering. */
+  conversations?: { session: string; title: string | null; answering: boolean }[];
+  /** The decision model (`[decide]`), with what it has done since lyra started. */
+  decide?: { model: string; decided: number; to_chat: number; ms: number } | null;
 }
 
 export interface Command {

@@ -67,6 +67,8 @@ impl View {
                 .flatten()
                 .map(|c| (str_of(&c["usage"]), str_of(&c["description"]), str_of(&c["completion"])))
                 .collect();
+            // Handled here: the file goes up from this machine.
+            self.commands.push(("/attach <path>".into(), "send a file with your next message (/attach clear drops them)".into(), "/attach ".into()));
             self.ready = true;
             return;
         }
@@ -201,6 +203,11 @@ struct Screen {
     show_panel: bool,
     out: tokio::sync::mpsc::UnboundedSender<String>,
     url: String,
+    /// The server's address and this device's token, for uploads.
+    base: String,
+    token: String,
+    /// Files attached for the next message: (upload id, name).
+    files: Vec<(String, String)>,
 }
 
 impl Screen {
@@ -251,9 +258,35 @@ impl Screen {
         self.view.commands.iter().filter(|c| c.0.split_whitespace().next() == Some(word.as_str())).cloned().collect()
     }
 
+    /// `/attach <path>`: upload a file now; it goes with the next message.
+    fn attach(&mut self, arg: &str) {
+        self.view.banner = match arg {
+            "" => match self.files.len() {
+                0 => "nothing attached: /attach <path>".into(),
+                _ => format!("attached: {}", self.files.iter().map(|f| f.1.as_str()).collect::<Vec<_>>().join(", ")),
+            },
+            "clear" => {
+                self.files.clear();
+                "attachments dropped".into()
+            }
+            path => match upload(&self.base, &self.token, &lyra_node::expand(path)) {
+                Ok((id, name, size)) => {
+                    self.files.push((id, name.clone()));
+                    format!("attached {name} ({}) — it goes with your next message", size_text(size))
+                }
+                Err(e) => format!("couldn't attach {path}: {e}"),
+            },
+        };
+    }
+
     fn submit(&mut self) {
         let text = self.input.trim().to_string();
         if text.is_empty() {
+            return;
+        }
+        if text == "/attach" || text.starts_with("/attach ") {
+            self.attach(text.trim_start_matches("/attach").trim());
+            self.input.clear();
             return;
         }
         // While an approval is open, y / n / a typed out answer it too.
@@ -262,11 +295,52 @@ impl Screen {
         {
             self.send(json!({ "type": "approve", "id": id, "answer": text }));
         } else {
-            self.send(json!({ "type": "send", "text": text }));
+            let files: Vec<&str> = self.files.iter().map(|f| f.0.as_str()).collect();
+            self.send(json!({ "type": "send", "text": text, "files": files }));
+            self.files.clear();
         }
         self.input.clear();
         self.scroll = None;
         self.palette = 0;
+    }
+}
+
+/// Most a file may be (the server says the same).
+const MAX_UPLOAD: u64 = 25 * 1024 * 1024;
+
+/// Upload a file to the server (`POST /api/files`): its id, name and size.
+fn upload(base: &str, token: &str, path: &std::path::Path) -> Result<(String, String, u64), String> {
+    let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+    if size > MAX_UPLOAD {
+        return Err(format!("it's {}, more than 25 MB", size_text(size)));
+    }
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
+    let escaped: String = name.bytes().map(|b| if b.is_ascii_alphanumeric() || b".-_ ".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+    let resp = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|e| e.to_string())?
+        .post(format!("{}/api/files", base.trim_end_matches('/')))
+        .bearer_auth(token)
+        .header("X-Filename", escaped.replace(' ', "%20"))
+        .header("Content-Type", "application/octet-stream")
+        .body(bytes)
+        .send()
+        .map_err(|e| e.to_string())?;
+    let ok = resp.status().is_success();
+    let v: Value = resp.json().unwrap_or(json!({}));
+    if !ok {
+        return Err(v["error"].as_str().unwrap_or("the server refused it").to_string());
+    }
+    Ok((str_of(&v["id"]), str_of(&v["name"]), size))
+}
+
+fn size_text(n: u64) -> String {
+    match n {
+        n if n >= 1024 * 1024 => format!("{:.1} MB", n as f64 / 1048576.0),
+        n if n >= 1024 => format!("{} KB", n / 1024),
+        n => format!("{n} bytes"),
     }
 }
 
@@ -338,7 +412,11 @@ fn draw(f: &mut Frame, s: &mut Screen) {
             Span::raw(" allow for this session "),
         ])
     } else {
-        Line::from(format!(" {} · Enter send · / commands · @ machines · ^X stop · PgUp PgDn · ^R reasoning · ^B panel · Esc quit ", s.url))
+        Line::from(format!(
+            " {}{} · Enter send · / commands · @ machines · ^X stop · PgUp PgDn · ^R reasoning · ^B panel · Esc quit ",
+            if s.files.is_empty() { String::new() } else { format!("📎 {} · ", s.files.iter().map(|f| f.1.as_str()).collect::<Vec<_>>().join(", ")) },
+            s.url
+        ))
     };
     let border = if s.approval().is_some() { Style::default().fg(Color::Yellow) } else { Style::default() };
     f.render_widget(Paragraph::new(s.input.as_str()).block(Block::bordered().title(title).border_style(border)), input_area);
@@ -459,6 +537,33 @@ fn draw_panel(f: &mut Frame, s: &Screen, area: Rect) {
             lines.push(Line::styled(truncate(&format!("? {} ({})", str_of(&p["name"]), str_of(&p["hostname"])), width), Style::default().fg(Color::Yellow)));
             lines.push(Line::styled(truncate(&format!("  /devices approve {}", str_of(&p["code"])), width), dim));
         }
+    }
+    // Conversations open on the server; others may be answering at the same time.
+    let open = st["conversations"].as_array().cloned().unwrap_or_default();
+    if open.len() > 1 {
+        lines.push(Line::default());
+        lines.push(Line::from("Conversations".bold()));
+        for c in &open {
+            let here = c["session"] == st["session"];
+            let title = c["title"].as_str().filter(|t| !t.is_empty()).unwrap_or("(new)");
+            let mark = if c["answering"] == true { "↻ " } else if here { "› " } else { "  " };
+            let style = if here { Style::default().fg(Color::Cyan) } else if c["answering"] == true { Style::default().fg(Color::LightBlue) } else { dim };
+            lines.push(Line::styled(truncate(&format!("{mark}{title}"), width), style));
+        }
+        lines.push(Line::styled(truncate("  /sessions · /resume <id>", width), dim));
+    }
+    if let Some(d) = st["decide"].as_object() {
+        lines.push(Line::default());
+        lines.push(Line::from("Decisions".bold()));
+        lines.push(Line::raw(truncate(&str_of(&d["model"]), width)));
+        let to_chat = d["to_chat"].as_u64().unwrap_or(0);
+        let text = format!(
+            "{} decided · {} ms{}",
+            d["decided"].as_u64().unwrap_or(0),
+            d["ms"].as_u64().unwrap_or(0),
+            if to_chat > 0 { format!(" · {to_chat} to chat") } else { String::new() }
+        );
+        lines.push(Line::styled(truncate(&text, width), dim));
     }
     let working: Vec<String> = st["agents"].as_array().into_iter().flatten().filter(|a| a["working"] == true).map(|a| str_of(&a["title"])).collect();
     if !working.is_empty() {
@@ -719,6 +824,7 @@ pub fn local(home: &std::path::Path, listen: &str) {
 pub fn run(config: RemoteConfig) {
     lyra_node::tls_provider();
     let url = config.url.clone();
+    let token = config.token.clone();
     let (to_screen, incoming) = mpsc::channel();
     let (out, from_screen) = tokio::sync::mpsc::unbounded_channel();
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -735,6 +841,9 @@ pub fn run(config: RemoteConfig) {
         show_panel: true,
         out,
         url: url.trim_start_matches("https://").trim_start_matches("http://").to_string(),
+        base: url.clone(),
+        token,
+        files: Vec::new(),
     };
     ratatui::run(|terminal| ui_loop(terminal, &mut screen, incoming)).expect("terminal error");
 }
@@ -742,6 +851,23 @@ pub fn run(config: RemoteConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attach_uploads_with_the_device_token() {
+        let _guard = crate::decide::tests::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (url, server) = crate::decide::tests::fake(json!({ "id": "abc123", "name": "notes v2.txt", "size": 5 }));
+        let file = std::env::temp_dir().join(format!("lyra-attach-{}", std::process::id())).join("notes v2.txt");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "hello").unwrap();
+        let base = url.trim_end_matches("/v1");
+        assert_eq!(upload(base, "tok", &file).unwrap(), ("abc123".into(), "notes v2.txt".into(), 5));
+        let request = server.join().unwrap().to_lowercase();
+        assert!(request.starts_with("post /api/files"), "{request}");
+        assert!(request.contains("authorization: bearer tok") && request.contains("x-filename: notes%20v2.txt"), "{request}");
+        assert!(request.ends_with("hello"));
+        assert!(upload(base, "tok", &file.with_file_name("missing")).is_err());
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
 
     #[test]
     fn the_view_follows_the_servers_updates() {

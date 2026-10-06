@@ -72,13 +72,22 @@ fn status(app: &App, machines: &[String]) -> Value {
         "waiting": app.waiting,
         "model": app.model,
         "session": app.session_id,
-        "title": app.messages.iter().find(|m| m.role == "user").map(|m| m.content.lines().next().unwrap_or("").chars().take(60).collect::<String>()),
+        "title": title(app),
+        "decide": crate::decide::model().map(|model| {
+            let (decided, to_chat, ms) = crate::decide::stats();
+            json!({ "model": model, "decided": decided, "to_chat": to_chat, "ms": ms })
+        }),
         "approvals": app.approvals.iter().map(|r| json!({
             "id": r.id, "agent": r.agent, "what": r.what, "detail": r.detail, "why": r.why, "dangerous": r.dangerous,
         })).collect::<Vec<_>>(),
         "machines": machines,
         "agents": app.agents_panel.iter().map(|a| json!({ "title": a.title, "working": active.contains(&a.title), "enabled": a.enabled })).collect::<Vec<_>>(),
     })
+}
+
+/// A conversation's title: its first message's first line.
+fn title(app: &App) -> Option<String> {
+    app.messages.iter().find(|m| m.role == "user").map(|m| m.content.lines().next().unwrap_or("").chars().take(60).collect::<String>())
 }
 
 /// What the devices were last sent, to send only what changed.
@@ -266,6 +275,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut machines: Vec<String> = hub.machines().into_iter().map(|m| m.name).collect();
     let mut extra = hub_status(hub, node_build.as_deref());
     let mut last_extra = Instant::now();
+    let mut last_open = Value::Null;
     let started = Instant::now();
     let mut convs = vec![Conv::new(primary)];
     loop {
@@ -432,6 +442,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     let c = &mut convs[i];
                     c.mirror.machines = machines.clone();
                     c.mirror.extra = extra.clone();
+                    c.mirror.extra["conversations"] = last_open.clone();
                     for u in c.mirror.updates(&mut c.app) {
                         hub.publish(Some(&c.app.session_id), u);
                     }
@@ -490,6 +501,14 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 everyone = true;
             }
         }
+        // The conversations loaded now and which are answering, for every device.
+        let open = json!(convs.iter().map(|c| json!({ "session": c.app.session_id, "title": title(&c.app), "answering": c.app.waiting })).collect::<Vec<_>>());
+        if open != last_open {
+            last_open = open.clone();
+            everyone = true;
+        }
+        let mut extra_now = extra.clone();
+        extra_now["conversations"] = open;
         let attached = hub.attached_sessions();
         for c in convs.iter_mut() {
             // The phase timer ("thinking 4s") ticks while something is happening.
@@ -497,7 +516,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 c.last_status = Instant::now();
                 c.changed = false;
                 c.mirror.machines = machines.clone();
-                c.mirror.extra = extra.clone();
+                c.mirror.extra = extra_now.clone();
                 for u in c.mirror.updates(&mut c.app) {
                     hub.publish(Some(&c.app.session_id), u);
                 }
@@ -577,6 +596,58 @@ fn level_name(level: Level) -> &'static str {
         Level::Agent => "agent",
         Level::Error => "error",
     }
+}
+
+const RULES_USAGE: &str = "/machines rules <name|server> [on|off | allow|write|deny|ssh add|remove <value>]";
+
+/// A machine's rules, for the terminal.
+fn rules_text(name: &str, r: &lyra_system::Settings) -> String {
+    let list = |v: &[String]| if v.is_empty() { "—".to_string() } else { v.join(", ") };
+    format!(
+        "rules on {name}: system access {}\n  run without asking (allow): {}\n  write without asking (write): {}\n  off limits (deny): {}\n  ssh hosts (ssh): {}\n  commands time out after {}s · approvals wait {}s\n{RULES_USAGE}",
+        if r.enabled { "on" } else { "off" },
+        list(&r.allow_commands),
+        list(&r.write_roots),
+        list(&r.deny_paths),
+        list(&r.ssh_hosts),
+        r.timeout_seconds,
+        r.approval_timeout_seconds
+    )
+}
+
+/// `on|off` or `<list> add|remove <value>`, checked like the app's dialog.
+fn edit_rules(rules: &mut lyra_system::Settings, change: &str) -> Result<(), String> {
+    // On a copy: a refused change leaves the rules as they were.
+    let mut next = rules.clone();
+    let r = &mut next;
+    let mut words = change.splitn(3, ' ');
+    let (what, op, value) = (words.next().unwrap_or(""), words.next().unwrap_or(""), words.next().unwrap_or("").trim());
+    match (what, op) {
+        ("on", "") => r.enabled = true,
+        ("off", "") => r.enabled = false,
+        (list @ ("allow" | "write" | "deny" | "ssh"), op @ ("add" | "remove")) if !value.is_empty() => {
+            let v = match list {
+                "allow" => &mut r.allow_commands,
+                "write" => &mut r.write_roots,
+                "deny" => &mut r.deny_paths,
+                _ => &mut r.ssh_hosts,
+            };
+            if op == "add" {
+                if !v.iter().any(|x| x == value) {
+                    v.push(value.to_string());
+                }
+            } else {
+                let before = v.len();
+                v.retain(|x| x != value);
+                if v.len() == before {
+                    return Err(format!("{value:?} isn't in {list}"));
+                }
+            }
+        }
+        _ => return Err(format!("usage: {RULES_USAGE}")),
+    }
+    *rules = next.cleaned()?;
+    Ok(())
 }
 
 /// The server's own `[system]` rules changed from the app: checked, saved
@@ -728,7 +799,54 @@ impl App {
                 }
                 Ok(format!("{} {}…", if sub == "update" { "updating" } else { "removing" }, targets.join(", ")))
             }
-            _ => Err("usage: /machines [update <name|all> | remove <name>]".into()),
+            // What runs without asking there; changed like the app's Rules dialog.
+            "rules" => {
+                let (name, change) = rest.split_once(' ').map_or((rest, ""), |(n, c)| (n, c.trim()));
+                if name.is_empty() {
+                    return Err(format!("usage: {RULES_USAGE}"));
+                }
+                if name.eq_ignore_ascii_case("server") {
+                    let system = self.caps.as_ref().and_then(|c| c.system.as_ref()).ok_or("system access isn't set up")?;
+                    let mut rules = system.settings();
+                    if change.is_empty() {
+                        return Ok(rules_text("server", &rules));
+                    }
+                    edit_rules(&mut rules, change)?;
+                    let answer = set_server_rules(self, &json!(rules)).map_err(|e| format!("not changed: {e}"))?;
+                    let rules: lyra_system::Settings = serde_json::from_value(answer["system"].clone()).map_err(|e| e.to_string())?;
+                    return Ok(format!("saved to config.toml, in effect now\n{}", rules_text("server", &rules)));
+                }
+                let Some(name) = all.iter().filter_map(|m| m["name"].as_str()).find(|n| n.eq_ignore_ascii_case(name)).map(str::to_string) else {
+                    return Err(format!("no machine {name:?} (/machines lists them)"));
+                };
+                // Check the change before asking the machine, so a typo fails here.
+                if !change.is_empty() {
+                    edit_rules(&mut lyra_system::Settings::default(), change)?;
+                }
+                let (tx, change) = (self.tx.clone(), change.to_string());
+                std::thread::spawn(move || {
+                    let ask = |set: Option<&lyra_system::Settings>| {
+                        let mut request = json!({ "type": "rules" });
+                        if let Some(set) = set {
+                            request["set"] = json!(set);
+                        }
+                        hub.call_machine(&name, request, Duration::from_secs(20))
+                            .and_then(|v| v["system"].is_object().then(|| v.clone()).ok_or_else(|| v["error"].as_str().unwrap_or("no rules in the answer").to_string()))
+                            .and_then(|v| serde_json::from_value::<lyra_system::Settings>(v["system"].clone()).map(|r| (r, v["path"].as_str().unwrap_or("").to_string())).map_err(|e| e.to_string()))
+                    };
+                    let note = match ask(None) {
+                        Err(e) => format!("✗ {name}'s rules: {e}"),
+                        Ok((rules, _)) if change.is_empty() => rules_text(&name, &rules),
+                        Ok((mut rules, _)) => match edit_rules(&mut rules, &change).and_then(|()| ask(Some(&rules))) {
+                            Ok((rules, path)) => format!("✓ {name} saved its rules ({path}), in effect now\n{}", rules_text(&name, &rules)),
+                            Err(e) => format!("✗ {name}'s rules weren't changed: {e}"),
+                        },
+                    };
+                    let _ = tx.send(crate::StreamEvent::Notice(note));
+                });
+                Ok(format!("asking {}…", rest.split_whitespace().next().unwrap_or("")))
+            }
+            _ => Err(format!("usage: /machines [update <name|all> | remove <name>] · {RULES_USAGE}")),
         }
     }
 
@@ -826,6 +944,22 @@ pub fn service_unit(binary: &str, system: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rules_change_from_the_terminal_like_the_dialog() {
+        let mut r = lyra_system::Settings::default();
+        edit_rules(&mut r, "allow add git pull").unwrap();
+        edit_rules(&mut r, "allow add git pull").unwrap();
+        assert_eq!(r.allow_commands, vec!["git pull"], "added once");
+        edit_rules(&mut r, "write add ~/Projects").unwrap();
+        edit_rules(&mut r, "off").unwrap();
+        assert!(!r.enabled && r.write_roots == vec!["~/Projects"]);
+        assert!(edit_rules(&mut r, "write add /").is_err(), "checked like the app's dialog");
+        assert_eq!(r.write_roots, vec!["~/Projects"], "and left as it was");
+        assert!(edit_rules(&mut r, "deny remove ~/nothing").is_err());
+        assert!(edit_rules(&mut r, "allow").is_err());
+        assert!(rules_text("desktop", &r).contains("git pull"));
+    }
 
     #[test]
     fn streaming_text_is_sent_as_appends() {

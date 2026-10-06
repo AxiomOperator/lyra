@@ -279,7 +279,7 @@ function Notifications() {
 }
 
 export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "memory" | "skills" | "goals" | "model") => void; update: () => void }) {
-  const { say, unpaired, token, serverVersion } = useLyra();
+  const { say, unpaired, token, serverVersion, status } = useLyra();
   const [sessions] = useData<Session[]>("sessions");
   const [about] = useData<About>("about");
   const { ask, onData } = useLyra();
@@ -323,7 +323,7 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
                 </span>
               </span>
               <span className="flex shrink-0 gap-1.5">
-                {s.answering && <Badge className="bg-sky-600/80 text-white">answering</Badge>}
+                {(s.answering || status.conversations?.some((c) => c.session === s.id && c.answering)) && <Badge className="bg-sky-600/80 text-white">answering</Badge>}
                 {s.current && <Badge className="bg-teal-600/80 text-white">here</Badge>}
               </span>
             </button>
@@ -363,7 +363,7 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
           <CardDescription className="break-words">
             lyra {about?.lyra} · app {APP_VERSION}
             {newer ? ` (lyra has ${serverVersion})` : ""} · model {about?.model}
-            {about?.decide && ` · decisions by ${about.decide}`}
+            {status.decide && ` · decisions by ${status.decide.model} (${status.decide.decided} made, ${status.decide.to_chat} left to the chat model, ${status.decide.ms} ms average)`}
             <br />
             lyra-node on offer: {about?.node_build ?? "none"} · {about?.devices ?? 0} paired devices
           </CardDescription>

@@ -2602,6 +2602,7 @@ pub(crate) const COMMANDS: &str = "\
 /stop                        stop the reply being written (also Ctrl-X)
 /new                         start a new conversation (this one is saved)
 /machines [update|remove <name>]  machines lyra works on (lyra-node): online, version, update, remove
+/machines rules <name|server> [on|off | allow|write|deny|ssh add|remove <value>]  what runs without asking there
 /devices [approve|deny <code>]    paired phones, browsers, terminals and machines; pairing requests
 /devices remove <name>       unpair a device or machine
 /sessions                    saved conversations (lyra -c continues the latest)

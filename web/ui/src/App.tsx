@@ -33,7 +33,10 @@ type TabItem = {
 function Sidebar({ tabs, more, tab, setTab }: { tabs: TabItem[]; more: TabItem[]; tab: Tab; setTab: (t: Tab) => void }) {
   const { connected, status, say } = useLyra();
   // Refreshed when a conversation gets a title or finishes answering.
-  const [sessions] = useData<Session[]>("sessions", [status.title, status.waiting]);
+  // Refreshed as conversations start, finish or get a title, here or on another device.
+  const live = status.conversations ?? [];
+  const [sessions] = useData<Session[]>("sessions", [status.title, JSON.stringify(live)]);
+  const answering = (id: string) => live.some((c) => c.session === id && c.answering);
   const open = (s: Session) => {
     if (!s.current) say(`/resume ${s.id}`);
     setTab("chat");
@@ -89,7 +92,7 @@ function Sidebar({ tabs, more, tab, setTab }: { tabs: TabItem[]; more: TabItem[]
               <span className={cn("block truncate text-sm", s.current ? "text-foreground" : "text-muted-foreground")}>{s.title || "(untitled)"}</span>
               <span className="block text-muted-foreground/70 text-xs">{ago(s.updated)}</span>
             </span>
-            {s.answering && <span title="answering" className="size-2 shrink-0 animate-pulse rounded-full bg-sky-400" />}
+            {answering(s.id) && <span title="answering" className="size-2 shrink-0 animate-pulse rounded-full bg-sky-400" />}
           </button>
         ))}
       </div>
@@ -97,6 +100,11 @@ function Sidebar({ tabs, more, tab, setTab }: { tabs: TabItem[]; more: TabItem[]
         <div className="truncate" title={status.model}>
           {status.model}
         </div>
+        {status.decide && (
+          <div className="truncate" title={`${status.decide.decided} decisions, ${status.decide.to_chat} left to the chat model`}>
+            decides: {status.decide.model} · {status.decide.decided} · {status.decide.ms} ms
+          </div>
+        )}
         <div>app {APP_VERSION}</div>
       </div>
     </aside>
