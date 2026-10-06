@@ -644,6 +644,46 @@ conversations, but don't run the TUI and `lyra serve` on the same
 conversation at the same time: each keeps its own copy and the last to save
 wins.
 
+### Moving to an always-on server (Fedora)
+
+Build lyra on the server itself: a binary is tied to the glibc it was built
+against, so one built on a newer Fedora won't start on an older one.
+
+```sh
+# on the server
+sudo dnf install -y gcc git protobuf-compiler
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # current Rust (needs 1.88+)
+git clone https://github.com/AxiomOperator/lyra.git ~/Projects/lyra
+cd ~/Projects/lyra && cargo install --path . --locked
+curl -s http://172.99.99.11:8181/v1/models >/dev/null && echo "model reachable"
+```
+
+Then move the data (it's all in `~/.lyra`; paths in it use `~`):
+
+```sh
+# on the old machine: stop lyra (and lyra serve) first
+rsync -a --exclude lyra.pid ~/.lyra/ server:~/.lyra/
+```
+
+On the server: check `config.toml` (model URLs reachable from there,
+`[web] listen`, `source_repo` if the checkout lives elsewhere), then
+`lyra service`, `systemctl --user daemon-reload && systemctl --user enable --now lyra`
+and `sudo loginctl enable-linger $USER`. Point the Zoraxy rule at the server
+(`127.0.0.1:8484` if Zoraxy runs there; otherwise set `listen` to the server's
+LAN address and allow it through firewalld:
+`sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=<zoraxy-ip> port port=8484 protocol=tcp accept' && sudo firewall-cmd --reload`).
+Paired phones keep working without pairing again as long as `public_url`
+stays the same (`web/` holds the devices and the push key).
+
+Things that move with it: the Operator's shell and file access now act on
+the server, and `ssh_run` uses the server's SSH keys.
+
+`GET /health` answers 200 with uptime and whether lyra is busy (nothing
+private) and 503 if lyra's main loop is stuck: point Zoraxy's uptime monitor
+at it. Only one lyra runs per `~/.lyra`: starting the TUI while `lyra serve`
+is running (say, over SSH) is refused with a note, because each would keep
+its own copy of the conversation (`--force` overrides).
+
 ## Self-evolution
 
 Skills are what lyra learns; **evolution** changes *how it works*, from

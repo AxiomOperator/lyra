@@ -53,6 +53,8 @@ pub enum Inbound {
     Approve { id: u64, answer: String, device: String },
     /// The whole current state, for a device that just connected.
     Snapshot(oneshot::Sender<Value>),
+    /// Is the app's loop alive? (`/health`)
+    Health(oneshot::Sender<Value>),
 }
 
 /// A notification for every device with push turned on.
@@ -199,7 +201,23 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/api/test-push", post(test_push))
         .route("/api/approve", post(approve))
         .route("/ws", get(ws))
+        .route("/health", get(health))
         .with_state(shared)
+}
+
+/// For uptime monitors: 200 when the server and lyra's main loop both
+/// answer, 503 when the loop is stuck or gone. Says nothing private.
+async fn health(State(s): State<Arc<Shared>>) -> Response {
+    let (tx, rx) = oneshot::channel();
+    let alive = s.inbound.send(Inbound::Health(tx)).is_ok();
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        Ok(Ok(mut v)) if alive => {
+            v["ok"] = json!(true);
+            v["connections"] = json!(s.visible.lock().unwrap_or_else(|e| e.into_inner()).len());
+            (StatusCode::OK, [(header::CACHE_CONTROL, "no-store")], Json(v)).into_response()
+        }
+        _ => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "ok": false, "error": "lyra's main loop isn't answering" }))).into_response(),
+    }
 }
 
 fn error(status: StatusCode, text: &str) -> Response {

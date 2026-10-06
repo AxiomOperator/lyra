@@ -7,6 +7,7 @@ mod evolve;
 mod goals;
 mod markdown;
 mod learn;
+mod lock;
 mod mem;
 mod plan;
 mod migrate;
@@ -2677,6 +2678,7 @@ usage: lyra [command] [options]
   -c, --continue          continue the latest conversation (started in this folder, else any)
   -r, --resume [id]       resume a saved conversation; without an id, list them
   --restore-memory <dir>  put a memory backup in place, then exit
+  --force                 start even if another lyra (TUI or serve) is using the same home
   -h, --help              this help
 
 Conversations are saved in ~/.lyra/sessions/ ($LYRA_HOME/sessions).";
@@ -2757,6 +2759,21 @@ fn main() {
             eprintln!("lyra: bad config: {e}");
             std::process::exit(1);
         }
+    };
+    // One lyra per home: two would each keep their own copy of the conversation.
+    let _lock = match (config::home(), args.iter().any(|a| a == "--force")) {
+        (Some(home), false) => match lock::acquire(&home, if serving { "lyra serve" } else { "the terminal UI" }) {
+            Ok(l) => Some(l),
+            Err(e) => {
+                eprintln!("lyra: {e}.");
+                if !serving {
+                    eprintln!("Use the web app instead, or stop it first (systemctl --user stop lyra).");
+                }
+                eprintln!("Two at once overwrite each other's conversation; to run anyway: lyra {}--force", if serving { "serve " } else { "" });
+                std::process::exit(1);
+            }
+        },
+        _ => None,
     };
     // Memory is async (sqlx); a small runtime lets lyra's threads call into it.
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");

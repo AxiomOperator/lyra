@@ -129,6 +129,7 @@ pub fn run(app: &mut App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>
     let mut mirror = Mirror::default();
     let mut printed = app.logged;
     let mut last_status = Instant::now();
+    let started = Instant::now();
     loop {
         let mut changed = false;
         // Events from lyra's own work (replies streaming, agents, plans…).
@@ -174,6 +175,14 @@ pub fn run(app: &mut App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>
                 Inbound::Approve { id, answer, device } => {
                     app.log(Level::Agent, format!("{device} answered approval {id}: {answer}"));
                     app.answer_approval_id(id, &answer);
+                }
+                Inbound::Health(reply) => {
+                    let _ = reply.send(json!({
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "uptime_seconds": started.elapsed().as_secs(),
+                        "busy": app.waiting,
+                        "approvals_waiting": app.approvals.len(),
+                    }));
                 }
                 Inbound::Snapshot(reply) => {
                     for u in mirror.updates(app) {
