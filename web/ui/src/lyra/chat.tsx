@@ -5,6 +5,7 @@ import { Conversation, ConversationContent, ConversationEmptyState, Conversation
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, PromptInputHeader, PromptInputSubmit, PromptInputTextarea, PromptInputTools } from "@/components/ai-elements/prompt-input";
 import { SpeechInput } from "@/components/ai-elements/speech-input";
+import { withDictation } from "./dictation";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool";
@@ -278,6 +279,8 @@ async function upload(token: string, file: File): Promise<string> {
 function Composer() {
   const { say, send, status, token } = useLyra();
   const [text, setText] = useState("");
+  // The message as typed when dictation started; what's said goes after it.
+  const typedBefore = useRef("");
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
@@ -415,7 +418,14 @@ function Composer() {
             <PromptInputButton aria-label="Attach files" onClick={() => fileInput.current?.click()}>
               <Paperclip className="size-4" />
             </PromptInputButton>
-            {canDictate && <SpeechInput size="icon-sm" variant="ghost" onTranscriptionChange={(t) => setText((x) => (x ? `${x} ${t}` : t))} />}
+            {canDictate && (
+              <SpeechInput
+                size="icon-sm"
+                variant="ghost"
+                onListenStart={() => (typedBefore.current = text)}
+                onTranscriptionChange={(said) => setText(withDictation(typedBefore.current, said))}
+              />
+            )}
             <span className="truncate px-1 text-muted-foreground text-xs">{status.model}</span>
           </PromptInputTools>
           {/* While a reply is being written the button stops it. */}

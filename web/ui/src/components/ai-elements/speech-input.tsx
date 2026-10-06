@@ -1,5 +1,6 @@
 "use client";
 
+import { transcript } from "@/lyra/dictation";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -60,7 +61,10 @@ declare global {
 type SpeechInputMode = "speech-recognition" | "media-recorder" | "none";
 
 export type SpeechInputProps = ComponentProps<typeof Button> & {
+  /** lyra: called with everything said since `onListenStart`, interim words included. */
   onTranscriptionChange?: (text: string) => void;
+  /** lyra: dictation started (keep what was already typed). */
+  onListenStart?: () => void;
   /**
    * Callback for when audio is recorded using MediaRecorder fallback.
    * This is called in browsers that don't support the Web Speech API (Firefox, Safari).
@@ -90,8 +94,9 @@ const detectSpeechInputMode = (): SpeechInputMode => {
 export const SpeechInput = ({
   className,
   onTranscriptionChange,
+  onListenStart,
   onAudioRecorded,
-  lang = "en-US",
+  lang = navigator.language || "en-US",
   ...props
 }: SpeechInputProps) => {
   const [isListening, setIsListening] = useState(false);
@@ -108,8 +113,11 @@ export const SpeechInput = ({
   const onAudioRecordedRef =
     useRef<SpeechInputProps["onAudioRecorded"]>(onAudioRecorded);
 
+  const onListenStartRef = useRef(onListenStart);
+
   // Keep refs in sync
   onTranscriptionChangeRef.current = onTranscriptionChange;
+  onListenStartRef.current = onListenStart;
   onAudioRecordedRef.current = onAudioRecorded;
 
   // Initialize Speech Recognition when mode is speech-recognition
@@ -128,30 +136,21 @@ export const SpeechInput = ({
 
     const handleStart = () => {
       setIsListening(true);
+      onListenStartRef.current?.();
     };
 
     const handleEnd = () => {
       setIsListening(false);
     };
 
+    // lyra: the whole transcript each time (see lyra/dictation.ts): Chrome on
+    // Android repeats growing phrases as final results, which appending doubled.
     const handleResult = (event: Event) => {
       const speechEvent = event as SpeechRecognitionEvent;
-      let finalTranscript = "";
-
-      for (
-        let i = speechEvent.resultIndex;
-        i < speechEvent.results.length;
-        i += 1
-      ) {
-        const result = speechEvent.results[i];
-        if (result.isFinal) {
-          finalTranscript += result[0]?.transcript ?? "";
-        }
-      }
-
-      if (finalTranscript) {
-        onTranscriptionChangeRef.current?.(finalTranscript);
-      }
+      const phrases = Array.from({ length: speechEvent.results.length }, (_, i) => ({
+        transcript: speechEvent.results[i][0]?.transcript ?? "",
+      }));
+      onTranscriptionChangeRef.current?.(transcript(phrases));
     };
 
     const handleError = () => {
