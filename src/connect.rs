@@ -546,11 +546,13 @@ fn draw_panel(f: &mut Frame, s: &Screen, area: Rect) {
         }
         if on {
             health_lines(&m["health"], width, &mut lines);
+            diagnosis_lines(&st["diagnoses"], &str_of(&m["name"]), width, &mut lines);
         }
     }
     if st["server_health"].is_object() {
         lines.push(Line::raw("● server"));
         health_lines(&st["server_health"], width, &mut lines);
+        diagnosis_lines(&st["diagnoses"], "server", width, &mut lines);
     }
     let pairing = st["pairing"].as_array().cloned().unwrap_or_default();
     if !pairing.is_empty() {
@@ -648,6 +650,19 @@ fn health_lines(h: &Value, width: usize, lines: &mut Vec<Line<'static>>) {
     }
     for p in h["problems"].as_array().into_iter().flatten().filter_map(Value::as_str) {
         lines.push(Line::styled(format!("  ⚠ {}", truncate(p, width.saturating_sub(4))), Style::default().fg(Color::Red)));
+    }
+}
+
+/// What lyra found when it looked into a machine's problems (open ones).
+fn diagnosis_lines(all: &Value, machine: &str, width: usize, lines: &mut Vec<Line<'static>>) {
+    for d in all.as_array().into_iter().flatten().filter(|d| d["machine"].as_str().is_some_and(|m| m.eq_ignore_ascii_case(machine)) && d["resolved"] != true) {
+        let text = match d["state"].as_str() {
+            Some("done") => crate::diagnose::headline(d["summary"].as_str().unwrap_or("")),
+            Some("running") => "looking into it…".into(),
+            Some("queued") => "waiting to be looked into".into(),
+            _ => continue,
+        };
+        lines.push(Line::styled(format!("  🔎 {}", truncate(&text, width.saturating_sub(5))), Style::default().fg(Color::LightBlue)));
     }
 }
 

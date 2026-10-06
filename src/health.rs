@@ -164,6 +164,9 @@ pub struct Alerts {
 pub struct Change {
     pub new: Vec<String>,
     pub cleared: Vec<String>,
+    /// The same, as (key, text): what diagnoses are filed under.
+    pub new_keys: Vec<(String, String)>,
+    pub cleared_keys: Vec<String>,
 }
 
 impl Alerts {
@@ -171,10 +174,12 @@ impl Alerts {
     pub fn report(&mut self, machine: &str, found: Vec<Problem>) -> Change {
         let known = self.active.entry(machine.to_lowercase()).or_default();
         let now: HashMap<String, String> = found.into_iter().map(|p| (p.key, p.text)).collect();
-        let new = now.iter().filter(|(k, _)| !known.contains_key(*k)).map(|(_, t)| t.clone()).collect();
+        let new_keys: Vec<(String, String)> = now.iter().filter(|(k, _)| !known.contains_key(*k)).map(|(k, t)| (k.clone(), t.clone())).collect();
+        let cleared_keys: Vec<String> = known.keys().filter(|k| !now.contains_key(*k)).cloned().collect();
+        let new = new_keys.iter().map(|(_, t)| t.clone()).collect();
         let cleared = known.iter().filter(|(k, _)| !now.contains_key(*k)).map(|(_, t)| t.clone()).collect();
         *known = now;
-        Change { new, cleared }
+        Change { new, cleared, new_keys, cleared_keys }
     }
 
     /// Machines connected now; returns (gone quiet too long, back after that).
@@ -227,7 +232,7 @@ mod tests {
         let mut alerts = Alerts::default();
         let first = alerts.report("web1", problems(&report(93, &["nginx.service"]), &s));
         assert_eq!(first.new.len(), 3);
-        assert_eq!(alerts.report("web1", problems(&report(94, &["nginx.service"]), &s)), Change::default(), "still the same problems: quiet");
+        assert!(alerts.report("web1", problems(&report(94, &["nginx.service"]), &s)).new.is_empty(), "still the same problems: quiet");
         let fixed = alerts.report("web1", problems(&report(60, &["nginx.service"]), &s));
         assert_eq!(fixed.cleared, vec!["disk / is 94% full (1.0 GB free)".to_string()]);
         assert!(summary(&report(60, &["x"])).contains("disk 60% · mem 40% · load 0.5 · 1 failed · 3 updates"));

@@ -323,8 +323,8 @@ function Shell() {
 
         <div className="flex min-h-0 flex-1 flex-col">
           {tab === "chat" && <ChatPage />}
-          {tab === "status" && <StatusPage toMachines={() => setTab("machines")} />}
-          {tab === "machines" && <MachinesPage mention={mention} toStatus={() => setTab("status")} />}
+          {tab === "status" && <StatusPage toMachines={() => setTab("machines")} toChat={() => setTab("chat")} />}
+          {tab === "machines" && <MachinesPage mention={mention} toStatus={() => setTab("status")} toChat={() => setTab("chat")} />}
           {tab === "devices" && <DevicesPage />}
           {tab === "activity" && <ActivityPage />}
           {tab === "more" && <MorePage toChat={() => setTab("chat")} open={setTab} update={updateApp} />}

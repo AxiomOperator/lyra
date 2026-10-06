@@ -29,6 +29,7 @@ const READ_ONLY: &[&str] = &[
     "nl", "cal", "getent", "groups", "locale", "lsof", "pgrep", "vmstat", "iostat", "mpstat", "sensors", "env", "printenv", "awk", "sed",
     "find", "git", "systemctl", "docker", "podman", "kubectl", "ip", "ping", "top", "curl", "apt", "dnf", "rpm", "dpkg", "uname", "timedatectl",
     "hostnamectl", "loginctl", "id", "seq", "xxd", "od", "strings", "zcat", "less", "more", "ls-files",
+    "findmnt", "showmount", "nc", "command", "timeout", "blkid", "lsmod", "dmesg", "resolvectl", "nmcli",
 ];
 
 /// Commands that delete, stop or take over things.
@@ -183,6 +184,23 @@ fn reads_only(cmd: &str, args: &[String]) -> Result<(), String> {
         "rpm" => args.iter().all(|a| !a.starts_with("-e") && !a.starts_with("-i") && !a.starts_with("-U")),
         "dpkg" => has(&["-l", "-L", "-s", "--list", "--status", "--listfiles"]),
         "timedatectl" | "hostnamectl" | "loginctl" => sub.is_empty() || matches!(sub, "status" | "show" | "list-sessions" | "list-users"),
+        // A port check, not a connection that sends anything.
+        "nc" => has(&["-z"]) && !has(&["-l", "-e", "-c", "--exec", "--sh-exec"]),
+        // `command -v x`: is x installed?
+        "command" => has(&["-v", "-V"]),
+        "dmesg" => !has(&["-C", "--clear", "-c", "--read-clear", "-n", "--console-level", "-D", "-E"]),
+        "resolvectl" => sub.is_empty() || matches!(sub, "status" | "query" | "statistics" | "dns" | "domain"),
+        "nmcli" => !args.iter().any(|a| matches!(a.as_str(), "up" | "down" | "add" | "modify" | "delete" | "connect" | "disconnect" | "reload" | "on" | "off")),
+        // `timeout 5 <command>`: as read-only as the command it wraps.
+        "timeout" => {
+            let mut rest = args.iter().skip_while(|a| a.starts_with('-'));
+            let _duration = rest.next();
+            let inner: Vec<String> = rest.cloned().collect();
+            match inner.split_first() {
+                Some((c, a)) => READ_ONLY.contains(&c.as_str()) && c != "timeout" && reads_only(c, a).is_ok(),
+                None => false,
+            }
+        }
         _ => true,
     };
     if ok { Ok(()) } else { Err(format!("{cmd} {sub}").trim().to_string()) }
@@ -322,6 +340,11 @@ mod tests {
             "git status",
             "systemctl status nginx",
             "systemctl --failed --no-pager --no-legend",
+            "findmnt -T /mnt/dbr2-repo; echo \"findmnt:$?\"",
+            "nc -z -w 5 192.1.3.196 2049",
+            "timeout 5 ping -c 2 -W 3 192.1.3.196",
+            "showmount -e 192.1.3.196",
+            "command -v nc",
             "systemctl --failed --no-legend --no-pager 2>&1; echo \"EXIT:$?\"",
             "systemctl --user list-timers",
             "dnf -q check-update",
@@ -343,6 +366,9 @@ mod tests {
         assert!(matches!(class("systemctl restart nginx"), Class::Change(_)));
         assert!(matches!(class("systemctl --now enable nginx"), Class::Change(_)), "options first, then a changing verb");
         assert!(matches!(class("dnf -y upgrade"), Class::Change(_)));
+        assert!(!matches!(class("mount /dev/sdb1 /mnt"), Class::ReadOnly), "mounting changes things");
+        assert!(!matches!(class("nc -l 4444"), Class::ReadOnly));
+        assert!(!matches!(class("timeout 5 touch x"), Class::ReadOnly), "timeout is only as harmless as what it runs");
         assert!(matches!(class("ls $(cat list)"), Class::Change(_)));
         assert!(matches!(class("curl -X POST http://x"), Class::Change(_)));
         assert!(matches!(class("ls && rm -r build"), Class::Dangerous(w) if w.contains("deletes")));

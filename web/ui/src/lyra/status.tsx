@@ -8,6 +8,7 @@ import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader,
 import { cn } from "@/lib/utils";
 import { ChevronDown, CircleCheck, CircleX, RefreshCw, TriangleAlert } from "lucide-react";
 import { useState } from "react";
+import { DiagnosisNote } from "./diagnosis";
 import { Page } from "./parts";
 import { ago } from "./push";
 import { useLyra } from "./store";
@@ -53,7 +54,7 @@ function pct(v: number | null) {
   return v >= 99.95 ? "100%" : `${v.toFixed(1)}%`;
 }
 
-function CheckRow({ r }: { r: StatusRow }) {
+function CheckRow({ r, toChat }: { r: StatusRow; toChat: () => void }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="border-b last:border-0">
@@ -75,6 +76,12 @@ function CheckRow({ r }: { r: StatusRow }) {
         </span>
         <ChevronDown className={cn("mt-1 size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
       </button>
+      {/* Something lyra needs is down: what it found when it looked into it. Machines have theirs on their page. */}
+      {r.state === "down" && r.group !== "Machines" && (
+        <div className="-ml-4 pb-2 pl-5.5">
+          <DiagnosisNote machine="server" problem={`${r.name} is down: ${r.detail}`} diagnosisKey={`status:${r.id}`} toChat={toChat} />
+        </div>
+      )}
       {open && (
         <div className="space-y-2 pb-3 pl-5.5 text-muted-foreground text-xs">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:hidden">
@@ -150,7 +157,7 @@ function SectionCards({ rows, at, banner }: { rows: StatusRow[]; at?: string; ba
   );
 }
 
-export function StatusPage({ toMachines }: { toMachines: () => void }) {
+export function StatusPage({ toMachines, toChat }: { toMachines: () => void; toChat: () => void }) {
   const { status, run } = useLyra();
   const [asked, setAsked] = useState(false);
   const board = status.status;
@@ -206,7 +213,7 @@ export function StatusPage({ toMachines }: { toMachines: () => void }) {
             {rows
               .filter((r) => r.group === g)
               .map((r) => (
-                <CheckRow key={r.id} r={r} />
+                <CheckRow key={r.id} r={r} toChat={toChat} />
               ))}
           </CardContent>
         </Card>

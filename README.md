@@ -669,6 +669,35 @@ run and last verdict, and has **New**, **Run now**, Pause/Resume, Edit, Delete a
 runs. A routine whose last run needs you gets a badge. `lyra connect`'s side panel lists them
 too (✓ all clear, ⚠ needs you, ↻ running).
 
+## Problems researched by themselves
+
+When something goes wrong, lyra looks into it before you ask:
+- a machine reports a new problem (a failed systemd unit, a disk nearly full, memory or load
+  too high)
+- one of lyra's status checks goes down
+
+The Operator investigates on that machine with read-only checks (`systemctl status`,
+`journalctl -u …`, the unit or config file, whether a host or port answers). It then writes up
+what's wrong, the likely cause, and the exact fix with whether it's safe. Nothing is changed:
+any change it asks for during a diagnosis is declined.
+
+- **Where it shows:** the write-up's headline goes to Activity and to a push notification
+  ("🔎 desktop: mnt-dbr2\x2drepo.mount failed — the NFS mount hangs…"). The full write-up sits
+  under the problem on the Machines page (or the check on Status), with **Fix it** and **Open
+  conversation**. Fix it sends the problem and the write-up to chat, where changes are approved
+  as usual.
+- **Commands:** `/diagnose` lists recent write-ups, `/diagnose <machine> <problem>` looks into
+  something now, and `/machines health` shows them. `lyra connect`'s panel shows the headline
+  under the machine.
+- **Limits:** one diagnosis runs at a time, and the same problem isn't looked into again for a
+  day while it lasts. Write-ups are kept in `~/.lyra/diagnoses.json`.
+
+```toml
+[diagnose]
+auto = true       # false: only /diagnose and the app's "look into it"
+# enabled = true
+```
+
 ## Status
 
 The **Status** page (first in the app's sidebar, a tab on a phone), `/status` in a terminal and

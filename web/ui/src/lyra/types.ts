@@ -80,6 +80,8 @@ export interface Status {
   online?: { id: string; name: string }[];
   pairing?: PairRequest[];
   machines_detail?: Machine[];
+  /** Problems researched by themselves (read-only), newest first. */
+  diagnoses?: Diagnosis[] | null;
   /** Everything lyra depends on, checked every minute. */
   status?: StatusBoard | null;
   /** Named sets of machines (`[groups]`), for @group. */
@@ -285,4 +287,15 @@ export interface StatusBoard {
   at: string;
   overall: CheckState;
   rows: StatusRow[];
+}
+
+export interface Diagnosis {
+  key: string;
+  machine: string;
+  problem: string;
+  state: "queued" | "running" | "done" | "failed";
+  summary: string;
+  session: string;
+  at: string;
+  resolved: boolean;
 }

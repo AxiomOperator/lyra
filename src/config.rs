@@ -34,6 +34,8 @@ pub struct Config {
     /// `[decide]` table: a decision model (clef-flash) for yes/no and
     /// pick-one questions; without it the chat model answers them.
     pub decide: Option<crate::decide::Settings>,
+    /// `[diagnose]` table: problems researched by themselves.
+    pub diagnose: crate::diagnose::Settings,
     /// `[status]` table: checking what lyra depends on.
     pub status: crate::status::Settings,
     /// `[health]` table: machine health limits and alerts.
@@ -316,6 +318,7 @@ impl Default for Config {
             groups: Default::default(),
             health: Default::default(),
             status: Default::default(),
+            diagnose: Default::default(),
             memory: MemoryConfig::default(),
             learning: LearningConfig::default(),
             planning: PlanningConfig::default(),

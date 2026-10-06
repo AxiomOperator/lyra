@@ -296,3 +296,9 @@ currency = "$"
 # every_seconds = 60
 # notify = true
 # mute = []
+
+# Problems researched by themselves (see README): new machine problems and
+# status checks that go down are looked into, read-only, by the Operator.
+# [diagnose]
+# auto = true
+# enabled = true

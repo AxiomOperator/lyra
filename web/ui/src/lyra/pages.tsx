@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { Activity as ActivityIcon, AlarmClock, Archive, Bell, BellOff, Bot, Brain, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, Unplug } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PairCard } from "./chat";
+import { DiagnosisNote } from "./diagnosis";
 import { RulesDialog } from "./manage";
 import { SearchBox, SearchHits, useConversationSearch } from "./search";
 import { Dot, Page, useConfirm } from "./parts";
@@ -19,7 +20,7 @@ import type { About, ActivityLine, Device, Health, Session } from "./types";
 // ---- machine health
 
 /** Disk, memory, load, failed units and updates, red when over a limit. */
-function HealthRow({ h }: { h: Health }) {
+function HealthRow({ h, machine, toChat }: { h: Health; machine: string; toChat: () => void }) {
   const disk = [...(h.disks ?? [])].sort((a, b) => b.used_pct - a.used_pct)[0];
   const failed = h.failed_units?.length ?? 0;
   const bad = (word: string) => h.problems.some((p) => p.includes(word));
@@ -39,9 +40,12 @@ function HealthRow({ h }: { h: Health }) {
         <span className="self-center text-muted-foreground/70 text-xs">checked {ago(h.at)}</span>
       </div>
       {h.problems.length > 0 && (
-        <ul className="space-y-0.5 text-red-300 text-xs">
+        <ul className="space-y-1.5 text-red-300 text-xs">
           {h.problems.map((p) => (
-            <li key={p}>⚠ {p}</li>
+            <li key={p} className="space-y-1">
+              <div>⚠ {p}</div>
+              <DiagnosisNote machine={machine} problem={p} toChat={toChat} />
+            </li>
           ))}
         </ul>
       )}
@@ -51,7 +55,7 @@ function HealthRow({ h }: { h: Health }) {
 
 // ---- machines
 
-export function MachinesPage({ mention, toStatus }: { mention: (name: string) => void; toStatus: () => void }) {
+export function MachinesPage({ mention, toStatus, toChat }: { mention: (name: string) => void; toStatus: () => void; toChat: () => void }) {
   const { status, say } = useLyra();
   const [confirm, dialog] = useConfirm();
   const [copied, setCopied] = useState(false);
@@ -82,7 +86,7 @@ export function MachinesPage({ mention, toStatus }: { mention: (name: string) =>
           </CardAction>
         </CardHeader>
         <CardContent className="space-y-3 px-4">
-          {status.server_health && <HealthRow h={status.server_health} />}
+          {status.server_health && <HealthRow h={status.server_health} machine="server" toChat={toChat} />}
           <Button size="sm" variant="secondary" onClick={() => setRules("server")}>
             <ShieldCheck /> Rules
           </Button>
@@ -109,7 +113,7 @@ export function MachinesPage({ mention, toStatus }: { mention: (name: string) =>
           </CardHeader>
           {m.online && m.health && (
             <CardContent className="px-4">
-              <HealthRow h={m.health} />
+              <HealthRow h={m.health} machine={m.name} toChat={toChat} />
             </CardContent>
           )}
           <CardContent className="flex flex-wrap gap-2 px-4">

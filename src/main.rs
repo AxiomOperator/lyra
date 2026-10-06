@@ -6,6 +6,7 @@ mod config;
 mod connect;
 mod context;
 mod decide;
+mod diagnose;
 mod evolve;
 mod goals;
 mod health;
@@ -404,6 +405,8 @@ struct App {
     logged: u64,
     /// `[status]`.
     status: status::Settings,
+    /// `[diagnose]`.
+    diagnose: diagnose::Settings,
     /// `[backup]`, and where the memory store is (backed up through it).
     backup: backup::Settings,
     memory_store: Option<std::path::PathBuf>,
@@ -546,6 +549,7 @@ impl App {
             logged: 0,
             backup: config.backup.clone(),
             status: config.status.clone(),
+            diagnose: config.diagnose.clone(),
             memory_store: (config.memory.backend == config::MemoryBackend::Lance).then(|| config.memory.path()).flatten(),
             hub: None,
             vision: config.vision,
@@ -1327,7 +1331,7 @@ impl App {
     /// the answer goes back to the page instead of into the conversation.
     pub fn quiet_command(&mut self, line: &str) -> Result<String, String> {
         let name = line.split_whitespace().next().unwrap_or("");
-        if !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate" | "/goal" | "/goals" | "/model" | "/backup" | "/routine" | "/routines" | "/status") {
+        if !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate" | "/goal" | "/goals" | "/model" | "/backup" | "/routine" | "/routines" | "/status" | "/diagnose") {
             return Err(format!("{name} can't be run from a page"));
         }
         let result = self.command_result(line);
@@ -1445,6 +1449,7 @@ impl App {
             "/backup" => self.backup_command(arg),
             "/routine" | "/routines" => self.routine_command(arg),
             "/status" => self.status_command(arg),
+            "/diagnose" => self.diagnose_command(arg),
             _ => Err(format!("unknown command {name} — try /help")),
         }
     }
@@ -1542,6 +1547,29 @@ impl App {
             let _ = tx.send(StreamEvent::BackedUp { nightly, result });
         });
         Ok(format!("backing up to {}…", context::show(&dir)))
+    }
+
+    /// `/diagnose [<machine> <problem>]`: what's been looked into, or look into something now.
+    fn diagnose_command(&mut self, arg: &str) -> Result<String, String> {
+        let arg = arg.trim();
+        if arg.is_empty() {
+            return Ok(diagnose::describe());
+        }
+        if self.hub.is_none() {
+            return Err("diagnoses run in lyra serve (the always-on lyra); this one isn't serving".into());
+        }
+        let (machine, problem) = arg.split_once([' ', '|']).map(|(m, p)| (m.trim().trim_start_matches('@'), p.trim().trim_start_matches('|').trim())).ok_or("usage: /diagnose <machine> <problem>")?;
+        if problem.is_empty() {
+            return Err("usage: /diagnose <machine> <problem>".into());
+        }
+        let key = format!("{}:asked:{problem}", machine.to_lowercase());
+        // A problem already reported keeps its key, so the panels find the write-up.
+        let key = diagnose::all().into_iter().find(|d| d.machine.eq_ignore_ascii_case(machine) && d.problem == problem).map_or(key, |d| d.key);
+        if diagnose::queue(&key, machine, problem, true) {
+            Ok(format!("looking into it on {machine}: {problem} — the write-up shows in Activity and next to the problem"))
+        } else {
+            Err("that's being looked into already".into())
+        }
     }
 
     /// `/status [now]`: everything lyra depends on.
@@ -2787,6 +2815,7 @@ pub(crate) const COMMANDS: &str = "\
 /routine [list]              scheduled things to ask lyra; runs tell you only when something needs you
 /routine new <name> | <schedule> | <what to do> [| notify problems|always|never] [| changes]
 /routine run|pause|resume|delete|show <name> · /routine edit <name> schedule|prompt|notify|changes <value>
+/diagnose [<machine> <problem>]  problems researched (read-only); look into one now
 /status [now]                everything lyra depends on: models, search, APIs, address, storage, backups, machines
 /backup [now|list]           back up lyra (memory, skills, goals, sessions, config); nightly by itself
 /model [name]                the model in use and the ones on offer; switch (saved to config.toml)

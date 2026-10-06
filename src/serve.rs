@@ -102,6 +102,16 @@ fn health_report(app: &mut App, hub: &Hub, alerts: &mut crate::health::Alerts, n
     if !change.cleared.is_empty() {
         alert(app, hub, name, &format!("{name} is fine again: {}", change.cleared.join("; ")), false);
     }
+    // New problems are researched by themselves; cleared ones are marked so.
+    let d = app.diagnose.clone();
+    for (key, text) in &change.new_keys {
+        if d.enabled && d.auto {
+            crate::diagnose::queue(&format!("{}:{key}", name.to_lowercase()), name, text, false);
+        }
+    }
+    for key in &change.cleared_keys {
+        crate::diagnose::resolve(&format!("{}:{key}", name.to_lowercase()));
+    }
 }
 
 /// Log a health alert, and push it when `[health] notify` is on.
@@ -273,12 +283,14 @@ struct Conv {
     quiet_since: Instant,
     /// A routine running here, and since when.
     routine: Option<(crate::routines::Routine, Instant)>,
+    /// A diagnosis running here (its key).
+    diagnosis: Option<String>,
 }
 
 impl Conv {
     fn new(app: App) -> Conv {
         let printed = app.logged;
-        Conv { app, mirror: Mirror::default(), printed, changed: true, last_status: Instant::now(), quiet_since: Instant::now(), routine: None }
+        Conv { app, mirror: Mirror::default(), printed, changed: true, last_status: Instant::now(), quiet_since: Instant::now(), routine: None, diagnosis: None }
     }
 }
 
@@ -331,6 +343,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut last_routines = Instant::now() - Duration::from_secs(60);
     let (routine_tx, routine_rx) = std::sync::mpsc::channel::<(crate::routines::Routine, crate::routines::Run)>();
     let mut routines_view = Value::Null;
+    // Diagnoses: when they were last looked at, and what the panels show.
+    crate::diagnose::requeue_running();
+    let mut last_diag = Instant::now() - Duration::from_secs(60);
+    let mut diag_view = Value::Null;
     let started = Instant::now();
     let mut convs = vec![Conv::new(primary)];
     loop {
@@ -506,6 +522,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     c.mirror.extra["server_health"] = server_health.clone();
                     c.mirror.extra["routines"] = routines_view.clone();
                     c.mirror.extra["status"] = status_view.clone();
+                    c.mirror.extra["diagnoses"] = diag_view.clone();
                     for u in c.mirror.updates(&mut c.app) {
                         hub.publish(Some(&c.app.session_id), u);
                     }
@@ -519,12 +536,28 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         convs[0].app.decide_notes();
         // Each conversation's own work: replies streaming, agents, plans…
         let many = convs.len() > 1;
+        let mut diagnosed: Vec<String> = Vec::new();
         for c in convs.iter_mut() {
             while let Ok(event) = c.app.rx.try_recv() {
                 let note = notification(&event);
                 let done = matches!(event, StreamEvent::Done(_) | StreamEvent::Error(_));
                 c.app.handle(event);
                 c.changed = true;
+                // A diagnosis only looks: changes it asks for are declined; its write-up is kept.
+                if let Some(key) = c.diagnosis.clone() {
+                    let asked: Vec<u64> = c.app.approvals.iter().map(|a| a.id).collect();
+                    for id in asked {
+                        c.app.answer_approval_id(id, "n");
+                    }
+                    if done && !c.app.waiting {
+                        c.diagnosis = None;
+                        let reply = c.app.messages.iter().rev().find(|m| matches!(m.role.as_str(), "assistant" | "error")).map(|m| (m.role == "assistant", m.content.clone()));
+                        let (ok, text) = reply.unwrap_or((false, "no answer".into()));
+                        crate::diagnose::finish(&key, &text, ok);
+                        diagnosed.push(key);
+                    }
+                    continue;
+                }
                 // A routine's run: judged and told by its own rules, not "lyra replied".
                 if let Some((r, started)) = c.routine.clone() {
                     let may_change = r.changes;
@@ -576,6 +609,17 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     hub.notify(n);
                 }
             }
+        }
+        // Finished write-ups: logged and told.
+        for key in diagnosed {
+            if let Some(d) = crate::diagnose::all().into_iter().find(|d| d.key == key) {
+                let head = crate::diagnose::headline(&d.summary);
+                convs[0].app.log(if d.state == "done" { Level::Agent } else { Level::Error }, format!("🔎 {}: {} — {head}", d.machine, d.problem));
+                if crate::health::settings().notify && d.state == "done" {
+                    hub.notify(Notification { title: format!("🔎 {}: {}", d.machine, d.problem), body: head, tag: format!("diag-{}", d.key), approval: None });
+                }
+            }
+            last_diag = Instant::now() - Duration::from_secs(60);
         }
         // lyra's background work, on the primary.
         {
@@ -633,6 +677,28 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             crate::routines::record(&r.name, run);
             everyone = true;
         }
+        // Diagnoses: one at a time, each in its own conversation; their write-ups for the panels.
+        if last_diag.elapsed() >= Duration::from_secs(5) {
+            last_diag = Instant::now();
+            let d = convs[0].app.diagnose.clone();
+            if d.enabled && !convs.iter().any(|c| c.diagnosis.is_some()) && crate::diagnose::has_queued() {
+                let mut app = convs[0].app.fork();
+                let session = app.session_id.clone();
+                if let Some(next) = crate::diagnose::start_next(|_| session.clone()) {
+                    app.input = crate::diagnose::message(&next);
+                    app.send();
+                    convs[0].app.log(Level::Agent, format!("🔎 looking into {}: {}", next.machine, next.problem));
+                    let mut c = Conv::new(app);
+                    c.diagnosis = Some(next.key);
+                    convs.push(c);
+                }
+            }
+            let now = crate::diagnose::view();
+            if now != diag_view {
+                diag_view = now;
+                everyone = true;
+            }
+        }
         // What the panels show: each routine's next run, last result, running now.
         if last_routines.elapsed() < Duration::from_millis(50) || everyone {
             let running: Vec<String> = convs.iter().filter_map(|c| c.routine.as_ref().map(|(r, _)| r.name.clone())).collect();
@@ -668,7 +734,13 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             status_busy = false;
             match board {
                 Ok(board) => {
-                    for (_, problem, text) in crate::status::alerts(&mut status_alerts, &board, &ss) {
+                    for (id, problem, text) in crate::status::alerts(&mut status_alerts, &board, &ss) {
+                        let d = &convs[0].app.diagnose;
+                        if problem && d.enabled && d.auto {
+                            crate::diagnose::queue(&format!("status:{id}"), crate::caps::HERE, &text, false);
+                        } else if !problem {
+                            crate::diagnose::resolve(&format!("status:{id}"));
+                        }
                         convs[0].app.log(if problem { Level::Error } else { Level::Agent }, format!("{} {text}", if problem { "⚠" } else { "✓" }));
                         if ss.notify {
                             hub.notify(Notification {
@@ -729,6 +801,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         extra_now["server_health"] = server_health.clone();
         extra_now["routines"] = routines_view.clone();
         extra_now["status"] = status_view.clone();
+        extra_now["diagnoses"] = diag_view.clone();
         let attached = hub.attached_sessions();
         for c in convs.iter_mut() {
             // The phase timer ("thinking 4s") ticks while something is happening.
@@ -1048,18 +1121,24 @@ impl App {
             "health" => {
                 if rest.is_empty() || rest.eq_ignore_ascii_case("server") {
                     let mut out = vec![crate::health::describe("server", &lyra_node::health::report())];
+                    out.extend(crate::diagnose::lines_for("server"));
                     if rest.is_empty() {
                         for m in hub.machines() {
                             out.push(match &m.health {
                                 Some(h) => crate::health::describe(&m.name, h),
                                 None => format!("{}: no report yet", m.name),
                             });
+                            out.extend(crate::diagnose::lines_for(&m.name));
                         }
                     }
                     return Ok(out.join("\n\n"));
                 }
                 let m = hub.machines().into_iter().find(|m| m.name.eq_ignore_ascii_case(rest)).ok_or_else(|| format!("{rest} isn't connected (/machines lists them)"))?;
-                Ok(m.health.as_ref().map_or(format!("{}: no report yet (it sends one every 5 minutes)", m.name), |h| crate::health::describe(&m.name, h)))
+                let mut text = m.health.as_ref().map_or(format!("{}: no report yet (it sends one every 5 minutes)", m.name), |h| crate::health::describe(&m.name, h));
+                for line in crate::diagnose::lines_for(&m.name) {
+                    text += &format!("\n{line}");
+                }
+                Ok(text)
             }
             // What runs without asking there; changed like the app's Rules dialog.
             "rules" => {
