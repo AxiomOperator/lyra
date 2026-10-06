@@ -71,6 +71,46 @@ model = "reranker"
 
 These tables must come after the top-level keys.
 
+
+### Decision model (optional)
+
+lyra makes many small yes/no and pick-one decisions:
+- which agent should take a message
+- how a new memory relates to similar ones
+- whether a plan step worked
+- how a benchmark answer scored
+- whether a turn is worth a memory capture or a skill review
+
+By default the chat model answers them, each a full completion of a few seconds. A
+**decision model** such as Cloudflare's
+[clef-flash](https://huggingface.co/bartowski/Cloudflare_clef-flash-GGUF) answers them in tens
+of milliseconds. It returns a probability for every option instead of text to parse.
+
+Serve it with llama-server (a build with `/v1/systemone` support) next to the chat model:
+
+```sh
+llama-server -m Cloudflare_clef-flash-Q4_K_M.gguf --port 8091 -ngl 99
+```
+
+```toml
+[decide]
+url = "http://localhost:8091/v1"   # /systemone is added
+model = "clef-flash"
+# min_confidence = 0.75             # below it, the chat model decides
+```
+
+**Without `[decide]`, nothing changes:** the chat model answers everything as before. With it,
+an answer is used only when the model is at least `min_confidence` sure. Otherwise the chat
+model decides. If the endpoint is down, the chat model takes over for a minute at a time and
+Activity says so.
+
+The per-turn memory and lesson checks also run when the keyword triggers don't fire. That
+catches turns the keywords miss, and the chat model is still called only on a yes.
+
+Each decision is logged in Activity with its answer, confidence and time. The Session panel
+shows the model, how many decisions it made and their average time. Approvals and system
+checks never depend on it.
+
 ## Personality and context files
 
 Three Markdown files make up the system prompt sent with every request:

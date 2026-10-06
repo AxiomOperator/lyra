@@ -277,12 +277,19 @@ fn session_panel(app: &App, width: usize) -> Vec<Line<'static>> {
         Line::from(vec![label("state"), phase_span(app)]),
         Line::from(vec![label("model"), Span::raw(truncate(&app.model, width.saturating_sub(8)))]),
         Line::from(vec![label("server"), Span::raw(truncate(&host(&app.base_url), width.saturating_sub(8)))]),
+    ];
+    if let Some(model) = crate::decide::model() {
+        let (calls, fallbacks, ms) = crate::decide::stats();
+        let text = format!("{model} · {calls} decided{} · {ms} ms", if fallbacks > 0 { format!(", {fallbacks} to chat") } else { String::new() });
+        lines.push(Line::from(vec![label("decide"), Span::raw(truncate(&text, width.saturating_sub(8)))]));
+    }
+    lines.extend([
         Line::from(vec![
             label("replies"),
             Span::raw(t.replies.to_string()),
             Span::raw(t.avg_ttft().map(|d| format!(" · avg ttft {}", secs(d))).unwrap_or_default()),
         ]),
-    ];
+    ]);
     if let Some(last) = app.messages.iter().rev().find_map(|m| m.stats.as_ref()) {
         let mut text = last.ttft.map(|d| format!("ttft {}", secs(d))).unwrap_or_default();
         if let Some(tps) = last.tokens_per_sec() {

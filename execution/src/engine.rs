@@ -91,6 +91,11 @@ pub trait Runtime: Send + Sync {
     fn agent_tools(&self, agent: &str) -> Option<Vec<String>>;
     /// Report an event as it happens (for the UI).
     fn emit(&self, _event: &ExecutionEvent) {}
+    /// A yes/no answer from a fast decision model, with its confidence;
+    /// `None` (the default) means ask the chat model through `complete`.
+    fn decide_yes(&self, _state: &str, _question: &str) -> Option<(bool, f32)> {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -800,6 +805,12 @@ impl Engine {
                     _ => v.check.as_deref(),
                 };
                 let prompt = planner::verify_prompt(step, check, &output);
+                if let Some((verified, sure)) =
+                    runtime.decide_yes(&prompt, "Does the evidence show this step achieved what it was meant to? Don't assume success.")
+                {
+                    let reason = format!("{} by the decision model ({:.0}% sure)", if verified { "verified" } else { "not verified" }, sure * 100.0);
+                    return (VerificationResult { verified, evidence: vec![], reason: Some(reason) }, usage);
+                }
                 ask(runtime, &mut usage, planner::VERIFY_PROMPT, &prompt, planner::parse_verification).unwrap_or_else(|e| {
                     VerificationResult { verified: false, evidence: vec![], reason: Some(format!("couldn't verify: {e}")) }
                 })

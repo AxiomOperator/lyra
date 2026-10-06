@@ -298,6 +298,10 @@ impl Runtime for LyraRuntime {
         crate::agents::step_tools(self.caps.as_deref(), agent)
     }
 
+    fn decide_yes(&self, state: &str, question: &str) -> Option<(bool, f32)> {
+        crate::decide::yes("step check", state, question)
+    }
+
     fn emit(&self, event: &ExecutionEvent) {
         let _ = self.tx.send(StreamEvent::PlanEvent(event.clone()));
     }

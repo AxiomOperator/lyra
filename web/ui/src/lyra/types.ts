@@ -106,6 +106,8 @@ export interface About {
   app: string;
   node_build: string | null;
   model: string;
+  /** The decision model (`[decide]`), when one is set up. */
+  decide: string | null;
   session: string;
   devices: number;
 }

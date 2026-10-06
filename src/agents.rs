@@ -222,6 +222,25 @@ impl Agents {
         if sim >= s.routing.semantic_threshold {
             return Some(RoutingDecision { agent: top.name.clone(), confidence: sim, reason: "similar to what it handles".into(), method: RouteMethod::Semantic });
         }
+        // The decision model is quick enough to ask whenever routing is unsure.
+        if crate::decide::model().is_some() {
+            let mut options: Vec<(String, String)> = candidates
+                .iter()
+                .map(|a| (a.name.clone(), format!("{} Handles: {}.", a.description, a.delegation.intents.join(", "))))
+                .collect();
+            options.push((MAIN.into(), "The main assistant: anything not clearly one specialist's kind of work.".into()));
+            let question = crate::decide::Question::Choice("Which agent should handle this message?".into(), options);
+            if let Some(answers) = crate::decide::ask("routing", message, &[("agent".into(), question)])
+                && let Some(a) = crate::decide::confident(&answers, "agent")
+            {
+                return (a.choice != MAIN && candidates.iter().any(|c| c.name == a.choice)).then(|| RoutingDecision {
+                    agent: a.choice.clone(),
+                    confidence: a.confidence,
+                    reason: "the decision model's pick".into(),
+                    method: RouteMethod::Model,
+                });
+            }
+        }
         if !s.routing.model_fallback {
             return None;
         }

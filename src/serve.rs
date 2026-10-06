@@ -441,6 +441,8 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             }
             next = inbound.try_recv().ok();
         }
+        // Decisions made for any conversation are logged with the primary.
+        convs[0].app.decide_notes();
         // Each conversation's own work: replies streaming, agents, plans…
         let many = convs.len() > 1;
         for c in convs.iter_mut() {
@@ -636,6 +638,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
             "app": hub.app_version(),
             "node_build": node_build.map(|b| b.chars().take(12).collect::<String>()),
             "model": app.model,
+            "decide": crate::decide::model(),
             "session": app.session_id,
             "devices": hub.devices().list().len(),
         }),

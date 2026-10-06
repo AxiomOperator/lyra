@@ -780,6 +780,12 @@ fn bench(env: &Env, v: &Variant, task: &str, expect: &str, t: &mut Tested) -> Be
 
 /// Have the model judge an answer; fills `success` and `accuracy`.
 fn judge(env: &Env, task: &str, expect: &str, answer: &str, r: &mut BenchResult, t: &mut Tested) {
+    // The decision model when it's set up and sure of the verdict; the chat model otherwise.
+    if let Some((success, accuracy)) = decide_judgement(task, expect, answer) {
+        r.success = success;
+        r.accuracy = accuracy;
+        return;
+    }
     match crate::learn::complete(&env.url, &env.model, evolver::JUDGE_PROMPT, &evolver::judge_prompt(task, expect, answer)) {
         Ok((reply, usage)) => {
             t.usage.extend(usage);
@@ -793,6 +799,25 @@ fn judge(env: &Env, task: &str, expect: &str, answer: &str, r: &mut BenchResult,
         }
         Err(e) => t.notes.push(format!("  judge call failed: {e}")),
     }
+}
+
+/// A benchmark answer graded by the decision model: `(success, accuracy)`.
+fn decide_judgement(task: &str, expect: &str, answer: &str) -> Option<(bool, f32)> {
+    use crate::decide::{Question, ask, confident};
+    let levels: Vec<(String, String)> = [("0", "wrong or useless"), ("25", "mostly wrong"), ("50", "partly right"), ("75", "mostly right"), ("100", "fully right")]
+        .iter()
+        .map(|(id, d)| (id.to_string(), d.to_string()))
+        .collect();
+    let questions = [
+        ("success".to_string(), Question::Yes("Does the answer accomplish the task as expected?".into())),
+        ("accuracy".to_string(), Question::Choice("How accurate and complete is the answer?".into(), levels)),
+    ];
+    let state = evolver::judge_prompt(task, expect, answer);
+    let answers = ask("benchmark judge", &state, &questions)?;
+    let success = confident(&answers, "success")?.yes()?;
+    // The grade is a scale: its most likely level is used even when spread out.
+    let accuracy = answers.get("accuracy").and_then(|a| a.choice.parse::<f32>().ok()).map_or(if success { 1.0 } else { 0.0 }, |p| p / 100.0);
+    Some((success, accuracy.clamp(0.0, 1.0)))
 }
 
 /// Plan and run a task with a variant on a throwaway plan store, approving

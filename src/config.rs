@@ -31,6 +31,9 @@ pub struct Config {
     pub embedding: Option<Endpoint>,
     /// `[reranker]` table: reranker model endpoint.
     pub reranker: Option<Endpoint>,
+    /// `[decide]` table: a decision model (clef-flash) for yes/no and
+    /// pick-one questions; without it the chat model answers them.
+    pub decide: Option<crate::decide::Settings>,
     /// `[memory]` table: persistent memory tools.
     pub memory: MemoryConfig,
     /// `[learning]` table: self-learned skills.
@@ -300,6 +303,7 @@ impl Default for Config {
             structured_thinking: true,
             embedding: None,
             reranker: None,
+            decide: None,
             memory: MemoryConfig::default(),
             learning: LearningConfig::default(),
             planning: PlanningConfig::default(),

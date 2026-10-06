@@ -25,6 +25,14 @@ currency = "$"
 # url = "http://localhost:8081/v1"
 # model = "reranker"
 
+# A decision model (see README), e.g. clef-flash on llama-server's /v1/systemone:
+# routing, memory links, step checks and per-turn gates in milliseconds. Leave it
+# out and the chat model answers those questions, as before.
+# [decide]
+# url = "http://localhost:8091/v1"
+# model = "clef-flash"
+# min_confidence = 0.75
+
 # Memory (see README): facts, episodes and working memory, with automatic
 # capture, superseding, hybrid recall (keywords + [embedding] vectors) and a
 # context compiler that adds the relevant few memories to each prompt.

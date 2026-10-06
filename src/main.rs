@@ -4,6 +4,7 @@ mod commands;
 mod config;
 mod connect;
 mod context;
+mod decide;
 mod evolve;
 mod goals;
 mod markdown;
@@ -177,6 +178,9 @@ fn stopped(cancel: &Cancel) -> bool {
 
 enum StreamEvent {
     Token(String),
+    /// The decision model found nothing for a memory capture (`memory`) or a
+    /// skill review to look at.
+    GateClosed { memory: bool },
     /// The main agent is working with a subagent (routing, progress, result).
     Agent(agents::AgentEvent),
     /// An agent waits for the user's approval before changing something.
@@ -878,6 +882,13 @@ impl App {
                 self.applied_memories = ids;
                 self.applied_memories_tokens = tokens;
             }
+            StreamEvent::GateClosed { memory } => {
+                if memory {
+                    self.capturing = false;
+                } else {
+                    self.reviewing = false;
+                }
+            }
             StreamEvent::MemoryReview { curation, review: Review { outcome, usage } } => {
                 if curation {
                     self.memory_curating = false;
@@ -1216,7 +1227,11 @@ impl App {
         } else {
             learn::last_turn(&history, self.corrected_skills.len()).and_then(|turn| evaluator::trigger(&turn))
         };
-        let Some(trigger) = trigger else { return };
+        // Nothing the keywords catch: the decision model (when set up) looks at the turn.
+        let ask_decide = trigger.is_none() && decide::model().is_some() && history.len() >= 2;
+        if trigger.is_none() && !ask_decide {
+            return;
+        }
         let mut transcript = learn::transcript(&history, 16);
         if !self.corrected_skills.is_empty() {
             transcript += &format!(
@@ -1224,12 +1239,24 @@ impl App {
                 self.corrected_skills.join(", ")
             );
         }
-        self.log(Level::Learn, format!("reviewing for a lesson: {trigger}"));
+        if let Some(trigger) = trigger {
+            self.log(Level::Learn, format!("reviewing for a lesson: {trigger}"));
+        }
         self.reviewing = true;
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let (model, tx, run) = (self.model.clone(), self.tx.clone(), self.last_run.as_ref().map(|r| r.id));
         thread::spawn(move || {
+            let trigger = match trigger {
+                Some(t) => t,
+                None => match decide::yes("a lesson here?", &transcript, LESSON_GATE) {
+                    Some((true, _)) => "the decision model saw a reusable lesson",
+                    _ => {
+                        let _ = tx.send(StreamEvent::GateClosed { memory: false });
+                        return;
+                    }
+                },
+            };
             let review = learning.review(&url, &model, trigger, &transcript, run);
             let _ = tx.send(StreamEvent::Reviewed(review));
         });
@@ -1438,6 +1465,13 @@ impl App {
         self.log(Level::Info, text);
     }
 
+    /// What the decision model decided (or that it's down), into Activity.
+    fn decide_notes(&mut self) {
+        for note in decide::take_notes() {
+            self.log(Level::Info, note);
+        }
+    }
+
     /// Re-read the memory panel's numbers in the background.
     fn refresh_memory(&self) {
         let Some(mem) = self.mem() else { return };
@@ -1495,18 +1529,34 @@ impl App {
         } else {
             capture::trigger(&turn)
         };
-        let Some(reason) = reason else { return };
+        // Nothing the keywords catch: the decision model (when set up) looks at the turn.
+        let ask_decide = reason.is_none() && !turn.model_saved && decide::model().is_some();
+        if reason.is_none() && !ask_decide {
+            return;
+        }
         let owned = self.history_text();
         let history: Vec<(&str, &str)> = owned.iter().map(|(r, c)| (*r, c.as_str())).collect();
         let transcript = learn::transcript(&history, if episode { 30 } else { 8 });
         let reply = self.messages.iter().rev().find(|m| m.role == "assistant").map_or("", |m| m.content.as_str());
         let query = format!("{user}\n{reply}");
-        self.log(Level::Memory, format!("capturing: {reason}"));
+        if let Some(reason) = reason {
+            self.log(Level::Memory, format!("capturing: {reason}"));
+        }
         self.capturing = true;
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let (model, tx, run) = (self.model.clone(), self.tx.clone(), self.last_run.as_ref().map(|r| r.id));
         let started = self.session_started;
         thread::spawn(move || {
+            let reason = match reason {
+                Some(r) => r,
+                None => match decide::yes("worth remembering?", &transcript, MEMORY_GATE) {
+                    Some((true, _)) => "the decision model found something worth remembering",
+                    _ => {
+                        let _ = tx.send(StreamEvent::GateClosed { memory: true });
+                        return;
+                    }
+                },
+            };
             let review = mem.capture(&url, &model, reason, &transcript, &query, run, Some(started));
             let _ = tx.send(StreamEvent::MemoryReview { curation: false, review });
         });
@@ -2360,6 +2410,7 @@ impl App {
                     max_tokens: config.structured_max_tokens,
                     thinking: config.structured_thinking,
                 });
+                decide::configure(config.decide.clone());
                 self.pricing = pricing(&config);
                 if let Some(mem) = self.mem() {
                     for note in mem.reconfigure(config.memory.settings.clone(), config.embedding.clone()) {
@@ -2535,6 +2586,12 @@ impl App {
         self.messages.last_mut().unwrap()
     }
 }
+
+/// The decision model's per-turn questions (when `[decide]` is set up).
+const MEMORY_GATE: &str = "Did the user share something worth remembering in future conversations: a lasting preference, \
+     a decision, stable configuration or facts about their setup, or a completed multi-step task? Small talk and one-off questions are not.";
+const LESSON_GATE: &str = "Does this conversation teach the assistant a reusable procedure or rule: the user corrected it, \
+     showed a better way, or a multi-step task worked after a failed attempt?";
 
 pub(crate) const COMMANDS: &str = "\
 /skills                      skills and changes waiting for review
@@ -3024,6 +3081,7 @@ fn main() {
         max_tokens: config.structured_max_tokens,
         thinking: config.structured_thinking,
     });
+    decide::configure(config.decide.clone());
     let web = config.web.clone();
     let mut app = App::new(config, Context::load(), services);
     for note in migrated {
@@ -3418,6 +3476,7 @@ fn restore_memory(backup: &str) -> Result<String, String> {
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
     loop {
         // Drain everything the stream has produced since the last frame.
+        app.decide_notes();
         while let Ok(event) = app.rx.try_recv() {
             app.handle(event);
         }

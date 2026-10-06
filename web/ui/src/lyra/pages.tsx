@@ -363,6 +363,7 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
           <CardDescription className="break-words">
             lyra {about?.lyra} · app {APP_VERSION}
             {newer ? ` (lyra has ${serverVersion})` : ""} · model {about?.model}
+            {about?.decide && ` · decisions by ${about.decide}`}
             <br />
             lyra-node on offer: {about?.node_build ?? "none"} · {about?.devices ?? 0} paired devices
           </CardDescription>

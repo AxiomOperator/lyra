@@ -139,9 +139,14 @@ impl Mem {
             Ok(_) => return Review { outcome: Ok(Vec::new()), usage: None },
             Err(e) => return Review { outcome: Err(e), usage: None },
         };
-        let (reply, usage) = match complete(url, model, lyra_memory::relate::SYSTEM_PROMPT, &lyra_memory::relate::prompt(&new, &near)) {
-            Ok(r) => r,
-            Err(e) => return Review { outcome: Err(e), usage: None },
+        // The decision model first (one question per nearby memory); the chat model if it
+        // isn't set up or isn't sure about every one.
+        let (reply, usage) = match decide_relations(&new, &near) {
+            Some(reply) => (reply, None),
+            None => match complete(url, model, lyra_memory::relate::SYSTEM_PROMPT, &lyra_memory::relate::prompt(&new, &near)) {
+                Ok(r) => r,
+                Err(e) => return Review { outcome: Err(e), usage: None },
+            },
         };
         let outcome = lyra_memory::relate::parse(&reply, &near).map(|links| {
             let mut notes = Vec::new();
@@ -520,6 +525,38 @@ impl Mem {
     }
 }
 
+/// How a new memory relates to each nearby one, from the decision model, as
+/// the JSON the chat model would give (so `relate::parse` reads both).
+fn decide_relations(new: &Memory, near: &[Memory]) -> Option<String> {
+    use crate::decide::{Question, ask, confident};
+    let options: Vec<(String, String)> = [
+        ("updates", "the new memory replaces it: the old one is no longer true (a changed preference, a new version, a moved server)"),
+        ("contradicts", "they can't both be true, and it isn't clear which is current"),
+        ("supports", "the new one confirms or backs it up"),
+        ("related", "same subject, different facts"),
+        ("unrelated", "nothing to do with each other"),
+    ]
+    .iter()
+    .map(|(id, d)| (id.to_string(), d.to_string()))
+    .collect();
+    let questions: Vec<(String, Question)> = near
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let q = format!("How does the new memory relate to this existing one ({}): {}", m.created_at.format("%Y-%m-%d"), m.content);
+            (format!("m{i}"), Question::Choice(q, options.clone()))
+        })
+        .collect();
+    let state = format!("New memory ({}): {}", new.created_at.format("%Y-%m-%d"), new.content);
+    let answers = ask("memory links", &state, &questions)?;
+    let mut links = Vec::new();
+    for (i, m) in near.iter().enumerate() {
+        let a = confident(&answers, &format!("m{i}"))?;
+        links.push(serde_json::json!({ "id": m.short_id(), "relation": a.choice, "reason": format!("decision model, {:.0}% sure", a.confidence * 100.0) }));
+    }
+    Some(serde_json::json!({ "links": links }).to_string())
+}
+
 fn describe_proposal(change: &MemoryChange, id: &Uuid, known: &[Memory]) -> String {
     let short = |m: &Uuid| known.iter().find(|k| k.id == *m).map_or(m.to_string()[..8].to_string(), |k| k.short_id());
     let id = &id.to_string()[..8];
@@ -553,4 +590,62 @@ pub fn human_bytes(b: u64) -> String {
         unit += 1;
     }
     if unit == 0 { format!("{b} B") } else { format!("{size:.1} {}", units[unit]) }
+}
+
+#[cfg(test)]
+mod decide_tests {
+    use super::*;
+    use crate::decide::tests::{LOCK, fake, settings};
+    use lyra_memory::{MemorySource, Provenance};
+    use serde_json::json;
+
+    fn memory(content: &str) -> Memory {
+        let now = chrono::Utc::now();
+        Memory {
+            id: Uuid::new_v4(),
+            scope: "user".into(),
+            kind: MemoryKind::Semantic,
+            content: content.into(),
+            tags: vec![],
+            source: MemorySource::User,
+            provenance: Provenance::default(),
+            importance: 0.5,
+            confidence: 0.9,
+            status: MemoryStatus::Active,
+            created_at: now,
+            updated_at: now,
+            last_accessed_at: None,
+            expires_at: None,
+            usage: Default::default(),
+        }
+    }
+
+    #[test]
+    fn the_decision_model_links_memories_or_leaves_it_to_the_chat_model() {
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let new = memory("The NAS moved to 10.0.0.9");
+        let near = [memory("The NAS is at 10.0.0.5"), memory("The user likes dark themes")];
+        crate::decide::configure(None);
+        assert!(decide_relations(&new, &near).is_none(), "no [decide]: the chat model relates them");
+
+        let (url, server) = fake(json!({ "answers": {
+            "m0": { "choice": "updates", "confidence": 0.95 },
+            "m1": { "choice": "unrelated", "confidence": 0.99 },
+        }}));
+        crate::decide::configure(Some(settings(&url)));
+        let reply = decide_relations(&new, &near).unwrap();
+        let request = server.join().unwrap();
+        assert!(request.contains("10.0.0.5") && request.contains("\"m1\""), "one question per nearby memory");
+        let links = lyra_memory::relate::parse(&reply, &near).unwrap();
+        assert_eq!(links.len(), 1, "unrelated makes no link");
+        assert_eq!((links[0].0.id, &links[0].1), (near[0].id, &lyra_memory::relate::Link::Replaces));
+
+        let (url, _server) = fake(json!({ "answers": {
+            "m0": { "choice": "updates", "confidence": 0.95 },
+            "m1": { "choice": "related", "confidence": 0.4 },
+        }}));
+        crate::decide::configure(Some(settings(&url)));
+        assert!(decide_relations(&new, &near).is_none(), "unsure about one: the chat model does them all");
+        crate::decide::configure(None);
+    }
 }
