@@ -26,7 +26,25 @@ import {
 } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { Activity, AlarmClock, Bell, Brain, Cpu, Ellipsis, EllipsisVertical, RefreshCw, GraduationCap, MessageSquare, MessageSquarePlus, ScrollText, Server, Smartphone, Sparkles, Target, WifiOff } from "lucide-react";
+import {
+  Activity,
+  AlarmClock,
+  Bell,
+  Brain,
+  Cpu,
+  Ellipsis,
+  EllipsisVertical,
+  RefreshCw,
+  GraduationCap,
+  MessageSquare,
+  MessageSquarePlus,
+  ScrollText,
+  Server,
+  Smartphone,
+  Sparkles,
+  Target,
+  WifiOff,
+} from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
 import { GoalsPage, MemoryPage, ModelsPage, RoutinesPage, SkillsPage } from "./lyra/manage";
@@ -75,7 +93,9 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
         <t.icon />
         <span>{t.label}</span>
       </SidebarMenuButton>
-      {!!t.badge && <SidebarMenuBadge className="rounded-full bg-amber-400 font-semibold text-black peer-hover/menu-button:text-black peer-data-[active=true]/menu-button:text-black">{t.badge}</SidebarMenuBadge>}
+      {!!t.badge && (
+        <SidebarMenuBadge className="rounded-full bg-amber-400 font-semibold text-black peer-hover/menu-button:text-black peer-data-[active=true]/menu-button:text-black">{t.badge}</SidebarMenuBadge>
+      )}
     </SidebarMenuItem>
   );
   return (
@@ -90,54 +110,64 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
+        <SearchBox query={search.query} setQuery={search.setQuery} />
       </SidebarHeader>
       <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupContent className="flex flex-col gap-2">
-            <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  tooltip="New conversation"
-                  className="min-w-8 bg-primary text-primary-foreground duration-200 ease-linear hover:bg-primary/90 hover:text-primary-foreground active:bg-primary/90 active:text-primary-foreground"
-                  onClick={() => {
-                    say("/new");
-                    go("chat");
-                  }}
-                >
-                  <MessageSquarePlus />
-                  <span>New conversation</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            </SidebarMenu>
-            <SidebarMenu>{tabs.filter((t) => t.id !== "more").map(item)}</SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-        <SidebarGroup>
-          <SidebarGroupLabel>Lyra</SidebarGroupLabel>
-          <SidebarMenu>{more.map(item)}</SidebarMenu>
-        </SidebarGroup>
-        <SidebarGroup className="min-h-0 flex-1">
-          <SidebarGroupLabel>Conversations</SidebarGroupLabel>
-          <SearchBox query={search.query} setQuery={search.setQuery} className="mb-1.5" />
-          <SidebarGroupContent className="min-h-0 flex-1 overflow-y-auto">
-            {search.hits && <SearchHits hits={search.hits} open={resume} />}
-            {!search.hits && (
-              <SidebarMenu>
-                {(sessions ?? []).slice(0, 40).map((s) => (
-                  <SidebarMenuItem key={s.id}>
-                    <SidebarMenuButton size="lg" isActive={s.current && tab === "chat"} onClick={() => resume(s.id, s.current)} className="h-auto py-1.5">
-                      <span className="grid min-w-0 flex-1 leading-tight">
-                        <span className="truncate text-sm">{s.title || "(untitled)"}</span>
-                        <span className="truncate text-muted-foreground text-xs">{ago(s.updated)}</span>
-                      </span>
-                      {answering(s.id) && <span title="answering" className="size-2 shrink-0 animate-pulse rounded-full bg-sky-400" />}
+        {/* Searching: the results take the sidebar until the box is cleared. */}
+        {search.hits && (
+          <SidebarGroup className="min-h-0 flex-1">
+            <SidebarGroupLabel>Conversations mentioning “{search.query.trim()}”</SidebarGroupLabel>
+            <SidebarGroupContent className="min-h-0 flex-1 overflow-y-auto">
+              <SearchHits hits={search.hits} open={resume} />
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
+        {!search.hits && (
+          <>
+            <SidebarGroup>
+              <SidebarGroupContent className="flex flex-col gap-2">
+                <SidebarMenu>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      tooltip="New conversation"
+                      className="min-w-8 bg-primary text-primary-foreground duration-200 ease-linear hover:bg-primary/90 hover:text-primary-foreground active:bg-primary/90 active:text-primary-foreground"
+                      onClick={() => {
+                        say("/new");
+                        go("chat");
+                      }}
+                    >
+                      <MessageSquarePlus />
+                      <span>New conversation</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            )}
-          </SidebarGroupContent>
-        </SidebarGroup>
+                </SidebarMenu>
+                <SidebarMenu>{tabs.filter((t) => t.id !== "more").map(item)}</SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+            <SidebarGroup>
+              <SidebarGroupLabel>Lyra</SidebarGroupLabel>
+              <SidebarMenu>{more.map(item)}</SidebarMenu>
+            </SidebarGroup>
+            <SidebarGroup className="min-h-0 flex-1">
+              <SidebarGroupLabel>Conversations</SidebarGroupLabel>
+              <SidebarGroupContent className="min-h-0 flex-1 overflow-y-auto">
+                <SidebarMenu>
+                  {(sessions ?? []).slice(0, 40).map((s) => (
+                    <SidebarMenuItem key={s.id}>
+                      <SidebarMenuButton size="lg" isActive={s.current && tab === "chat"} onClick={() => resume(s.id, s.current)} className="h-auto py-1.5">
+                        <span className="grid min-w-0 flex-1 leading-tight">
+                          <span className="truncate text-sm">{s.title || "(untitled)"}</span>
+                          <span className="truncate text-muted-foreground text-xs">{ago(s.updated)}</span>
+                        </span>
+                        {answering(s.id) && <span title="answering" className="size-2 shrink-0 animate-pulse rounded-full bg-sky-400" />}
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          </>
+        )}
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
@@ -158,7 +188,11 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
                   <div className="grid text-xs leading-tight">
                     <span className="font-medium text-sm">{device?.name}</span>
                     <span className="text-muted-foreground">model {status.model}</span>
-                    {status.decide && <span className="text-muted-foreground">decides: {status.decide.model} · {status.decide.ms} ms</span>}
+                    {status.decide && (
+                      <span className="text-muted-foreground">
+                        decides: {status.decide.model} · {status.decide.ms} ms
+                      </span>
+                    )}
                     <span className="text-muted-foreground">app {APP_VERSION}</span>
                   </div>
                 </DropdownMenuLabel>
@@ -303,18 +337,23 @@ function Shell() {
 
         <nav className="grid grid-cols-5 border-t bg-card/60 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
           {/* Five fit: Devices lives under More on a phone. */}
-          {tabs.filter((t) => t.id !== "devices").map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={cn("relative flex flex-col items-center gap-0.5 pt-2 pb-2 text-[11px]", tab === t.id || (t.id === "more" && (manage.includes(tab as Manage) || tab === "devices")) ? "text-teal-400" : "text-muted-foreground")}
-            >
-              <t.icon className="size-5" />
-              {t.label}
-              {!!t.badge && <span className="absolute top-1 right-[calc(50%-1.4rem)] min-w-4 rounded-full bg-amber-400 px-1 font-semibold text-[10px] text-black">{t.badge}</span>}
-            </button>
-          ))}
+          {tabs
+            .filter((t) => t.id !== "devices")
+            .map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTab(t.id)}
+                className={cn(
+                  "relative flex flex-col items-center gap-0.5 pt-2 pb-2 text-[11px]",
+                  tab === t.id || (t.id === "more" && (manage.includes(tab as Manage) || tab === "devices")) ? "text-teal-400" : "text-muted-foreground",
+                )}
+              >
+                <t.icon className="size-5" />
+                {t.label}
+                {!!t.badge && <span className="absolute top-1 right-[calc(50%-1.4rem)] min-w-4 rounded-full bg-amber-400 px-1 font-semibold text-[10px] text-black">{t.badge}</span>}
+              </button>
+            ))}
         </nav>
       </SidebarInset>
     </SidebarProvider>
