@@ -5,8 +5,28 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Separator } from "@/components/ui/separator";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuBadge,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+  useSidebar,
+} from "@/components/ui/sidebar";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { Activity, AlarmClock, Brain, Cpu, Ellipsis, GraduationCap, MessageSquare, MessageSquarePlus, ScrollText, Server, Smartphone, Sparkles, Target, WifiOff } from "lucide-react";
+import { Activity, AlarmClock, Bell, Brain, Cpu, Ellipsis, EllipsisVertical, RefreshCw, GraduationCap, MessageSquare, MessageSquarePlus, ScrollText, Server, Smartphone, Sparkles, Target, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
 import { GoalsPage, MemoryPage, ModelsPage, RoutinesPage, SkillsPage } from "./lyra/manage";
@@ -31,89 +51,133 @@ type TabItem = {
   badge?: number;
 };
 
-/** Wide screens: navigation, conversations and the model on the left. */
-function Sidebar({ tabs, more, tab, setTab }: { tabs: TabItem[]; more: TabItem[]; tab: Tab; setTab: (t: Tab) => void }) {
-  const { connected, status, say } = useLyra();
-  // Refreshed when a conversation gets a title or finishes answering.
+/** The sidebar (dashboard-01's inset style): navigation, lyra's pages,
+ *  conversations, and this device at the bottom. A sheet on a phone. */
+function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more: TabItem[]; tab: Tab; setTab: (t: Tab) => void; update: () => void }) {
+  const { connected, status, say, device } = useLyra();
+  const { setOpenMobile } = useSidebar();
   // Refreshed as conversations start, finish or get a title, here or on another device.
   const live = status.conversations ?? [];
   const [sessions] = useData<Session[]>("sessions", [status.title, JSON.stringify(live)]);
   const answering = (id: string) => live.some((c) => c.session === id && c.answering);
+  const go = (t: Tab) => {
+    setTab(t);
+    setOpenMobile(false);
+  };
   const resume = (id: string, current: boolean) => {
     if (!current) say(`/resume ${id}`);
-    setTab("chat");
+    go("chat");
   };
-  const open = (s: Session) => resume(s.id, s.current);
   const search = useConversationSearch();
   const item = (t: TabItem) => (
-    <button
-      key={t.id}
-      type="button"
-      onClick={() => setTab(t.id)}
-      className={cn("flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm", tab === t.id ? "bg-accent text-teal-300" : "text-muted-foreground hover:bg-accent/50 hover:text-foreground")}
-    >
-      <t.icon className="size-4" />
-      {t.label}
-      {!!t.badge && <span className="ml-auto min-w-5 rounded-full bg-amber-400 px-1.5 text-center font-semibold text-[11px] text-black">{t.badge}</span>}
-    </button>
+    <SidebarMenuItem key={t.id}>
+      <SidebarMenuButton tooltip={t.label} isActive={tab === t.id} onClick={() => go(t.id)}>
+        <t.icon />
+        <span>{t.label}</span>
+      </SidebarMenuButton>
+      {!!t.badge && <SidebarMenuBadge className="rounded-full bg-amber-400 font-semibold text-black peer-hover/menu-button:text-black peer-data-[active=true]/menu-button:text-black">{t.badge}</SidebarMenuBadge>}
+    </SidebarMenuItem>
   );
   return (
-    <aside className="hidden w-64 shrink-0 flex-col border-r bg-card/40 md:flex lg:w-72">
-      <div className="flex items-center gap-2.5 px-4 pt-4 pb-3">
-        <img src="/icon-192.png" alt="" className="size-8 rounded-lg" />
-        <span className="font-semibold text-lg">lyra</span>
-        <span title={connected ? "connected" : "not connected"} className={cn("ml-auto size-2.5 rounded-full", connected ? "bg-emerald-500" : "bg-red-500")} />
-      </div>
-      <nav className="space-y-0.5 px-2">
-        {tabs.map(item)}
-        <div className="px-3 pt-4 pb-1 font-medium text-muted-foreground text-xs uppercase tracking-wide">Lyra</div>
-        {more.map(item)}
-      </nav>
-      <div className="mt-5 flex items-center justify-between px-4 pb-1.5">
-        <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">Conversations</span>
-        <Button
-          size="icon"
-          variant="ghost"
-          className="size-7"
-          aria-label="New conversation"
-          onClick={() => {
-            say("/new");
-            setTab("chat");
-          }}
-        >
-          <MessageSquarePlus />
-        </Button>
-      </div>
-      <SearchBox query={search.query} setQuery={search.setQuery} className="mx-2 mb-1.5" />
-      <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
-        {search.hits && <SearchHits hits={search.hits} open={resume} />}
-        {!search.hits && (sessions ?? []).slice(0, 40).map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            onClick={() => open(s)}
-            className={cn("flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left", s.current && tab === "chat" ? "bg-accent" : "hover:bg-accent/50")}
-          >
-            <span className="min-w-0 flex-1">
-              <span className={cn("block truncate text-sm", s.current ? "text-foreground" : "text-muted-foreground")}>{s.title || "(untitled)"}</span>
-              <span className="block text-muted-foreground/70 text-xs">{ago(s.updated)}</span>
-            </span>
-            {answering(s.id) && <span title="answering" className="size-2 shrink-0 animate-pulse rounded-full bg-sky-400" />}
-          </button>
-        ))}
-      </div>
-      <div className="border-t px-4 py-3 text-muted-foreground text-xs">
-        <div className="truncate" title={status.model}>
-          {status.model}
-        </div>
-        {status.decide && (
-          <div className="truncate" title={`${status.decide.decided} decisions, ${status.decide.to_chat} left to the chat model`}>
-            decides: {status.decide.model} · {status.decide.decided} · {status.decide.ms} ms
-          </div>
-        )}
-        <div>app {APP_VERSION}</div>
-      </div>
-    </aside>
+    <Sidebar collapsible="offcanvas" variant="inset">
+      <SidebarHeader>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton className="data-[slot=sidebar-menu-button]:p-1.5!" onClick={() => go("chat")}>
+              <img src="/icon-192.png" alt="" className="size-5! rounded" />
+              <span className="font-semibold text-base">lyra</span>
+              <span title={connected ? "connected" : "not connected"} className={cn("ml-auto size-2 rounded-full", connected ? "bg-emerald-500" : "bg-red-500")} />
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupContent className="flex flex-col gap-2">
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  tooltip="New conversation"
+                  className="min-w-8 bg-primary text-primary-foreground duration-200 ease-linear hover:bg-primary/90 hover:text-primary-foreground active:bg-primary/90 active:text-primary-foreground"
+                  onClick={() => {
+                    say("/new");
+                    go("chat");
+                  }}
+                >
+                  <MessageSquarePlus />
+                  <span>New conversation</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+            <SidebarMenu>{tabs.filter((t) => t.id !== "more").map(item)}</SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+        <SidebarGroup>
+          <SidebarGroupLabel>Lyra</SidebarGroupLabel>
+          <SidebarMenu>{more.map(item)}</SidebarMenu>
+        </SidebarGroup>
+        <SidebarGroup className="min-h-0 flex-1">
+          <SidebarGroupLabel>Conversations</SidebarGroupLabel>
+          <SearchBox query={search.query} setQuery={search.setQuery} className="mb-1.5" />
+          <SidebarGroupContent className="min-h-0 flex-1 overflow-y-auto">
+            {search.hits && <SearchHits hits={search.hits} open={resume} />}
+            {!search.hits && (
+              <SidebarMenu>
+                {(sessions ?? []).slice(0, 40).map((s) => (
+                  <SidebarMenuItem key={s.id}>
+                    <SidebarMenuButton size="lg" isActive={s.current && tab === "chat"} onClick={() => resume(s.id, s.current)} className="h-auto py-1.5">
+                      <span className="grid min-w-0 flex-1 leading-tight">
+                        <span className="truncate text-sm">{s.title || "(untitled)"}</span>
+                        <span className="truncate text-muted-foreground text-xs">{ago(s.updated)}</span>
+                      </span>
+                      {answering(s.id) && <span title="answering" className="size-2 shrink-0 animate-pulse rounded-full bg-sky-400" />}
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            )}
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+      <SidebarFooter>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <SidebarMenuButton size="lg" className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground">
+                  <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-accent font-semibold text-xs uppercase">{(device?.name ?? "?").slice(0, 2)}</span>
+                  <span className="grid flex-1 text-left text-sm leading-tight">
+                    <span className="truncate font-medium">{device?.name ?? "this device"}</span>
+                    <span className="truncate text-muted-foreground text-xs">{status.model}</span>
+                  </span>
+                  <EllipsisVertical className="ml-auto size-4" />
+                </SidebarMenuButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="w-(--radix-dropdown-menu-trigger-width) min-w-56 rounded-lg" side="right" align="end" sideOffset={4}>
+                <DropdownMenuLabel className="font-normal">
+                  <div className="grid text-xs leading-tight">
+                    <span className="font-medium text-sm">{device?.name}</span>
+                    <span className="text-muted-foreground">model {status.model}</span>
+                    {status.decide && <span className="text-muted-foreground">decides: {status.decide.model} · {status.decide.ms} ms</span>}
+                    <span className="text-muted-foreground">app {APP_VERSION}</span>
+                  </div>
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => go("devices")}>
+                  <Smartphone /> Devices
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => go("more")}>
+                  <Bell /> Notifications & more
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={update}>
+                  <RefreshCw /> Update the app
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
+    </Sidebar>
   );
 }
 
@@ -174,29 +238,37 @@ function Shell() {
     { id: "more", label: "More", icon: Ellipsis },
   ];
 
+  const title = [...tabs, ...more].find((t) => t.id === tab)?.label ?? "lyra";
   return (
-    <div className="flex h-dvh bg-background text-foreground">
-      <Sidebar tabs={tabs} more={more} tab={tab} setTab={setTab} />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center gap-3 border-b px-4 pt-[calc(env(safe-area-inset-top)+0.6rem)] pb-2.5 md:px-6 md:py-3">
-          <span className={cn("size-2.5 shrink-0 rounded-full md:hidden", connected ? "bg-emerald-500" : "bg-red-500")} />
-          <div className="min-w-0 flex-1">
-            <div className="font-semibold leading-tight md:hidden">lyra</div>
-            {status.title && <div className="truncate text-muted-foreground text-xs md:text-foreground md:text-sm">{status.title}</div>}
+    <SidebarProvider
+      className="h-dvh min-h-0 bg-sidebar text-foreground"
+      style={{ "--sidebar-width": "calc(var(--spacing) * 72)", "--header-height": "calc(var(--spacing) * 12)" } as React.CSSProperties}
+    >
+      <AppSidebar tabs={tabs} more={more} tab={tab} setTab={setTab} update={updateApp} />
+      <SidebarInset className="min-h-0 min-w-0 overflow-hidden">
+        {/* dashboard-01's site header: the sidebar toggle, the page, what lyra is doing. */}
+        <header className="flex shrink-0 items-center gap-2 border-b pt-[env(safe-area-inset-top)] md:h-(--header-height) md:pt-0">
+          <div className="flex w-full items-center gap-1 px-4 py-2 md:py-0 lg:gap-2 lg:px-6">
+            <SidebarTrigger className="-ml-1" />
+            <Separator orientation="vertical" className="mx-2 data-[orientation=vertical]:h-4" />
+            <span className={cn("size-2 shrink-0 rounded-full md:hidden", connected ? "bg-emerald-500" : "bg-red-500")} />
+            <div className="min-w-0 flex-1">
+              <h1 className="truncate font-medium text-base leading-tight">{tab === "chat" ? status.title || "lyra" : title}</h1>
+            </div>
+            {ready && (
+              <Badge
+                variant="outline"
+                className={cn(
+                  "max-w-[48vw] truncate",
+                  asking && "border-amber-500/50 bg-amber-500/15 text-amber-300",
+                  working && !asking && "border-sky-500/50 bg-sky-500/15 text-sky-300",
+                  status.waiting && !asking && !working && "border-teal-500/50 bg-teal-500/15 text-teal-300",
+                )}
+              >
+                {status.phase}
+              </Badge>
+            )}
           </div>
-          {ready && (
-            <Badge
-              variant="secondary"
-              className={cn(
-                "max-w-[48vw] truncate",
-                asking && "bg-amber-500/20 text-amber-300",
-                working && !asking && "bg-sky-500/20 text-sky-300",
-                status.waiting && !asking && !working && "bg-teal-500/20 text-teal-300",
-              )}
-            >
-              {status.phase}
-            </Badge>
-          )}
         </header>
         {banner && (
           <Alert className="rounded-none border-x-0 border-t-0 bg-amber-950/40 py-2">
@@ -205,7 +277,7 @@ function Shell() {
           </Alert>
         )}
         {newer && (
-          <div className="flex items-center justify-between gap-3 border-b bg-teal-950/40 px-4 py-2 text-sm text-teal-200">
+          <div className="flex items-center justify-between gap-3 border-b bg-teal-950/40 px-4 py-2 text-sm text-teal-200 lg:px-6">
             <span className="flex items-center gap-2">
               <Sparkles className="size-4" /> A new version of the lyra app is ready.
             </span>
@@ -215,7 +287,7 @@ function Shell() {
           </div>
         )}
 
-        <main className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col">
           {tab === "chat" && <ChatPage />}
           {tab === "status" && <StatusPage toMachines={() => setTab("machines")} />}
           {tab === "machines" && <MachinesPage mention={mention} toStatus={() => setTab("status")} />}
@@ -227,7 +299,7 @@ function Shell() {
           {tab === "skills" && <SkillsPage onBack={toMore} />}
           {tab === "goals" && <GoalsPage onBack={toMore} />}
           {tab === "model" && <ModelsPage onBack={toMore} />}
-        </main>
+        </div>
 
         <nav className="grid grid-cols-5 border-t bg-card/60 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
           {/* Five fit: Devices lives under More on a phone. */}
@@ -244,8 +316,8 @@ function Shell() {
             </button>
           ))}
         </nav>
-      </div>
-    </div>
+      </SidebarInset>
+    </SidebarProvider>
   );
 }
 
@@ -322,7 +394,9 @@ export default function App() {
   if (!token) return <Pair onPaired={setToken} message={why} />;
   return (
     <LyraProvider token={token} onUnpaired={unpaired}>
-      <Shell />
+      <TooltipProvider>
+        <Shell />
+      </TooltipProvider>
     </LyraProvider>
   );
 }

@@ -4,9 +4,9 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { ChevronDown, RefreshCw } from "lucide-react";
+import { ChevronDown, CircleCheck, CircleX, RefreshCw, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import { Page } from "./parts";
 import { ago } from "./push";
@@ -106,6 +106,50 @@ function CheckRow({ r }: { r: StatusRow }) {
   );
 }
 
+/** dashboard-01's section cards: the overall state, then each area. */
+function SectionCards({ rows, at, banner }: { rows: StatusRow[]; at?: string; banner: string }) {
+  const area = (title: string, groups: string[]) => {
+    const mine = rows.filter((r) => groups.includes(r.group) && r.state !== "off");
+    const up = mine.filter((r) => r.state === "up").length;
+    const bad = mine.filter((r) => r.state !== "up");
+    const timed = mine.filter((r) => r.latency_ms !== null);
+    const avg = timed.length ? Math.round(timed.reduce((a, r) => a + (r.latency_ms ?? 0), 0) / timed.length) : null;
+    return { title, up, total: mine.length, bad, avg };
+  };
+  const all = area("Overall", ["Models", "Tools & APIs", "lyra", "Machines"]);
+  const cards = [all, area("Models", ["Models"]), area("Tools & lyra", ["Tools & APIs", "lyra"]), area("Machines", ["Machines"])];
+  return (
+    <div className="grid grid-cols-1 gap-4 *:data-[slot=card]:bg-gradient-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card *:data-[slot=card]:shadow-xs @xl/main:grid-cols-2 @5xl/main:grid-cols-4 dark:*:data-[slot=card]:bg-card">
+      {cards.map((c, i) => {
+        const down = c.bad.some((r) => r.state === "down");
+        const ok = c.bad.length === 0;
+        const Icon = ok ? CircleCheck : down ? CircleX : TriangleAlert;
+        return (
+          <Card key={c.title} className="@container/card">
+            <CardHeader>
+              <CardDescription>{c.title}</CardDescription>
+              <CardTitle className="font-semibold text-2xl tabular-nums @[250px]/card:text-3xl">
+                {c.total ? `${c.up}/${c.total}` : "—"}
+              </CardTitle>
+              <CardAction>
+                <Badge variant="outline" className={cn(ok ? "text-emerald-300" : down ? "text-red-300" : "text-amber-300")}>
+                  <Icon /> {ok ? "up" : down ? "down" : "degraded"}
+                </Badge>
+              </CardAction>
+            </CardHeader>
+            <CardFooter className="flex-col items-start gap-1.5 text-sm">
+              <div className="line-clamp-1 flex gap-2 font-medium">
+                {i === 0 ? banner : ok ? "All answering" : c.bad.map((r) => r.name).join(", ")}
+              </div>
+              <div className="text-muted-foreground">{i === 0 ? (at ? `checked ${ago(at)}` : "checking…") : c.avg !== null ? `${c.avg} ms on average` : `${c.total} checked`}</div>
+            </CardFooter>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
 export function StatusPage({ toMachines }: { toMachines: () => void }) {
   const { status, run } = useLyra();
   const [asked, setAsked] = useState(false);
@@ -140,10 +184,7 @@ export function StatusPage({ toMachines }: { toMachines: () => void }) {
         </Button>
       }
     >
-      <div className={cn("flex items-center justify-between gap-3 rounded-lg border px-4 py-3", banner.cls)}>
-        <span className="font-medium">{banner.text}</span>
-        {board && <span className="text-xs opacity-80">checked {ago(board.at)}</span>}
-      </div>
+      <SectionCards rows={rows} at={board?.at} banner={banner.text} />
       {groups.map((g) => (
         <Card key={g} className="gap-1 py-3">
           <CardHeader className="px-4">
