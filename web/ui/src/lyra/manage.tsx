@@ -60,7 +60,8 @@ function useAction(reload: () => void) {
 
 function Back({ onBack }: { onBack: () => void }) {
   return (
-    <Button size="icon" variant="ghost" onClick={onBack} aria-label="Back">
+    // Wide screens have the sidebar instead.
+    <Button size="icon" variant="ghost" onClick={onBack} aria-label="Back" className="md:hidden">
       <ArrowLeft />
     </Button>
   );

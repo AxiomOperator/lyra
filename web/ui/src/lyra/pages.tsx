@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { Bell, BellOff, Bot, Brain, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, Unplug } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PairCard } from "./chat";
-import { GoalsPage, MemoryPage, ModelsPage, RulesDialog, SkillsPage } from "./manage";
+import { RulesDialog } from "./manage";
 import { Dot, Page, useConfirm } from "./parts";
 import { ago, blocker, disable, enable, test } from "./push";
 import { APP_VERSION, useData, useLyra } from "./store";
@@ -278,21 +278,15 @@ function Notifications() {
   );
 }
 
-export function MorePage({ toChat, update }: { toChat: () => void; update: () => void }) {
+export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "memory" | "skills" | "goals" | "model") => void; update: () => void }) {
   const { say, unpaired, token, serverVersion } = useLyra();
   const [sessions] = useData<Session[]>("sessions");
   const [about] = useData<About>("about");
   const { ask, onData } = useLyra();
   const [text, setText] = useState<{ title: string; body: string } | null>(null);
-  const [sub, setSub] = useState<"memory" | "skills" | "goals" | "model" | null>(null);
   const [confirm, dialog] = useConfirm();
   useEffect(() => onData((w, d) => w === "agents" && setText({ title: "Agents", body: (d as { text: string }).text })), [onData]);
   const newer = serverVersion && serverVersion !== APP_VERSION;
-  const back = () => setSub(null);
-  if (sub === "memory") return <MemoryPage onBack={back} />;
-  if (sub === "skills") return <SkillsPage onBack={back} />;
-  if (sub === "goals") return <GoalsPage onBack={back} />;
-  if (sub === "model") return <ModelsPage onBack={back} />;
   return (
     <Page title="More">
       <Card className="py-4">
@@ -345,16 +339,16 @@ export function MorePage({ toChat, update }: { toChat: () => void; update: () =>
           <CardDescription>What lyra knows and can do.</CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-2 gap-2 px-4 sm:grid-cols-3">
-          <Button variant="secondary" onClick={() => setSub("memory")}>
+          <Button variant="secondary" onClick={() => open("memory")}>
             <Brain /> Memory
           </Button>
-          <Button variant="secondary" onClick={() => setSub("skills")}>
+          <Button variant="secondary" onClick={() => open("skills")}>
             <GraduationCap /> Skills
           </Button>
-          <Button variant="secondary" onClick={() => setSub("goals")}>
+          <Button variant="secondary" onClick={() => open("goals")}>
             <Target /> Goals
           </Button>
-          <Button variant="secondary" onClick={() => setSub("model")}>
+          <Button variant="secondary" onClick={() => open("model")}>
             <Cpu /> Model
           </Button>
           <Button variant="secondary" onClick={() => ask("agents")}>

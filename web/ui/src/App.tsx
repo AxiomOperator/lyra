@@ -6,16 +6,21 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { Ellipsis, MessageSquare, MessageSquarePlus, ScrollText, Server, Smartphone, Sparkles, WifiOff } from "lucide-react";
+import { Brain, Cpu, Ellipsis, GraduationCap, MessageSquare, MessageSquarePlus, ScrollText, Server, Smartphone, Sparkles, Target, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
+import { GoalsPage, MemoryPage, ModelsPage, SkillsPage } from "./lyra/manage";
 import { ActivityPage, DevicesPage, MachinesPage, MorePage } from "./lyra/pages";
 import { ago } from "./lyra/push";
 import { APP_VERSION, LyraProvider, useData, useLyra } from "./lyra/store";
 import type { Session } from "./lyra/types";
 import { loadToken, saveToken, takeShared } from "./lyra/token";
 
-type Tab = "chat" | "machines" | "devices" | "activity" | "more";
+type Tab = "chat" | "machines" | "devices" | "activity" | "more" | Manage;
+
+/** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
+type Manage = "memory" | "skills" | "goals" | "model";
+const manage: Manage[] = ["memory", "skills", "goals", "model"];
 
 type TabItem = {
   id: Tab;
@@ -25,7 +30,7 @@ type TabItem = {
 };
 
 /** Wide screens: navigation, conversations and the model on the left. */
-function Sidebar({ tabs, tab, setTab }: { tabs: TabItem[]; tab: Tab; setTab: (t: Tab) => void }) {
+function Sidebar({ tabs, more, tab, setTab }: { tabs: TabItem[]; more: TabItem[]; tab: Tab; setTab: (t: Tab) => void }) {
   const { connected, status, say } = useLyra();
   // Refreshed when a conversation gets a title or finishes answering.
   const [sessions] = useData<Session[]>("sessions", [status.title, status.waiting]);
@@ -33,6 +38,18 @@ function Sidebar({ tabs, tab, setTab }: { tabs: TabItem[]; tab: Tab; setTab: (t:
     if (!s.current) say(`/resume ${s.id}`);
     setTab("chat");
   };
+  const item = (t: TabItem) => (
+    <button
+      key={t.id}
+      type="button"
+      onClick={() => setTab(t.id)}
+      className={cn("flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm", tab === t.id ? "bg-accent text-teal-300" : "text-muted-foreground hover:bg-accent/50 hover:text-foreground")}
+    >
+      <t.icon className="size-4" />
+      {t.label}
+      {!!t.badge && <span className="ml-auto min-w-5 rounded-full bg-amber-400 px-1.5 text-center font-semibold text-[11px] text-black">{t.badge}</span>}
+    </button>
+  );
   return (
     <aside className="hidden w-64 shrink-0 flex-col border-r bg-card/40 md:flex lg:w-72">
       <div className="flex items-center gap-2.5 px-4 pt-4 pb-3">
@@ -41,18 +58,9 @@ function Sidebar({ tabs, tab, setTab }: { tabs: TabItem[]; tab: Tab; setTab: (t:
         <span title={connected ? "connected" : "not connected"} className={cn("ml-auto size-2.5 rounded-full", connected ? "bg-emerald-500" : "bg-red-500")} />
       </div>
       <nav className="space-y-0.5 px-2">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setTab(t.id)}
-            className={cn("flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm", tab === t.id ? "bg-accent text-teal-300" : "text-muted-foreground hover:bg-accent/50 hover:text-foreground")}
-          >
-            <t.icon className="size-4" />
-            {t.label}
-            {!!t.badge && <span className="ml-auto min-w-5 rounded-full bg-amber-400 px-1.5 text-center font-semibold text-[11px] text-black">{t.badge}</span>}
-          </button>
-        ))}
+        {tabs.map(item)}
+        <div className="px-3 pt-4 pb-1 font-medium text-muted-foreground text-xs uppercase tracking-wide">Lyra</div>
+        {more.map(item)}
       </nav>
       <div className="mt-5 flex items-center justify-between px-4 pb-1.5">
         <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">Conversations</span>
@@ -128,6 +136,13 @@ function Shell() {
     setTimeout(() => window.dispatchEvent(new CustomEvent("lyra-mention", { detail: name })), 0);
   };
 
+  const more: TabItem[] = [
+    { id: "memory", label: "Memory", icon: Brain },
+    { id: "skills", label: "Skills", icon: GraduationCap },
+    { id: "goals", label: "Goals", icon: Target },
+    { id: "model", label: "Model", icon: Cpu },
+  ];
+  const toMore = () => setTab("more");
   const tabs: TabItem[] = [
     { id: "chat", label: "Chat", icon: MessageSquare, badge: asking ? 1 : 0 },
     {
@@ -143,7 +158,7 @@ function Shell() {
 
   return (
     <div className="flex h-dvh bg-background text-foreground">
-      <Sidebar tabs={tabs} tab={tab} setTab={setTab} />
+      <Sidebar tabs={tabs} more={more} tab={tab} setTab={setTab} />
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-3 border-b px-4 pt-[calc(env(safe-area-inset-top)+0.6rem)] pb-2.5 md:px-6 md:py-3">
           <span className={cn("size-2.5 shrink-0 rounded-full md:hidden", connected ? "bg-emerald-500" : "bg-red-500")} />
@@ -187,7 +202,11 @@ function Shell() {
           {tab === "machines" && <MachinesPage mention={mention} />}
           {tab === "devices" && <DevicesPage />}
           {tab === "activity" && <ActivityPage />}
-          {tab === "more" && <MorePage toChat={() => setTab("chat")} update={updateApp} />}
+          {tab === "more" && <MorePage toChat={() => setTab("chat")} open={setTab} update={updateApp} />}
+          {tab === "memory" && <MemoryPage onBack={toMore} />}
+          {tab === "skills" && <SkillsPage onBack={toMore} />}
+          {tab === "goals" && <GoalsPage onBack={toMore} />}
+          {tab === "model" && <ModelsPage onBack={toMore} />}
         </main>
 
         <nav className="grid grid-cols-5 border-t bg-card/60 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
@@ -196,7 +215,7 @@ function Shell() {
               key={t.id}
               type="button"
               onClick={() => setTab(t.id)}
-              className={cn("relative flex flex-col items-center gap-0.5 pt-2 pb-2 text-[11px]", tab === t.id ? "text-teal-400" : "text-muted-foreground")}
+              className={cn("relative flex flex-col items-center gap-0.5 pt-2 pb-2 text-[11px]", tab === t.id || (t.id === "more" && manage.includes(tab as Manage)) ? "text-teal-400" : "text-muted-foreground")}
             >
               <t.icon className="size-5" />
               {t.label}
