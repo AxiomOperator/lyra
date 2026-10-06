@@ -138,10 +138,16 @@ async fn connection(config: RemoteConfig, to_screen: mpsc::Sender<Incoming>, mut
                 let visible = json!({ "type": "visible", "visible": true }).to_string();
                 let _ = sink.send(Message::Text(visible.clone().into())).await;
                 let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+                let mut heard = std::time::Instant::now();
+                let ping = json!({ "type": "ping" }).to_string();
                 let why = loop {
                     tokio::select! {
                         _ = heartbeat.tick() => {
-                            if sink.send(Message::Text(visible.clone().into())).await.is_err() {
+                            // lyra answers pings: silence means a dead connection a proxy kept open.
+                            if heard.elapsed() > lyra_node::SILENCE {
+                                break "no answer from lyra".to_string();
+                            }
+                            if sink.send(Message::Text(visible.clone().into())).await.is_err() || sink.send(Message::Text(ping.clone().into())).await.is_err() {
                                 break "connection lost".to_string();
                             }
                         }
@@ -153,7 +159,7 @@ async fn connection(config: RemoteConfig, to_screen: mpsc::Sender<Incoming>, mut
                             }
                             None => return,
                         },
-                        incoming = stream.next() => match incoming {
+                        incoming = stream.next() => { heard = std::time::Instant::now(); match incoming {
                             Some(Ok(Message::Text(t))) => {
                                 if let Ok(v) = serde_json::from_str::<Value>(t.as_str()) {
                                     let resync = v["type"] == "resync";
@@ -171,7 +177,7 @@ async fn connection(config: RemoteConfig, to_screen: mpsc::Sender<Incoming>, mut
                             Some(Ok(_)) => {}
                             Some(Err(e)) => break e.to_string(),
                             None => break "lyra closed the connection".to_string(),
-                        },
+                        }},
                     }
                 };
                 let _ = to_screen.send(Incoming::Lost(why));

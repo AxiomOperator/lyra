@@ -360,6 +360,9 @@ fn hello() -> Value {
     })
 }
 
+/// Longer than this without a word from lyra (it answers each 30 s ping): reconnect.
+pub const SILENCE: Duration = Duration::from_secs(90);
+
 /// What a session ended with.
 enum End {
     Lost(String),
@@ -384,6 +387,7 @@ async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System
     }
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<(String, Option<bool>)>();
     let mut ping = tokio::time::interval(Duration::from_secs(30));
+    let mut heard = std::time::Instant::now();
     // Health now, then every few minutes (read off the connection's thread).
     let mut checkup = tokio::time::interval(health::EVERY);
     loop {
@@ -395,6 +399,11 @@ async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System
                 });
             }
             _ = ping.tick() => {
+                // lyra answers every ping: silence means the connection died on the way
+                // (a proxy can keep a dead one looking open), so start over.
+                if heard.elapsed() > SILENCE {
+                    return End::Lost(format!("no answer from lyra for {}s", heard.elapsed().as_secs()));
+                }
                 if let Err(e) = sink.send(Message::Text(json!({ "type": "ping" }).to_string().into())).await {
                     return End::Lost(e.to_string());
                 }
@@ -417,6 +426,7 @@ async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System
                     Some(Err(e)) => return End::Lost(e.to_string()),
                     None => return End::Lost("lyra closed the connection".into()),
                 };
+                heard = std::time::Instant::now();
                 let Message::Text(text) = msg else { continue };
                 let Ok(v) = serde_json::from_str::<Value>(text.as_str()) else { continue };
                 let reply = |id: &Value, result: Result<Value, String>| match result {
