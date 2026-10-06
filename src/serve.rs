@@ -31,8 +31,34 @@ fn web_message(app: &App, m: &Message) -> Value {
     })
 }
 
-/// The status line, pending approvals and agents.
-fn status(app: &App) -> Value {
+/// Other machines (`lyra node`) as `caps` sees them: through the hub.
+pub struct HubRemote(pub Hub);
+
+impl crate::caps::Remote for HubRemote {
+    fn machines(&self) -> Vec<(String, bool)> {
+        let online: Vec<String> = self.0.machines().into_iter().map(|m| m.name.to_lowercase()).collect();
+        let mut all: Vec<(String, bool)> = self
+            .0
+            .devices()
+            .list()
+            .into_iter()
+            .filter(|d| d.kind == "node")
+            .map(|d| {
+                let on = online.contains(&d.name.to_lowercase());
+                (d.name, on)
+            })
+            .collect();
+        all.sort();
+        all
+    }
+
+    fn call(&self, machine: &str, request: Value, timeout: Duration) -> Result<Value, String> {
+        self.0.call_machine(machine, request, timeout)
+    }
+}
+
+/// The status line, pending approvals, agents and connected machines.
+fn status(app: &App, machines: &[String]) -> Value {
     let active = app.agents.as_ref().map(|a| a.active.lock().map(|v| v.clone()).unwrap_or_default()).unwrap_or_default();
     json!({
         "phase": crate::ui::phase_text(app),
@@ -43,6 +69,7 @@ fn status(app: &App) -> Value {
         "approvals": app.approvals.iter().map(|r| json!({
             "id": r.id, "agent": r.agent, "what": r.what, "detail": r.detail, "why": r.why, "dangerous": r.dangerous,
         })).collect::<Vec<_>>(),
+        "machines": machines,
         "agents": app.agents_panel.iter().map(|a| json!({ "title": a.title, "working": active.contains(&a.title), "enabled": a.enabled })).collect::<Vec<_>>(),
     })
 }
@@ -53,6 +80,8 @@ pub struct Mirror {
     sent: Vec<Value>,
     status: Value,
     session: String,
+    /// Machines connected (`lyra node`), for the status.
+    pub machines: Vec<String>,
 }
 
 impl Mirror {
@@ -85,7 +114,7 @@ impl Mirror {
                 }
             }
         }
-        let s = status(app);
+        let s = status(app, &self.machines);
         if s != self.status {
             self.status = s.clone();
             out.push(json!({ "type": "status", "status": s }));
@@ -175,6 +204,22 @@ pub fn run(app: &mut App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>
                 Inbound::Approve { id, answer, device } => {
                     app.log(Level::Agent, format!("{device} answered approval {id}: {answer}"));
                     app.answer_approval_id(id, &answer);
+                }
+                Inbound::MachinesChanged => {
+                    let now: Vec<String> = hub.machines().into_iter().map(|m| m.name).collect();
+                    for m in now.iter().filter(|m| !mirror.machines.contains(m)) {
+                        app.log(Level::Agent, format!("machine {m} connected: the Operator can work on it"));
+                    }
+                    for m in mirror.machines.iter().filter(|m| !now.contains(m)) {
+                        app.log(Level::Agent, format!("machine {m} disconnected"));
+                    }
+                    mirror.machines = now;
+                    // The system tools' `machine` choices follow.
+                    if let Some(caps) = app.caps.clone() {
+                        std::thread::spawn(move || {
+                            caps.refresh();
+                        });
+                    }
                 }
                 Inbound::Health(reply) => {
                     let _ = reply.send(json!({

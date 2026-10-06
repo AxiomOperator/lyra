@@ -70,14 +70,17 @@ pub fn template(name: &str) -> Option<AgentProfile> {
                 smallest change that does the job, one step at a time, and check the result afterwards. Changes wait for \
                 the user's approval, so say plainly what each one does. Never try to get around a refusal, never use \
                 sudo unless asked, and never print or store passwords, keys or tokens. Report the commands you ran and \
-                what they showed, briefly, with the answer first."
+                what they showed, briefly, with the answer first. The tools' `machine` argument picks where to work: \
+                \"server\" is where lyra runs; \"my desktop\", \"my PC\" or a machine's name mean that connected machine. \
+                Say which machine you worked on."
                 .into();
             p.delegation = DelegationProfile {
                 auto_delegate: true,
                 intents: strs(&["run_command", "inspect_system", "manage_files", "check_server", "http_request", "check_service"]),
                 keywords: strs(&[
                     "shell", "terminal", "command", "disk", "process", "port", "service", "server", "ssh", "file", "folder",
-                    "directory", "curl", "logs", "cpu", "uptime", "systemctl", "nginx", "docker", "endpoint",
+                    "directory", "curl", "logs", "cpu", "uptime", "systemctl", "nginx", "docker", "endpoint", "desktop", "machine",
+                    "laptop",
                 ]),
                 examples: strs(&[
                     "How much disk space is left?",
@@ -89,6 +92,9 @@ pub fn template(name: &str) -> Option<AgentProfile> {
                     "Which processes are using the most CPU?",
                     "Run git status in ~/Projects/lyra",
                     "Create a file called notes.txt in ~/lyra-work",
+                    "How much disk space is free on my desktop?",
+                    "Create ~/notes.txt on my desktop",
+                    "What's running on my PC?",
                 ]),
                 priority: 8,
                 exclusions: strs(&["rewrite this email", "write a poem", "explain this concept", "summarize this text"]),

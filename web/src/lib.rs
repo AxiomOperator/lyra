@@ -55,6 +55,29 @@ pub enum Inbound {
     Snapshot(oneshot::Sender<Value>),
     /// Is the app's loop alive? (`/health`)
     Health(oneshot::Sender<Value>),
+    /// A machine (`lyra node`) connected or went away.
+    MachinesChanged,
+}
+
+/// A machine lending lyra its tools (`lyra node`), as it introduced itself.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MachineInfo {
+    /// What lyra calls it (the name it paired with).
+    pub name: String,
+    pub hostname: String,
+    pub os: String,
+    pub user: String,
+    pub since: chrono::DateTime<chrono::Utc>,
+}
+
+type Pending = Arc<Mutex<HashMap<u64, std::sync::mpsc::Sender<Result<Value, String>>>>>;
+
+struct MachineConn {
+    info: MachineInfo,
+    /// This connection (a reconnect replaces it; only the newest may remove itself).
+    conn: u64,
+    to_node: tokio::sync::mpsc::UnboundedSender<String>,
+    pending: Pending,
 }
 
 /// A notification for every device with push turned on.
@@ -78,6 +101,8 @@ struct Shared {
     /// Connections and when each last said it was visible on screen.
     visible: Mutex<HashMap<u64, Option<Instant>>>,
     next_conn: AtomicU64,
+    machines: Mutex<HashMap<String, MachineConn>>,
+    next_call: AtomicU64,
 }
 
 /// The running server, as the app sees it.
@@ -127,6 +152,8 @@ impl Hub {
             inbound,
             visible: Mutex::new(HashMap::new()),
             next_conn: AtomicU64::new(1),
+            machines: Mutex::new(HashMap::new()),
+            next_call: AtomicU64::new(1),
         });
         let addr: SocketAddr = settings.listen.parse().map_err(|e| format!("[web] listen {:?}: {e}", settings.listen))?;
         let listener = rt.block_on(tokio::net::TcpListener::bind(addr)).map_err(|e| format!("can't listen on {addr}: {e}"))?;
@@ -152,6 +179,38 @@ impl Hub {
         let seq = self.shared.seq.fetch_add(1, Ordering::SeqCst) + 1;
         msg["seq"] = json!(seq);
         let _ = self.shared.out.send(Arc::new(msg.to_string()));
+    }
+
+    /// The machines connected right now (`lyra node`), by name.
+    pub fn machines(&self) -> Vec<MachineInfo> {
+        let mut all: Vec<MachineInfo> = self.shared.machines.lock().unwrap_or_else(|e| e.into_inner()).values().map(|m| m.info.clone()).collect();
+        all.sort_by(|a, b| a.name.cmp(&b.name));
+        all
+    }
+
+    /// Ask a machine to do something and wait for its answer (blocking: call
+    /// from a worker thread, never from the async runtime).
+    pub fn call_machine(&self, name: &str, mut request: Value, timeout: std::time::Duration) -> Result<Value, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let id = self.shared.next_call.fetch_add(1, Ordering::SeqCst);
+        let pending = {
+            let machines = self.shared.machines.lock().unwrap_or_else(|e| e.into_inner());
+            let m = machines
+                .values()
+                .find(|m| m.info.name.eq_ignore_ascii_case(name))
+                .ok_or_else(|| format!("{name} isn't connected (is `lyra node` running on it?)"))?;
+            m.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(id, tx);
+            request["id"] = json!(id);
+            m.to_node.send(request.to_string()).map_err(|_| format!("{name} just disconnected"))?;
+            m.pending.clone()
+        };
+        match rx.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(_) => {
+                pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+                Err(format!("{name} didn't answer within {}s", timeout.as_secs()))
+            }
+        }
     }
 
     pub fn connections(&self) -> usize {
@@ -202,6 +261,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/api/approve", post(approve))
         .route("/ws", get(ws))
         .route("/health", get(health))
+        .route("/node", get(node_ws))
         .with_state(shared)
 }
 
@@ -228,8 +288,13 @@ fn bearer(headers: &HeaderMap) -> String {
     headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).unwrap_or("").to_string()
 }
 
+/// A phone or browser (not a machine's node token).
 fn device(shared: &Shared, headers: &HeaderMap) -> Result<Device, Box<Response>> {
-    shared.devices.authenticate(&bearer(headers)).ok_or_else(|| Box::new(error(StatusCode::UNAUTHORIZED, "not paired: pair this device again")))
+    shared
+        .devices
+        .authenticate(&bearer(headers))
+        .filter(|d| d.kind == "device")
+        .ok_or_else(|| Box::new(error(StatusCode::UNAUTHORIZED, "not paired: pair this device again")))
 }
 
 #[derive(Deserialize)]
@@ -237,13 +302,17 @@ struct PairBody {
     code: String,
     #[serde(default)]
     name: String,
+    /// `device` (default) or `node`.
+    #[serde(default)]
+    kind: String,
 }
 
 async fn pair(State(s): State<Arc<Shared>>, Json(b): Json<PairBody>) -> Response {
     // Slow guessing down a little more than the attempt limit does.
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-    match s.devices.pair(&b.code, &b.name) {
-        Ok((d, token)) => Json(json!({ "token": token, "device": { "id": d.id, "name": d.name } })).into_response(),
+    let kind = if b.kind.is_empty() { "device" } else { b.kind.as_str() };
+    match s.devices.pair(&b.code, &b.name, kind) {
+        Ok((d, token)) => Json(json!({ "token": token, "device": { "id": d.id, "name": d.name, "kind": d.kind } })).into_response(),
         Err(e) => error(StatusCode::FORBIDDEN, &e),
     }
 }
@@ -316,7 +385,7 @@ struct WsQuery {
 }
 
 async fn ws(State(s): State<Arc<Shared>>, Query(q): Query<WsQuery>, upgrade: WebSocketUpgrade) -> Response {
-    let Some(d) = s.devices.authenticate(&q.token) else { return error(StatusCode::UNAUTHORIZED, "not paired") };
+    let Some(d) = s.devices.authenticate(&q.token).filter(|d| d.kind == "device") else { return error(StatusCode::UNAUTHORIZED, "not paired") };
     let mut r = upgrade.on_upgrade(move |socket| connection(s, d, socket));
     r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     r
@@ -386,4 +455,81 @@ async fn connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
         }
     }
     s.visible.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn);
+}
+
+// ---- machines (`lyra node`): a machine connects out and runs lyra's
+// system tools there. Calls go out as `{id, type: check|call, …}`; answers
+// come back as `{type: result, id, ok, value | error}`.
+
+async fn node_ws(State(s): State<Arc<Shared>>, Query(q): Query<WsQuery>, upgrade: WebSocketUpgrade) -> Response {
+    let Some(d) = s.devices.authenticate(&q.token).filter(|d| d.kind == "node") else { return error(StatusCode::UNAUTHORIZED, "not a paired machine") };
+    upgrade.on_upgrade(move |socket| node_connection(s, d, socket))
+}
+
+/// No message (a ping at least) for this long: the machine is gone.
+const NODE_SILENCE: std::time::Duration = std::time::Duration::from_secs(90);
+
+async fn node_connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
+    // The node introduces itself first.
+    let hello = match tokio::time::timeout(std::time::Duration::from_secs(15), socket.recv()).await {
+        Ok(Some(Ok(Message::Text(t)))) => serde_json::from_str::<Value>(t.as_str()).unwrap_or(json!({})),
+        _ => return,
+    };
+    if hello["type"] != "hello" {
+        return;
+    }
+    let field = |k: &str| hello[k].as_str().unwrap_or("").chars().take(80).collect::<String>();
+    let info = MachineInfo { name: d.name.clone(), hostname: field("hostname"), os: field("os"), user: field("user"), since: chrono::Utc::now() };
+    let conn = s.next_conn.fetch_add(1, Ordering::SeqCst);
+    let (to_node, mut outgoing) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+    let replaced = s.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(d.name.to_lowercase(), MachineConn { info, conn, to_node, pending: pending.clone() });
+    if let Some(old) = replaced {
+        fail_pending(&old.pending, &format!("{} reconnected", d.name));
+    }
+    let _ = s.inbound.send(Inbound::MachinesChanged);
+    let _ = socket.send(Message::Text(json!({ "type": "welcome", "machine": d.name }).to_string().into())).await;
+    loop {
+        tokio::select! {
+            out = outgoing.recv() => match out {
+                Some(text) => {
+                    if socket.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
+                None => break,
+            },
+            incoming = tokio::time::timeout(NODE_SILENCE, socket.recv()) => {
+                let Ok(Some(Ok(msg))) = incoming else { break };
+                let Message::Text(text) = msg else { continue };
+                let Ok(v) = serde_json::from_str::<Value>(text.as_str()) else { continue };
+                match v["type"].as_str().unwrap_or("") {
+                    "result" => {
+                        let id = v["id"].as_u64().unwrap_or(0);
+                        if let Some(tx) = pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
+                            let result = if v["ok"] == true { Ok(v["value"].clone()) } else { Err(v["error"].as_str().unwrap_or("failed").to_string()) };
+                            let _ = tx.send(result);
+                        }
+                    }
+                    "ping" => {
+                        let _ = socket.send(Message::Text(json!({ "type": "pong" }).to_string().into())).await;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut machines = s.machines.lock().unwrap_or_else(|e| e.into_inner());
+    if machines.get(&d.name.to_lowercase()).is_some_and(|m| m.conn == conn) {
+        machines.remove(&d.name.to_lowercase());
+        drop(machines);
+        let _ = s.inbound.send(Inbound::MachinesChanged);
+    }
+    fail_pending(&pending, &format!("{} disconnected", d.name));
+}
+
+fn fail_pending(pending: &Pending, why: &str) {
+    for (_, tx) in pending.lock().unwrap_or_else(|e| e.into_inner()).drain() {
+        let _ = tx.send(Err(why.to_string()));
+    }
 }

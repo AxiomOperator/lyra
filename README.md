@@ -689,6 +689,38 @@ at it. Only one lyra runs per `~/.lyra`: starting the TUI while `lyra serve`
 is running (say, over SSH) is refused with a note, because each would keep
 its own copy of the conversation (`--force` overrides).
 
+## From your desktop: `lyra connect` and `lyra node`
+
+With lyra on a server, a desktop (or laptop) uses two small parts of the same
+`lyra` binary (`cargo install --path .` on it):
+
+- **`lyra connect`** is the terminal UI for the server: the same chat,
+  Markdown, `/` palette and approval box (y / n / a), streaming live. Pair it
+  once with a code from `lyra pair` on the server:
+  `lyra connect --pair <code> --url https://lyra.example.com`. After that,
+  plain `lyra` opens it on a machine that has no lyra of its own. Nothing is
+  stored locally but the token (`~/.config/lyra/remote.toml`, 0600). An open
+  terminal counts as watching, so phones aren't notified meanwhile.
+- **`lyra node`** lets lyra work on this machine. It connects *out* to the
+  server (no open ports, no SSH), and the Operator's tools (shell, files,
+  system info) gain a `machine` choice: `server` or this machine's name. Ask
+  "how much disk is free on my desktop?" from the phone and it runs here.
+  Pair it with a code from `lyra pair`:
+  `lyra node pair https://lyra.example.com <code> --name desktop`, then
+  `lyra node service` and `systemctl --user enable --now lyra-node` (plus
+  `loginctl enable-linger $USER` to keep it running when logged out).
+
+  Everything is decided **on this machine**: it runs the same checks as the
+  server with its own rules in `~/.config/lyra/node.toml` (`[system]`:
+  `allow_commands`, `write_roots`, `deny_paths`, timeouts). Reading runs at
+  once; changes wait for your approval (the card says "write a file on
+  desktop"); forbidden things and `~/.ssh`, `~/.gnupg` and other credentials
+  are refused here even when "approved". The node runs as your user, so no
+  `sudo`. A node's token can only lend tools: it can't chat or approve.
+  `lyra devices` on the server lists machines too; `lyra devices remove
+  desktop` cuts one off. When a machine is offline, lyra says so instead of
+  doing it somewhere else.
+
 ## Self-evolution
 
 Skills are what lyra learns; **evolution** changes *how it works*, from

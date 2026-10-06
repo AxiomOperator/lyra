@@ -12,10 +12,18 @@ use sha2::{Digest, Sha256};
 
 use crate::push::Subscription;
 
+fn device_kind() -> String {
+    "device".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {
     pub id: String,
     pub name: String,
+    /// `device`: a phone or browser (chats, approves). `node`: a machine that
+    /// lends lyra its tools (`lyra node`); it can't chat or approve.
+    #[serde(default = "device_kind")]
+    pub kind: String,
     pub token_hash: String,
     pub created: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
@@ -96,7 +104,10 @@ impl Devices {
     }
 
     /// Pair a device with a code: returns its token (shown once, never stored).
-    pub fn pair(&self, code: &str, name: &str) -> Result<(Device, String), String> {
+    pub fn pair(&self, code: &str, name: &str, kind: &str) -> Result<(Device, String), String> {
+        if !matches!(kind, "device" | "node") {
+            return Err(format!("unknown kind {kind:?}"));
+        }
         let path = self.dir.join("pairing.json");
         let mut p: Pairing = std::fs::read_to_string(&path)
             .ok()
@@ -115,15 +126,20 @@ impl Devices {
         let _ = std::fs::remove_file(&path);
         let token = random(43, b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
         let name: String = name.trim().chars().take(60).collect();
+        let mut all = self.list();
+        // A machine's name is how lyra addresses it: one node per name.
+        if kind == "node" && all.iter().any(|d| d.kind == "node" && d.name.eq_ignore_ascii_case(&name)) {
+            return Err(format!("a machine called {name:?} is already paired (lyra devices remove {name})"));
+        }
         let device = Device {
             id: random(10, b"abcdefghijkmnpqrstuvwxyz23456789"),
-            name: if name.is_empty() { "device".into() } else { name },
+            name: if name.is_empty() { kind.into() } else { name },
+            kind: kind.into(),
             token_hash: hash(&token),
             created: Utc::now(),
             last_seen: Utc::now(),
             push: None,
         };
-        let mut all = self.list();
         all.push(device.clone());
         self.save(&all)?;
         Ok((device, token))
@@ -170,13 +186,13 @@ mod tests {
     fn pairing_gives_a_token_once_and_codes_expire() {
         let dir = std::env::temp_dir().join(format!("lyra-devices-{}", uuid::Uuid::new_v4()));
         let d = Devices::open(&dir).unwrap();
-        assert!(d.pair("ABCDEFGH", "phone").unwrap_err().contains("lyra pair"));
+        assert!(d.pair("ABCDEFGH", "phone", "device").unwrap_err().contains("lyra pair"));
         let code = d.new_code(10).unwrap();
         assert_eq!(code.len(), 8);
-        assert!(d.pair("WRONGONE", "phone").unwrap_err().contains("wrong"));
-        let (device, token) = d.pair(&code.to_lowercase(), "Pixel").unwrap();
-        assert_eq!(device.name, "Pixel");
-        assert!(d.pair(&code, "again").is_err(), "a code works once");
+        assert!(d.pair("WRONGONE", "phone", "device").unwrap_err().contains("wrong"));
+        let (device, token) = d.pair(&code.to_lowercase(), "Pixel", "device").unwrap();
+        assert_eq!((device.name.as_str(), device.kind.as_str()), ("Pixel", "device"));
+        assert!(d.pair(&code, "again", "device").is_err(), "a code works once");
         assert_eq!(d.authenticate(&token).unwrap().id, device.id);
         assert!(d.authenticate("not-a-real-token-at-all-but-long").is_none());
         assert!(!std::fs::read_to_string(dir.join("devices.json")).unwrap().contains(&token), "only the hash is kept");
@@ -185,9 +201,17 @@ mod tests {
 
         let code = d.new_code(10).unwrap();
         for _ in 0..MAX_ATTEMPTS {
-            let _ = d.pair("WRONGONE", "x");
+            let _ = d.pair("WRONGONE", "x", "device");
         }
-        assert!(d.pair(&code, "x").unwrap_err().contains("expired"), "too many wrong guesses");
+        assert!(d.pair(&code, "x", "device").unwrap_err().contains("expired"), "too many wrong guesses");
+        let code = d.new_code(10).unwrap();
+        let (node, _) = d.pair(&code, "desktop", "node").unwrap();
+        assert_eq!(node.kind, "node");
+        let code = d.new_code(10).unwrap();
+        assert!(d.pair(&code, "Desktop", "node").unwrap_err().contains("already paired"), "one node per name");
+        // Devices saved before kinds existed are devices.
+        let old: Device = serde_json::from_str(r#"{"id":"a","name":"b","token_hash":"c","created":"2026-01-01T00:00:00Z","last_seen":"2026-01-01T00:00:00Z"}"#).unwrap();
+        assert_eq!(old.kind, "device");
         assert_eq!(d.remove("pixel").unwrap().id, device.id);
         assert!(d.authenticate(&token).is_none());
     }

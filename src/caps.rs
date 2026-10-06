@@ -39,6 +39,8 @@ pub struct Caps {
     agents: std::sync::OnceLock<Arc<crate::agents::Agents>>,
     /// Shell, files, network, servers (`[system]`): for agents only.
     pub system: Option<lyra_system::System>,
+    /// Other machines' system tools (`lyra node`), when serving.
+    remote: std::sync::OnceLock<Arc<dyn Remote>>,
 }
 
 /// What a call needs the user's approval for.
@@ -52,13 +54,45 @@ pub struct Ask {
     pub dangerous: bool,
 }
 
-/// The system tools as capabilities.
-fn system_tools() -> Vec<Capability> {
+/// Other machines lending lyra their tools (`lyra node`, through `lyra serve`).
+pub trait Remote: Send + Sync {
+    /// Every paired machine by name, and whether it's connected now. Offline
+    /// ones are listed too, so "on my desktop" never quietly runs elsewhere.
+    fn machines(&self) -> Vec<(String, bool)>;
+    /// Send a request to a machine and wait for its answer.
+    fn call(&self, machine: &str, request: Value, timeout: std::time::Duration) -> Result<Value, String>;
+}
+
+/// What the machine lyra itself runs on is called in the `machine` argument.
+pub const HERE: &str = "server";
+
+/// The machine a system call is for, when it's another one than lyra's own.
+fn remote_machine(args: &Value) -> Option<String> {
+    let m = args["machine"].as_str()?.trim();
+    (!m.is_empty() && !matches!(m.to_lowercase().as_str(), HERE | "local" | "localhost" | "this")).then(|| m.to_string())
+}
+
+/// The system tools as capabilities; with machines connected, each (but
+/// `ssh_run`) can be pointed at one of them.
+fn system_tools(machines: &[(String, bool)]) -> Vec<Capability> {
     lyra_system::specs()
         .into_iter()
         .map(|s| {
             let mut c = Capability::new(s.name, CapabilityKind::NativeTool, s.description, s.risk);
             c.input_schema = s.parameters;
+            if !machines.is_empty() && s.name != "ssh_run" {
+                let names: Vec<String> = std::iter::once(HERE.to_string()).chain(machines.iter().map(|m| m.0.clone())).collect();
+                let listed: Vec<String> = machines.iter().map(|(m, on)| format!("{m} ({})", if *on { "online" } else { "offline now" })).collect();
+                c.input_schema["properties"]["machine"] = json!({
+                    "type": "string",
+                    "enum": names,
+                    "description": format!(
+                        "Where to do it: \"{HERE}\" (where lyra runs; the default) or another machine: {}. \"my desktop\", \"my PC\" and the like mean {}. Never use the server for a request about another machine.",
+                        listed.join(", "),
+                        machines[0].0
+                    ),
+                });
+            }
             c.source = "system".into();
             c.tags = vec!["system".into(), s.name.split('_').next().unwrap_or("").into()];
             c.permissions = vec![format!("system.{}", s.name)];
@@ -239,10 +273,24 @@ impl Caps {
     }
 
     pub fn new(manager: CapabilityManager, rt: Handle, openapi: Vec<OpenApiClient>, mcp: Vec<McpClient>) -> Self {
-        Self { manager, rt, tools: None, learning: None, evolution: None, openapi, mcp, goals: std::sync::OnceLock::new(), agents: std::sync::OnceLock::new(), system: None }
+        Self { manager, rt, tools: None, learning: None, evolution: None, openapi, mcp, goals: std::sync::OnceLock::new(), agents: std::sync::OnceLock::new(), system: None, remote: std::sync::OnceLock::new() }
     }
 
     /// Add the goal tools (goal_list, goal_get, goal_create, goal_note).
+    pub fn set_remote(&self, remote: Arc<dyn Remote>) {
+        let _ = self.remote.set(remote);
+    }
+
+    /// Paired machines and whether they're connected (none without `lyra serve`).
+    pub fn machines(&self) -> Vec<(String, bool)> {
+        self.remote.get().map(|r| r.machines()).unwrap_or_default()
+    }
+
+    /// How long a call on another machine may take: its command, plus the trip.
+    fn remote_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.system.as_ref().map_or(60, |s| s.settings.timeout_seconds).max(60) + 30)
+    }
+
     pub fn set_agents(&self, agents: Arc<crate::agents::Agents>) {
         let _ = self.agents.set(agents);
     }
@@ -284,7 +332,7 @@ impl Caps {
             caps.extend(goal_tools());
         }
         if self.system.as_ref().is_some_and(|s| s.settings.enabled) {
-            caps.extend(system_tools());
+            caps.extend(system_tools(&self.machines()));
         }
         caps.extend(self.openapi.iter().flat_map(OpenApiClient::capabilities));
         caps.extend(self.mcp.iter().flat_map(McpClient::capabilities));
@@ -361,6 +409,19 @@ impl Caps {
     pub fn approval(&self, name: &str, arguments: &str) -> Option<Ask> {
         let c = self.manager.get(name)?;
         let args: Value = serde_json::from_str(if arguments.trim().is_empty() { "{}" } else { arguments }).unwrap_or(json!({}));
+        // Another machine decides for itself (its own rules), and says what it would do.
+        if c.source == "system"
+            && let Some(machine) = remote_machine(&args)
+        {
+            let remote = self.remote.get()?;
+            let v = remote.call(&machine, json!({ "type": "check", "tool": name, "args": args }), std::time::Duration::from_secs(30)).ok()?;
+            return (v["check"] == "ask").then(|| Ask {
+                what: v["what"].as_str().unwrap_or("change something").to_string(),
+                detail: v["detail"].as_str().unwrap_or("").to_string(),
+                why: v["why"].as_str().unwrap_or("").to_string(),
+                dangerous: v["dangerous"] == true,
+            });
+        }
         if c.source == "system"
             && let Some(system) = &self.system
             && let lyra_system::Check::Ask { why, dangerous } = system.check(name, &args)
@@ -456,7 +517,9 @@ impl Caps {
             }
             let Some(system) = &self.system else { return json!({ "error": "system access is off" }).to_string() };
             let args: Value = serde_json::from_str(if arguments.trim().is_empty() { "{}" } else { arguments }).unwrap_or(json!({}));
-            match system.check(&c.name, &args) {
+            // Another machine checks the call itself before running it.
+            let local = remote_machine(&args).is_none();
+            match if local { system.check(&c.name, &args) } else { lyra_system::Check::Auto } {
                 lyra_system::Check::Forbidden(why) => return json!({ "error": format!("refused: {why}") }).to_string(),
                 lyra_system::Check::Ask { why, .. } if !approved => {
                     return json!({ "error": format!("needs the user's approval ({why})") }).to_string();
@@ -478,9 +541,13 @@ impl Caps {
                 Some(client) => client.call(&c.id, &args),
                 None => Err(format!("{} has no provider", c.id)),
             },
-            _ if c.source == "system" => match &self.system {
-                Some(system) => system.call(&c.name, &args),
-                None => Err("system access is off".into()),
+            _ if c.source == "system" => match (remote_machine(&args), &self.system) {
+                (Some(machine), _) => match self.remote.get() {
+                    Some(remote) => remote.call(&machine, json!({ "type": "call", "tool": c.name, "args": args, "approved": approved }), self.remote_timeout()),
+                    None => Err(format!("{machine} isn't reachable: other machines connect to `lyra serve`")),
+                },
+                (None, Some(system)) => system.call(&c.name, &args),
+                (None, None) => Err("system access is off".into()),
             },
             _ if c.source == "goals" => match self.goals.get() {
                 Some(goals) => goal_tool(goals, &c.name, &args),
@@ -741,6 +808,55 @@ mod tests {
 
     fn call(caps: &Caps, name: &str, args: Value) -> Value {
         serde_json::from_str(&caps.invoke(name, &args.to_string(), CallContext::new(None, ""), false, true)).unwrap()
+    }
+
+    /// A pretend `lyra node`: asks about `touch`, runs what it's told.
+    struct Desktop(std::sync::Mutex<Vec<Value>>);
+
+    impl Remote for Desktop {
+        fn machines(&self) -> Vec<(String, bool)> {
+            vec![("desktop".into(), true), ("laptop".into(), false)]
+        }
+
+        fn call(&self, machine: &str, req: Value, _: std::time::Duration) -> Result<Value, String> {
+            if machine != "desktop" {
+                return Err(format!("{machine} isn't connected"));
+            }
+            self.0.lock().unwrap().push(req.clone());
+            Ok(match req["type"].as_str() {
+                Some("check") => json!({ "check": "ask", "what": "run a command on desktop", "detail": req["args"]["command"], "why": "runs touch", "dangerous": false }),
+                _ => json!({ "ran": req["args"]["command"], "approved": req["approved"] }),
+            })
+        }
+    }
+
+    #[test]
+    fn system_calls_can_go_to_another_machine() {
+        let (_rt, mut caps) = caps();
+        caps.system = Some(lyra_system::System::new(Default::default(), crate::config::expand_path));
+        let desktop = Arc::new(Desktop(Default::default()));
+        caps.set_remote(desktop.clone());
+        caps.refresh();
+        let shell = caps.manager.get("shell_run").unwrap();
+        assert_eq!(shell.input_schema["properties"]["machine"]["enum"], json!(["server", "desktop", "laptop"]), "offline machines too");
+        assert!(shell.input_schema["properties"]["machine"]["description"].as_str().unwrap().contains("laptop (offline now)"));
+        assert!(caps.manager.get("ssh_run").unwrap().input_schema["properties"].get("machine").is_none());
+
+        let args = r#"{"command":"touch notes.txt","machine":"desktop"}"#;
+        let ask = caps.approval("shell_run", args).unwrap();
+        assert_eq!((ask.what.as_str(), ask.detail.as_str()), ("run a command on desktop", "touch notes.txt"), "the machine's own answer");
+        let agent = CallContext { agent: Some("operator"), ..CallContext::new(None, "") };
+        let ran: Value = serde_json::from_str(&caps.invoke("shell_run", args, agent, true, true)).unwrap();
+        assert_eq!(ran, json!({ "ran": "touch notes.txt", "approved": true }));
+        let sent = desktop.0.lock().unwrap().clone();
+        assert_eq!((sent[0]["type"].as_str(), sent[1]["type"].as_str()), (Some("check"), Some("call")));
+
+        let offline: Value = serde_json::from_str(&caps.invoke("shell_run", r#"{"command":"ls","machine":"laptop"}"#, agent, false, true)).unwrap();
+        assert!(offline["error"].as_str().unwrap().contains("isn't connected"));
+        // Without a machine (or "server") it stays here, under this machine's rules.
+        assert!(caps.approval("shell_run", r#"{"command":"ls","machine":"server"}"#).is_none());
+        let direct = caps.invoke("shell_run", args, CallContext::new(None, ""), true, true);
+        assert!(direct.contains("only for agents"), "the main agent still can't, wherever it points");
     }
 
     #[test]

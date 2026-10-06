@@ -2,6 +2,7 @@ mod agents;
 mod caps;
 mod commands;
 mod config;
+mod connect;
 mod context;
 mod evolve;
 mod goals;
@@ -9,6 +10,7 @@ mod markdown;
 mod learn;
 mod lock;
 mod mem;
+mod node;
 mod plan;
 mod migrate;
 mod retrieval;
@@ -2674,6 +2676,9 @@ usage: lyra [command] [options]
   pair                    a code to pair a phone or browser with `lyra serve`
   devices [remove <name>] paired devices
   service                 install a systemd user service that runs `lyra serve`
+  node [pair|service]     let a lyra server work on this machine (see lyra node --help)
+  connect [--pair <code>] the terminal UI for a lyra server (see lyra connect --help);
+                          plain `lyra` opens it on a machine that has no lyra of its own
 
   -c, --continue          continue the latest conversation (started in this folder, else any)
   -r, --resume [id]       resume a saved conversation; without an id, list them
@@ -2685,7 +2690,7 @@ Conversations are saved in ~/.lyra/sessions/ ($LYRA_HOME/sessions).";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "-h" || a == "--help") {
+    if args.get(1).is_none_or(|a| a != "node" && a != "connect") && args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{USAGE}");
         return;
     }
@@ -2694,6 +2699,10 @@ fn main() {
         Some("pair") => return pair_command(),
         Some("devices") => return devices_command(&args[2..]),
         Some("service") => return service_command(),
+        Some("node") => return node::main(&args[2..]),
+        Some("connect") => return connect::main(&args[2..]),
+        // No lyra of its own here, but a paired terminal: open that.
+        None if connect::configured() && !config::home().is_some_and(|h| h.join("config").join("config.toml").exists()) => return connect::main(&[]),
         _ => {}
     }
     let serving = sub == Some("serve");
@@ -2846,6 +2855,11 @@ fn serve_main(app: &mut App, web: &lyra_web::Settings, rt: &tokio::runtime::Hand
             std::process::exit(1);
         }
     };
+    if let Some(caps) = &app.caps {
+        caps.set_remote(Arc::new(serve::HubRemote(hub.clone())));
+        // Paired machines show in the tools' choices even before they connect.
+        caps.refresh();
+    }
     println!("lyra serve · listening on http://{} ({} paired devices)", hub.address, hub.devices().list().len());
     match web.public_url.as_str() {
         "" => println!("set [web] public_url to the https:// address your reverse proxy serves (needed for install and notifications)"),

@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 pub use shell::{Class, classify};
 
 /// `[system]`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct Settings {
     pub enabled: bool,

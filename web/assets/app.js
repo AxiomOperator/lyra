@@ -360,6 +360,8 @@ $("input").addEventListener("keydown", (e) => {
 function openMenu() {
   $("menu").classList.remove("hidden");
   $("menu-device").textContent = state.device ? `This device: ${state.device.name}` : "";
+  const machines = state.status.machines || [];
+  $("menu-machines").textContent = machines.length ? `Machines lyra can work on: server, ${machines.join(", ")}` : "Machines: server only (run `lyra node` on a PC to add it)";
   updateNotifyButton();
 }
 $("menu-button").addEventListener("click", openMenu);
