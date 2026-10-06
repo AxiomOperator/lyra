@@ -113,5 +113,9 @@ fn a_headless_machine_pairs_when_a_device_approves() {
     let script = get("/install.sh").text().unwrap();
     assert!(script.contains("URL=\"https://lyra.example.com\"") && script.contains("lyra-node\" pair"));
     // The app is stamped with its version.
-    assert!(get("/app.js").text().unwrap().contains(&format!("\"{}\"", hub.app_version())));
+    let page = get("/").text().unwrap();
+    assert!(page.contains(&format!("content=\"{}\"", hub.app_version())), "the page carries the app's version");
+    assert!(get("/sw.js").text().unwrap().contains(hub.app_version()));
+    assert_eq!(get("/manifest.webmanifest").status(), 200);
+    assert_eq!(get("/nope.js").status(), 404);
 }

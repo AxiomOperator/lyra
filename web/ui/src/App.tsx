@@ -1,0 +1,169 @@
+// lyra's web app: pair once, then chat, machines, devices, activity, more.
+
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+import { Ellipsis, MessageSquare, ScrollText, Server, Smartphone, Sparkles, WifiOff } from "lucide-react";
+import { useCallback, useState, type FormEvent } from "react";
+import { ChatPage } from "./lyra/chat";
+import { ActivityPage, DevicesPage, MachinesPage, MorePage } from "./lyra/pages";
+import { APP_VERSION, LyraProvider, useLyra } from "./lyra/store";
+import { loadToken, saveToken } from "./lyra/token";
+
+type Tab = "chat" | "machines" | "devices" | "activity" | "more";
+
+async function updateApp() {
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    await reg?.update();
+  } catch {
+    // reload anyway: the shell is fetched network-first
+  }
+  location.reload();
+}
+
+function Shell() {
+  const { status, connected, banner, serverVersion, ready } = useLyra();
+  const [tab, setTab] = useState<Tab>("chat");
+  const pairing = status.pairing?.length ?? 0;
+  const updates = (status.machines_detail ?? []).filter((m) => m.update_available).length;
+  const newer = !!serverVersion && serverVersion !== APP_VERSION;
+  const asking = (status.approvals?.length ?? 0) > 0;
+  const working = status.phase?.startsWith("↪");
+
+  const mention = (name: string) => {
+    setTab("chat");
+    // The composer picks it up from here.
+    setTimeout(() => window.dispatchEvent(new CustomEvent("lyra-mention", { detail: name })), 0);
+  };
+
+  const tabs: { id: Tab; label: string; icon: typeof MessageSquare; badge?: number }[] = [
+    { id: "chat", label: "Chat", icon: MessageSquare, badge: asking ? 1 : 0 },
+    { id: "machines", label: "Machines", icon: Server, badge: pairing + updates },
+    { id: "devices", label: "Devices", icon: Smartphone, badge: pairing },
+    { id: "activity", label: "Activity", icon: ScrollText },
+    { id: "more", label: "More", icon: Ellipsis },
+  ];
+
+  return (
+    <div className="flex h-dvh flex-col bg-background text-foreground">
+      <header className="flex items-center gap-3 border-b px-4 pt-[calc(env(safe-area-inset-top)+0.6rem)] pb-2.5">
+        <span className={cn("size-2.5 shrink-0 rounded-full", connected ? "bg-emerald-500" : "bg-red-500")} />
+        <div className="min-w-0 flex-1">
+          <div className="font-semibold leading-tight">lyra</div>
+          {status.title && <div className="truncate text-muted-foreground text-xs">{status.title}</div>}
+        </div>
+        {ready && (
+          <Badge
+            variant="secondary"
+            className={cn("max-w-[48vw] truncate", asking && "bg-amber-500/20 text-amber-300", working && !asking && "bg-sky-500/20 text-sky-300", status.waiting && !asking && !working && "bg-teal-500/20 text-teal-300")}
+          >
+            {status.phase}
+          </Badge>
+        )}
+      </header>
+      {banner && (
+        <Alert className="rounded-none border-x-0 border-t-0 bg-amber-950/40 py-2">
+          <WifiOff />
+          <AlertDescription className="text-amber-300">{banner}</AlertDescription>
+        </Alert>
+      )}
+      {newer && (
+        <div className="flex items-center justify-between gap-3 border-b bg-teal-950/40 px-4 py-2 text-sm text-teal-200">
+          <span className="flex items-center gap-2">
+            <Sparkles className="size-4" /> A new version of the lyra app is ready.
+          </span>
+          <Button size="sm" onClick={updateApp} className="bg-teal-500 text-black hover:bg-teal-400">
+            Update
+          </Button>
+        </div>
+      )}
+
+      <main className="flex min-h-0 flex-1 flex-col">
+        {tab === "chat" && <ChatPage />}
+        {tab === "machines" && <MachinesPage mention={mention} />}
+        {tab === "devices" && <DevicesPage />}
+        {tab === "activity" && <ActivityPage />}
+        {tab === "more" && <MorePage toChat={() => setTab("chat")} update={updateApp} />}
+      </main>
+
+      <nav className="grid grid-cols-5 border-t bg-card/60 pb-[env(safe-area-inset-bottom)] backdrop-blur">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setTab(t.id)}
+            className={cn("relative flex flex-col items-center gap-0.5 pt-2 pb-2 text-[11px]", tab === t.id ? "text-teal-400" : "text-muted-foreground")}
+          >
+            <t.icon className="size-5" />
+            {t.label}
+            {!!t.badge && <span className="absolute top-1 right-[calc(50%-1.4rem)] min-w-4 rounded-full bg-amber-400 px-1 font-semibold text-[10px] text-black">{t.badge}</span>}
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
+}
+
+function Pair({ onPaired, message }: { onPaired: (token: string) => void; message?: string }) {
+  const ua = navigator.userAgent;
+  const [code, setCode] = useState("");
+  const [name, setName] = useState(/iphone/i.test(ua) ? "iPhone" : /ipad/i.test(ua) ? "iPad" : /android/i.test(ua) ? "Android" : "Browser");
+  const [error, setError] = useState(message ?? "");
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    const r = await fetch("/api/pair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, name }) });
+    const body = await r.json().catch(() => ({}));
+    setBusy(false);
+    if (!r.ok) {
+      setError(body.error || "Pairing failed");
+      return;
+    }
+    saveToken(body.token);
+    onPaired(body.token);
+  };
+  return (
+    <div className="flex min-h-dvh items-center justify-center bg-background p-5 text-foreground">
+      <Card className="w-full max-w-sm">
+        <CardHeader className="items-center text-center">
+          <img src="/icon-192.png" alt="" className="mx-auto mb-2 size-16 rounded-2xl" />
+          <CardTitle className="text-xl">Pair this device</CardTitle>
+          <CardDescription>
+            On the computer running lyra, run <code className="rounded bg-muted px-1">lyra pair</code> and enter the code it shows.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={submit} className="space-y-3">
+            <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder="Pairing code" autoCapitalize="characters" spellCheck={false} autoComplete="one-time-code" className="h-12 text-center font-mono text-lg tracking-[0.2em]" required />
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Device name" className="h-11 text-center" />
+            <Button type="submit" disabled={busy} className="h-11 w-full">
+              Pair
+            </Button>
+            {error && <p className="text-center text-red-400 text-sm">{error}</p>}
+          </form>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+export default function App() {
+  const [token, setToken] = useState<string | null>(() => loadToken());
+  const [why, setWhy] = useState<string | undefined>();
+  const unpaired = useCallback((message?: string) => {
+    setWhy(message);
+    setToken(null);
+  }, []);
+  if (!token) return <Pair onPaired={setToken} message={why} />;
+  return (
+    <LyraProvider token={token} onUnpaired={unpaired}>
+      <Shell />
+    </LyraProvider>
+  );
+}

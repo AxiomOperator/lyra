@@ -621,7 +621,7 @@ paired devices get in (each gets its own token; lyra keeps only its hash), and
 `lyra devices` / `lyra devices remove <name>` manage them. Five wrong codes
 cancel a code.
 
-**The app** has tabs: **Chat** (with `/` commands, `@` machines, approval
+**The app** (React with shadcn/ui and Vercel AI Elements; source in `web/ui`, see its README) has tabs: **Chat** (with `/` commands, `@` machines, approval
 and pairing cards), **Machines** (online, versions, update, remove, the
 install command for a new machine), **Devices** (who's paired and online;
 unpair), **Activity** (lyra's log) and **More** (saved conversations, new

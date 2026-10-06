@@ -25,7 +25,8 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
   helpers are shared with `src/connect.rs`. Built static with musl (`.cargo/config.toml`).
 - `web/` — `lyra-web` crate: `lyra serve`'s HTTP + WebSocket server (axum), device pairing (token
   hashes in `~/.lyra/web/devices.json`), Web Push (VAPID + RFC 8291 with RustCrypto), and the PWA
-  in `web/assets/` (built into the binary). `src/serve.rs` mirrors the `App` to devices as small
+  in `web/ui/` (React + Vite + Tailwind + shadcn/ui + Vercel AI Elements; `npm run build` → `web/ui/dist/`,
+  committed and embedded in the binary — rebuild and commit `dist/` after changing the app). `src/serve.rs` mirrors the `App` to devices as small
   updates and feeds their input back; TLS comes from the user's reverse proxy (Zoraxy).
 - `execution/` — `lyra-execution` crate: goals, plans and the execution `Engine` (task graph,
   verification, retry, replanning, approvals, budgets, checkpoints, events) behind a `Runtime`

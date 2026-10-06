@@ -159,14 +159,8 @@ pub struct Hub {
     pub address: SocketAddr,
 }
 
-const INDEX: &str = include_str!("../assets/index.html");
-const APP_JS: &str = include_str!("../assets/app.js");
-const SW_JS: &str = include_str!("../assets/sw.js");
-const STYLE: &str = include_str!("../assets/style.css");
-const MANIFEST: &str = include_str!("../assets/manifest.webmanifest");
-const ICON_192: &[u8] = include_bytes!("../assets/icon-192.png");
-const ICON_512: &[u8] = include_bytes!("../assets/icon-512.png");
-const ICON_180: &[u8] = include_bytes!("../assets/apple-touch-icon.png");
+/// The web app, built by Vite from `web/ui` (`npm run build`), inside lyra.
+static APP: include_dir::Dir<'static> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/ui/dist");
 
 /// The VAPID key, made on first use and kept in `dir/vapid.key` (0600).
 fn vapid(dir: &Path) -> Result<Vapid, String> {
@@ -337,19 +331,8 @@ impl Hub {
 }
 
 fn router(shared: Arc<Shared>) -> Router {
-    let file = |body: &'static str, kind: &'static str| {
-        move || async move { ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, "no-cache")], body) }
-    };
-    let image = |body: &'static [u8]| move || async move { ([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "max-age=86400")], body) };
     Router::new()
-        .route("/", get(file(INDEX, "text/html; charset=utf-8")))
-        .route("/app.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], APP_JS.replace("__LYRA_VERSION__", app_version())) }))
-        .route("/style.css", get(file(STYLE, "text/css; charset=utf-8")))
-        .route("/manifest.webmanifest", get(file(MANIFEST, "application/manifest+json")))
-        .route("/sw.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], SW_JS.replace("__LYRA_VERSION__", app_version())) }))
-        .route("/icon-192.png", get(image(ICON_192)))
-        .route("/icon-512.png", get(image(ICON_512)))
-        .route("/apple-touch-icon.png", get(image(ICON_180)))
+        .route("/", get(|| app_file("index.html")))
         .route("/api/pair", post(pair))
         .route("/api/pair/request", post(pair_request))
         .route("/api/pair/request/{id}", get(pair_poll))
@@ -364,6 +347,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/ws", get(ws))
         .route("/health", get(health))
         .route("/node", get(node_ws))
+        .fallback(get(|uri: axum::http::Uri| app_file_owned(uri.path().trim_start_matches('/').to_string())))
         .with_state(shared)
 }
 
@@ -380,6 +364,40 @@ async fn health(State(s): State<Arc<Shared>>) -> Response {
         }
         _ => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "ok": false, "error": "lyra's main loop isn't answering" }))).into_response(),
     }
+}
+
+fn content_type(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" => "application/json",
+        "webmanifest" => "application/manifest+json",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "wasm" => "application/wasm",
+        _ => "application/octet-stream",
+    }
+}
+
+/// A file of the web app. The page and the service worker carry the app's
+/// version; the bundle's files have content hashes, so they cache for good.
+async fn app_file(path: &'static str) -> Response {
+    app_file_owned(path.to_string()).await
+}
+
+async fn app_file_owned(path: String) -> Response {
+    let path = if path.is_empty() { "index.html".to_string() } else { path };
+    let Some(file) = APP.get_file(&path) else { return error(StatusCode::NOT_FOUND, "not found") };
+    let kind = content_type(&path);
+    if path == "index.html" || path == "sw.js" {
+        let text = String::from_utf8_lossy(file.contents()).replace("__LYRA_VERSION__", app_version());
+        return ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, "no-cache")], text).into_response();
+    }
+    let cache = if path.starts_with("assets/") { "public, max-age=31536000, immutable" } else { "max-age=86400" };
+    ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, cache)], file.contents()).into_response()
 }
 
 fn error(status: StatusCode, text: &str) -> Response {
@@ -792,8 +810,18 @@ fn app_version() -> &'static str {
     VERSION.get_or_init(|| {
         use sha2::Digest;
         let mut h = sha2::Sha256::new();
-        for part in [INDEX, APP_JS, SW_JS, STYLE, MANIFEST] {
-            h.update(part.as_bytes());
+        let mut files: Vec<&include_dir::File> = Vec::new();
+        fn walk<'a>(dir: &'a include_dir::Dir<'a>, out: &mut Vec<&'a include_dir::File<'a>>) {
+            out.extend(dir.files());
+            for d in dir.dirs() {
+                walk(d, out);
+            }
+        }
+        walk(&APP, &mut files);
+        files.sort_by_key(|f| f.path());
+        for f in files {
+            h.update(f.path().to_string_lossy().as_bytes());
+            h.update(f.contents());
         }
         h.finalize().iter().take(6).map(|b| format!("{b:02x}")).collect()
     })

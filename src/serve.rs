@@ -19,11 +19,14 @@ fn web_message(app: &App, m: &Message) -> Value {
         .iter()
         .map(|c| format!("{} {}", c.function.name, c.function.arguments.chars().take(160).collect::<String>()))
         .collect();
+    let calls: Vec<Value> = m.tool_calls.iter().map(|c| json!({ "id": c.id, "name": c.function.name, "arguments": c.function.arguments })).collect();
     json!({
         "role": m.role,
         "content": m.content,
         "reasoning": m.reasoning,
         "tools": tools,
+        "calls": calls,
+        "tool_call_id": m.tool_call_id,
         "stats": m.stats.as_ref().map(|s| crate::ui::reply_stats(s, &app.pricing)),
         "memories": m.memories,
         "skills": m.skills,

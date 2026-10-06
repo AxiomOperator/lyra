@@ -5,7 +5,7 @@
 
 // A new version of the app gets a new cache (the old one is dropped on activate).
 const CACHE = "lyra-shell-__LYRA_VERSION__";
-const SHELL = ["/", "/app.js", "/style.css", "/manifest.webmanifest", "/icon-192.png", "/apple-touch-icon.png"];
+const SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -17,14 +17,16 @@ self.addEventListener("activate", (e) => {
   );
 });
 
-// The app shell: network first (always the latest), the cache when offline.
+// The app: network first (always the latest), the cache when offline. The
+// bundle's files have content hashes in their names, so caching them is safe.
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin || url.pathname.startsWith("/api/") || url.pathname === "/ws") return;
+  const keep = SHELL.includes(url.pathname) || url.pathname.startsWith("/assets/");
   e.respondWith(
     fetch(e.request)
       .then((r) => {
-        if (r.ok && SHELL.includes(url.pathname)) {
+        if (r.ok && keep) {
           const copy = r.clone();
           caches.open(CACHE).then((c) => c.put(url.pathname, copy));
         }
