@@ -89,14 +89,19 @@ of milliseconds. It returns a probability for every option instead of text to pa
 Serve it with llama-server (a build with `/v1/systemone` support) next to the chat model:
 
 ```sh
-llama-server -m Cloudflare_clef-flash-Q4_K_M.gguf --port 8091 -ngl 99
+llama-server -m Cloudflare_clef-flash-Q4_K_M.gguf --port 8091 -ngl 99 -c 16384 -b 8192 -ub 8192
 ```
+
+The whole input (state and questions) must fit in one batch. llama-server's default `-ub` is 512
+tokens, which is too small for a conversation turn, so raise `-b`/`-ub` and then
+`max_state_chars` with them. An input that's still too big is answered by the chat model.
 
 ```toml
 [decide]
 url = "http://localhost:8091/v1"   # /systemone is added
 model = "clef-flash"
 # min_confidence = 0.75             # below it, the chat model decides
+# max_state_chars = 1500            # fits the default 512-token batch; ~20000 with -ub 8192
 ```
 
 **Without `[decide]`, nothing changes:** the chat model answers everything as before. With it,

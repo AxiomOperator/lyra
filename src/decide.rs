@@ -28,6 +28,15 @@ pub struct Settings {
     /// Answers below this probability go to the chat model instead.
     #[serde(default = "default_min_confidence")]
     pub min_confidence: f32,
+    /// Longest state sent, in characters (its start and end are kept). The
+    /// whole input must fit llama-server's batch (`-ub`, 512 tokens by default):
+    /// raise both together.
+    #[serde(default = "default_max_state_chars")]
+    pub max_state_chars: usize,
+}
+
+fn default_max_state_chars() -> usize {
+    1500
 }
 
 fn default_model() -> String {
@@ -173,6 +182,12 @@ pub fn ask(what: &str, state: &str, questions: &[(String, Question)]) -> Option<
             note(format!("{what}: {} — {} in {ms} ms", shown.join(", "), settings.model));
             Some(answers)
         }
+        // Too much for its batch: only this question goes to the chat model.
+        Err(e) if e.contains("too large") => {
+            FALLBACKS.fetch_add(1, Ordering::Relaxed);
+            note(format!("{what}: too long for the decision model's batch, asked the chat model (raise llama-server's -b/-ub and [decide] max_state_chars)"));
+            None
+        }
         Err(e) => {
             FALLBACKS.fetch_add(1, Ordering::Relaxed);
             let mut down = DOWN_UNTIL.lock().unwrap_or_else(|e| e.into_inner());
@@ -202,9 +217,19 @@ pub fn yes(what: &str, state: &str, question: &str) -> Option<(bool, f32)> {
     a.yes().map(|y| (y, a.confidence))
 }
 
+/// The start and end of a long state (a transcript's latest turn is at the end).
+pub fn clip(state: &str, max: usize) -> String {
+    let n = state.chars().count();
+    if n <= max {
+        return state.to_string();
+    }
+    let head: String = state.chars().take(max / 3).collect();
+    let tail: String = state.chars().skip(n - (max - max / 3)).collect();
+    format!("{head}\n…\n{tail}")
+}
+
 fn call(s: &Settings, state: &str, questions: &[(String, Question)]) -> Result<HashMap<String, Answer>, String> {
-    // Its context is 16k tokens: keep the state well inside it.
-    let state: String = state.chars().take(40_000).collect();
+    let state = clip(state, s.max_state_chars);
     let qs: Map<String, Value> = questions.iter().map(|(id, q)| (id.clone(), q.to_json())).collect();
     let body = json!({ "model": s.model, "state": state, "questions": qs });
     let url = format!("{}/systemone", s.url.trim_end_matches('/'));
@@ -264,7 +289,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn settings(url: &str) -> Settings {
-        Settings { url: url.into(), model: "clef-flash".into(), min_confidence: 0.75 }
+        Settings { url: url.into(), model: "clef-flash".into(), min_confidence: 0.75, max_state_chars: 1500 }
     }
 
     #[test]
@@ -285,6 +310,9 @@ pub(crate) mod tests {
         assert_eq!(a["fine"].yes(), Some(false));
         assert_eq!((a["urgency"].choice.as_str(), a["urgency"].confidence), ("2", 0.7), "the most likely option");
         assert!(parse(&json!({ "error": "x" })).is_err());
+        let long = format!("start {} end", "x".repeat(5000));
+        let short = clip(&long, 300);
+        assert!(short.starts_with("start") && short.ends_with("end") && short.chars().count() <= 303);
     }
 
     #[test]
