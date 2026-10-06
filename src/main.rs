@@ -8,6 +8,7 @@ mod context;
 mod decide;
 mod evolve;
 mod goals;
+mod health;
 mod markdown;
 mod learn;
 mod lock;
@@ -2485,6 +2486,7 @@ impl App {
                     thinking: config.structured_thinking,
                 });
                 decide::configure(config.decide.clone());
+                health::configure(config.health.clone());
                 self.pricing = pricing(&config);
                 if let Some(mem) = self.mem() {
                     for note in mem.reconfigure(config.memory.settings.clone(), config.embedding.clone()) {
@@ -2676,6 +2678,7 @@ pub(crate) const COMMANDS: &str = "\
 /stop                        stop the reply being written (also Ctrl-X)
 /new                         start a new conversation (this one is saved)
 /machines [update|remove <name>]  machines lyra works on (lyra-node): online, version, update, remove
+/machines health [name|server]  disks, memory, load, failed units and updates (alerts: [health])
 /machines rules <name|server> [on|off | allow|write|deny|ssh add|remove <value>]  what runs without asking there
 /devices [approve|deny <code>]    paired phones, browsers, terminals and machines; pairing requests
 /devices remove <name>       unpair a device or machine
@@ -3160,6 +3163,7 @@ fn main() {
         max_tokens: config.structured_max_tokens,
         thinking: config.structured_thinking,
     });
+    health::configure(config.health.clone());
     decide::configure(config.decide.clone());
     let web = config.web.clone();
     let mut app = App::new(config, Context::load(), services);

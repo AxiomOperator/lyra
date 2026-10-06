@@ -4338,6 +4338,7 @@ dependencies = [
 name = "lyra-node"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "futures-util",
  "lyra-system",
  "reqwest 0.13.5",

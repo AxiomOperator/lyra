@@ -918,6 +918,43 @@ install -m 755 target/x86_64-unknown-linux-musl/release/lyra-node /usr/local/bin
 (`.cargo/config.toml` points the musl build at the system `gcc`.) `lyra node`
 inside the full `lyra` does the same job but can't update itself.
 
+### Machine health and alerts
+
+Every machine reports its health every 5 minutes, and `lyra serve` checks the server the same
+way. A report covers:
+- disks (percent used)
+- memory
+- load
+- failed systemd units
+- pending package updates, from dnf's or apt's cache, checked every 6 hours
+
+When something crosses a limit, lyra logs it in Activity and sends a push notification:
+- a disk 90% full
+- memory 95% used
+- a 15-minute load over 2 per CPU
+- a failed unit
+- a machine offline for 10 minutes
+
+It tells you once, and again when the problem clears or the machine is back.
+
+```toml
+[health]
+disk_percent = 90
+memory_percent = 95
+load_per_cpu = 2.0
+failed_units = true
+offline_minutes = 10   # 0: don't report quiet machines
+notify = true          # push; Activity logs them either way
+# enabled = true
+```
+
+Where it shows:
+- **App:** the Machines page shows each machine's health as badges (red when over a limit),
+  including the server's own card. The Machines tab counts machines with a problem.
+- **Terminal:** `/machines` adds a health line per machine, and `/machines health [name|server]`
+  gives the full report.
+- **`lyra connect`:** the side panel lists problems under each machine.
+
 ### Terminals: `lyra connect`
 
 `lyra connect` is the terminal UI for the server: the same chat, Markdown,

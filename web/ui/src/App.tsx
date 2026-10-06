@@ -139,6 +139,8 @@ function Shell() {
   const [tab, setTab] = useState<Tab>("chat");
   const pairing = status.pairing?.length ?? 0;
   const updates = (status.machines_detail ?? []).filter((m) => m.update_available).length;
+  // Machines (and the server) with a health problem.
+  const troubled = (status.machines_detail ?? []).filter((m) => m.online && m.health?.problems.length).length + (status.server_health?.problems.length ? 1 : 0);
   const newer = !!serverVersion && serverVersion !== APP_VERSION;
   const asking = (status.approvals?.length ?? 0) > 0;
   const working = status.phase?.startsWith("↪");
@@ -162,7 +164,7 @@ function Shell() {
       id: "machines",
       label: "Machines",
       icon: Server,
-      badge: pairing + updates,
+      badge: pairing + updates + troubled,
     },
     { id: "devices", label: "Devices", icon: Smartphone, badge: pairing },
     { id: "activity", label: "Activity", icon: ScrollText },

@@ -528,6 +528,13 @@ fn draw_panel(f: &mut Frame, s: &Screen, area: Rect) {
         if on && let Some(h) = m["hostname"].as_str().filter(|h| !h.is_empty()) {
             lines.push(Line::styled(format!("  {}", truncate(h, width.saturating_sub(2))), dim));
         }
+        if on {
+            health_lines(&m["health"], width, &mut lines);
+        }
+    }
+    if st["server_health"].is_object() {
+        lines.push(Line::raw("● server"));
+        health_lines(&st["server_health"], width, &mut lines);
     }
     let pairing = st["pairing"].as_array().cloned().unwrap_or_default();
     if !pairing.is_empty() {
@@ -584,6 +591,16 @@ fn draw_panel(f: &mut Frame, s: &Screen, area: Rect) {
         }
     }
     f.render_widget(Paragraph::new(lines).block(Block::bordered().title(" Online ")), area);
+}
+
+/// A machine's health under its name: the summary, then any problems in red.
+fn health_lines(h: &Value, width: usize, lines: &mut Vec<Line<'static>>) {
+    if let Some(summary) = h["summary"].as_str().filter(|s| !s.is_empty()) {
+        lines.push(Line::styled(format!("  {}", truncate(summary, width.saturating_sub(2))), Style::default().fg(Color::DarkGray)));
+    }
+    for p in h["problems"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        lines.push(Line::styled(format!("  ⚠ {}", truncate(p, width.saturating_sub(4))), Style::default().fg(Color::Red)));
+    }
 }
 
 /// The open approval, in full: who, what kind of thing, exactly what, why, keys.

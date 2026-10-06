@@ -10,6 +10,7 @@ name = "lyra-node"
 path = "src/main.rs"
 
 [dependencies]
+chrono = "0.4.45"
 futures-util = "0.3"
 lyra-system = { version = "0.1.0", path = "../system" }
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls-no-provider", "json"] }

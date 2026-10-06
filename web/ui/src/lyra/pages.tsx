@@ -14,7 +14,40 @@ import { SearchBox, SearchHits, useConversationSearch } from "./search";
 import { Dot, Page, useConfirm } from "./parts";
 import { ago, blocker, disable, enable, test } from "./push";
 import { APP_VERSION, useData, useLyra } from "./store";
-import type { About, ActivityLine, Device, Session } from "./types";
+import type { About, ActivityLine, Device, Health, Session } from "./types";
+
+// ---- machine health
+
+/** Disk, memory, load, failed units and updates, red when over a limit. */
+function HealthRow({ h }: { h: Health }) {
+  const disk = [...(h.disks ?? [])].sort((a, b) => b.used_pct - a.used_pct)[0];
+  const failed = h.failed_units?.length ?? 0;
+  const bad = (word: string) => h.problems.some((p) => p.includes(word));
+  const chip = (text: string, warn: boolean, title?: string) => (
+    <Badge key={text} variant="outline" title={title} className={cn("font-normal", warn ? "border-red-500/60 bg-red-500/15 text-red-300" : "text-muted-foreground")}>
+      {text}
+    </Badge>
+  );
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        {disk && chip(`disk ${disk.used_pct}%`, bad("disk"), (h.disks ?? []).map((d) => `${d.mount}: ${d.used_pct}%`).join("\n"))}
+        {h.memory && chip(`mem ${h.memory.used_pct}%`, bad("memory"))}
+        {h.load?.length > 0 && chip(`load ${h.load[0].toFixed(1)}`, bad("load"), `${h.load.map((l) => l.toFixed(2)).join(" ")} on ${h.cpus} CPUs`)}
+        {failed > 0 && chip(`${failed} failed`, true, h.failed_units?.join("\n"))}
+        {h.updates != null && h.updates > 0 && chip(`${h.updates} updates`, false)}
+        <span className="self-center text-muted-foreground/70 text-xs">checked {ago(h.at)}</span>
+      </div>
+      {h.problems.length > 0 && (
+        <ul className="space-y-0.5 text-red-300 text-xs">
+          {h.problems.map((p) => (
+            <li key={p}>⚠ {p}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 // ---- machines
 
@@ -40,7 +73,8 @@ export function MachinesPage({ mention }: { mention: (name: string) => void }) {
             <Badge variant="secondary">home</Badge>
           </CardAction>
         </CardHeader>
-        <CardContent className="px-4">
+        <CardContent className="space-y-3 px-4">
+          {status.server_health && <HealthRow h={status.server_health} />}
           <Button size="sm" variant="secondary" onClick={() => setRules("server")}>
             <ShieldCheck /> Rules
           </Button>
@@ -59,11 +93,17 @@ export function MachinesPage({ mention }: { mention: (name: string) => void }) {
             </CardDescription>
             <CardAction className="flex gap-1.5">
               {m.update_available && <Badge className="bg-amber-500/20 text-amber-300">update</Badge>}
+              {m.online && !!m.health?.problems.length && <Badge className="bg-red-500/20 text-red-300">⚠ {m.health.problems.length}</Badge>}
               <Badge variant={m.online ? "default" : "secondary"} className={m.online ? "bg-emerald-600/80 text-white" : ""}>
                 {m.online ? "online" : "offline"}
               </Badge>
             </CardAction>
           </CardHeader>
+          {m.online && m.health && (
+            <CardContent className="px-4">
+              <HealthRow h={m.health} />
+            </CardContent>
+          )}
           <CardContent className="flex flex-wrap gap-2 px-4">
             {m.online && (
               <Button size="sm" variant="secondary" onClick={() => mention(m.name)}>

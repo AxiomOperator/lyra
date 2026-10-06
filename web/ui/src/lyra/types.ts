@@ -51,6 +51,21 @@ export interface Machine {
   self_update: boolean;
   update_available: boolean;
   last_seen: string;
+  /** Its latest health report, with what's wrong in it. */
+  health?: Health | null;
+}
+
+export interface Health {
+  at: string;
+  disks: { mount: string; used_pct: number; size_kb: number; avail_kb: number }[];
+  memory: { total_kb: number; available_kb: number; used_pct: number } | null;
+  load: number[];
+  cpus: number;
+  uptime_s: number | null;
+  failed_units: string[] | null;
+  updates: number | null;
+  problems: string[];
+  summary: string;
 }
 
 export interface Status {
@@ -65,6 +80,8 @@ export interface Status {
   online?: { id: string; name: string }[];
   pairing?: PairRequest[];
   machines_detail?: Machine[];
+  /** The server's own health (as a machine's). */
+  server_health?: Health | null;
   /** Conversations loaded on the server, and which are answering. */
   conversations?: { session: string; title: string | null; answering: boolean }[];
   /** The decision model (`[decide]`), with what it has done since lyra started. */

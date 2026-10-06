@@ -274,3 +274,13 @@ currency = "$"
 # keep = 7
 # include_uploads = false
 # enabled = true
+
+# Machine health (see README): every machine reports disks, memory, load, failed
+# units and updates every 5 minutes; crossing a limit is logged and pushed once.
+# [health]
+# disk_percent = 90
+# memory_percent = 95
+# load_per_cpu = 2.0
+# failed_units = true
+# offline_minutes = 10
+# notify = true

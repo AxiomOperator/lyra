@@ -87,6 +87,31 @@ fn status(app: &App, machines: &[String]) -> Value {
     })
 }
 
+/// A machine's (or the server's) health report: new problems are logged and
+/// pushed, cleared ones logged and pushed as fixed.
+fn health_report(app: &mut App, hub: &Hub, alerts: &mut crate::health::Alerts, name: &str, h: &Value) {
+    let change = alerts.report(name, crate::health::problems(h, &crate::health::settings()));
+    if !change.new.is_empty() {
+        alert(app, hub, name, &format!("{name}: {}", change.new.join("; ")), true);
+    }
+    if !change.cleared.is_empty() {
+        alert(app, hub, name, &format!("{name} is fine again: {}", change.cleared.join("; ")), false);
+    }
+}
+
+/// Log a health alert, and push it when `[health] notify` is on.
+fn alert(app: &mut App, hub: &Hub, machine: &str, text: &str, problem: bool) {
+    app.log(if problem { Level::Error } else { Level::Agent }, format!("{} {text}", if problem { "⚠" } else { "✓" }));
+    if crate::health::settings().notify {
+        hub.notify(Notification {
+            title: if problem { format!("⚠ {machine} needs a look") } else { format!("✓ {machine}") },
+            body: text.to_string(),
+            tag: format!("health-{}", machine.to_lowercase()),
+            approval: None,
+        });
+    }
+}
+
 /// A conversation's title: its first message's first line.
 fn title(app: &App) -> Option<String> {
     app.messages.iter().find(|m| m.role == "user").map(|m| m.content.lines().next().unwrap_or("").chars().take(60).collect::<String>())
@@ -278,6 +303,11 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut extra = hub_status(hub, node_build.as_deref());
     let mut last_extra = Instant::now();
     let mut last_open = Value::Null;
+    // Machine health: what's been reported, and the server's own checkups.
+    let mut alerts = crate::health::Alerts::default();
+    let (health_tx, health_rx) = std::sync::mpsc::channel::<Value>();
+    let mut server_health = Value::Null;
+    let mut last_checkup: Option<Instant> = None;
     let started = Instant::now();
     let mut convs = vec![Conv::new(primary)];
     loop {
@@ -412,6 +442,11 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         }
                     }
                 }
+                Inbound::MachineHealth { name, health } => {
+                    health_report(&mut convs[0].app, hub, &mut alerts, &name, &health);
+                    extra = hub_status(hub, node_build.as_deref());
+                    everyone = true;
+                }
                 Inbound::MachinesChanged => {
                     let now: Vec<String> = hub.machines().into_iter().map(|m| m.name).collect();
                     for m in now.iter().filter(|m| !machines.contains(m)) {
@@ -445,6 +480,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     c.mirror.machines = machines.clone();
                     c.mirror.extra = extra.clone();
                     c.mirror.extra["conversations"] = last_open.clone();
+                    c.mirror.extra["server_health"] = server_health.clone();
                     for u in c.mirror.updates(&mut c.app) {
                         hub.publish(Some(&c.app.session_id), u);
                     }
@@ -494,9 +530,33 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 p.changed = true;
             }
         }
+        // The server's own health, like a machine's.
+        if last_checkup.is_none_or(|t| t.elapsed() >= lyra_node::health::EVERY) {
+            last_checkup = Some(Instant::now());
+            let tx = health_tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(lyra_node::health::report());
+            });
+        }
+        while let Ok(h) = health_rx.try_recv() {
+            health_report(&mut convs[0].app, hub, &mut alerts, "server", &h);
+            server_health = crate::health::view(&h);
+            everyone = true;
+        }
         // Pairing requests expire and devices come and go: refresh now and then.
         if last_extra.elapsed() > Duration::from_secs(10) {
             last_extra = Instant::now();
+            let s = crate::health::settings();
+            if s.enabled {
+                let paired: Vec<String> = hub.devices().list().into_iter().filter(|d| d.kind == "node").map(|d| d.name).collect();
+                let (gone, back) = alerts.connected(&paired, &machines, Duration::from_secs(s.offline_minutes * 60));
+                for m in gone {
+                    alert(&mut convs[0].app, hub, &m, &format!("{m} has been offline for {} minute{}", s.offline_minutes, if s.offline_minutes == 1 { "" } else { "s" }), true);
+                }
+                for m in back {
+                    alert(&mut convs[0].app, hub, &m, &format!("{m} is back online"), false);
+                }
+            }
             let now = hub_status(hub, node_build.as_deref());
             if now != extra {
                 extra = now;
@@ -511,6 +571,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         }
         let mut extra_now = extra.clone();
         extra_now["conversations"] = open;
+        extra_now["server_health"] = server_health.clone();
         let attached = hub.attached_sessions();
         for c in convs.iter_mut() {
             // The phase timer ("thinking 4s") ticks while something is happening.
@@ -582,6 +643,7 @@ fn machines_detail(hub: &Hub, node_build: Option<&str>) -> Vec<Value> {
                 "self_update": m.is_some_and(|m| m.self_update),
                 "update_available": update,
                 "last_seen": d.last_seen,
+                "health": m.and_then(|m| m.health.as_ref()).map(crate::health::view),
             })
         })
         .collect()
@@ -759,11 +821,17 @@ impl App {
                             m["hostname"].as_str().map_or(String::new(), |h| format!(" · {h}")),
                             m["version"].as_str().map_or(String::new(), |v| if m["self_update"] == true { format!(" · lyra-node {v} ({})", m["build"].as_str().unwrap_or("")) } else { format!(" · built into lyra {v}") }),
                             if m["update_available"] == true { " · update available (/machines update)" } else { "" },
-                        )
+                        ) + &match m["health"].as_object() {
+                            Some(h) => {
+                                let problems: Vec<&str> = h.get("problems").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+                                format!("\n    {}{}", h.get("summary").and_then(Value::as_str).unwrap_or(""), if problems.is_empty() { String::new() } else { format!(" · ⚠ {}", problems.join("; ")) })
+                            }
+                            None => String::new(),
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join("\n")
-                    + "\n\n/machines update <name|all> · /machines remove <name> · add one: curl -fsSL <lyra url>/install.sh | sh")
+                    + "\n\n/machines health [name] · /machines update <name|all> · /machines remove <name> · add one: curl -fsSL <lyra url>/install.sh | sh")
             }
             "update" | "remove" => {
                 if rest.is_empty() {
@@ -817,6 +885,23 @@ impl App {
                 }
                 Ok(format!("{} {}…", if sub == "update" { "updating" } else { "removing" }, targets.join(", ")))
             }
+            // Disks, memory, load, failed units, updates (from its last report).
+            "health" => {
+                if rest.is_empty() || rest.eq_ignore_ascii_case("server") {
+                    let mut out = vec![crate::health::describe("server", &lyra_node::health::report())];
+                    if rest.is_empty() {
+                        for m in hub.machines() {
+                            out.push(match &m.health {
+                                Some(h) => crate::health::describe(&m.name, h),
+                                None => format!("{}: no report yet", m.name),
+                            });
+                        }
+                    }
+                    return Ok(out.join("\n\n"));
+                }
+                let m = hub.machines().into_iter().find(|m| m.name.eq_ignore_ascii_case(rest)).ok_or_else(|| format!("{rest} isn't connected (/machines lists them)"))?;
+                Ok(m.health.as_ref().map_or(format!("{}: no report yet (it sends one every 5 minutes)", m.name), |h| crate::health::describe(&m.name, h)))
+            }
             // What runs without asking there; changed like the app's Rules dialog.
             "rules" => {
                 let (name, change) = rest.split_once(' ').map_or((rest, ""), |(n, c)| (n, c.trim()));
@@ -864,7 +949,7 @@ impl App {
                 });
                 Ok(format!("asking {}…", rest.split_whitespace().next().unwrap_or("")))
             }
-            _ => Err(format!("usage: /machines [update <name|all> | remove <name>] · {RULES_USAGE}")),
+            _ => Err(format!("usage: /machines [update <name|all> | remove <name> | health [name|server]] · {RULES_USAGE}")),
         }
     }
 

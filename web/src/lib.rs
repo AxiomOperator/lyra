@@ -65,6 +65,8 @@ pub enum Inbound {
     Health(oneshot::Sender<Value>),
     /// A machine (`lyra node`) connected or went away.
     MachinesChanged,
+    /// A machine sent its health (disks, memory, load, failed units, updates).
+    MachineHealth { name: String, health: Value },
     /// A phone, browser or terminal connected or went away.
     DevicesChanged,
     /// A machine without a screen asks to pair; a paired device approves it.
@@ -115,6 +117,8 @@ pub struct MachineInfo {
     pub build: String,
     /// It can replace itself (the standalone `lyra-node`).
     pub self_update: bool,
+    /// Its latest health report (`lyra_node::health::report`).
+    pub health: Option<Value>,
 }
 
 type Pending = Arc<Mutex<HashMap<u64, std::sync::mpsc::Sender<Result<Value, String>>>>>;
@@ -800,6 +804,7 @@ async fn node_connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
         version: field("version"),
         build: hello["build"].as_str().unwrap_or("").chars().take(64).collect(),
         self_update: hello["self_update"] == true,
+        health: None,
     };
     let conn = s.next_conn.fetch_add(1, Ordering::SeqCst);
     let (to_node, mut outgoing) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -834,6 +839,12 @@ async fn node_connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
                     }
                     "ping" => {
                         let _ = socket.send(Message::Text(json!({ "type": "pong" }).to_string().into())).await;
+                    }
+                    "health" if v["health"].is_object() => {
+                        if let Some(m) = s.machines.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&d.name.to_lowercase()).filter(|m| m.conn == conn) {
+                            m.info.health = Some(v["health"].clone());
+                        }
+                        let _ = s.inbound.send(Inbound::MachineHealth { name: d.name.clone(), health: v["health"].clone() });
                     }
                     _ => {}
                 }

@@ -9,6 +9,8 @@
 //! itself when asked. The pairing and connection helpers are shared with
 //! `lyra connect`.
 
+pub mod health;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -382,8 +384,16 @@ async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System
     }
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<(String, Option<bool>)>();
     let mut ping = tokio::time::interval(Duration::from_secs(30));
+    // Health now, then every few minutes (read off the connection's thread).
+    let mut checkup = tokio::time::interval(health::EVERY);
     loop {
         tokio::select! {
+            _ = checkup.tick() => {
+                let out = out_tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = out.send((json!({ "type": "health", "health": health::report() }).to_string(), None));
+                });
+            }
             _ = ping.tick() => {
                 if let Err(e) = sink.send(Message::Text(json!({ "type": "ping" }).to_string().into())).await {
                     return End::Lost(e.to_string());
