@@ -78,7 +78,12 @@ fn system_tools(machines: &[(String, bool)]) -> Vec<Capability> {
     lyra_system::specs()
         .into_iter()
         .map(|s| {
-            let mut c = Capability::new(s.name, CapabilityKind::NativeTool, s.description, s.risk);
+            let risk = match s.risk {
+                lyra_system::Risk::ReadOnly => RiskLevel::ReadOnly,
+                lyra_system::Risk::Write => RiskLevel::Write,
+                lyra_system::Risk::Destructive => RiskLevel::Destructive,
+            };
+            let mut c = Capability::new(s.name, CapabilityKind::NativeTool, s.description, risk);
             c.input_schema = s.parameters;
             if !machines.is_empty() && s.name != "ssh_run" {
                 let names: Vec<String> = std::iter::once(HERE.to_string()).chain(machines.iter().map(|m| m.0.clone())).collect();

@@ -14,6 +14,14 @@ fn alive(pid: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "lyra")
 }
 
+/// The other lyra using this home, if one runs: (pid, what it is).
+pub fn holder(home: &Path) -> Option<(u32, String)> {
+    let text = std::fs::read_to_string(home.join("lyra.pid")).ok()?;
+    let (pid, mode) = text.trim().split_once(' ').unwrap_or((text.trim(), "lyra"));
+    let pid: u32 = pid.parse().ok()?;
+    (pid != std::process::id() && alive(pid)).then(|| (pid, mode.to_string()))
+}
+
 /// Take the home for this process (`mode`: "the terminal UI" or "lyra serve").
 pub fn acquire(home: &Path, mode: &str) -> Result<Lock, String> {
     let path = home.join("lyra.pid");

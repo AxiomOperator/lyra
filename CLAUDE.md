@@ -4,8 +4,7 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
 
 ## Layout
 
-- `src/` — the TUI binary: `main.rs` (app state, streaming, tool loop), `ui.rs` (all drawing), `markdown.rs` (replies as styled lines), `commands.rs` (the `/` command palette), `sessions.rs` (saved conversations, `-c`/`-r`), `serve.rs` (`lyra serve`), `node.rs` (`lyra node`: lends a machine's system tools to a server),
-  `connect.rs` (`lyra connect`: the TUI as a client of a server),
+- `src/` — the TUI binary: `main.rs` (app state, streaming, tool loop), `ui.rs` (all drawing), `markdown.rs` (replies as styled lines), `commands.rs` (the `/` command palette), `sessions.rs` (saved conversations, `-c`/`-r`), `serve.rs` (`lyra serve`), `connect.rs` (`lyra connect`: the TUI as a client of a server),
   `config.rs`, `context.rs` (SOUL/USER/AGENT.md), `tools.rs` (memory tools + composite tools), `caps.rs` (capabilities glue), `goals.rs` (goals glue), `mem.rs` (memory glue), `plan.rs` (planning glue), `learn.rs`
   (self-learning glue), `evolve.rs` (evolution glue: evolved state, benchmark, `/evolve`), `retrieval.rs` (embedding/reranker clients), `stats.rs`.
 - `memory/` — `lyra-memory` crate: memory behind `MemoryManager` (LanceDB by default: typed memory rows with
@@ -21,6 +20,9 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
 - `system/` — `lyra-system` crate: system access for agents (shell with a Rust command classifier,
   files, HTTP, SSH, system info), every call checked (`System::check`: auto / ask / forbidden). Only
   agents whose profile lists the tools (the Operator) may call them; changes wait for the user's y/n.
+- `node/` — `lyra-node` crate (lib + static binary): lends a machine's system tools to a server
+  (outbound WebSocket), headless pairing, self-update and self-uninstall; its pairing/connection
+  helpers are shared with `src/connect.rs`. Built static with musl (`.cargo/config.toml`).
 - `web/` — `lyra-web` crate: `lyra serve`'s HTTP + WebSocket server (axum), device pairing (token
   hashes in `~/.lyra/web/devices.json`), Web Push (VAPID + RFC 8291 with RustCrypto), and the PWA
   in `web/assets/` (built into the binary). `src/serve.rs` mirrors the `App` to devices as small

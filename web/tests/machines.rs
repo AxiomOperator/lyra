@@ -65,3 +65,53 @@ fn a_machine_answers_calls_and_its_going_away_is_noticed() {
     assert!(hub.machines().is_empty());
     assert!(hub.call_machine("desktop", json!({}), Duration::from_secs(1)).unwrap_err().contains("isn't connected"));
 }
+
+#[test]
+fn a_headless_machine_pairs_when_a_device_approves() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let dir = std::env::temp_dir().join(format!("lyra-headless-{}", std::process::id()));
+    let (tx, inbound) = std::sync::mpsc::channel();
+    let node_bin = dir.join("lyra-node-bin");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(&node_bin, b"pretend program").unwrap();
+    let settings = Settings { listen: "127.0.0.1:0".into(), node_binary: node_bin.display().to_string(), public_url: "https://lyra.example.com".into(), ..Settings::default() };
+    let hub = Hub::start(rt.handle(), &settings, &dir, tx).unwrap();
+    let base = format!("http://{}", hub.address);
+    let client = reqwest::blocking::Client::new();
+    let post = |path: &str, body: Value| client.post(format!("{base}{path}")).json(&body).send().unwrap().json::<Value>().unwrap();
+    let get = |path: &str| client.get(format!("{base}{path}")).send().unwrap();
+
+    let asked = post("/api/pair/request", json!({ "name": "web1", "hostname": "web1.lan", "os": "Debian" }));
+    let (id, code) = (asked["id"].as_str().unwrap().to_string(), asked["code"].as_str().unwrap().to_string());
+    assert_eq!(code.len(), 4);
+    assert!(matches!(inbound.recv_timeout(Duration::from_secs(5)), Ok(Inbound::PairRequested(p)) if p.name == "web1" && p.kind == "node"));
+    assert_eq!(hub.pair_requests().len(), 1);
+    assert_eq!(get(&format!("/api/pair/request/{id}")).json::<Value>().unwrap()["state"], "waiting");
+
+    assert!(hub.answer_pair("ZZZZ", true).is_err(), "the code must match");
+    assert!(hub.answer_pair(&code.to_lowercase(), true).unwrap().contains("paired web1"));
+    let done = get(&format!("/api/pair/request/{id}")).json::<Value>().unwrap();
+    assert_eq!(done["state"], "approved");
+    let token = done["token"].as_str().unwrap();
+    assert!(hub.devices().authenticate(token).is_some_and(|d| d.kind == "node" && d.name == "web1"));
+    assert_eq!(get(&format!("/api/pair/request/{id}")).json::<Value>().unwrap()["state"], "unknown", "the token is handed over once");
+
+    // Denied, and too many at once.
+    let denied = post("/api/pair/request", json!({ "name": "x" }));
+    hub.answer_pair(denied["code"].as_str().unwrap(), false).unwrap();
+    assert_eq!(get(&format!("/api/pair/request/{}", denied["id"].as_str().unwrap())).json::<Value>().unwrap()["state"], "denied");
+    for i in 0..5 {
+        post("/api/pair/request", json!({ "name": format!("m{i}") }));
+    }
+    assert!(post("/api/pair/request", json!({ "name": "one-too-many" }))["error"].as_str().unwrap().contains("too many"));
+    assert!(post("/api/pair/request", json!({ "name": "" }))["error"].is_string(), "a name is needed");
+
+    // Handing out lyra-node, its checksum, and the installer pointing here.
+    assert_eq!(get("/download/lyra-node").bytes().unwrap().as_ref(), b"pretend program");
+    let sum = get("/download/lyra-node.sha256").text().unwrap();
+    assert_eq!(sum.split_whitespace().next().unwrap(), hub.node_build().unwrap());
+    let script = get("/install.sh").text().unwrap();
+    assert!(script.contains("URL=\"https://lyra.example.com\"") && script.contains("lyra-node\" pair"));
+    // The app is stamped with its version.
+    assert!(get("/app.js").text().unwrap().contains(&format!("\"{}\"", hub.app_version())));
+}

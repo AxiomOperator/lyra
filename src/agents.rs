@@ -124,6 +124,35 @@ pub struct Env {
     pub learning: Option<Arc<Learning>>,
     pub agents: Arc<Agents>,
     pub tx: Sender<StreamEvent>,
+    /// A machine the user named with `@desktop`: system tools default to it.
+    pub machine: Option<String>,
+}
+
+/// The machine a message names with `@name` (one of `known`, or `server`).
+pub fn machine_mention(message: &str, known: &[String]) -> Option<String> {
+    message.split_whitespace().filter_map(|w| w.strip_prefix('@')).find_map(|w| {
+        let w = w.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
+        if w.eq_ignore_ascii_case(crate::caps::HERE) {
+            return Some(crate::caps::HERE.to_string());
+        }
+        known.iter().find(|k| k.eq_ignore_ascii_case(w)).cloned()
+    })
+}
+
+/// A system call's arguments with the mentioned machine filled in, when the
+/// model didn't pick one.
+fn with_machine(env: &Env, tool: &str, args: &str) -> String {
+    let (Some(machine), Some(caps)) = (&env.machine, &env.caps) else { return args.to_string() };
+    if tool == "ssh_run" || caps.manager.get(tool).is_none_or(|c| c.source != "system") {
+        return args.to_string();
+    }
+    let mut v: Value = serde_json::from_str(args).unwrap_or(json!({}));
+    if v.get("machine").and_then(Value::as_str).is_none_or(str::is_empty)
+        && let Some(map) = v.as_object_mut()
+    {
+        map.insert("machine".into(), json!(machine));
+    }
+    v.to_string()
 }
 
 fn emit(tx: &Sender<StreamEvent>, e: AgentEvent) {
@@ -350,6 +379,8 @@ pub fn delegate(
                 nested(env, profile, args, depth, run)
             } else if allowed.iter().any(|c| c.name == name) {
                 tool_calls += 1;
+                let filled = with_machine(env, name, args);
+                let args = filled.as_str();
                 let ctx = CallContext {
                     run,
                     call_id: call["id"].as_str().unwrap_or(""),
@@ -615,7 +646,13 @@ pub fn panel(agents: &Agents) -> Vec<PanelRow> {
 /// specialist should take it, run the delegation and put it in the history as
 /// the main agent's own `delegate` call (A6, A11). Returns the agent's title.
 pub fn auto_delegate(env: &Env, message: &str, run: Uuid, history: &mut Vec<Value>) -> Option<String> {
-    let d = env.agents.route(env, message)?;
+    // `@desktop …`: the Operator, on that machine.
+    let d = match &env.machine {
+        Some(m) if env.agents.registry.get("operator").is_some_and(|p| p.enabled) => {
+            RoutingDecision { agent: "operator".into(), confidence: 1.0, reason: format!("@{m}"), method: RouteMethod::Explicit }
+        }
+        _ => env.agents.route(env, message)?,
+    };
     let profile = env.agents.registry.get(&d.agent)?;
     emit(&env.tx, AgentEvent::Routed { agent: profile.title.clone(), method: d.method, confidence: d.confidence, reason: d.reason.clone() });
     let input = delegation::extract_input(message);
@@ -645,6 +682,7 @@ impl crate::App {
             learning: self.learning.clone(),
             agents,
             tx: self.tx.clone(),
+            machine: None,
         })
     }
 
@@ -1253,7 +1291,7 @@ mod tests {
         caps.set_agents(agents.clone());
         caps.refresh();
         let (tx, events) = mpsc::channel();
-        let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx };
+        let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx, machine: None };
         Fixture { _rt: rt, env, events }
     }
 
@@ -1364,6 +1402,23 @@ mod tests {
         // Other agents don't have them either.
         let writer = f.env.agents.registry.get("writer").unwrap();
         assert!(!caps.manager.usable().iter().any(|c| c.name == "shell_run" && delegation::allows(&writer, c)));
+    }
+
+    #[test]
+    fn at_mentions_pick_a_machine() {
+        let known = vec!["desktop".to_string(), "web1".to_string()];
+        assert_eq!(machine_mention("@desktop how much disk is free?", &known).as_deref(), Some("desktop"));
+        assert_eq!(machine_mention("check uptime on @Web1, please", &known).as_deref(), Some("web1"));
+        assert_eq!(machine_mention("@server restart nginx", &known).as_deref(), Some("server"));
+        assert_eq!(machine_mention("@writer fix this email", &known), None, "agents aren't machines");
+        assert_eq!(machine_mention("mail me at a@b.com", &known), None);
+
+        let f = fixture("http://127.0.0.1:9/v1/chat/completions");
+        let mut env = f.env.clone();
+        env.machine = Some("desktop".into());
+        assert_eq!(serde_json::from_str::<Value>(&with_machine(&env, "shell_run", r#"{"command":"ls"}"#)).unwrap()["machine"], "desktop");
+        assert_eq!(serde_json::from_str::<Value>(&with_machine(&env, "shell_run", r#"{"command":"ls","machine":"server"}"#)).unwrap()["machine"], "server", "an explicit choice stays");
+        assert_eq!(with_machine(&env, "memory_recall", r#"{"query":"x"}"#), r#"{"query":"x"}"#, "only system tools");
     }
 
     #[test]

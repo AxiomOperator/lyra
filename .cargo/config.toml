@@ -1,0 +1,4 @@
+# The static lyra-node build (x86_64-unknown-linux-musl): ring's C code needs no
+# libc, so the system gcc compiles it (no musl-gcc needed).
+[env]
+CC_x86_64_unknown_linux_musl = "gcc"

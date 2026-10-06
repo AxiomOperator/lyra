@@ -37,11 +37,14 @@ pub struct Settings {
     pub public_url: String,
     /// Push notifications when no device has lyra open.
     pub notify: bool,
+    /// The `lyra-node` program handed out at /download/lyra-node (default:
+    /// `lyra-node` next to the running lyra).
+    pub node_binary: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { listen: "127.0.0.1:8484".into(), public_url: String::new(), notify: true }
+        Self { listen: "127.0.0.1:8484".into(), public_url: String::new(), notify: true, node_binary: String::new() }
     }
 }
 
@@ -57,7 +60,41 @@ pub enum Inbound {
     Health(oneshot::Sender<Value>),
     /// A machine (`lyra node`) connected or went away.
     MachinesChanged,
+    /// A phone, browser or terminal connected or went away.
+    DevicesChanged,
+    /// A machine without a screen asks to pair; a paired device approves it.
+    PairRequested(PairRequest),
+    /// Something to say in the conversation (who approved a pairing, …).
+    Note(String),
+    /// A device asks for a list (sessions, devices, activity…) for a page.
+    Get { what: String, reply: oneshot::Sender<Value> },
 }
+
+/// A headless machine asking to pair (`lyra-node pair <url>` without a code).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PairRequest {
+    pub id: String,
+    /// Shown on the machine too, so the right request gets approved.
+    pub code: String,
+    pub name: String,
+    pub kind: String,
+    pub hostname: String,
+    pub os: String,
+    pub created: chrono::DateTime<chrono::Utc>,
+    #[serde(skip)]
+    state: PairState,
+}
+
+#[derive(Debug, Clone, Default)]
+enum PairState {
+    #[default]
+    Waiting,
+    Approved(String),
+    Denied,
+}
+
+/// How long a pairing request waits for an answer.
+const PAIR_REQUEST_MINUTES: i64 = 10;
 
 /// A machine lending lyra its tools (`lyra node`), as it introduced itself.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -68,6 +105,11 @@ pub struct MachineInfo {
     pub os: String,
     pub user: String,
     pub since: chrono::DateTime<chrono::Utc>,
+    pub version: String,
+    /// sha256 of its program (compared with the server's to offer updates).
+    pub build: String,
+    /// It can replace itself (the standalone `lyra-node`).
+    pub self_update: bool,
 }
 
 type Pending = Arc<Mutex<HashMap<u64, std::sync::mpsc::Sender<Result<Value, String>>>>>;
@@ -103,6 +145,11 @@ struct Shared {
     next_conn: AtomicU64,
     machines: Mutex<HashMap<String, MachineConn>>,
     next_call: AtomicU64,
+    /// Devices connected now: connection → (device id, name).
+    online: Mutex<HashMap<u64, (String, String)>>,
+    requests: Mutex<Vec<PairRequest>>,
+    node_binary: std::path::PathBuf,
+    public_url: String,
 }
 
 /// The running server, as the app sees it.
@@ -154,6 +201,14 @@ impl Hub {
             next_conn: AtomicU64::new(1),
             machines: Mutex::new(HashMap::new()),
             next_call: AtomicU64::new(1),
+            online: Mutex::new(HashMap::new()),
+            requests: Mutex::new(Vec::new()),
+            node_binary: if settings.node_binary.trim().is_empty() {
+                std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("lyra-node"))).unwrap_or_default()
+            } else {
+                std::path::PathBuf::from(settings.node_binary.trim())
+            },
+            public_url: settings.public_url.trim_end_matches('/').to_string(),
         });
         let addr: SocketAddr = settings.listen.parse().map_err(|e| format!("[web] listen {:?}: {e}", settings.listen))?;
         let listener = rt.block_on(tokio::net::TcpListener::bind(addr)).map_err(|e| format!("can't listen on {addr}: {e}"))?;
@@ -179,6 +234,48 @@ impl Hub {
         let seq = self.shared.seq.fetch_add(1, Ordering::SeqCst) + 1;
         msg["seq"] = json!(seq);
         let _ = self.shared.out.send(Arc::new(msg.to_string()));
+    }
+
+    /// Devices (phones, browsers, terminals) connected now: (id, name), once each.
+    pub fn online_devices(&self) -> Vec<(String, String)> {
+        let mut all: Vec<(String, String)> = self.shared.online.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
+        all.sort();
+        all.dedup();
+        all
+    }
+
+    /// Headless machines waiting for approval.
+    pub fn pair_requests(&self) -> Vec<PairRequest> {
+        let mut r = self.shared.requests.lock().unwrap_or_else(|e| e.into_inner());
+        r.retain(|p| chrono::Utc::now() - p.created < chrono::Duration::minutes(PAIR_REQUEST_MINUTES));
+        r.iter().filter(|p| matches!(p.state, PairState::Waiting)).cloned().collect()
+    }
+
+    /// Approve or deny a pairing request (by its code or id).
+    pub fn answer_pair(&self, key: &str, approve: bool) -> Result<String, String> {
+        let key = key.trim().to_uppercase().replace('-', "");
+        let mut r = self.shared.requests.lock().unwrap_or_else(|e| e.into_inner());
+        let p = r
+            .iter_mut()
+            .find(|p| matches!(p.state, PairState::Waiting) && (p.code == key || p.id.to_uppercase() == key))
+            .ok_or_else(|| format!("no pairing request {key:?} is waiting"))?;
+        if !approve {
+            p.state = PairState::Denied;
+            return Ok(format!("denied {} ({})", p.name, p.hostname));
+        }
+        let (d, token) = self.shared.devices.add(&p.name, &p.kind)?;
+        p.state = PairState::Approved(token);
+        Ok(format!("paired {} ({}) as a {}", d.name, p.hostname, if d.kind == "node" { "machine" } else { "device" }))
+    }
+
+    /// sha256 of the `lyra-node` program this server hands out, if it has one.
+    pub fn node_build(&self) -> Option<String> {
+        node_build(&self.shared.node_binary)
+    }
+
+    /// The web app's version: changes whenever its files do.
+    pub fn app_version(&self) -> &'static str {
+        app_version()
     }
 
     /// The machines connected right now (`lyra node`), by name.
@@ -246,14 +343,19 @@ fn router(shared: Arc<Shared>) -> Router {
     let image = |body: &'static [u8]| move || async move { ([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "max-age=86400")], body) };
     Router::new()
         .route("/", get(file(INDEX, "text/html; charset=utf-8")))
-        .route("/app.js", get(file(APP_JS, "text/javascript; charset=utf-8")))
+        .route("/app.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], APP_JS.replace("__LYRA_VERSION__", app_version())) }))
         .route("/style.css", get(file(STYLE, "text/css; charset=utf-8")))
         .route("/manifest.webmanifest", get(file(MANIFEST, "application/manifest+json")))
-        .route("/sw.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], SW_JS) }))
+        .route("/sw.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], SW_JS.replace("__LYRA_VERSION__", app_version())) }))
         .route("/icon-192.png", get(image(ICON_192)))
         .route("/icon-512.png", get(image(ICON_512)))
         .route("/apple-touch-icon.png", get(image(ICON_180)))
         .route("/api/pair", post(pair))
+        .route("/api/pair/request", post(pair_request))
+        .route("/api/pair/request/{id}", get(pair_poll))
+        .route("/download/lyra-node", get(download_node))
+        .route("/download/lyra-node.sha256", get(download_node_sha))
+        .route("/install.sh", get(install_script))
         .route("/api/me", get(me))
         .route("/api/vapid", get(vapid_key))
         .route("/api/push", post(set_push))
@@ -396,6 +498,8 @@ async fn ws(State(s): State<Arc<Shared>>, Query(q): Query<WsQuery>, upgrade: Web
 async fn connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
     let conn = s.next_conn.fetch_add(1, Ordering::SeqCst);
     s.visible.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, Some(Instant::now()));
+    s.online.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, (d.id.clone(), d.name.clone()));
+    let _ = s.inbound.send(Inbound::DevicesChanged);
     // Subscribe before asking for the snapshot, so nothing falls in between.
     let mut updates = s.out.subscribe();
     let (tx, rx) = oneshot::channel();
@@ -407,6 +511,8 @@ async fn connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
     snapshot["device"] = json!({ "id": d.id, "name": d.name, "push": d.push.is_some() });
     if socket.send(Message::Text(snapshot.to_string().into())).await.is_err() {
         s.visible.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn);
+        s.online.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn);
+        let _ = s.inbound.send(Inbound::DevicesChanged);
         return;
     }
     loop {
@@ -449,12 +555,35 @@ async fn connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
                     "ping" => {
                         let _ = socket.send(Message::Text(json!({ "type": "pong" }).to_string().into())).await;
                     }
+                    "pair_answer" => {
+                        let hub = Hub { shared: s.clone(), address: "0.0.0.0:0".parse().expect("address") };
+                        let key = v["id"].as_str().or(v["code"].as_str()).unwrap_or("").to_string();
+                        let text = match hub.answer_pair(&key, v["approve"] == true) {
+                            Ok(t) => t,
+                            Err(e) => e,
+                        };
+                        let _ = s.inbound.send(Inbound::Note(format!("{} (from {})", text, d.name)));
+                    }
+                    "get" => {
+                        let what = v["what"].as_str().unwrap_or("").to_string();
+                        let (tx, rx) = oneshot::channel();
+                        if s.inbound.send(Inbound::Get { what: what.clone(), reply: tx }).is_ok()
+                            && let Ok(data) = rx.await
+                        {
+                            let msg = json!({ "type": "data", "what": what, "data": data });
+                            if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
         }
     }
     s.visible.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn);
+    s.online.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn);
+    let _ = s.inbound.send(Inbound::DevicesChanged);
 }
 
 // ---- machines (`lyra node`): a machine connects out and runs lyra's
@@ -479,7 +608,16 @@ async fn node_connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
         return;
     }
     let field = |k: &str| hello[k].as_str().unwrap_or("").chars().take(80).collect::<String>();
-    let info = MachineInfo { name: d.name.clone(), hostname: field("hostname"), os: field("os"), user: field("user"), since: chrono::Utc::now() };
+    let info = MachineInfo {
+        name: d.name.clone(),
+        hostname: field("hostname"),
+        os: field("os"),
+        user: field("user"),
+        since: chrono::Utc::now(),
+        version: field("version"),
+        build: hello["build"].as_str().unwrap_or("").chars().take(64).collect(),
+        self_update: hello["self_update"] == true,
+    };
     let conn = s.next_conn.fetch_add(1, Ordering::SeqCst);
     let (to_node, mut outgoing) = tokio::sync::mpsc::unbounded_channel::<String>();
     let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
@@ -532,4 +670,131 @@ fn fail_pending(pending: &Pending, why: &str) {
     for (_, tx) in pending.lock().unwrap_or_else(|e| e.into_inner()).drain() {
         let _ = tx.send(Err(why.to_string()));
     }
+}
+
+// ---- headless pairing: the machine asks, a paired device approves
+
+#[derive(Deserialize)]
+struct PairRequestBody {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    hostname: String,
+    #[serde(default)]
+    os: String,
+}
+
+/// Waiting requests at once (anyone who can reach lyra can ask; only a
+/// paired device can approve, and it sees the code the machine shows).
+const MAX_PAIR_REQUESTS: usize = 5;
+
+async fn pair_request(State(s): State<Arc<Shared>>, Json(b): Json<PairRequestBody>) -> Response {
+    let kind = if b.kind.is_empty() { "node".to_string() } else { b.kind.clone() };
+    if !matches!(kind.as_str(), "node" | "device") {
+        return error(StatusCode::BAD_REQUEST, "kind is node or device");
+    }
+    let clip = |t: &str| t.trim().chars().take(60).collect::<String>();
+    let name = clip(&b.name);
+    if name.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "a name is needed (--name)");
+    }
+    let request = {
+        let mut r = s.requests.lock().unwrap_or_else(|e| e.into_inner());
+        r.retain(|p| chrono::Utc::now() - p.created < chrono::Duration::minutes(PAIR_REQUEST_MINUTES));
+        if r.iter().filter(|p| matches!(p.state, PairState::Waiting)).count() >= MAX_PAIR_REQUESTS {
+            return error(StatusCode::TOO_MANY_REQUESTS, "too many pairing requests are waiting; approve or deny them first");
+        }
+        let p = PairRequest {
+            id: devices::random(16, b"abcdefghijkmnpqrstuvwxyz23456789"),
+            code: devices::random(4, b"ABCDEFGHJKMNPQRSTUVWXYZ23456789"),
+            name,
+            kind,
+            hostname: clip(&b.hostname),
+            os: clip(&b.os),
+            created: chrono::Utc::now(),
+            state: PairState::Waiting,
+        };
+        r.push(p.clone());
+        p
+    };
+    let _ = s.inbound.send(Inbound::PairRequested(request.clone()));
+    Json(json!({ "id": request.id, "code": request.code, "expires_in": PAIR_REQUEST_MINUTES * 60 })).into_response()
+}
+
+/// The waiting machine polls this; the token is handed over once.
+async fn pair_poll(State(s): State<Arc<Shared>>, axum::extract::Path(id): axum::extract::Path<String>) -> Response {
+    let mut r = s.requests.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(i) = r.iter().position(|p| p.id == id) else { return Json(json!({ "state": "unknown" })).into_response() };
+    if chrono::Utc::now() - r[i].created >= chrono::Duration::minutes(PAIR_REQUEST_MINUTES) {
+        r.remove(i);
+        return Json(json!({ "state": "expired" })).into_response();
+    }
+    match r[i].state.clone() {
+        PairState::Waiting => Json(json!({ "state": "waiting" })).into_response(),
+        PairState::Denied => {
+            r.remove(i);
+            Json(json!({ "state": "denied" })).into_response()
+        }
+        PairState::Approved(token) => {
+            r.remove(i);
+            Json(json!({ "state": "approved", "token": token })).into_response()
+        }
+    }
+}
+
+// ---- handing out lyra-node
+
+fn node_build(path: &Path) -> Option<String> {
+    use sha2::Digest;
+    let bytes = std::fs::read(path).ok()?;
+    Some(sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect())
+}
+
+async fn download_node(State(s): State<Arc<Shared>>) -> Response {
+    match tokio::fs::read(&s.node_binary).await {
+        Ok(bytes) => (
+            [(header::CONTENT_TYPE, "application/octet-stream"), (header::CONTENT_DISPOSITION, "attachment; filename=\"lyra-node\"")],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => error(StatusCode::NOT_FOUND, &format!("this server has no lyra-node to hand out ({})", s.node_binary.display())),
+    }
+}
+
+async fn download_node_sha(State(s): State<Arc<Shared>>) -> Response {
+    let path = s.node_binary.clone();
+    match tokio::task::spawn_blocking(move || node_build(&path)).await.ok().flatten() {
+        Some(sum) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], format!("{sum}  lyra-node\n")).into_response(),
+        None => error(StatusCode::NOT_FOUND, "this server has no lyra-node to hand out"),
+    }
+}
+
+const INSTALL_SH: &str = include_str!("../assets/install.sh");
+
+/// `curl -fsSL https://lyra…/install.sh | sh -s -- --name web1`
+async fn install_script(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Response {
+    let url = if s.public_url.is_empty() {
+        let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("localhost");
+        let proto = headers.get("x-forwarded-proto").and_then(|h| h.to_str().ok()).unwrap_or("http");
+        format!("{proto}://{host}")
+    } else {
+        s.public_url.clone()
+    };
+    ([(header::CONTENT_TYPE, "text/x-shellscript; charset=utf-8")], INSTALL_SH.replace("__LYRA_URL__", &url)).into_response()
+}
+
+// ---- the web app's version
+
+fn app_version() -> &'static str {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        for part in [INDEX, APP_JS, SW_JS, STYLE, MANIFEST] {
+            h.update(part.as_bytes());
+        }
+        h.finalize().iter().take(6).map(|b| format!("{b:02x}")).collect()
+    })
 }

@@ -26,7 +26,7 @@ pub struct RemoteConfig {
 }
 
 pub fn config_path() -> Option<std::path::PathBuf> {
-    Some(crate::node::config_dir()?.join("remote.toml"))
+    Some(lyra_node::config_dir()?.join("remote.toml"))
 }
 
 pub fn configured() -> bool {
@@ -121,7 +121,7 @@ fn truncate(text: &str, max: usize) -> String {
 
 /// Keep the connection up (reconnecting), feeding the screen and sending its messages.
 async fn connection(config: RemoteConfig, to_screen: mpsc::Sender<Incoming>, mut from_screen: tokio::sync::mpsc::UnboundedReceiver<String>) {
-    let url = crate::node::socket_url(&config.url, "ws", &config.token);
+    let url = lyra_node::socket_url(&config.url, "ws", &config.token);
     let mut pause = 1;
     loop {
         match tokio_tungstenite::connect_async(url.as_str()).await {
@@ -189,6 +189,8 @@ struct Screen {
     show_reasoning: bool,
     palette: usize,
     palette_hidden: bool,
+    /// The side panel (devices and machines online); Ctrl-B toggles it.
+    show_panel: bool,
     out: tokio::sync::mpsc::UnboundedSender<String>,
     url: String,
 }
@@ -204,8 +206,32 @@ impl Screen {
         self.view.status["approvals"].as_array().and_then(|a| a.first())
     }
 
+    /// The word being typed starts with `@`: the machines to pick from.
+    fn mentioning(&self) -> Option<&str> {
+        let word = self.input.rsplit(' ').next().unwrap_or("");
+        word.starts_with('@').then_some(word)
+    }
+
     fn palette_entries(&self) -> Vec<(String, String, String)> {
-        if self.palette_hidden || !self.input.starts_with('/') {
+        if self.palette_hidden {
+            return Vec::new();
+        }
+        if let Some(word) = self.mentioning() {
+            let typed = word.trim_start_matches('@').to_lowercase();
+            let before = &self.input[..self.input.len() - word.len()];
+            let mut names = vec![("server".to_string(), "where lyra runs".to_string())];
+            for m in self.view.status["machines_detail"].as_array().into_iter().flatten().filter(|m| m["online"] == true) {
+                let name = str_of(&m["name"]);
+                let about = [str_of(&m["hostname"]), str_of(&m["os"])].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+                names.push((name, if about.is_empty() { "online".into() } else { format!("online · {about}") }));
+            }
+            return names
+                .into_iter()
+                .filter(|(n, _)| n.to_lowercase().starts_with(&typed))
+                .map(|(n, d)| (format!("@{n}"), d, format!("{before}@{n} ")))
+                .collect();
+        }
+        if !self.input.starts_with('/') {
             return Vec::new();
         }
         let q = self.input.to_lowercase();
@@ -250,8 +276,14 @@ fn role_label(role: &str) -> (&'static str, Color) {
 fn draw(f: &mut Frame, s: &mut Screen) {
     let approval = approval_box(s);
     let approval_height = approval.as_ref().map_or(0, |p| p.line_count(f.area().width) as u16).min(f.area().height / 2);
-    let [header, chat, approval_area, input_area] =
+    let [header, middle, approval_area, input_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(approval_height), Constraint::Length(3)]).areas(f.area());
+    let (chat, panel) = if s.show_panel && middle.width >= 100 {
+        let [chat, panel] = Layout::horizontal([Constraint::Min(40), Constraint::Length(36)]).areas(middle);
+        (chat, Some(panel))
+    } else {
+        (middle, None)
+    };
 
     // Header: connection, conversation, what lyra is doing, machines.
     let st = &s.view.status;
@@ -281,6 +313,9 @@ fn draw(f: &mut Frame, s: &mut Screen) {
     f.render_widget(Line::from(spans), header);
 
     draw_chat(f, s, chat);
+    if let Some(panel) = panel {
+        draw_panel(f, s, panel);
+    }
     if let Some(p) = approval {
         f.render_widget(p, approval_area);
     }
@@ -295,7 +330,7 @@ fn draw(f: &mut Frame, s: &mut Screen) {
             Span::raw(" allow for this session "),
         ])
     } else {
-        Line::from(format!(" {} · Enter send · / commands · PgUp PgDn scroll · ^R reasoning · Esc quit ", s.url))
+        Line::from(format!(" {} · Enter send · / commands · @ machines · PgUp PgDn · ^R reasoning · ^B panel · Esc quit ", s.url))
     };
     let border = if s.approval().is_some() { Style::default().fg(Color::Yellow) } else { Style::default() };
     f.render_widget(Paragraph::new(s.input.as_str()).block(Block::bordered().title(title).border_style(border)), input_area);
@@ -374,6 +409,60 @@ fn draw_chat(f: &mut Frame, s: &mut Screen, area: Rect) {
     f.render_widget(chat.scroll((s.scroll.unwrap_or(s.max_scroll), 0)), area);
 }
 
+/// Who's here: devices online, machines (online or not), pairing requests,
+/// agents at work.
+fn draw_panel(f: &mut Frame, s: &Screen, area: Rect) {
+    let st = &s.view.status;
+    let dim = Style::default().fg(Color::DarkGray);
+    let width = area.width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = vec![Line::from("Devices online".bold())];
+    let online = st["online"].as_array().cloned().unwrap_or_default();
+    if online.is_empty() {
+        lines.push(Line::styled("  none", dim));
+    }
+    for d in &online {
+        lines.push(Line::from(vec![Span::styled("● ", Style::default().fg(Color::Green)), Span::raw(truncate(&str_of(&d["name"]), width.saturating_sub(2)))]));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from("Machines".bold()));
+    let machines = st["machines_detail"].as_array().cloned().unwrap_or_default();
+    if machines.is_empty() {
+        lines.push(Line::styled("  none paired", dim));
+    }
+    for m in &machines {
+        let on = m["online"] == true;
+        let mut text = str_of(&m["name"]);
+        if m["update_available"] == true {
+            text += " · update";
+        }
+        lines.push(Line::from(vec![
+            Span::styled(if on { "● " } else { "○ " }, Style::default().fg(if on { Color::Green } else { Color::DarkGray })),
+            Span::styled(truncate(&text, width.saturating_sub(2)), if on { Style::default() } else { dim }),
+        ]));
+        if on && let Some(h) = m["hostname"].as_str().filter(|h| !h.is_empty()) {
+            lines.push(Line::styled(format!("  {}", truncate(h, width.saturating_sub(2))), dim));
+        }
+    }
+    let pairing = st["pairing"].as_array().cloned().unwrap_or_default();
+    if !pairing.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from("Wants to pair".bold().yellow()));
+        for p in &pairing {
+            lines.push(Line::styled(truncate(&format!("? {} ({})", str_of(&p["name"]), str_of(&p["hostname"])), width), Style::default().fg(Color::Yellow)));
+            lines.push(Line::styled(truncate(&format!("  /devices approve {}", str_of(&p["code"])), width), dim));
+        }
+    }
+    let working: Vec<String> = st["agents"].as_array().into_iter().flatten().filter(|a| a["working"] == true).map(|a| str_of(&a["title"])).collect();
+    if !working.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from("Working".bold()));
+        for a in working {
+            lines.push(Line::styled(format!("↪ {a}"), Style::default().fg(Color::LightBlue)));
+        }
+    }
+    f.render_widget(Paragraph::new(lines).block(Block::bordered().title(" Online ")), area);
+}
+
 /// The open approval, in full: who, what kind of thing, exactly what, why, keys.
 fn approval_box(s: &Screen) -> Option<Paragraph<'static>> {
     let a = s.approval()?;
@@ -433,7 +522,7 @@ fn draw_palette(f: &mut Frame, s: &Screen, area: Rect) {
     let height = rows as u16 + 2;
     let popup = Rect { x: area.x, y: area.y + area.height - height, width, height };
     f.render_widget(Clear, popup);
-    f.render_widget(Paragraph::new(lines).block(Block::bordered().title(format!(" commands · {} · ↑↓ Tab Esc ", entries.len())).border_style(Style::default().fg(Color::Cyan))), popup);
+    f.render_widget(Paragraph::new(lines).block(Block::bordered().title(format!(" {} · {} · ↑↓ Tab Esc ", if s.mentioning().is_some() { "machines" } else { "commands" }, entries.len())).border_style(Style::default().fg(Color::Cyan))), popup);
 }
 
 fn ui_loop(terminal: &mut DefaultTerminal, s: &mut Screen, incoming: mpsc::Receiver<Incoming>) -> std::io::Result<()> {
@@ -499,7 +588,7 @@ fn ui_loop(terminal: &mut DefaultTerminal, s: &mut Screen, incoming: mpsc::Recei
                     complete(s);
                     continue;
                 }
-                KeyCode::Enter if !s.input.contains(' ') && !s.view.commands.iter().any(|c| c.0.split_whitespace().next() == Some(s.input.trim())) => {
+                KeyCode::Enter if s.mentioning().is_some() || (!s.input.contains(' ') && !s.view.commands.iter().any(|c| c.0.split_whitespace().next() == Some(s.input.trim()))) => {
                     complete(s);
                     continue;
                 }
@@ -510,6 +599,7 @@ fn ui_loop(terminal: &mut DefaultTerminal, s: &mut Screen, incoming: mpsc::Recei
             KeyCode::Esc => return Ok(()),
             KeyCode::Char('c') if ctrl => return Ok(()),
             KeyCode::Char('r') if ctrl => s.show_reasoning = !s.show_reasoning,
+            KeyCode::Char('b') if ctrl => s.show_panel = !s.show_panel,
             KeyCode::Up => s.scroll = Some(s.scroll.unwrap_or(s.max_scroll).saturating_sub(1)),
             KeyCode::Down => s.scroll = s.scroll.map(|t| t + 1).filter(|&t| t < s.max_scroll),
             KeyCode::PageUp => s.scroll = Some(s.scroll.unwrap_or(s.max_scroll).saturating_sub(s.page)),
@@ -544,7 +634,7 @@ pub fn main(args: &[String]) {
         println!("{USAGE}");
         return;
     }
-    crate::node::tls_provider();
+    lyra_node::tls_provider();
     let path = config_path().expect("a home directory");
     if let Some(code) = flag("--pair") {
         let existing: Option<RemoteConfig> = std::fs::read_to_string(&path).ok().and_then(|t| toml::from_str(&t).ok());
@@ -553,10 +643,10 @@ pub fn main(args: &[String]) {
             std::process::exit(2);
         };
         let name = flag("--name").unwrap_or_else(|| "terminal".into());
-        match crate::node::pair(&url, &code, &name, "device") {
+        match lyra_node::pair(&url, &code, &name, "device") {
             Ok(token) => {
                 let config = RemoteConfig { url: url.trim_end_matches('/').to_string(), token, name };
-                if let Err(e) = toml::to_string_pretty(&config).map_err(|e| e.to_string()).and_then(|t| crate::node::write_private(&path, &t)) {
+                if let Err(e) = toml::to_string_pretty(&config).map_err(|e| e.to_string()).and_then(|t| lyra_node::write_private(&path, &t)) {
                     eprintln!("lyra connect: couldn't save {}: {e}", path.display());
                     std::process::exit(1);
                 }
@@ -576,6 +666,49 @@ pub fn main(args: &[String]) {
             std::process::exit(1);
         }
     };
+    run(config);
+}
+
+/// On the server itself, while `lyra serve` runs: connect to it with this
+/// home's own terminal device (made once, kept in `web/terminal.toml`).
+pub fn local(home: &std::path::Path, listen: &str) {
+    lyra_node::tls_provider();
+    let path = home.join("web").join("terminal.toml");
+    let addr = listen.replace("0.0.0.0", "127.0.0.1").replace("[::]", "[::1]");
+    let url = format!("http://{addr}");
+    let devices = match lyra_web::Devices::open(&home.join("web")) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("lyra: {e}");
+            std::process::exit(1);
+        }
+    };
+    let saved: Option<RemoteConfig> = std::fs::read_to_string(&path).ok().and_then(|t| toml::from_str(&t).ok());
+    let config = match saved.filter(|c| devices.authenticate(&c.token).is_some()) {
+        Some(mut c) => {
+            c.url = url;
+            c
+        }
+        None => match devices.add("server-terminal", "device") {
+            Ok((_, token)) => {
+                let c = RemoteConfig { url, token, name: "server-terminal".into() };
+                if let Err(e) = toml::to_string_pretty(&c).map_err(|e| e.to_string()).and_then(|t| lyra_node::write_private(&path, &t)) {
+                    eprintln!("lyra: couldn't save {}: {e}", path.display());
+                }
+                c
+            }
+            Err(e) => {
+                eprintln!("lyra: {e}");
+                std::process::exit(1);
+            }
+        },
+    };
+    run(config);
+}
+
+/// Open the terminal UI on a server.
+pub fn run(config: RemoteConfig) {
+    lyra_node::tls_provider();
     let url = config.url.clone();
     let (to_screen, incoming) = mpsc::channel();
     let (out, from_screen) = tokio::sync::mpsc::unbounded_channel();
@@ -590,6 +723,7 @@ pub fn main(args: &[String]) {
         show_reasoning: false,
         palette: 0,
         palette_hidden: false,
+        show_panel: true,
         out,
         url: url.trim_start_matches("https://").trim_start_matches("http://").to_string(),
     };

@@ -3,6 +3,8 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+// Stamped by the server; when it says it has another version, offer the update.
+const LYRA_VERSION = "__LYRA_VERSION__";
 const state = { token: null, ws: null, seq: 0, messages: [], status: {}, commands: [], device: null, retry: 0, ready: false };
 
 // ---- storage: the token in localStorage (the page) and IndexedDB (the
@@ -185,7 +187,47 @@ function renderStatus() {
   phase.className = "phase" + (s.approvals && s.approvals.length ? " asking" : (s.phase || "").startsWith("↪") ? " agent" : s.waiting ? " busy" : "");
   $("session-title").textContent = s.title ? "· " + s.title : "";
   renderApproval();
+  renderPairing();
   renderThinking();
+  renderBadges();
+  if (state.page === "machines") renderMachines();
+  // The devices page follows who's online (not every status tick).
+  const who = JSON.stringify([s.online || [], (s.machines_detail || []).map((m) => [m.name, m.online])]);
+  if (state.page === "devices" && who !== state.lastWho) ask("devices");
+  state.lastWho = who;
+}
+
+// Headless machines asking to pair: approve from here (check the code matches).
+function pairCard(p) {
+  return `<div class="pair-request">
+    <div><strong>${esc(p.name)}</strong> <span class="muted">(${esc(p.hostname || "?")}${p.os ? ", " + esc(p.os) : ""})</span> asks to pair as a ${p.kind === "node" ? "machine" : "device"}.</div>
+    <div class="muted">Check the machine shows this code: <span class="code">${esc(p.code)}</span></div>
+    <div class="actions row"><button class="allow" data-pair="${esc(p.id)}" data-approve="1">Approve</button><button class="deny" data-pair="${esc(p.id)}" data-approve="0">Deny</button></div>
+  </div>`;
+}
+function bindPairButtons(root) {
+  root.querySelectorAll("button[data-pair]").forEach((b) => b.addEventListener("click", () => {
+    send({ type: "pair_answer", id: b.dataset.pair, approve: b.dataset.approve === "1" });
+    b.closest(".pair-request").querySelectorAll("button").forEach((x) => (x.disabled = true));
+  }));
+}
+function renderPairing() {
+  const list = state.status.pairing || [];
+  for (const id of ["pairing-cards", "machine-pairing", "device-pairing"]) {
+    const el = $(id);
+    el.innerHTML = list.map(pairCard).join("");
+    bindPairButtons(el);
+  }
+}
+function renderBadges() {
+  const pairing = (state.status.pairing || []).length;
+  const updates = (state.status.machines_detail || []).filter((m) => m.update_available).length;
+  const bm = $("badge-machines");
+  bm.textContent = pairing + updates || "";
+  bm.classList.toggle("hidden", !(pairing + updates));
+  const bd = $("badge-devices");
+  bd.textContent = pairing || "";
+  bd.classList.toggle("hidden", !pairing);
 }
 
 function renderApproval() {
@@ -260,6 +302,8 @@ function handle(msg) {
     state.commands = msg.commands || [];
     state.device = msg.device || null;
     state.ready = true;
+    state.serverVersion = msg.app_version || "";
+    $("update-banner").classList.toggle("hidden", !state.serverVersion || state.serverVersion === LYRA_VERSION);
     renderAll();
     renderStatus();
     updateNotifyButton();
@@ -267,6 +311,7 @@ function handle(msg) {
     return;
   }
   if (msg.type === "resync") { state.ws && state.ws.close(); return; }
+  if (msg.type === "data") { showData(msg.what, msg.data); return; }
   if (msg.type === "pong" || !state.ready) return;
   if (msg.seq && msg.seq <= state.seq) return;
   if (msg.seq) state.seq = msg.seq;
@@ -316,14 +361,39 @@ function autosize() {
   t.style.height = Math.min(t.scrollHeight, window.innerHeight * 0.4) + "px";
 }
 
+// `@` + the start of a machine's name: pick where the Operator should work.
+function mentionEntries(text) {
+  const word = text.split(/\s/).pop();
+  if (!word.startsWith("@")) return null;
+  const typed = word.slice(1).toLowerCase();
+  const before = text.slice(0, text.length - word.length);
+  const entries = [{ usage: "@server", description: "where lyra runs", completion: before + "@server " }];
+  for (const m of state.status.machines_detail || []) {
+    if (!m.online) continue;
+    entries.push({ usage: "@" + m.name, description: ["online", m.hostname, m.os].filter(Boolean).join(" · "), completion: before + "@" + m.name + " " });
+  }
+  return entries.filter((e) => e.usage.slice(1).toLowerCase().startsWith(typed));
+}
+
 function renderPalette() {
   const text = $("input").value;
   const p = $("palette");
+  const mentions = mentionEntries(text);
+  if (mentions) {
+    showPalette(mentions);
+    return;
+  }
   if (!text.startsWith("/") || !state.commands.length) { p.classList.add("hidden"); return; }
   const q = text.toLowerCase();
   const word = q.split(/\s+/)[0];
   let found = state.commands.filter((c) => c.usage.toLowerCase().startsWith(q));
   if (!found.length && q.includes(" ")) found = state.commands.filter((c) => c.usage.split(/\s+/)[0] === word);
+  if (!found.length) { p.classList.add("hidden"); return; }
+  showPalette(found);
+}
+
+function showPalette(found) {
+  const p = $("palette");
   if (!found.length) { p.classList.add("hidden"); return; }
   p.innerHTML = found.slice(0, 40).map((c, i) => `<div data-i="${i}"><div class="usage">${esc(c.usage)}</div>${c.description ? `<div class="desc">${esc(c.description)}</div>` : ""}</div>`).join("");
   p.querySelectorAll("div[data-i]").forEach((el) => el.addEventListener("click", () => {
@@ -352,22 +422,160 @@ $("composer").addEventListener("submit", (e) => { e.preventDefault(); submit(); 
 $("input").addEventListener("input", () => { autosize(); renderPalette(); });
 $("input").addEventListener("keydown", (e) => {
   // Desktop: Enter sends, Shift-Enter is a new line. Touch keyboards keep Enter for new lines.
-  if (e.key === "Enter" && !e.shiftKey && !("ontouchstart" in window)) { e.preventDefault(); submit(); }
+  if (e.key === "Enter" && !e.shiftKey && !("ontouchstart" in window)) {
+    e.preventDefault();
+    // An open @ list: Enter picks the first machine rather than sending.
+    const mentions = mentionEntries($("input").value);
+    if (mentions && mentions.length) {
+      $("input").value = mentions[0].completion;
+      $("palette").classList.add("hidden");
+      return;
+    }
+    submit();
+  }
 });
 
-// ---- menu: sessions, notifications, unpair
+// ---- pages: machines, devices, activity, more
 
-function openMenu() {
-  $("menu").classList.remove("hidden");
-  $("menu-device").textContent = state.device ? `This device: ${state.device.name}` : "";
-  const machines = state.status.machines || [];
-  $("menu-machines").textContent = machines.length ? `Machines lyra can work on: server, ${machines.join(", ")}` : "Machines: server only (run `lyra node` on a PC to add it)";
-  updateNotifyButton();
+function ask(what) {
+  send({ type: "get", what });
 }
-$("menu-button").addEventListener("click", openMenu);
-$("menu").addEventListener("click", (e) => { if (e.target === $("menu") || e.target.dataset.close !== undefined) $("menu").classList.add("hidden"); });
-$("new-chat").addEventListener("click", () => { send({ type: "send", text: "/new" }); $("menu").classList.add("hidden"); });
-$("sessions-button").addEventListener("click", () => send({ type: "send", text: "/sessions" }) && ($("menu").classList.add("hidden")));
+
+function showPage(page) {
+  state.page = page;
+  document.querySelectorAll(".page").forEach((el) => el.classList.toggle("hidden", el.id !== "page-" + page));
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.page === page));
+  if (page === "chat") toBottom();
+  if (page === "machines") renderMachines();
+  if (page === "devices") ask("devices");
+  if (page === "activity") ask("activity");
+  if (page === "more") {
+    ask("sessions");
+    ask("about");
+    $("menu-device").textContent = state.device ? `This device: ${state.device.name}` : "";
+    updateNotifyButton();
+  }
+}
+document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => showPage(b.dataset.page)));
+
+function ago(iso) {
+  if (!iso) return "";
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 90) return "just now";
+  if (s < 3600) return Math.round(s / 60) + " min ago";
+  if (s < 86400) return Math.round(s / 3600) + " h ago";
+  return Math.round(s / 86400) + " days ago";
+}
+
+function command(text, confirmText) {
+  if (confirmText && !confirm(confirmText)) return;
+  send({ type: "send", text });
+}
+
+function renderMachines() {
+  const list = state.status.machines_detail || [];
+  const el = $("machine-list");
+  el.innerHTML = [
+    `<div class="card"><div class="top"><span class="dot on"></span><span class="name">server</span><span class="pill on">lyra runs here</span></div></div>`,
+    ...list.map((m) => `<div class="card">
+      <div class="top"><span class="dot ${m.online ? "on" : ""}"></span><span class="name">${esc(m.name)}</span>
+        <span class="pill ${m.online ? "on" : ""}">${m.online ? "online" : "offline"}</span>
+        ${m.update_available ? '<span class="pill warn">update</span>' : ""}</div>
+      <div class="meta">${m.online ? [m.hostname, m.os, m.user && "as " + m.user, m.version && (m.self_update ? "lyra-node " + m.version + " (" + m.build + ")" : "node built into lyra " + m.version)].filter(Boolean).map(esc).join(" · ") : "last seen " + esc(ago(m.last_seen))}</div>
+      <div class="actions">
+        ${m.online ? `<button data-mention="${esc(m.name)}">Ask on @${esc(m.name)}</button>` : ""}
+        ${m.online && m.self_update ? `<button data-cmd="/machines update ${esc(m.name)}">${m.update_available ? "Update" : "Reinstall latest"}</button>` : ""}
+        <button class="danger" data-cmd="/machines remove ${esc(m.name)}" data-confirm="Remove lyra-node from ${esc(m.name)}? ${m.online ? "It uninstalls itself and is unpaired." : "It's offline: it will only be unpaired; its files stay there."}">Remove</button>
+      </div></div>`),
+  ].join("");
+  el.querySelectorAll("button[data-cmd]").forEach((b) => b.addEventListener("click", () => command(b.dataset.cmd, b.dataset.confirm)));
+  el.querySelectorAll("button[data-mention]").forEach((b) => b.addEventListener("click", () => {
+    showPage("chat");
+    $("input").value = "@" + b.dataset.mention + " ";
+    $("input").focus();
+  }));
+  $("install-cmd").textContent = `curl -fsSL ${location.origin}/install.sh | sh -s -- --name NAME`;
+}
+$("copy-install").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText($("install-cmd").textContent); $("copy-install").textContent = "Copied"; } catch (e) { $("copy-install").textContent = "Select it"; }
+  setTimeout(() => ($("copy-install").textContent = "Copy"), 2000);
+});
+
+function showData(what, data) {
+  if (what === "devices") {
+    const el = $("device-list");
+    el.innerHTML = (data || []).map((d) => `<div class="card${state.device && d.id === state.device.id ? " current" : ""}">
+      <div class="top"><span class="dot ${d.online ? "on" : ""}"></span><span class="name">${esc(d.name)}</span>
+        <span class="pill">${d.kind === "node" ? "machine" : "device"}</span><span class="pill ${d.online ? "on" : ""}">${d.online ? "online" : "offline"}</span></div>
+      <div class="meta">paired ${esc(ago(d.created))} · last seen ${esc(ago(d.last_seen))}${d.push ? " · notifications on" : ""}${state.device && d.id === state.device.id ? " · this device" : ""}</div>
+      ${state.device && d.id === state.device.id ? "" : `<div class="actions"><button class="danger" data-remove="${esc(d.id)}" data-name="${esc(d.name)}">Unpair</button></div>`}
+    </div>`).join("");
+    el.querySelectorAll("button[data-remove]").forEach((b) => b.addEventListener("click", () => {
+      command("/devices remove " + b.dataset.remove, `Unpair ${b.dataset.name}? It will need to pair again.`);
+      setTimeout(() => ask("devices"), 800);
+    }));
+  } else if (what === "activity") {
+    $("activity-list").innerHTML = (data || []).map((a) => `<div class="${esc(a.level)}"><span class="t">${esc(a.time)}</span>${esc(a.text)}</div>`).join("");
+  } else if (what === "sessions") {
+    const el = $("session-list");
+    el.innerHTML = (data || []).map((s) => `<div class="card${s.current ? " current" : ""}" data-id="${esc(s.id)}">
+      <div class="top"><span class="name">${esc(s.title || "(untitled)")}</span>${s.current ? '<span class="pill on">open</span>' : ""}</div>
+      <div class="meta">${s.turns} turns · ${esc(ago(s.updated))}</div></div>`).join("") || '<p class="muted">No saved conversations yet.</p>';
+    el.querySelectorAll(".card[data-id]").forEach((c) => c.addEventListener("click", () => {
+      if (c.classList.contains("current")) { showPage("chat"); return; }
+      command("/resume " + c.dataset.id);
+      showPage("chat");
+    }));
+  } else if (what === "about") {
+    $("about").innerHTML = `lyra ${esc(data.lyra || "")} · app ${esc(LYRA_VERSION)}${data.app && data.app !== LYRA_VERSION ? " (server has " + esc(data.app) + ")" : ""} · model ${esc(data.model || "")}<br>lyra-node on offer: ${esc(data.node_build || "none")} · ${data.devices} paired devices`;
+  } else if (data && typeof data.text === "string") {
+    const v = $("text-view");
+    v.textContent = data.text;
+    v.classList.remove("hidden");
+  }
+}
+$("activity-refresh").addEventListener("click", () => ask("activity"));
+document.querySelectorAll("button[data-text]").forEach((b) => b.addEventListener("click", () => ask(b.dataset.text)));
+setInterval(() => { if (state.page === "activity" && document.visibilityState === "visible") ask("activity"); }, 5000);
+$("new-chat").addEventListener("click", () => { command("/new"); showPage("chat"); });
+
+// ---- updating the installed app
+
+async function updateApp() {
+  $("update-now").disabled = true;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (reg) await reg.update();
+  } catch (e) {}
+  location.reload();
+}
+$("update-now").addEventListener("click", updateApp);
+$("check-update").addEventListener("click", async () => {
+  const b = $("check-update");
+  b.textContent = "Checking…";
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (reg) await reg.update();
+  } catch (e) {}
+  if (state.serverVersion && state.serverVersion !== LYRA_VERSION) {
+    $("update-banner").classList.remove("hidden");
+    b.textContent = "Update available";
+  } else {
+    b.textContent = "Up to date (" + LYRA_VERSION + ")";
+  }
+  setTimeout(() => (b.textContent = "Check for app update"), 4000);
+});
+// A new service worker took over: load the new app.
+if ("serviceWorker" in navigator) {
+  let reloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!reloading && state.serverVersion && state.serverVersion !== LYRA_VERSION) {
+      reloading = true;
+      location.reload();
+    }
+  });
+}
+
 $("unpair").addEventListener("click", async () => {
   if (!confirm("Unpair this device? You'll need a new code from `lyra pair` to use it again.")) return;
   await disableNotifications();
@@ -476,6 +684,7 @@ $("pair-form").addEventListener("submit", async (e) => {
 function start() {
   $("pair").classList.add("hidden");
   $("app").classList.remove("hidden");
+  showPage("chat");
   connect();
 }
 

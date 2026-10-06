@@ -621,6 +621,14 @@ paired devices get in (each gets its own token; lyra keeps only its hash), and
 `lyra devices` / `lyra devices remove <name>` manage them. Five wrong codes
 cancel a code.
 
+**The app** has tabs: **Chat** (with `/` commands, `@` machines, approval
+and pairing cards), **Machines** (online, versions, update, remove, the
+install command for a new machine), **Devices** (who's paired and online;
+unpair), **Activity** (lyra's log) and **More** (saved conversations, new
+conversation, notifications, agents, goals, skills, memory, versions). When
+lyra is updated, an installed app shows **"A new version of the lyra app is
+ready · Update"**; More → *Check for app update* does it by hand.
+
 **4. Install and turn on notifications.**
 - **Android (Chrome):** menu → *Install app* (or *Add to Home screen*). Open
   it, tap ⋯ → *Turn on notifications*, then *Send a test notification*.
@@ -689,37 +697,76 @@ at it. Only one lyra runs per `~/.lyra`: starting the TUI while `lyra serve`
 is running (say, over SSH) is refused with a note, because each would keep
 its own copy of the conversation (`--force` overrides).
 
-## From your desktop: `lyra connect` and `lyra node`
+## Other machines and terminals: `lyra-node` and `lyra connect`
 
-With lyra on a server, a desktop (or laptop) uses two small parts of the same
-`lyra` binary (`cargo install --path .` on it):
+With lyra on a server, other machines join it in two ways.
 
-- **`lyra connect`** is the terminal UI for the server: the same chat,
-  Markdown, `/` palette and approval box (y / n / a), streaming live. Pair it
-  once with a code from `lyra pair` on the server:
-  `lyra connect --pair <code> --url https://lyra.example.com`. After that,
-  plain `lyra` opens it on a machine that has no lyra of its own. Nothing is
-  stored locally but the token (`~/.config/lyra/remote.toml`, 0600). An open
-  terminal counts as watching, so phones aren't notified meanwhile.
-- **`lyra node`** lets lyra work on this machine. It connects *out* to the
-  server (no open ports, no SSH), and the Operator's tools (shell, files,
-  system info) gain a `machine` choice: `server` or this machine's name. Ask
-  "how much disk is free on my desktop?" from the phone and it runs here.
-  Pair it with a code from `lyra pair`:
-  `lyra node pair https://lyra.example.com <code> --name desktop`, then
-  `lyra node service` and `systemctl --user enable --now lyra-node` (plus
-  `loginctl enable-linger $USER` to keep it running when logged out).
+### Machines lyra works on: `lyra-node`
 
-  Everything is decided **on this machine**: it runs the same checks as the
-  server with its own rules in `~/.config/lyra/node.toml` (`[system]`:
-  `allow_commands`, `write_roots`, `deny_paths`, timeouts). Reading runs at
-  once; changes wait for your approval (the card says "write a file on
-  desktop"); forbidden things and `~/.ssh`, `~/.gnupg` and other credentials
-  are refused here even when "approved". The node runs as your user, so no
-  `sudo`. A node's token can only lend tools: it can't chat or approve.
-  `lyra devices` on the server lists machines too; `lyra devices remove
-  desktop` cuts one off. When a machine is offline, lyra says so instead of
-  doing it somewhere else.
+`lyra-node` lets lyra's Operator work on a machine: shell, files, system info.
+It connects *out* to the server (no open ports, no SSH) and is a small static
+program (x86_64 Linux, any distribution) that the server hands out, so a
+headless box needs nothing but `curl`:
+
+```sh
+curl -fsSL https://lyra.example.com/install.sh | sh -s -- --name web1
+```
+
+The installer downloads `lyra-node`, checks it against the server's checksum,
+installs it (root: `/usr/local/bin`, else `~/.local/bin`), asks lyra to pair
+and starts its service (a system service as root, a user service otherwise).
+**Headless pairing** needs no code typed in: the machine shows a short code,
+and you approve the request in lyra — the card in the web app (Chat, Machines
+or Devices), a phone notification, or `/devices approve <code>` in a lyra
+terminal. Check the code matches what the machine shows. With a code from
+`lyra pair` it works too: `lyra-node pair <url> <code> --name web1`.
+
+Then, from any device:
+
+- **`@web1 …`** in a message sends the work there: the Operator handles it, and
+  its tools default to that machine. Typing `@` opens the list of machines
+  online (and `@server`), like `/` does for commands.
+- **`/machines`** lists them: online or not, host and OS, version, and whether
+  the server has a newer `lyra-node`. **`/machines update <name|all>`** has the
+  machine download the server's build, verify it and restart into it;
+  **`/machines remove <name>`** has it uninstall itself (service, settings,
+  program) and unpairs it. Both are buttons on the web app's Machines page.
+
+Everything is decided **on that machine**, with its own rules in
+`~/.config/lyra/node.toml` (`[system]`: `allow_commands`, `write_roots`,
+`deny_paths`, timeouts): reading runs at once; changes wait for your approval
+(the card says "write a file on web1"); forbidden things and `~/.ssh`,
+`~/.gnupg` and other credentials are refused there even when "approved". A
+node's token can only lend tools: it can't chat or approve. When a machine is
+offline, lyra says so instead of doing the work somewhere else.
+
+The server hands out the `lyra-node` that sits next to its `lyra` (or
+`[web] node_binary`). Build it static and put it there whenever lyra is
+updated (then `/machines update all`):
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+cargo build --release -p lyra-node --target x86_64-unknown-linux-musl
+install -m 755 target/x86_64-unknown-linux-musl/release/lyra-node /usr/local/bin/lyra-node
+```
+
+(`.cargo/config.toml` points the musl build at the system `gcc`.) `lyra node`
+inside the full `lyra` does the same job but can't update itself.
+
+### Terminals: `lyra connect`
+
+`lyra connect` is the terminal UI for the server: the same chat, Markdown,
+`/` and `@` palettes and approval box (y / n / a), streaming live, with a side
+panel (Ctrl-B) of the devices and machines online and machines waiting to
+pair. Pair it once with a code from `lyra pair`:
+`lyra connect --pair <code> --url https://lyra.example.com`. After that, plain
+`lyra` opens it on a machine with no lyra of its own. Nothing is stored
+locally but the token (`~/.config/lyra/remote.toml`, 0600). An open terminal
+counts as watching, so phones aren't notified meanwhile.
+
+**On the server itself**, `lyra` while `lyra serve` runs opens the same
+terminal UI connected to it (with its own terminal device, kept in
+`~/.lyra/web/terminal.toml`), instead of starting a second lyra.
 
 ## Self-evolution
 

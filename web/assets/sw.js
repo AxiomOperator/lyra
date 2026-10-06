@@ -3,7 +3,8 @@
 // the app shell available offline.
 "use strict";
 
-const CACHE = "lyra-shell-v1";
+// A new version of the app gets a new cache (the old one is dropped on activate).
+const CACHE = "lyra-shell-__LYRA_VERSION__";
 const SHELL = ["/", "/app.js", "/style.css", "/manifest.webmanifest", "/icon-192.png", "/apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {

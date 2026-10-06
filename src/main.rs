@@ -10,7 +10,6 @@ mod markdown;
 mod learn;
 mod lock;
 mod mem;
-mod node;
 mod plan;
 mod migrate;
 mod retrieval;
@@ -177,6 +176,8 @@ enum StreamEvent {
     Error(String),
     /// Progress note from the worker for the activity log.
     Log(String),
+    /// Something to say in the chat (a remote update finished, …).
+    Notice(String),
     /// Health check results for the embedding/reranker models.
     Models(Vec<Result<String, String>>),
     /// Fresh numbers for the memory panel.
@@ -372,6 +373,8 @@ struct App {
     session_id: String,
     /// Activity lines logged so far (`lyra serve` prints the new ones).
     logged: u64,
+    /// The web server, when this lyra is `lyra serve` (machines, devices).
+    hub: Option<lyra_web::Hub>,
     /// Agents' actions waiting for the user's y / n / a, oldest first.
     approvals: Vec<agents::ApprovalRequest>,
     /// The highlighted entry in the command palette, and whether Esc closed it.
@@ -493,6 +496,7 @@ impl App {
             pending_input: None,
             session_id: sessions::new_id(),
             logged: 0,
+            hub: None,
             approvals: Vec::new(),
             palette: 0,
             palette_hidden: false,
@@ -573,7 +577,12 @@ impl App {
         let (model, tools, tx) = (self.model.clone(), self.tools.clone(), self.tx.clone());
         let (learning, evolution, caps) = (self.learning.clone(), self.evolution.clone(), self.caps.clone());
         let goals_section = self.goals.as_ref().and_then(|g| g.prompt_section());
-        let agent_env = self.agent_env();
+        let mut agent_env = self.agent_env();
+        // `@desktop`: that machine is where system work goes.
+        if let (Some(env), Some(caps)) = (agent_env.as_mut(), &self.caps) {
+            let known: Vec<String> = caps.machines().into_iter().map(|m| m.0).collect();
+            env.machine = agents::machine_mention(&content, &known);
+        }
         thread::spawn(move || {
             let mut history = history;
             // Evolved behavior: guidelines, the matching workflow, the round limit.
@@ -704,6 +713,10 @@ impl App {
                 self.save_session();
             }
             StreamEvent::Log(text) => self.log(Level::Info, text),
+            StreamEvent::Notice(text) => {
+                self.log(Level::Agent, text.clone());
+                self.messages.push(Message::new("info", text));
+            }
             StreamEvent::Models(results) => {
                 for result in &results {
                     match result {
@@ -1223,6 +1236,8 @@ impl App {
             }),
             "/resume" => self.resume(arg),
             "/new" => self.new_session(),
+            "/machines" => self.machines_command(arg),
+            "/devices" => self.devices_command(arg),
             "/memory" => {
                 let mem = self.mem().ok_or_else(|| match &self.memory_status {
                     Err(why) => why.clone(),
@@ -2373,6 +2388,9 @@ pub(crate) const COMMANDS: &str = "\
 /deprecate <id>              stop using a skill without deleting it
 /forget-skill <id>           delete a skill's file (its history is kept)
 /new                         start a new conversation (this one is saved)
+/machines [update|remove <name>]  machines lyra works on (lyra-node): online, version, update, remove
+/devices [approve|deny <code>]    paired phones, browsers, terminals and machines; pairing requests
+/devices remove <name>       unpair a device or machine
 /sessions                    saved conversations (lyra -c continues the latest)
 /resume <id>                 switch to a saved conversation
 /history <id>                a skill's versions and audit trail
@@ -2699,7 +2717,7 @@ fn main() {
         Some("pair") => return pair_command(),
         Some("devices") => return devices_command(&args[2..]),
         Some("service") => return service_command(),
-        Some("node") => return node::main(&args[2..]),
+        Some("node") => return lyra_node::main(&args[2..]),
         Some("connect") => return connect::main(&args[2..]),
         // No lyra of its own here, but a paired terminal: open that.
         None if connect::configured() && !config::home().is_some_and(|h| h.join("config").join("config.toml").exists()) => return connect::main(&[]),
@@ -2769,6 +2787,15 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // `lyra serve` already runs on this home: talk to it rather than start a second lyra.
+    if !serving
+        && !args.iter().any(|a| a == "--force")
+        && let Some(home) = config::home()
+        && let Some((_, mode)) = lock::holder(&home)
+        && mode == "lyra serve"
+    {
+        return connect::local(&home, &config.web.listen);
+    }
     // One lyra per home: two would each keep their own copy of the conversation.
     let _lock = match (config::home(), args.iter().any(|a| a == "--force")) {
         (Some(home), false) => match lock::acquire(&home, if serving { "lyra serve" } else { "the terminal UI" }) {
@@ -2855,6 +2882,7 @@ fn serve_main(app: &mut App, web: &lyra_web::Settings, rt: &tokio::runtime::Hand
             std::process::exit(1);
         }
     };
+    app.hub = Some(hub.clone());
     if let Some(caps) = &app.caps {
         caps.set_remote(Arc::new(serve::HubRemote(hub.clone())));
         // Paired machines show in the tools' choices even before they connect.

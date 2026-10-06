@@ -4150,12 +4150,12 @@ dependencies = [
  "lyra-goals",
  "lyra-learning",
  "lyra-memory",
+ "lyra-node",
  "lyra-system",
  "lyra-web",
  "pulldown-cmark",
  "ratatui",
  "reqwest 0.13.5",
- "rustls",
  "serde",
  "serde_json",
  "tokio",
@@ -4277,10 +4277,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "lyra-node"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "lyra-system",
+ "reqwest 0.13.5",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-tungstenite",
+ "toml",
+]
+
+[[package]]
 name = "lyra-system"
 version = "0.1.0"
 dependencies = [
- "lyra-capabilities",
  "reqwest 0.13.5",
  "serde",
  "serde_json",

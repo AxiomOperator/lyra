@@ -45,7 +45,7 @@ pub fn hash(secret: &str) -> String {
     Sha256::digest(secret.trim().as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn random(len: usize, alphabet: &[u8]) -> String {
+pub(crate) fn random(len: usize, alphabet: &[u8]) -> String {
     let mut out = String::new();
     while out.len() < len {
         for b in uuid::Uuid::new_v4().into_bytes() {
@@ -124,6 +124,15 @@ impl Devices {
             return Err("wrong pairing code".into());
         }
         let _ = std::fs::remove_file(&path);
+        self.add(name, kind)
+    }
+
+    /// Add a device directly (a headless request the user approved, or the
+    /// server's own terminal). Returns it and its token (shown once).
+    pub fn add(&self, name: &str, kind: &str) -> Result<(Device, String), String> {
+        if !matches!(kind, "device" | "node") {
+            return Err(format!("unknown kind {kind:?}"));
+        }
         let token = random(43, b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
         let name: String = name.trim().chars().take(60).collect();
         let mut all = self.list();

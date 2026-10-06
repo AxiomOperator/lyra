@@ -12,7 +12,6 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use lyra_capabilities::RiskLevel;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -62,13 +61,21 @@ impl Default for Settings {
     }
 }
 
+/// How much a tool can change, at worst (each call is checked on its own too).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Risk {
+    ReadOnly,
+    Write,
+    Destructive,
+}
+
 /// A tool the system offers.
 pub struct Spec {
     pub name: &'static str,
     pub description: &'static str,
     pub parameters: Value,
     /// Its worst case; each call is checked on its own too.
-    pub risk: RiskLevel,
+    pub risk: Risk,
 }
 
 pub const TOOLS: &[&str] = &["system_info", "shell_run", "file_read", "file_list", "file_write", "file_delete", "http_request", "ssh_run"];
@@ -80,7 +87,7 @@ pub fn specs() -> Vec<Spec> {
             name: "system_info",
             description: "This machine: OS, kernel, hostname, uptime, load, CPUs, memory, disks and the busiest processes.",
             parameters: json!({ "type": "object", "properties": {} }),
-            risk: RiskLevel::ReadOnly,
+            risk: Risk::ReadOnly,
         },
         Spec {
             name: "shell_run",
@@ -90,7 +97,7 @@ pub fn specs() -> Vec<Spec> {
                 "cwd": s("Directory to run it in (default: the home directory)."),
                 "timeout_seconds": { "type": "integer", "description": "Stop it after this long (capped by the configured limit)." },
             }, "required": ["command"] }),
-            risk: RiskLevel::Write,
+            risk: Risk::Write,
         },
         Spec {
             name: "file_read",
@@ -100,7 +107,7 @@ pub fn specs() -> Vec<Spec> {
                 "start_line": { "type": "integer", "description": "First line, from 1." },
                 "max_lines": { "type": "integer", "description": "How many lines (default 400)." },
             }, "required": ["path"] }),
-            risk: RiskLevel::ReadOnly,
+            risk: Risk::ReadOnly,
         },
         Spec {
             name: "file_list",
@@ -110,7 +117,7 @@ pub fn specs() -> Vec<Spec> {
                 "pattern": s("Only names matching this (* and ? wildcards)."),
                 "recursive": { "type": "boolean" },
             }, "required": ["path"] }),
-            risk: RiskLevel::ReadOnly,
+            risk: Risk::ReadOnly,
         },
         Spec {
             name: "file_write",
@@ -120,7 +127,7 @@ pub fn specs() -> Vec<Spec> {
                 "content": s("The text to write."),
                 "append": { "type": "boolean", "description": "Add to the end instead of replacing." },
             }, "required": ["path", "content"] }),
-            risk: RiskLevel::Write,
+            risk: Risk::Write,
         },
         Spec {
             name: "file_delete",
@@ -129,7 +136,7 @@ pub fn specs() -> Vec<Spec> {
                 "path": s("The file or directory."),
                 "recursive": { "type": "boolean", "description": "Delete a directory and everything in it." },
             }, "required": ["path"] }),
-            risk: RiskLevel::Destructive,
+            risk: Risk::Destructive,
         },
         Spec {
             name: "http_request",
@@ -140,7 +147,7 @@ pub fn specs() -> Vec<Spec> {
                 "headers": { "type": "object", "description": "Header names and values.", "additionalProperties": { "type": "string" } },
                 "body": s("The request body."),
             }, "required": ["url"] }),
-            risk: RiskLevel::Write,
+            risk: Risk::Write,
         },
         Spec {
             name: "ssh_run",
@@ -150,7 +157,7 @@ pub fn specs() -> Vec<Spec> {
                 "command": s("The command line to run there."),
                 "timeout_seconds": { "type": "integer" },
             }, "required": ["host", "command"] }),
-            risk: RiskLevel::Write,
+            risk: Risk::Write,
         },
     ]
 }
