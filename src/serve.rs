@@ -83,6 +83,11 @@ fn status(app: &App, machines: &[String]) -> Value {
             "id": r.id, "agent": r.agent, "what": r.what, "detail": r.detail, "why": r.why, "dangerous": r.dangerous,
         })).collect::<Vec<_>>(),
         "machines": machines,
+        "groups": app.caps.as_ref().map(|c| {
+            let mut g: Vec<Value> = c.groups.iter().map(|(name, members)| json!({ "name": name, "machines": members })).collect();
+            g.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+            g
+        }),
         "agents": app.agents_panel.iter().map(|a| json!({ "title": a.title, "working": active.contains(&a.title), "enabled": a.enabled })).collect::<Vec<_>>(),
     })
 }

@@ -41,6 +41,8 @@ pub struct Caps {
     pub system: Option<lyra_system::System>,
     /// Web search and page reading (`[search]`).
     pub search: Option<crate::websearch::Settings>,
+    /// Named sets of machines (`[groups]`, e.g. web = ["web1", "web2"]) for `fleet_run` and `@group`.
+    pub groups: std::collections::HashMap<String, Vec<String>>,
     /// Other machines' system tools (`lyra node`), when serving.
     remote: std::sync::OnceLock<Arc<dyn Remote>>,
 }
@@ -111,6 +113,35 @@ fn system_tools(machines: &[(String, bool)]) -> Vec<Capability> {
             c
         })
         .collect()
+}
+
+/// `fleet_run`: one command on several machines, one approval, a result each.
+fn fleet_capability(machines: &[(String, bool)], groups: &std::collections::HashMap<String, Vec<String>>) -> Capability {
+    let names: Vec<&str> = std::iter::once(HERE).chain(machines.iter().map(|m| m.0.as_str())).collect();
+    let mut groups: Vec<String> = groups.iter().map(|(g, m)| format!("{g} ({})", m.join(", "))).collect();
+    groups.sort();
+    let mut c = Capability::new(
+        "fleet_run",
+        CapabilityKind::NativeTool,
+        "Run one shell command on several machines at once (\"@all\", a group, or a list): one approval covers them all, \
+         each machine still checks the command against its own rules, and you get one result per machine. Use it for \
+         fleet-wide chores (\"update packages on @all\", \"disk usage on @web\"); use shell_run for one machine.",
+        RiskLevel::Write,
+    );
+    c.input_schema = json!({ "type": "object", "properties": {
+        "command": { "type": "string", "description": "The shell command, the same on every machine." },
+        "machines": { "type": "string", "description": format!(
+            "\"all\" (the server and every online machine){}, or names separated by commas from: {}.",
+            if groups.is_empty() { String::new() } else { format!(", a group: {}", groups.join("; ")) },
+            names.join(", ")
+        ) },
+        "cwd": { "type": "string", "description": "Folder to run in (default: home)." },
+        "timeout_seconds": { "type": "integer", "description": "Longest it may run on each machine." },
+    }, "required": ["command", "machines"] });
+    c.source = "system".into();
+    c.tags = vec!["system".into(), "fleet".into(), "all".into(), "machines".into(), "shell".into()];
+    c.permissions = vec!["system.fleet_run".into()];
+    c
 }
 
 /// Native tools: risk, permissions, prerequisites and how to check them.
@@ -285,7 +316,7 @@ impl Caps {
     }
 
     pub fn new(manager: CapabilityManager, rt: Handle, openapi: Vec<OpenApiClient>, mcp: Vec<McpClient>) -> Self {
-        Self { manager, rt, tools: None, learning: None, evolution: None, openapi, mcp, goals: std::sync::OnceLock::new(), agents: std::sync::OnceLock::new(), system: None, remote: std::sync::OnceLock::new(), search: None }
+        Self { manager, rt, groups: Default::default(), tools: None, learning: None, evolution: None, openapi, mcp, goals: std::sync::OnceLock::new(), agents: std::sync::OnceLock::new(), system: None, remote: std::sync::OnceLock::new(), search: None }
     }
 
     /// Add the goal tools (goal_list, goal_get, goal_create, goal_note).
@@ -301,6 +332,127 @@ impl Caps {
     /// How long a call on another machine may take: its command, plus the trip.
     fn remote_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.system.as_ref().map_or(60, |s| s.settings().timeout_seconds).max(60) + 30)
+    }
+
+    /// The machines `spec` names: "all" (the server and every online
+    /// machine), a `[groups]` name, or names separated by commas.
+    pub fn fleet_targets(&self, spec: &str) -> Result<Vec<String>, String> {
+        let known = self.machines();
+        let spec = spec.trim().trim_start_matches('@').to_lowercase();
+        let wanted: Vec<String> = if spec == "all" {
+            std::iter::once(HERE.to_string()).chain(known.iter().filter(|m| m.1).map(|m| m.0.clone())).collect()
+        } else if let Some(group) = self.groups.get(&spec) {
+            group.clone()
+        } else {
+            spec.split([',', ' ']).map(|w| w.trim().trim_start_matches('@').to_string()).filter(|w| !w.is_empty()).collect()
+        };
+        let mut out: Vec<String> = Vec::new();
+        for w in wanted {
+            let name = if w.eq_ignore_ascii_case(HERE) { HERE.to_string() } else { known.iter().find(|m| m.0.eq_ignore_ascii_case(&w)).map(|m| m.0.clone()).ok_or_else(|| format!("no machine {w:?}"))? };
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        if out.is_empty() {
+            return Err(format!("{spec:?} names no machines"));
+        }
+        Ok(out)
+    }
+
+    fn fleet_args(args: &Value) -> Value {
+        let mut a = json!({ "command": args["command"] });
+        for k in ["cwd", "timeout_seconds"] {
+            if !args[k].is_null() {
+                a[k] = args[k].clone();
+            }
+        }
+        a
+    }
+
+    /// One approval for the machines that ask; machines that run it freely aren't in it.
+    fn fleet_approval(&self, args: &Value) -> Option<Ask> {
+        let targets = self.fleet_targets(args["machines"].as_str().unwrap_or("")).ok()?;
+        let shell = Self::fleet_args(args);
+        let checks: Vec<(String, Option<(String, bool)>)> = std::thread::scope(|s| {
+            let handles: Vec<_> = targets
+                .iter()
+                .map(|m| {
+                    let shell = &shell;
+                    s.spawn(move || {
+                        let ask = if m == HERE {
+                            match self.system.as_ref().map(|sys| sys.check("shell_run", shell)) {
+                                Some(lyra_system::Check::Ask { why, dangerous }) => Some((why, dangerous)),
+                                _ => None,
+                            }
+                        } else {
+                            self.remote.get().and_then(|r| r.call(m, json!({ "type": "check", "tool": "shell_run", "args": shell }), std::time::Duration::from_secs(30)).ok()).and_then(|v| {
+                                (v["check"] == "ask").then(|| (v["why"].as_str().unwrap_or("").to_string(), v["dangerous"] == true))
+                            })
+                        };
+                        (m.clone(), ask)
+                    })
+                })
+                .collect();
+            handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        });
+        let asking: Vec<&(String, Option<(String, bool)>)> = checks.iter().filter(|c| c.1.is_some()).collect();
+        if asking.is_empty() {
+            return None;
+        }
+        let mut whys: Vec<String> = asking.iter().filter_map(|c| c.1.as_ref().map(|a| a.0.clone())).filter(|w| !w.is_empty()).collect();
+        whys.dedup();
+        Some(Ask {
+            what: format!("run a command on {}", asking.iter().map(|c| c.0.as_str()).collect::<Vec<_>>().join(", ")),
+            detail: format!("{}{}", args["command"].as_str().unwrap_or(""), args["cwd"].as_str().map_or(String::new(), |c| format!(" (in {c})"))),
+            why: whys.join("; "),
+            dangerous: asking.iter().any(|c| c.1.as_ref().is_some_and(|a| a.1)),
+        })
+    }
+
+    /// Run the command on every target at once; one result each.
+    fn fleet_run(&self, args: &Value, approved: bool) -> Result<Value, String> {
+        if args["command"].as_str().is_none_or(|c| c.trim().is_empty()) {
+            return Err("command is required".into());
+        }
+        let targets = self.fleet_targets(args["machines"].as_str().unwrap_or(""))?;
+        let shell = Self::fleet_args(args);
+        let results: Vec<Value> = std::thread::scope(|s| {
+            let handles: Vec<_> = targets
+                .iter()
+                .map(|m| {
+                    let shell = &shell;
+                    s.spawn(move || {
+                        let out = if m == HERE {
+                            match &self.system {
+                                None => Err("system access is off".to_string()),
+                                Some(sys) => match sys.check("shell_run", shell) {
+                                    lyra_system::Check::Forbidden(why) => Err(format!("refused: {why}")),
+                                    lyra_system::Check::Ask { why, .. } if !approved => Err(format!("needs the user's approval ({why})")),
+                                    _ => sys.call("shell_run", shell),
+                                },
+                            }
+                        } else {
+                            match self.remote.get() {
+                                Some(r) => r.call(m, json!({ "type": "call", "tool": "shell_run", "args": shell, "approved": approved }), self.remote_timeout()),
+                                None => Err("other machines connect to `lyra serve`".to_string()),
+                            }
+                        };
+                        let mut v = match out {
+                            Ok(v) if v.is_object() => v,
+                            Ok(v) => json!({ "output": v }),
+                            Err(e) => json!({ "error": e }),
+                        };
+                        let ok = v["error"].is_null() && v["exit_code"].as_i64().is_none_or(|c| c == 0);
+                        v["machine"] = json!(m);
+                        v["ok"] = json!(ok);
+                        v
+                    })
+                })
+                .collect();
+            handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        });
+        let ok = results.iter().filter(|r| r["ok"] == true).count();
+        Ok(json!({ "machines": results.len(), "ok": ok, "failed": results.len() - ok, "results": results }))
     }
 
     pub fn set_agents(&self, agents: Arc<crate::agents::Agents>) {
@@ -348,7 +500,11 @@ impl Caps {
         }
         caps.extend(crate::routines::capabilities());
         if self.system.as_ref().is_some_and(|s| s.settings().enabled) {
-            caps.extend(system_tools(&self.machines()));
+            let machines = self.machines();
+            if !machines.is_empty() {
+                caps.push(fleet_capability(&machines, &self.groups));
+            }
+            caps.extend(system_tools(&machines));
         }
         caps.extend(self.openapi.iter().flat_map(OpenApiClient::capabilities));
         caps.extend(self.mcp.iter().flat_map(McpClient::capabilities));
@@ -425,6 +581,9 @@ impl Caps {
     pub fn approval(&self, name: &str, arguments: &str) -> Option<Ask> {
         let c = self.manager.get(name)?;
         let args: Value = serde_json::from_str(if arguments.trim().is_empty() { "{}" } else { arguments }).unwrap_or(json!({}));
+        if c.name == "fleet_run" {
+            return self.fleet_approval(&args);
+        }
         // Another machine decides for itself (its own rules), and says what it would do.
         if c.source == "system"
             && let Some(machine) = remote_machine(&args)
@@ -530,6 +689,10 @@ impl Caps {
         if c.source == "system" {
             if ctx.agent.is_none() {
                 return json!({ "error": format!("{} is only for agents with system access: hand the task to the operator agent", c.name) }).to_string();
+            }
+            if c.name == "fleet_run" {
+                let args: Value = serde_json::from_str(if arguments.trim().is_empty() { "{}" } else { arguments }).unwrap_or(json!({}));
+                return self.fleet_run(&args, approved).unwrap_or_else(|e| json!({ "error": e })).to_string();
             }
             let Some(system) = &self.system else { return json!({ "error": "system access is off" }).to_string() };
             let args: Value = serde_json::from_str(if arguments.trim().is_empty() { "{}" } else { arguments }).unwrap_or(json!({}));
@@ -894,6 +1057,38 @@ mod tests {
         assert!(caps.approval("shell_run", r#"{"command":"ls","machine":"server"}"#).is_none());
         let direct = caps.invoke("shell_run", args, CallContext::new(None, ""), true, true);
         assert!(direct.contains("only for agents"), "the main agent still can't, wherever it points");
+    }
+
+    #[test]
+    fn one_command_on_several_machines_asks_once_and_answers_each() {
+        let (_rt, mut caps) = caps();
+        caps.system = Some(lyra_system::System::new(Default::default(), crate::config::expand_path));
+        caps.groups = [("web".to_string(), vec!["desktop".to_string(), "laptop".to_string()])].into();
+        let desktop = Arc::new(Desktop(Default::default()));
+        caps.set_remote(desktop.clone());
+        caps.refresh();
+        assert_eq!(caps.fleet_targets("@all").unwrap(), vec!["server", "desktop"], "the server and the online machines");
+        assert_eq!(caps.fleet_targets("web").unwrap(), vec!["desktop", "laptop"]);
+        assert_eq!(caps.fleet_targets("Desktop, server").unwrap(), vec!["desktop", "server"]);
+        assert!(caps.fleet_targets("nas").is_err());
+        assert!(caps.manager.get("fleet_run").unwrap().input_schema["properties"]["machines"]["description"].as_str().unwrap().contains("web (desktop, laptop)"));
+
+        // Only the machine that asks is in the approval; the server runs `echo` freely.
+        let args = r#"{"command":"echo hi","machines":"all"}"#;
+        let ask = caps.approval("fleet_run", args).unwrap();
+        assert_eq!((ask.what.as_str(), ask.detail.as_str()), ("run a command on desktop", "echo hi"));
+        let agent = CallContext { agent: Some("operator"), ..CallContext::new(None, "") };
+        let ran: Value = serde_json::from_str(&caps.invoke("fleet_run", args, agent, true, true)).unwrap();
+        assert_eq!((ran["machines"].as_u64(), ran["ok"].as_u64()), (Some(2), Some(2)), "{ran}");
+        let server = ran["results"].as_array().unwrap().iter().find(|r| r["machine"] == "server").unwrap();
+        assert_eq!(server["stdout"].as_str().map(str::trim), Some("hi"));
+        let lines = crate::ui::fleet_lines(&ran.to_string()).unwrap();
+        assert_eq!(lines.len(), 3, "a summary and a line per machine");
+
+        // An offline member is reported, not skipped silently.
+        let web: Value = serde_json::from_str(&caps.invoke("fleet_run", r#"{"command":"echo hi","machines":"web"}"#, agent, true, true)).unwrap();
+        assert_eq!(web["failed"], 1);
+        assert!(caps.invoke("fleet_run", args, CallContext::new(None, ""), true, true).contains("only for agents"));
     }
 
     #[test]

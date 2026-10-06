@@ -133,6 +133,21 @@ fn draw_palette(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(Block::bordered().title(title).border_style(Style::default().fg(Color::Cyan))), popup);
 }
 
+/// A `fleet_run` result as a line per machine: (worked, text).
+pub fn fleet_lines(content: &str) -> Option<Vec<(bool, String)>> {
+    let v: serde_json::Value = serde_json::from_str(content).ok()?;
+    let results = v["results"].as_array().filter(|r| r.iter().all(|x| x["machine"].is_string()))?;
+    let mut out = vec![(v["failed"] == 0, format!("  ↳ {} machines: {} ok, {} failed", v["machines"], v["ok"], v["failed"]))];
+    for r in results {
+        let ok = r["ok"] == true;
+        let first = |k: &str| r[k].as_str().and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty())).map(str::to_string);
+        let what = r["error"].as_str().map(str::to_string).or_else(|| first("stdout")).or_else(|| first("stderr")).unwrap_or_default();
+        let exit = r["exit_code"].as_i64().map_or(String::new(), |c| format!(" exit {c}"));
+        out.push((ok, format!("    {} {}{exit} · {}", if ok { "✓" } else { "✗" }, r["machine"].as_str().unwrap_or("?"), truncate(&what, 120))));
+    }
+    Some(out)
+}
+
 fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     let dim = Style::default().fg(Color::DarkGray);
     let mut lines: Vec<Line> = Vec::new();
@@ -144,8 +159,12 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     }
     for m in &app.messages {
         if m.role == "tool" || m.role == "agent_tool" {
-            // Tool results: one dim line, under the call that produced them.
-            lines.push(Line::styled(format!("  ↳ {}", truncate(&m.content, 160)), dim));
+            // Tool results: one dim line, under the call that produced them
+            // (a line per machine for one run on several).
+            match fleet_lines(&m.content) {
+                Some(each) => lines.extend(each.into_iter().map(|(ok, text)| Line::styled(text, if ok { dim } else { Style::default().fg(Color::Red) }))),
+                None => lines.push(Line::styled(format!("  ↳ {}", truncate(&m.content, 160)), dim)),
+            }
             lines.push(Line::default());
             continue;
         }

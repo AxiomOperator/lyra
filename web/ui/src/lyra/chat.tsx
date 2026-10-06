@@ -29,6 +29,41 @@ function parse(text: string): unknown {
 }
 
 /** One tool call, with its result when it has come back. */
+interface FleetResult {
+  machine: string;
+  ok: boolean;
+  exit_code?: number | null;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+  seconds?: number;
+}
+
+/** One machine's part of a run on several. */
+function MachineResult({ r }: { r: FleetResult }) {
+  const [open, setOpen] = useState(!r.ok);
+  return (
+    <div className={cn("rounded-md border", r.ok ? "border-border" : "border-red-800/60")}>
+      <button type="button" onClick={() => setOpen(!open)} className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs">
+        <span className={cn("font-medium", r.ok ? "text-emerald-300" : "text-red-300")}>
+          {r.ok ? "✓" : "✗"} {r.machine}
+        </span>
+        <span className="text-muted-foreground">
+          {r.error ? "not run" : `exit ${r.exit_code ?? "?"}`}
+          {typeof r.seconds === "number" ? ` · ${r.seconds}s` : ""}
+        </span>
+      </button>
+      {open && (
+        <div className="space-y-1.5 px-3 pb-2">
+          {r.error && <pre className="whitespace-pre-wrap break-words font-mono text-red-300 text-xs">{r.error}</pre>}
+          {r.stdout && <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded bg-black/40 p-2 font-mono text-xs">{r.stdout}</pre>}
+          {r.stderr && <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-red-950/30 p-2 font-mono text-red-300 text-xs">{r.stderr}</pre>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ToolCallView({ name, args, result }: { name: string; args: string; result?: string }) {
   const input = parse(args) as Record<string, unknown>;
   const output = result === undefined ? undefined : parse(result);
@@ -37,7 +72,9 @@ function ToolCallView({ name, args, result }: { name: string; args: string; resu
   const state = result === undefined ? "input-available" : error ? "output-error" : "output-available";
   // What it's about, at a glance: the command, path or URL.
   const subject = [input?.command, input?.path, input?.url, input?.query].find((v) => typeof v === "string") as string | undefined;
-  const where = typeof input?.machine === "string" && input.machine !== "server" ? ` @${input.machine}` : "";
+  const where = typeof input?.machine === "string" && input.machine !== "server" ? ` @${input.machine}` : typeof input?.machines === "string" ? ` @${input.machines}` : "";
+  // One run on several machines: a card per machine.
+  const fleet = obj && Array.isArray(obj.results) ? (obj.results as FleetResult[]) : null;
   const title = `${name}${where}${subject ? ` · ${subject.length > 70 ? subject.slice(0, 69) + "…" : subject}` : ""}`;
   const text = (v: unknown) => (typeof v === "string" ? v : "");
   return (
@@ -46,7 +83,17 @@ function ToolCallView({ name, args, result }: { name: string; args: string; resu
       <ToolContent>
         <ToolInput input={input} />
         {error && <div className="rounded-md bg-red-950/40 p-3 font-mono text-red-300 text-xs whitespace-pre-wrap break-words">{error}</div>}
-        {obj && !error && ("stdout" in obj || "stderr" in obj) && (
+        {fleet && (
+          <div className="space-y-2">
+            <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+              {String(obj?.machines)} machines · {String(obj?.ok)} ok · {String(obj?.failed)} failed
+            </h4>
+            {fleet.map((r) => (
+              <MachineResult key={r.machine} r={r} />
+            ))}
+          </div>
+        )}
+        {obj && !error && !fleet && ("stdout" in obj || "stderr" in obj) && (
           <div className="space-y-2">
             <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
               Output · exit {String(obj.exit_code ?? "?")}
@@ -60,7 +107,7 @@ function ToolCallView({ name, args, result }: { name: string; args: string; resu
         {obj && !error && !("stdout" in obj || "stderr" in obj) && typeof obj.content === "string" && (
           <pre className="max-h-80 overflow-auto rounded-md bg-black/40 p-3 font-mono text-xs whitespace-pre-wrap break-words">{obj.content}</pre>
         )}
-        {output !== undefined && !error && !(obj && ("stdout" in obj || "stderr" in obj || typeof obj.content === "string")) && <ToolOutput output={output as never} errorText={undefined} />}
+        {output !== undefined && !error && !fleet && !(obj && ("stdout" in obj || "stderr" in obj || typeof obj.content === "string")) && <ToolOutput output={output as never} errorText={undefined} />}
       </ToolContent>
     </Tool>
   );
@@ -244,6 +291,12 @@ function usePalette(text: string): Entry[] {
         if (!m.online) continue;
         list.push({ label: `@${m.name}`, description: ["online", m.hostname, m.os].filter(Boolean).join(" · "), completion: `${before}@${m.name} `, mention: true });
       }
+      // Several at once: every machine, or a group (one approval, a result each).
+      const online = (status.machines_detail ?? []).filter((m) => m.online).length;
+      if (online > 0) list.push({ label: "@all", description: `the server and ${online} machine${online === 1 ? "" : "s"} at once`, completion: `${before}@all `, mention: true });
+      for (const g of status.groups ?? []) {
+        list.push({ label: `@${g.name}`, description: `group: ${g.machines.join(", ")}`, completion: `${before}@${g.name} `, mention: true });
+      }
       return list.filter((e) => e.label.slice(1).toLowerCase().startsWith(typed));
     }
     if (!text.startsWith("/")) return [];
@@ -254,7 +307,7 @@ function usePalette(text: string): Entry[] {
       found = commands.filter((c) => c.usage.split(/\s+/)[0] === first);
     }
     return found.slice(0, 40).map((c) => ({ label: c.usage, description: c.description, completion: c.completion, mention: false }));
-  }, [text, commands, status.machines_detail]);
+  }, [text, commands, status.machines_detail, status.groups]);
 }
 
 /** Can this browser turn speech into text itself? (no server transcription) */

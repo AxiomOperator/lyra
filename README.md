@@ -955,6 +955,25 @@ install -m 755 target/x86_64-unknown-linux-musl/release/lyra-node /usr/local/bin
 (`.cargo/config.toml` points the musl build at the system `gcc`.) `lyra node`
 inside the full `lyra` does the same job but can't update itself.
 
+### Several machines at once: `@all` and groups
+
+`@all` means the server and every machine that's online. A group is a name for some of them:
+
+```toml
+[groups]
+web = ["web1", "web2"]
+lab = ["nas", "desktop"]
+```
+
+- **Running:** "update packages on @web" or "disk usage on @all" goes to the Operator, which
+  uses `fleet_run`: the same command on every machine at once.
+- **Approval:** each machine checks the command against its own rules. The ones that need a yes
+  are combined into one approval ("run a command on web1, web2"), machines that allow the
+  command just run it, and anything a machine forbids is refused there.
+- **Results:** one per machine, offline ones included. The app shows a card per machine (✓/✗,
+  exit code, output), and the terminals show a line per machine.
+- **Suggestions:** `@all` and your groups appear when you type `@`.
+
 ### Machine health and alerts
 
 Every machine reports its health every 5 minutes, and `lyra serve` checks the server the same

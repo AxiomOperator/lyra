@@ -284,3 +284,8 @@ currency = "$"
 # failed_units = true
 # offline_minutes = 10
 # notify = true
+
+# Named sets of machines (see README): "update packages on @web" runs on each,
+# with one approval. @all is the server and every online machine.
+# [groups]
+# web = ["web1", "web2"]

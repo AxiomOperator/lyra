@@ -657,6 +657,8 @@ impl App {
         if let (Some(env), Some(caps)) = (agent_env.as_mut(), &self.caps) {
             let known: Vec<String> = caps.machines().into_iter().map(|m| m.0).collect();
             env.machine = agents::machine_mention(&content, &known);
+            let groups: Vec<String> = caps.groups.keys().cloned().collect();
+            env.fleet = agents::fleet_mention(&content, &groups);
         }
         thread::spawn(move || {
             let mut history = history;
@@ -3592,11 +3594,17 @@ fn open_agents(config: &Config, runtime: &tokio::runtime::Handle) -> (Option<Arc
             }
             // System tools added since the Operator was installed from its template.
             if let Some(mut op) = a.registry.get("operator").filter(|p| p.template.as_deref() == Some("operator")) {
-                let missing: Vec<String> = ["upload_place", "routine_create", "routine_list"].iter().filter(|t| !op.tools.iter().any(|x| x == *t)).map(|t| t.to_string()).collect();
+                let missing: Vec<String> = ["upload_place", "fleet_run", "routine_create", "routine_list"].iter().filter(|t| !op.tools.iter().any(|x| x == *t)).map(|t| t.to_string()).collect();
                 // Routines: the Operator schedules with routine_create, not cron.
-                let note = !op.instructions.contains("routine_create");
+                let note = !op.instructions.contains(lyra_agents::templates::ROUTINE_NOTE);
                 if note {
-                    op.instructions = format!("{} {}", op.instructions.trim_end(), lyra_agents::templates::ROUTINE_NOTE);
+                    // An earlier version of the note is replaced, not repeated.
+                    let base = ["For @all or a group", "Something to do on a schedule"]
+                        .iter()
+                        .filter_map(|start| op.instructions.find(start))
+                        .min()
+                        .map_or(op.instructions.clone(), |i| op.instructions[..i].to_string());
+                    op.instructions = format!("{} {}", base.trim_end(), lyra_agents::templates::ROUTINE_NOTE);
                 }
                 if !missing.is_empty() || note {
                     op.tools.extend(missing.iter().cloned());
@@ -3652,6 +3660,7 @@ fn open_capabilities(
     if config.search.enabled {
         caps.search = Some(config.search.clone());
     }
+    caps.groups = config.groups.iter().map(|(g, m)| (g.to_lowercase(), m.clone())).collect();
     notes.extend(caps.refresh());
     notes.push(format!("capabilities · {} ({} callable)", caps.manager.all().len(), caps.manager.all().iter().filter(|c| c.kind.callable()).count()));
     (Some(Arc::new(caps)), notes)

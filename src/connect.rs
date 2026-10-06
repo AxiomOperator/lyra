@@ -246,6 +246,13 @@ impl Screen {
                 let about = [str_of(&m["hostname"]), str_of(&m["os"])].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
                 names.push((name, if about.is_empty() { "online".into() } else { format!("online · {about}") }));
             }
+            if names.len() > 1 {
+                names.push(("all".into(), format!("the server and {} machine(s) at once", names.len() - 1)));
+            }
+            for g in self.view.status["groups"].as_array().into_iter().flatten() {
+                let members: Vec<String> = g["machines"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(str::to_string)).collect();
+                names.push((str_of(&g["name"]), format!("group: {}", members.join(", "))));
+            }
             return names
                 .into_iter()
                 .filter(|(n, _)| n.to_lowercase().starts_with(&typed))
@@ -440,7 +447,10 @@ fn draw_chat(f: &mut Frame, s: &mut Screen, area: Rect) {
         let role = m["role"].as_str().unwrap_or("info");
         let content = m["content"].as_str().unwrap_or("");
         if role == "tool" || role == "agent_tool" {
-            lines.push(Line::styled(format!("  ↳ {}", truncate(content, 160)), dim));
+            match crate::ui::fleet_lines(content) {
+                Some(each) => lines.extend(each.into_iter().map(|(ok, text)| Line::styled(text, if ok { dim } else { Style::default().fg(Color::Red) }))),
+                None => lines.push(Line::styled(format!("  ↳ {}", truncate(content, 160)), dim)),
+            }
             lines.push(Line::default());
             continue;
         }

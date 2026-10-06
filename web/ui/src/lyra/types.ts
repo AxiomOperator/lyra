@@ -80,6 +80,8 @@ export interface Status {
   online?: { id: string; name: string }[];
   pairing?: PairRequest[];
   machines_detail?: Machine[];
+  /** Named sets of machines (`[groups]`), for @group. */
+  groups?: { name: string; machines: string[] }[] | null;
   /** The server's own health (as a machine's). */
   server_health?: Health | null;
   /** Conversations loaded on the server, and which are answering. */

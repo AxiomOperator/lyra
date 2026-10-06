@@ -27,7 +27,8 @@ pub const NAMES: &[&str] = &[
 pub const DEFAULTS: &[&str] = &["researcher", "archivist"];
 
 /// How the Operator handles "every morning …" (also added to existing Operators).
-pub const ROUTINE_NOTE: &str = "Something to do on a schedule (\"every morning at 7\", \"weekdays at 8:30\") is a lyra routine: \
+pub const ROUTINE_NOTE: &str = "For @all or a group of machines, use fleet_run (one approval, a result per machine). \
+    Something to do on a schedule (\"every morning at 7\", \"weekdays at 8:30\") is a lyra routine: \
     create it with routine_create (its prompt names the machines with @name or @all) instead of cron jobs or timers, \
     and don't run it now unless asked.";
 
@@ -106,7 +107,7 @@ pub fn template(name: &str) -> Option<AgentProfile> {
             };
             p.memory_policy = MemoryPolicy { mode: MemoryMode::Scoped, read: strs(&["user", "project:*"]), write: Vec::new() };
             p.tools = strs(&[
-                "system_info", "shell_run", "file_read", "file_list", "file_write", "file_delete", "upload_place", "http_request", "ssh_run", "routine_create", "routine_list", "memory_recall",
+                "system_info", "shell_run", "file_read", "file_list", "file_write", "file_delete", "upload_place", "fleet_run", "http_request", "ssh_run", "routine_create", "routine_list", "memory_recall",
             ]);
             p.permission_policy.max_risk = "destructive".into();
             p.test_task = Some("Report this machine's OS, uptime, CPU count and free disk space.".into());

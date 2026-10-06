@@ -129,6 +129,8 @@ pub struct Env {
     pub tx: Sender<StreamEvent>,
     /// A machine the user named with `@desktop`: system tools default to it.
     pub machine: Option<String>,
+    /// `@all` or `@<group>`: several machines (`fleet_run`).
+    pub fleet: Option<String>,
     /// Set when the user stops the run.
     pub cancel: crate::Cancel,
 }
@@ -144,9 +146,29 @@ pub fn machine_mention(message: &str, known: &[String]) -> Option<String> {
     })
 }
 
+/// `@all` or a `[groups]` name in the message: several machines at once.
+pub fn fleet_mention(message: &str, groups: &[String]) -> Option<String> {
+    message.split_whitespace().filter_map(|w| w.strip_prefix('@')).find_map(|w| {
+        let w = w.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_').to_lowercase();
+        (w == "all" || groups.contains(&w)).then_some(w)
+    })
+}
+
 /// A system call's arguments with the mentioned machine filled in, when the
 /// model didn't pick one.
 fn with_machine(env: &Env, tool: &str, args: &str) -> String {
+    // `@all` / `@web`: fleet_run's machines, when the model didn't say.
+    if tool == "fleet_run"
+        && let Some(fleet) = &env.fleet
+    {
+        let mut v: Value = serde_json::from_str(args).unwrap_or(json!({}));
+        if v.get("machines").and_then(Value::as_str).is_none_or(str::is_empty)
+            && let Some(map) = v.as_object_mut()
+        {
+            map.insert("machines".into(), json!(fleet));
+        }
+        return v.to_string();
+    }
     let (Some(machine), Some(caps)) = (&env.machine, &env.caps) else { return args.to_string() };
     if tool == "ssh_run" || caps.manager.get(tool).is_none_or(|c| c.source != "system") {
         return args.to_string();
@@ -681,10 +703,10 @@ pub fn panel(agents: &Agents) -> Vec<PanelRow> {
 /// the main agent's own `delegate` call (A6, A11). Returns the agent's title.
 pub fn auto_delegate(env: &Env, message: &str, run: Uuid, history: &mut Vec<Value>) -> Option<String> {
     // `@desktop …`: the Operator, on that machine.
-    let d = match &env.machine {
-        Some(m) if env.agents.registry.get("operator").is_some_and(|p| p.enabled) => {
-            RoutingDecision { agent: "operator".into(), confidence: 1.0, reason: format!("@{m}"), method: RouteMethod::Explicit }
-        }
+    let operator = env.agents.registry.get("operator").is_some_and(|p| p.enabled);
+    let d = match (&env.machine, &env.fleet) {
+        (_, Some(f)) if operator => RoutingDecision { agent: "operator".into(), confidence: 1.0, reason: format!("@{f}"), method: RouteMethod::Explicit },
+        (Some(m), _) if operator => RoutingDecision { agent: "operator".into(), confidence: 1.0, reason: format!("@{m}"), method: RouteMethod::Explicit },
         _ => env.agents.route(env, message)?,
     };
     let profile = env.agents.registry.get(&d.agent)?;
@@ -717,6 +739,7 @@ impl crate::App {
             agents,
             tx: self.tx.clone(),
             machine: None,
+            fleet: None,
             cancel: self.cancel.clone(),
         })
     }
@@ -1351,7 +1374,7 @@ mod tests {
         caps.set_agents(agents.clone());
         caps.refresh();
         let (tx, events) = mpsc::channel();
-        let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx, machine: None, cancel: Default::default() };
+        let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx, machine: None, fleet: None, cancel: Default::default() };
         Fixture { _rt: rt, env, events }
     }
 
@@ -1480,6 +1503,11 @@ mod tests {
         assert_eq!(serde_json::from_str::<Value>(&with_machine(&env, "shell_run", r#"{"command":"ls"}"#)).unwrap()["machine"], "desktop");
         assert_eq!(serde_json::from_str::<Value>(&with_machine(&env, "shell_run", r#"{"command":"ls","machine":"server"}"#)).unwrap()["machine"], "server", "an explicit choice stays");
         assert_eq!(with_machine(&env, "memory_recall", r#"{"query":"x"}"#), r#"{"query":"x"}"#, "only system tools");
+        assert_eq!(fleet_mention("update packages on @web please", &["web".into()]).as_deref(), Some("web"));
+        assert_eq!(fleet_mention("disk space on @all.", &[]).as_deref(), Some("all"));
+        assert_eq!(fleet_mention("email me@all-hands.com", &[]), None);
+        env.fleet = Some("web".into());
+        assert_eq!(serde_json::from_str::<Value>(&with_machine(&env, "fleet_run", r#"{"command":"uptime"}"#)).unwrap()["machines"], "web");
     }
 
     #[test]
