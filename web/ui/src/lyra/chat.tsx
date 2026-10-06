@@ -28,15 +28,37 @@ function parse(text: string): unknown {
 
 /** One tool call, with its result when it has come back. */
 function ToolCallView({ name, args, result }: { name: string; args: string; result?: string }) {
+  const input = parse(args) as Record<string, unknown>;
   const output = result === undefined ? undefined : parse(result);
-  const error = output && typeof output === "object" && "error" in (output as Record<string, unknown>) ? String((output as Record<string, unknown>).error) : undefined;
+  const obj = output && typeof output === "object" ? (output as Record<string, unknown>) : null;
+  const error = obj && "error" in obj ? String(obj.error) : undefined;
   const state = result === undefined ? "input-available" : error ? "output-error" : "output-available";
+  // What it's about, at a glance: the command, path or URL.
+  const subject = [input?.command, input?.path, input?.url, input?.query].find((v) => typeof v === "string") as string | undefined;
+  const where = typeof input?.machine === "string" && input.machine !== "server" ? ` @${input.machine}` : "";
+  const title = `${name}${where}${subject ? ` · ${subject.length > 70 ? subject.slice(0, 69) + "…" : subject}` : ""}`;
+  const text = (v: unknown) => (typeof v === "string" ? v : "");
   return (
-    <Tool>
-      <ToolHeader type="dynamic-tool" toolName={name} title={name} state={state} />
+    <Tool className="mb-0 bg-background/40">
+      <ToolHeader type="dynamic-tool" toolName={name} title={title} state={state} className="text-left [&_span]:[overflow-wrap:anywhere]" />
       <ToolContent>
-        <ToolInput input={parse(args)} />
-        <ToolOutput output={error ? undefined : (output as never)} errorText={error} />
+        <ToolInput input={input} />
+        {error && <div className="rounded-md bg-red-950/40 p-3 font-mono text-red-300 text-xs whitespace-pre-wrap break-words">{error}</div>}
+        {obj && !error && ("stdout" in obj || "stderr" in obj) && (
+          <div className="space-y-2">
+            <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+              Output · exit {String(obj.exit_code ?? "?")}
+              {obj.timed_out ? " · timed out" : ""}
+              {typeof obj.seconds === "number" ? ` · ${obj.seconds}s` : ""}
+            </h4>
+            {text(obj.stdout) && <pre className="max-h-80 overflow-auto rounded-md bg-black/40 p-3 font-mono text-xs whitespace-pre-wrap break-words">{text(obj.stdout)}</pre>}
+            {text(obj.stderr) && <pre className="max-h-48 overflow-auto rounded-md bg-red-950/30 p-3 font-mono text-red-300 text-xs whitespace-pre-wrap break-words">{text(obj.stderr)}</pre>}
+          </div>
+        )}
+        {obj && !error && !("stdout" in obj || "stderr" in obj) && typeof obj.content === "string" && (
+          <pre className="max-h-80 overflow-auto rounded-md bg-black/40 p-3 font-mono text-xs whitespace-pre-wrap break-words">{obj.content}</pre>
+        )}
+        {output !== undefined && !error && !(obj && ("stdout" in obj || "stderr" in obj || typeof obj.content === "string")) && <ToolOutput output={output as never} errorText={undefined} />}
       </ToolContent>
     </Tool>
   );
@@ -77,15 +99,34 @@ function MessageView({ m, results, streaming }: { m: ChatMessage; results: Map<s
           </MessageContent>
         </Message>
       );
-    case "agent":
+    case "agent": {
+      // One card per delegation: "working on it", its tool calls as they
+      // happen, then how it went.
+      const working = m.content.includes("· working on it");
+      const [head, ...rest] = m.content.split("\n");
       return (
-        <div className="flex gap-3 rounded-lg border border-sky-900/60 bg-sky-950/30 p-3 text-sm">
-          <Bot className="mt-0.5 size-4 shrink-0 text-sky-400" />
-          <div className="min-w-0 flex-1 text-sky-100/90">
-            <MessageResponse>{m.content}</MessageResponse>
+        <div className="space-y-3 rounded-lg border border-sky-900/60 bg-sky-950/30 p-3 text-sm">
+          <div className="flex items-start gap-3">
+            <Bot className="mt-0.5 size-4 shrink-0 text-sky-400" />
+            <div className="min-w-0 flex-1">
+              {working ? <Shimmer className="text-sky-200">{head}</Shimmer> : <div className="font-medium text-sky-200">{head}</div>}
+            </div>
           </div>
+          {m.calls?.length > 0 && (
+            <div className="space-y-2">
+              {m.calls.map((c) => (
+                <ToolCallView key={c.id} name={c.name} args={c.arguments} result={results.get(c.id)} />
+              ))}
+            </div>
+          )}
+          {rest.join("\n").trim() && (
+            <div className="text-sky-100/90">
+              <MessageResponse>{rest.join("\n")}</MessageResponse>
+            </div>
+          )}
         </div>
       );
+    }
     case "approval": {
       const denied = m.content.includes("→ denied");
       const Icon = denied ? ShieldX : ShieldCheck;
@@ -104,6 +145,7 @@ function MessageView({ m, results, streaming }: { m: ChatMessage; results: Map<s
         </Alert>
       );
     case "tool":
+    case "agent_tool":
       // Shown with its call; a stray one (no call to attach to) stays small.
       return <div className="truncate font-mono text-muted-foreground text-xs">↳ {m.content}</div>;
     default:
@@ -310,14 +352,15 @@ export function ChatPage() {
   // Tool results, by the call they answer.
   const results = useMemo(() => {
     const map = new Map<string, string>();
-    for (const m of messages) if (m.role === "tool" && m.tool_call_id) map.set(m.tool_call_id, m.content);
+    for (const m of messages) if ((m.role === "tool" || m.role === "agent_tool") && m.tool_call_id) map.set(m.tool_call_id, m.content);
     return map;
   }, [messages]);
   const attached = useMemo(() => new Set(messages.flatMap((m) => (m.calls ?? []).map((c) => c.id))), [messages]);
   const approvals = status.approvals ?? [];
   const pairing = status.pairing ?? [];
   const last = messages[messages.length - 1];
-  const thinking = status.waiting && (!last || ["user", "tool", "agent", "approval"].includes(last.role));
+  // An agent's card shows its own progress; this is for lyra itself.
+  const thinking = status.waiting && (!last || ["user", "tool", "approval"].includes(last.role)) && !status.phase?.startsWith("↪");
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -325,11 +368,11 @@ export function ChatPage() {
         <ConversationContent className="gap-5 px-3 py-4">
           {ready && messages.length === 0 && <ConversationEmptyState title="Ask lyra anything" description="Type / for commands, @ to pick a machine." />}
           {messages.map((m, i) =>
-            m.role === "tool" && m.tool_call_id && attached.has(m.tool_call_id) ? null : (
+            (m.role === "tool" || m.role === "agent_tool") && m.tool_call_id && attached.has(m.tool_call_id) ? null : (
               <MessageView key={i} m={m} results={results} streaming={!!status.waiting && i === messages.length - 1} />
             ),
           )}
-          {thinking && <Shimmer className="text-sm">{status.phase?.startsWith("↪") ? status.phase.replace(/^↪\s*/, "") + " is working…" : "Thinking…"}</Shimmer>}
+          {thinking && <Shimmer className="text-sm">Thinking…</Shimmer>}
         </ConversationContent>
         <ConversationScrollButton />
       </Conversation>

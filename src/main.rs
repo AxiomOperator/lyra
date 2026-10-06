@@ -369,6 +369,10 @@ struct App {
     wizard_busy: bool,
     /// A message to send once the current command is handled (`/agent ask`).
     pending_input: Option<String>,
+    /// Agents working now and the chat card each one's calls go on.
+    agent_cards: Vec<(String, usize)>,
+    /// The earliest message changed in place since devices were last updated.
+    touched: Option<usize>,
     /// This conversation's id (`~/.lyra/sessions/<id>.json`).
     session_id: String,
     /// Activity lines logged so far (`lyra serve` prints the new ones).
@@ -494,6 +498,8 @@ impl App {
             show_handled_by,
             wizard_busy: false,
             pending_input: None,
+            agent_cards: Vec::new(),
+            touched: None,
             session_id: sessions::new_id(),
             logged: 0,
             hub: None,
@@ -2318,6 +2324,7 @@ impl App {
         self.session_id = id.clone();
         self.session_started = s.started;
         self.messages = s.into_messages();
+        self.agent_cards.clear();
         self.messages.push(Message::new("info", format!("resumed session {id} · {turns} turns · last active {when}")));
         self.scroll = None;
         self.last_run = None;
@@ -2333,6 +2340,7 @@ impl App {
         self.session_id = sessions::new_id();
         self.session_started = chrono::Utc::now();
         self.messages.clear();
+        self.agent_cards.clear();
         self.last_run = None;
         self.scroll = None;
         self.log(Level::Info, format!("new session {}", self.session_id));
@@ -2355,6 +2363,11 @@ impl App {
         self.save_session();
         self.resume_session(s);
         Ok(String::new())
+    }
+
+    /// A message further back changed (an agent's card): devices must hear.
+    fn touch(&mut self, i: usize) {
+        self.touched = Some(self.touched.map_or(i, |t| t.min(i)));
     }
 
     /// What the command palette shows for the input (nothing when closed).

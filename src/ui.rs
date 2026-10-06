@@ -143,7 +143,7 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         }
     }
     for m in &app.messages {
-        if m.role == "tool" {
+        if m.role == "tool" || m.role == "agent_tool" {
             // Tool results: one dim line, under the call that produced them.
             lines.push(Line::styled(format!("  ↳ {}", truncate(&m.content, 160)), dim));
             lines.push(Line::default());

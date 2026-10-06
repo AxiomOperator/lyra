@@ -49,7 +49,10 @@ impl Default for Settings {
 pub enum AgentEvent {
     Routed { agent: String, method: RouteMethod, confidence: f32, reason: String },
     Started { agent: String, task: String, depth: u32 },
-    Tool { agent: String, tool: String },
+    /// An agent calls a tool: `id` is unique to this call, `args` as sent.
+    Tool { agent: String, tool: String, id: String, args: String },
+    /// What that call returned (clipped for the screen).
+    ToolResult { agent: String, id: String, output: String },
     Finished { agent: String, status: DelegationStatus, confidence: Option<f32>, ms: u64, output: String, depth: u32 },
 }
 
@@ -371,7 +374,9 @@ pub fn delegate(
         for call in &calls {
             let name = call["function"]["name"].as_str().unwrap_or("");
             let args = call["function"]["arguments"].as_str().unwrap_or("{}");
-            emit(&env.tx, AgentEvent::Tool { agent: profile.title.clone(), tool: name.to_string() });
+            // Shown in the chat as this delegation's own tool card.
+            let shown_id = format!("{task_id}-{}", call["id"].as_str().unwrap_or(""));
+            emit(&env.tx, AgentEvent::Tool { agent: profile.title.clone(), tool: name.to_string(), id: shown_id.clone(), args: with_machine(env, name, args) });
             let out = if tool_calls >= s.budget.max_tool_calls {
                 json!({ "error": "this delegation's tool budget is used up" }).to_string()
             } else if name == "delegate" && can_delegate {
@@ -403,6 +408,8 @@ pub fn delegate(
                 // A9: not in this agent's permissions, whatever the model asked.
                 json!({ "error": format!("{} may not use {name}", profile.title) }).to_string()
             };
+            let clipped: String = out.chars().take(4000).collect();
+            emit(&env.tx, AgentEvent::ToolResult { agent: profile.title.clone(), id: shown_id, output: clipped });
             messages.push(json!({ "role": "tool", "tool_call_id": call["id"], "content": out }));
         }
     }
@@ -892,13 +899,28 @@ impl crate::App {
                 let from = if depth > 1 { "an agent" } else { "lyra" };
                 self.log(Level::Agent, format!("{from} → {agent}: {task}"));
                 self.messages.push(Message::new("agent", format!("{agent} · working on it for {from}{}", if depth > 1 { " (nested)" } else { "" })));
+                // Its tool calls and the result go on this card.
+                self.agent_cards.push((agent.clone(), self.messages.len() - 1));
                 if !self.handled_by.contains(&agent) {
                     self.handled_by.push(agent);
                 }
             }
-            AgentEvent::Tool { agent, tool } => {
-                self.log(Level::Agent, format!("{agent} ⚙ {tool}"));
+            AgentEvent::Tool { agent, tool, id, args } => {
+                self.log(Level::Agent, format!("{agent} ⚙ {tool} {}", args.chars().take(120).collect::<String>()));
                 self.set_phase(Phase::Delegating(format!("{agent} · {tool}")));
+                if let Some(&(_, i)) = self.agent_cards.iter().rev().find(|(a, _)| *a == agent)
+                    && let Some(card) = self.messages.get_mut(i)
+                {
+                    card.tool_calls.push(crate::ToolCall { id, kind: "function".into(), function: crate::FunctionCall { name: tool, arguments: args } });
+                    self.touch(i);
+                }
+            }
+            AgentEvent::ToolResult { agent, id, output } => {
+                self.log(Level::Agent, format!("{agent} ↳ {}", output.chars().take(120).collect::<String>()));
+                // Shown with its call; never part of the model's history.
+                let mut m = Message::new("agent_tool", output);
+                m.tool_call_id = Some(id);
+                self.messages.push(m);
             }
             AgentEvent::Finished { agent, status, confidence, ms, output, depth } => {
                 let conf = confidence.map_or(String::new(), |c| format!(", confidence {c:.2}"));
@@ -906,7 +928,17 @@ impl crate::App {
                 self.log(if status == DelegationStatus::Completed { Level::Agent } else { Level::Error }, line.clone());
                 let preview: String = output.lines().take(4).collect::<Vec<_>>().join("\n");
                 let more = if output.lines().count() > 4 { "\n…" } else { "" };
-                self.messages.push(Message::new("agent", format!("{line}\n{preview}{more}")));
+                // The card that said "working on it" now says how it went.
+                match self.agent_cards.iter().rposition(|(a, _)| *a == agent) {
+                    Some(k) => {
+                        let (_, i) = self.agent_cards.remove(k);
+                        if let Some(card) = self.messages.get_mut(i) {
+                            card.content = format!("{line}\n{preview}{more}");
+                            self.touch(i);
+                        }
+                    }
+                    None => self.messages.push(Message::new("agent", format!("{line}\n{preview}{more}"))),
+                }
                 self.set_phase(if self.waiting { Phase::Waiting } else { Phase::Idle });
                 self.refresh_agents();
             }
@@ -1323,6 +1355,7 @@ mod tests {
         let events: Vec<StreamEvent> = f.events.try_iter().collect();
         assert!(matches!(events.first(), Some(StreamEvent::Agent(AgentEvent::Started { .. }))));
         assert!(events.iter().any(|e| matches!(e, StreamEvent::Agent(AgentEvent::Tool { tool, .. }) if tool == "memory_forget")));
+        assert!(events.iter().any(|e| matches!(e, StreamEvent::Agent(AgentEvent::ToolResult { output, .. }) if output.contains("may not use memory_forget"))), "the result follows the call");
         assert!(matches!(events.last(), Some(StreamEvent::Agent(AgentEvent::Finished { status: DelegationStatus::Completed, .. }))));
         assert!(f.env.agents.active.lock().unwrap().is_empty());
     }

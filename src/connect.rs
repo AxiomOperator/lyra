@@ -347,7 +347,7 @@ fn draw_chat(f: &mut Frame, s: &mut Screen, area: Rect) {
     for (i, m) in s.view.messages.iter().enumerate() {
         let role = m["role"].as_str().unwrap_or("info");
         let content = m["content"].as_str().unwrap_or("");
-        if role == "tool" {
+        if role == "tool" || role == "agent_tool" {
             lines.push(Line::styled(format!("  ↳ {}", truncate(content, 160)), dim));
             lines.push(Line::default());
             continue;

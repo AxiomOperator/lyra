@@ -91,7 +91,8 @@ pub struct Mirror {
 
 impl Mirror {
     /// The updates that bring the devices up to date with the app.
-    pub fn updates(&mut self, app: &App) -> Vec<Value> {
+    pub fn updates(&mut self, app: &mut App) -> Vec<Value> {
+        let touched = app.touched.take();
         let mut out = Vec::new();
         if self.session != app.session_id {
             // Another conversation (resumed or new): send it whole.
@@ -104,7 +105,8 @@ impl Mirror {
                 out.push(json!({ "type": "truncate", "length": app.messages.len() }));
             }
             // Only the last few messages ever change (the reply being written).
-            let from = self.sent.len().saturating_sub(3);
+            // …and anything changed in place further back (an agent's card).
+            let from = self.sent.len().saturating_sub(3).min(touched.unwrap_or(usize::MAX));
             for (i, m) in app.messages.iter().enumerate().skip(from) {
                 let now = web_message(app, m);
                 match self.sent.get(i) {
