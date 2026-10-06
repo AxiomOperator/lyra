@@ -446,7 +446,7 @@ export function ChatPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Conversation className="min-h-0 flex-1">
-        <ConversationContent className="gap-5 px-3 py-4">
+        <ConversationContent className="mx-auto w-full max-w-3xl gap-5 px-3 py-4 md:px-6 md:py-6">
           {ready && messages.length === 0 && <ConversationEmptyState title="Ask lyra anything" description="Type / for commands, @ to pick a machine." />}
           {messages.map((m, i) =>
             (m.role === "tool" || m.role === "agent_tool") && m.tool_call_id && attached.has(m.tool_call_id) ? null : (
@@ -457,11 +457,14 @@ export function ChatPage() {
         </ConversationContent>
         <ConversationScrollButton />
       </Conversation>
-      {pairing.map((p) => (
-        <PairCard key={p.id} p={p} className="mx-3 mb-2" />
-      ))}
-      {approvals[0] && <ApprovalCard a={approvals[0]} more={approvals.length - 1} />}
-      <Composer />
+      {/* Approvals, pairing and the composer line up with the messages. */}
+      <div className="mx-auto w-full max-w-3xl md:px-3">
+        {pairing.map((p) => (
+          <PairCard key={p.id} p={p} className="mx-3 mb-2" />
+        ))}
+        {approvals[0] && <ApprovalCard a={approvals[0]} more={approvals.length - 1} />}
+        <Composer />
+      </div>
     </div>
   );
 }

@@ -7,8 +7,8 @@ import { useState, type ReactNode } from "react";
 
 export function Page({ title, description, action, children }: { title: string; description?: string; action?: ReactNode; children: ReactNode }) {
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-8">
-      <div className="mx-auto max-w-2xl space-y-4">
+    <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-8 md:px-8 md:pt-8">
+      <div className="mx-auto max-w-3xl space-y-4">
         <div className="flex items-start justify-between gap-3">
           <div>
             <h1 className="font-semibold text-xl">{title}</h1>
