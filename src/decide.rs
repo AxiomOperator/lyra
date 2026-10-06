@@ -36,7 +36,7 @@ pub struct Settings {
 }
 
 fn default_max_state_chars() -> usize {
-    1500
+    1000
 }
 
 fn default_model() -> String {
@@ -185,7 +185,7 @@ pub fn ask(what: &str, state: &str, questions: &[(String, Question)]) -> Option<
         // Too much for its batch: only this question goes to the chat model.
         Err(e) if e.contains("too large") => {
             FALLBACKS.fetch_add(1, Ordering::Relaxed);
-            note(format!("{what}: too long for the decision model's batch, asked the chat model (raise llama-server's -b/-ub and [decide] max_state_chars)"));
+            note(format!("{what}: too long for the decision model's batch, left to the chat model (raise llama-server's -b/-ub and [decide] max_state_chars)"));
             None
         }
         Err(e) => {
@@ -289,7 +289,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn settings(url: &str) -> Settings {
-        Settings { url: url.into(), model: "clef-flash".into(), min_confidence: 0.75, max_state_chars: 1500 }
+        Settings { url: url.into(), model: "clef-flash".into(), min_confidence: 0.75, max_state_chars: 1000 }
     }
 
     #[test]

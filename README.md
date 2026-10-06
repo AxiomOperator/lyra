@@ -101,7 +101,7 @@ tokens, which is too small for a conversation turn, so raise `-b`/`-ub` and then
 url = "http://localhost:8091/v1"   # /systemone is added
 model = "clef-flash"
 # min_confidence = 0.75             # below it, the chat model decides
-# max_state_chars = 1500            # fits the default 512-token batch; ~20000 with -ub 8192
+# max_state_chars = 1000            # fits the default 512-token batch; ~20000 with -ub 8192
 ```
 
 **Without `[decide]`, nothing changes:** the chat model answers everything as before. With it,
