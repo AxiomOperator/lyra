@@ -926,7 +926,7 @@ pub fn local(home: &std::path::Path, listen: &str) {
             c.url = url;
             c
         }
-        None => match devices.add("server-terminal", "device") {
+        None => match devices.add("server-terminal", "device", Some(lyra_web::users::OWNER)) {
             Ok((_, token)) => {
                 let c = RemoteConfig { url, token, name: "server-terminal".into() };
                 if let Err(e) = toml::to_string_pretty(&c).map_err(|e| e.to_string()).and_then(|t| lyra_node::write_private(&path, &t)) {

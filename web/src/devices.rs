@@ -32,6 +32,9 @@ pub struct Device {
     /// The conversation it had open last (it returns to it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_session: Option<String>,
+    /// Whose it is (`users.json`); none for a machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -39,6 +42,9 @@ struct Pairing {
     code_hash: String,
     expires: DateTime<Utc>,
     attempts: u32,
+    /// The user a device paired with this code belongs to (none: the owner).
+    #[serde(default)]
+    user: Option<String>,
 }
 
 /// Wrong codes allowed before a pairing code stops working.
@@ -67,7 +73,7 @@ pub struct Devices {
 }
 
 /// Write a file only its owner can read, atomically.
-fn write_private(path: &Path, text: &str) -> Result<(), String> {
+pub(crate) fn write_private(path: &Path, text: &str) -> Result<(), String> {
     use std::os::unix::fs::OpenOptionsExt;
     let tmp = path.with_extension("tmp");
     {
@@ -100,8 +106,13 @@ impl Devices {
 
     /// A new pairing code (valid for `minutes`); replaces any earlier one.
     pub fn new_code(&self, minutes: i64) -> Result<String, String> {
+        self.new_code_for(minutes, None)
+    }
+
+    /// A pairing code whose device will belong to `user` (none: the owner).
+    pub fn new_code_for(&self, minutes: i64, user: Option<&str>) -> Result<String, String> {
         let code = random(8, b"ABCDEFGHJKMNPQRSTUVWXYZ23456789");
-        let p = Pairing { code_hash: hash(&code), expires: Utc::now() + Duration::minutes(minutes), attempts: 0 };
+        let p = Pairing { code_hash: hash(&code), expires: Utc::now() + Duration::minutes(minutes), attempts: 0, user: user.map(str::to_string) };
         write_private(&self.dir.join("pairing.json"), &serde_json::to_string(&p).map_err(|e| e.to_string())?)?;
         Ok(code)
     }
@@ -127,12 +138,14 @@ impl Devices {
             return Err("wrong pairing code".into());
         }
         let _ = std::fs::remove_file(&path);
-        self.add(name, kind)
+        let user = if kind == "node" { None } else { Some(p.user.unwrap_or_else(|| crate::users::OWNER.to_string())) };
+        self.add(name, kind, user.as_deref())
     }
 
     /// Add a device directly (a headless request the user approved, or the
-    /// server's own terminal). Returns it and its token (shown once).
-    pub fn add(&self, name: &str, kind: &str) -> Result<(Device, String), String> {
+    /// server's own terminal) for `user` (none for a machine). Returns it and
+    /// its token (shown once).
+    pub fn add(&self, name: &str, kind: &str, user: Option<&str>) -> Result<(Device, String), String> {
         if !matches!(kind, "device" | "node") {
             return Err(format!("unknown kind {kind:?}"));
         }
@@ -152,6 +165,7 @@ impl Devices {
             last_seen: Utc::now(),
             push: None,
             last_session: None,
+            user: if kind == "node" { None } else { user.map(str::to_string) },
         };
         all.push(device.clone());
         self.save(&all)?;
@@ -192,6 +206,29 @@ impl Devices {
         self.save(&all)
     }
 
+    /// Devices from before users existed belong to the owner. Returns how many.
+    pub fn adopt(&self, user: &str) -> Result<usize, String> {
+        let mut all = self.list();
+        let mut n = 0;
+        for d in all.iter_mut().filter(|d| d.kind == "device" && d.user.is_none()) {
+            d.user = Some(user.to_string());
+            n += 1;
+        }
+        if n > 0 {
+            self.save(&all)?;
+        }
+        Ok(n)
+    }
+
+    /// Move every device of one user to another id (the owner signing in with Microsoft).
+    pub fn reassign(&self, from: &str, to: &str) -> Result<(), String> {
+        let mut all = self.list();
+        for d in all.iter_mut().filter(|d| d.user.as_deref() == Some(from)) {
+            d.user = Some(to.to_string());
+        }
+        self.save(&all)
+    }
+
     pub fn remove(&self, key: &str) -> Result<Device, String> {
         let mut all = self.list();
         let i = all.iter().position(|d| d.id == key || d.name.eq_ignore_ascii_case(key)).ok_or(format!("no device {key:?}"))?;
@@ -214,7 +251,7 @@ mod tests {
         assert_eq!(code.len(), 8);
         assert!(d.pair("WRONGONE", "phone", "device").unwrap_err().contains("wrong"));
         let (device, token) = d.pair(&code.to_lowercase(), "Pixel", "device").unwrap();
-        assert_eq!((device.name.as_str(), device.kind.as_str()), ("Pixel", "device"));
+        assert_eq!((device.name.as_str(), device.kind.as_str(), device.user.as_deref()), ("Pixel", "device", Some("owner")));
         assert!(d.pair(&code, "again", "device").is_err(), "a code works once");
         assert_eq!(d.authenticate(&token).unwrap().id, device.id);
         assert!(d.authenticate("not-a-real-token-at-all-but-long").is_none());
@@ -229,12 +266,14 @@ mod tests {
         assert!(d.pair(&code, "x", "device").unwrap_err().contains("expired"), "too many wrong guesses");
         let code = d.new_code(10).unwrap();
         let (node, _) = d.pair(&code, "desktop", "node").unwrap();
-        assert_eq!(node.kind, "node");
+        assert_eq!((node.kind.as_str(), node.user.as_deref()), ("node", None));
+        let code = d.new_code_for(10, Some("oid-d")).unwrap();
+        assert_eq!(d.pair(&code, "Dana's phone", "device").unwrap().0.user.as_deref(), Some("oid-d"));
         let code = d.new_code(10).unwrap();
         assert!(d.pair(&code, "Desktop", "node").unwrap_err().contains("already paired"), "one node per name");
         // Devices saved before kinds existed are devices.
         let old: Device = serde_json::from_str(r#"{"id":"a","name":"b","token_hash":"c","created":"2026-01-01T00:00:00Z","last_seen":"2026-01-01T00:00:00Z"}"#).unwrap();
-        assert_eq!(old.kind, "device");
+        assert_eq!((old.kind.as_str(), old.user.as_deref()), ("device", None));
         assert_eq!(d.remove("pixel").unwrap().id, device.id);
         assert!(d.authenticate(&token).is_none());
     }

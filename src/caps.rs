@@ -765,6 +765,15 @@ impl Caps {
             }
             _ => {}
         }
+        // Members: no machines, system tools or coding; nothing that's still the owner's alone.
+        if ctx.member {
+            if matches!(c.source.as_str(), "system" | "coding") || c.name == "fleet_run" {
+                return json!({ "error": "machines, system tools and coding agents are for admins" }).to_string();
+            }
+            if matches!(c.source.as_str(), "goals" | "routines" | "pmi" | "memory") || c.name.starts_with("memory_") {
+                return json!({ "error": format!("{} isn't set up for your account yet", c.name) }).to_string();
+            }
+        }
         // System access: only agents whose profile allows it (checked by the
         // delegation), and every call checked again here.
         if c.source == "system" {
@@ -1153,6 +1162,9 @@ mod tests {
         assert!(caps.approval("shell_run", r#"{"command":"ls","machine":"server"}"#).is_none());
         let direct = caps.invoke("shell_run", args, CallContext::new(None, ""), true, true);
         assert!(direct.contains("only for agents"), "the main agent still can't, wherever it points");
+        // A member's agent can't either, approved or not.
+        let member = CallContext { agent: Some("operator"), member: true, ..CallContext::new(None, "") };
+        assert!(caps.invoke("shell_run", args, member, true, true).contains("for admins"));
     }
 
     #[test]

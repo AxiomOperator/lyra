@@ -5,6 +5,7 @@
 //! comes from the reverse proxy in front (Zoraxy, Caddy, nginx).
 
 pub mod devices;
+pub mod users;
 pub mod uploads;
 pub mod push;
 
@@ -26,6 +27,7 @@ use serde_json::{Value, json};
 use tokio::sync::{broadcast, oneshot};
 
 pub use devices::{Device, Devices};
+pub use users::{Role, Status, User, Users, Who};
 pub use push::{Subscription, Vapid};
 
 /// `[web]`.
@@ -53,16 +55,16 @@ impl Default for Settings {
 pub enum Inbound {
     /// A chat message or a /command, for the conversation the connection
     /// shows (`conn` can be moved to another one: `/new`, `/resume`).
-    Send { text: String, device: String, session: String, conn: u64, files: Vec<String> },
+    Send { text: String, device: String, who: Who, session: String, conn: u64, files: Vec<String> },
     /// Stop the reply being written in that conversation.
-    Stop { device: String, session: String },
+    Stop { device: String, who: Who, session: String },
     /// An answer to an approval (`y`, `n`, `a`).
-    Approve { id: u64, answer: String, device: String },
+    Approve { id: u64, answer: String, device: String, who: Who },
     /// A notification's button (`action`) about `reference` (a PMI task).
-    Action { action: String, reference: String, device: String },
+    Action { action: String, reference: String, device: String, who: Who },
     /// The whole current state of a conversation ("" = the device's usual
     /// one), for a device that just connected or switched.
-    Snapshot { session: String, reply: oneshot::Sender<Value> },
+    Snapshot { session: String, who: Who, reply: oneshot::Sender<Value> },
     /// Is the app's loop alive? (`/health`)
     Health(oneshot::Sender<Value>),
     /// A machine (`lyra node`) connected or went away.
@@ -76,7 +78,7 @@ pub enum Inbound {
     /// Something to say in the conversation (who approved a pairing, …).
     Note(String),
     /// A device asks for a list (sessions, devices, activity…) for a page.
-    Get { what: String, arg: Value, session: String, reply: oneshot::Sender<Value> },
+    Get { what: String, arg: Value, session: String, who: Who, reply: oneshot::Sender<Value> },
 }
 
 /// A headless machine asking to pair (`lyra-node pair <url>` without a code).
@@ -155,6 +157,7 @@ pub struct Notification {
 
 struct Shared {
     devices: Devices,
+    users: Users,
     /// Where lyra's own backups are (`[backup] dir`), for downloading the latest.
     backups: Mutex<Option<std::path::PathBuf>>,
     uploads: uploads::Uploads,
@@ -211,11 +214,16 @@ impl Hub {
     /// (`~/.lyra/web`).
     pub fn start(rt: &tokio::runtime::Handle, settings: &Settings, dir: &Path, inbound: std::sync::mpsc::Sender<Inbound>) -> Result<Hub, String> {
         let devices = Devices::open(dir)?;
+        // The first user is the owner (an admin); devices from before users are theirs.
+        let users = Users::open(dir);
+        users.ensure_owner("Owner")?;
+        devices.adopt(users::OWNER)?;
         let vapid = vapid(dir)?;
         let subject = if settings.public_url.starts_with("https://") { settings.public_url.trim_end_matches('/').to_string() } else { "mailto:lyra@example.com".into() };
         let (out, _) = broadcast::channel(4096);
         let shared = Arc::new(Shared {
             devices,
+            users,
             backups: Mutex::new(None),
             vapid,
             subject,
@@ -252,6 +260,10 @@ impl Hub {
 
     pub fn devices(&self) -> &Devices {
         &self.shared.devices
+    }
+
+    pub fn users(&self) -> &Users {
+        &self.shared.users
     }
 
     /// The sequence number of the last published message (snapshots carry it).
@@ -305,8 +317,9 @@ impl Hub {
         r.iter().filter(|p| matches!(p.state, PairState::Waiting)).cloned().collect()
     }
 
-    /// Approve or deny a pairing request (by its code or id).
-    pub fn answer_pair(&self, key: &str, approve: bool) -> Result<String, String> {
+    /// Approve or deny a pairing request (by its code or id). A device (a
+    /// terminal) becomes `user`'s; a machine is nobody's.
+    pub fn answer_pair(&self, key: &str, approve: bool, user: &str) -> Result<String, String> {
         let key = key.trim().to_uppercase().replace('-', "");
         let mut r = self.shared.requests.lock().unwrap_or_else(|e| e.into_inner());
         let p = r
@@ -317,7 +330,7 @@ impl Hub {
             p.state = PairState::Denied;
             return Ok(format!("denied {} ({})", p.name, p.hostname));
         }
-        let (d, token) = self.shared.devices.add(&p.name, &p.kind)?;
+        let (d, token) = self.shared.devices.add(&p.name, &p.kind, Some(user))?;
         p.state = PairState::Approved(token);
         Ok(format!("paired {} ({}) as a {}", d.name, p.hostname, if d.kind == "node" { "machine" } else { "device" }))
     }
@@ -567,13 +580,15 @@ fn bearer(headers: &HeaderMap) -> String {
     headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).unwrap_or("").to_string()
 }
 
-/// A phone or browser (not a machine's node token).
-fn device(shared: &Shared, headers: &HeaderMap) -> Result<Device, Box<Response>> {
-    shared
+/// A phone or browser (not a machine's node token), and whose it is.
+fn device(shared: &Shared, headers: &HeaderMap) -> Result<(Device, Who), Box<Response>> {
+    let d = shared
         .devices
         .authenticate(&bearer(headers))
         .filter(|d| d.kind == "device")
-        .ok_or_else(|| Box::new(error(StatusCode::UNAUTHORIZED, "not paired: pair this device again")))
+        .ok_or_else(|| Box::new(error(StatusCode::UNAUTHORIZED, "not paired: pair this device again")))?;
+    let who = shared.users.who(d.user.as_deref()).ok_or_else(|| Box::new(error(StatusCode::FORBIDDEN, "your lyra account isn't active: ask an admin")))?;
+    Ok((d, who))
 }
 
 #[derive(Deserialize)]
@@ -598,7 +613,7 @@ async fn pair(State(s): State<Arc<Shared>>, Json(b): Json<PairBody>) -> Response
 
 async fn me(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Response {
     match device(&s, &headers) {
-        Ok(d) => Json(json!({ "id": d.id, "name": d.name, "push": d.push.is_some() })).into_response(),
+        Ok((d, who)) => Json(json!({ "id": d.id, "name": d.name, "push": d.push.is_some(), "user": who })).into_response(),
         Err(r) => *r,
     }
 }
@@ -609,7 +624,7 @@ async fn vapid_key(State(s): State<Arc<Shared>>) -> Response {
 
 async fn set_push(State(s): State<Arc<Shared>>, headers: HeaderMap, Json(b): Json<Value>) -> Response {
     let d = match device(&s, &headers) {
-        Ok(d) => d,
+        Ok((d, _)) => d,
         Err(r) => return *r,
     };
     let sub: Option<Subscription> = match b.get("subscription") {
@@ -627,7 +642,7 @@ async fn set_push(State(s): State<Arc<Shared>>, headers: HeaderMap, Json(b): Jso
 
 async fn test_push(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Response {
     let d = match device(&s, &headers) {
-        Ok(d) => d,
+        Ok((d, _)) => d,
         Err(r) => return *r,
     };
     let Some(sub) = d.push.clone() else { return error(StatusCode::BAD_REQUEST, "notifications aren't on for this device") };
@@ -643,14 +658,14 @@ async fn test_push(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Response
 
 /// A file from a device: the body is the file, `X-Filename` its name.
 async fn upload(State(s): State<Arc<Shared>>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
-    let d = match device(&s, &headers) {
-        Ok(d) => d,
+    let (d, who) = match device(&s, &headers) {
+        Ok(x) => x,
         Err(r) => return *r,
     };
     let raw = headers.get("x-filename").and_then(|v| v.to_str().ok()).unwrap_or("file");
     let name = percent_decode(raw);
     let mime = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-    let saved = tokio::task::spawn_blocking(move || s.uploads.save(&name, &mime, &d.name, &body)).await;
+    let saved = tokio::task::spawn_blocking(move || s.uploads.save(&name, &mime, &d.name, &who.user, &body)).await;
     match saved {
         Ok(Ok(up)) => Json(json!({ "id": up.id, "name": up.name, "mime": up.mime, "size": up.size })).into_response(),
         Ok(Err(e)) => error(StatusCode::PAYLOAD_TOO_LARGE, &e),
@@ -678,12 +693,17 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// A device or a machine (placing a file the user sent) fetches an upload.
+/// Its sender, an admin, or a machine (placing a file the user sent) fetches an upload.
 async fn download(State(s): State<Arc<Shared>>, headers: HeaderMap, axum::extract::Path(id): axum::extract::Path<String>) -> Response {
-    if s.devices.authenticate(&bearer(&headers)).is_none() {
-        return error(StatusCode::UNAUTHORIZED, "not paired");
-    }
+    let Some(d) = s.devices.authenticate(&bearer(&headers)) else { return error(StatusCode::UNAUTHORIZED, "not paired") };
     let Some((up, path)) = s.uploads.get(&id) else { return error(StatusCode::NOT_FOUND, "no such file") };
+    if d.kind != "node" {
+        let who = s.users.who(d.user.as_deref());
+        let theirs = who.as_ref().is_some_and(|w| w.admin || up.user.as_deref().unwrap_or(users::OWNER) == w.user);
+        if !theirs {
+            return error(StatusCode::NOT_FOUND, "no such file");
+        }
+    }
     match tokio::fs::read(&path).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, up.mime.clone())], bytes).into_response(),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -693,8 +713,10 @@ async fn download(State(s): State<Arc<Shared>>, headers: HeaderMap, axum::extrac
 /// The newest backup of lyra, for a paired phone or browser (not a machine)
 /// to keep a copy off the server.
 async fn latest_backup(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Response {
-    if let Err(r) = device(&s, &headers) {
-        return *r;
+    match device(&s, &headers) {
+        Err(r) => return *r,
+        Ok((_, who)) if !who.admin => return error(StatusCode::FORBIDDEN, "backups are for admins"),
+        Ok(_) => {}
     }
     let Some(dir) = s.backups.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return error(StatusCode::NOT_FOUND, "backups aren't set up");
@@ -730,11 +752,11 @@ struct ApproveBody {
 
 /// From a notification's Allow / Deny button (the service worker).
 async fn approve(State(s): State<Arc<Shared>>, headers: HeaderMap, Json(b): Json<ApproveBody>) -> Response {
-    let d = match device(&s, &headers) {
-        Ok(d) => d,
+    let (d, who) = match device(&s, &headers) {
+        Ok(x) => x,
         Err(r) => return *r,
     };
-    let _ = s.inbound.send(Inbound::Approve { id: b.id, answer: b.answer, device: d.name });
+    let _ = s.inbound.send(Inbound::Approve { id: b.id, answer: b.answer, device: d.name, who });
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -747,11 +769,11 @@ struct ActionBody {
 
 /// From a notification's other buttons (Done, Snooze).
 async fn action(State(s): State<Arc<Shared>>, headers: HeaderMap, Json(b): Json<ActionBody>) -> Response {
-    let d = match device(&s, &headers) {
-        Ok(d) => d,
+    let (d, who) = match device(&s, &headers) {
+        Ok(x) => x,
         Err(r) => return *r,
     };
-    let _ = s.inbound.send(Inbound::Action { action: b.action, reference: b.reference, device: d.name });
+    let _ = s.inbound.send(Inbound::Action { action: b.action, reference: b.reference, device: d.name, who });
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -772,31 +794,33 @@ struct ConnState {
 
 async fn ws(State(s): State<Arc<Shared>>, Query(q): Query<WsQuery>, upgrade: WebSocketUpgrade) -> Response {
     let Some(d) = s.devices.authenticate(&q.token).filter(|d| d.kind == "device") else { return error(StatusCode::UNAUTHORIZED, "not paired") };
+    let Some(who) = s.users.who(d.user.as_deref()) else { return error(StatusCode::FORBIDDEN, "your lyra account isn't active: ask an admin") };
     let session = if q.session.is_empty() { d.last_session.clone().unwrap_or_default() } else { q.session.clone() };
-    let mut r = upgrade.on_upgrade(move |socket| connection(s, d, session, socket));
+    let mut r = upgrade.on_upgrade(move |socket| connection(s, d, who, session, socket));
     r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     r
 }
 
 /// A conversation's snapshot, with the device's details.
-async fn snapshot(s: &Shared, d: &Device, session: &str) -> Option<Value> {
+async fn snapshot(s: &Shared, d: &Device, who: &Who, session: &str) -> Option<Value> {
     let (tx, rx) = oneshot::channel();
-    s.inbound.send(Inbound::Snapshot { session: session.to_string(), reply: tx }).ok()?;
+    s.inbound.send(Inbound::Snapshot { session: session.to_string(), who: who.clone(), reply: tx }).ok()?;
     let mut snap = rx.await.ok()?;
     snap["device"] = json!({ "id": d.id, "name": d.name, "push": d.push.is_some() });
+    snap["user"] = json!(who);
     Some(snap)
 }
 
 /// One device's live connection: a conversation's state, then its updates
 /// (and everyone's); its messages go to that conversation.
-async fn connection(s: Arc<Shared>, d: Device, session: String, mut socket: WebSocket) {
+async fn connection(s: Arc<Shared>, d: Device, who: Who, session: String, mut socket: WebSocket) {
     let conn = s.next_conn.fetch_add(1, Ordering::SeqCst);
     let (moved_tx, mut moved) = tokio::sync::mpsc::unbounded_channel::<String>();
     s.visible.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, Some(Instant::now()));
     s.online.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, (d.id.clone(), d.name.clone()));
     // Subscribe before asking for the snapshot, so nothing falls in between.
     let mut updates = s.out.subscribe();
-    let Some(first) = snapshot(&s, &d, &session).await else { return };
+    let Some(first) = snapshot(&s, &d, &who, &session).await else { return };
     // The app says which conversation "" turned out to be.
     let mut session = first["session_id"].as_str().unwrap_or(&session).to_string();
     s.conns.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, ConnState { session: session.clone(), moved: moved_tx });
@@ -818,7 +842,7 @@ async fn connection(s: Arc<Shared>, d: Device, session: String, mut socket: WebS
                 let Some(to) = to else { break };
                 session = to;
                 let _ = s.devices.set_last_session(&d.id, &session);
-                let Some(snap) = snapshot(&s, &d, &session).await else { break };
+                let Some(snap) = snapshot(&s, &d, &who, &session).await else { break };
                 if socket.send(Message::Text(snap.to_string().into())).await.is_err() {
                     break;
                 }
@@ -849,17 +873,18 @@ async fn connection(s: Arc<Shared>, d: Device, session: String, mut socket: WebS
                         let text = v["text"].as_str().unwrap_or("").trim().to_string();
                         let files: Vec<String> = v["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(str::to_string)).take(10).collect();
                         if !text.is_empty() || !files.is_empty() {
-                            let _ = s.inbound.send(Inbound::Send { text, device: d.name.clone(), session: session.clone(), conn, files });
+                            let _ = s.inbound.send(Inbound::Send { text, device: d.name.clone(), who: who.clone(), session: session.clone(), conn, files });
                         }
                     }
                     "stop" => {
-                        let _ = s.inbound.send(Inbound::Stop { device: d.name.clone(), session: session.clone() });
+                        let _ = s.inbound.send(Inbound::Stop { device: d.name.clone(), who: who.clone(), session: session.clone() });
                     }
                     "approve" => {
                         let _ = s.inbound.send(Inbound::Approve {
                             id: v["id"].as_u64().unwrap_or(0),
                             answer: v["answer"].as_str().unwrap_or("").to_string(),
                             device: d.name.clone(),
+                            who: who.clone(),
                         });
                     }
                     "visible" => {
@@ -872,16 +897,20 @@ async fn connection(s: Arc<Shared>, d: Device, session: String, mut socket: WebS
                     "pair_answer" => {
                         let hub = Hub { shared: s.clone(), address: "0.0.0.0:0".parse().expect("address") };
                         let key = v["id"].as_str().or(v["code"].as_str()).unwrap_or("").to_string();
-                        let text = match hub.answer_pair(&key, v["approve"] == true) {
-                            Ok(t) => t,
-                            Err(e) => e,
+                        let text = if !who.admin {
+                            "only an admin can let a machine or terminal in".to_string()
+                        } else {
+                            match hub.answer_pair(&key, v["approve"] == true, &who.user) {
+                                Ok(t) => t,
+                                Err(e) => e,
+                            }
                         };
                         let _ = s.inbound.send(Inbound::Note(format!("{} (from {})", text, d.name)));
                     }
                     "get" => {
                         let what = v["what"].as_str().unwrap_or("").to_string();
                         let (tx, rx) = oneshot::channel();
-                        let ask = Inbound::Get { what: what.clone(), arg: v["arg"].clone(), session: session.clone(), reply: tx };
+                        let ask = Inbound::Get { what: what.clone(), arg: v["arg"].clone(), session: session.clone(), who: who.clone(), reply: tx };
                         if s.inbound.send(ask).is_ok()
                             && let Ok(data) = rx.await
                         {

@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use lyra_web::{Hub, Inbound, Notification};
+use lyra_web::{Hub, Inbound, Notification, Who};
 use serde_json::{Value, json};
 
 use crate::{App, Level, Message, StreamEvent};
@@ -325,22 +325,62 @@ impl Conv {
 /// Unopened conversations nobody looks at are put away after this long.
 const IDLE: Duration = Duration::from_secs(15 * 60);
 
-/// The conversation for `session`: open already, or loaded from its saved
-/// file; "" or an unknown one is the primary's.
-fn conv_for(convs: &mut Vec<Conv>, session: &str) -> usize {
+/// What a conversation's devices are sent: their own conversations only, and
+/// for a member nothing about machines, devices, the server's health or data
+/// that's still the owner's alone.
+fn for_viewer(extra: &Value, app: &App) -> Value {
+    let mut v = extra.clone();
+    if let Some(list) = v["conversations"].as_array() {
+        v["conversations"] = json!(list.iter().filter(|c| c["owner"].as_str() == Some(app.owner.as_str())).cloned().collect::<Vec<_>>());
+    }
+    if app.admin {
+        return v;
+    }
+    if let Some(map) = v.as_object_mut() {
+        for key in ["machines_detail", "pairing", "online", "server_health", "server_harnesses", "routines", "diagnoses", "briefing", "pmi"] {
+            map.remove(key);
+        }
+    }
+    if let Some(rows) = v["status"]["rows"].as_array() {
+        v["status"]["rows"] = json!(rows.iter().filter(|r| r["group"] != "Machines").cloned().collect::<Vec<_>>());
+    }
+    v
+}
+
+/// One of `who`'s conversations for `session`: open already, or loaded from
+/// their saved file. Nobody opens anyone else's.
+fn find_conv(convs: &mut Vec<Conv>, session: &str, who: &Who) -> Option<usize> {
+    let session = session.trim();
     if session.is_empty() {
-        return 0;
+        return None;
     }
-    if let Some(i) = convs.iter().position(|c| c.app.session_id == session) {
-        return i;
+    let mine = |c: &Conv| c.app.owner == who.user;
+    if let Some(i) = convs.iter().position(|c| mine(c) && c.app.session_id == session) {
+        return Some(i);
     }
-    let Some(saved) = crate::sessions::dir().and_then(|d| crate::sessions::find(&d, session).ok()) else { return 0 };
-    if let Some(i) = convs.iter().position(|c| c.app.session_id == saved.id) {
-        return i;
+    let saved = crate::sessions::dir().and_then(|d| crate::sessions::find_for(&d, session, &who.user).ok())?;
+    if let Some(i) = convs.iter().position(|c| mine(c) && c.app.session_id == saved.id) {
+        return Some(i);
     }
-    let mut app = convs[0].app.fork();
+    let mut app = convs[0].app.fork_for(who);
     app.resume_session(saved);
     convs.push(Conv::new(app));
+    Some(convs.len() - 1)
+}
+
+/// The conversation for `session`, else the user's own default: the primary
+/// for its owner, a member's latest open one, or a new one of theirs.
+fn conv_for(convs: &mut Vec<Conv>, session: &str, who: &Who) -> usize {
+    if let Some(i) = find_conv(convs, session, who) {
+        return i;
+    }
+    if convs[0].app.owner == who.user {
+        return 0;
+    }
+    if let Some(i) = convs.iter().rposition(|c| c.app.owner == who.user && c.routine.is_none() && c.diagnosis.is_none()) {
+        return i;
+    }
+    convs.push(Conv::new(convs[0].app.fork_for(who)));
     convs.len() - 1
 }
 
@@ -404,28 +444,30 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         let mut next = inbound.recv_timeout(Duration::from_millis(40)).ok();
         while let Some(msg) = next.take() {
             match msg {
-                Inbound::Send { text, device, session, conn, files } => {
-                    let i = conv_for(&mut convs, &session);
+                Inbound::Send { text, device, who, session, conn, files } => {
+                    let i = conv_for(&mut convs, &session, &who);
                     // Attached files: described (or read) in the message itself.
                     let (about, images) = attachments(hub, &files, convs[i].app.vision);
                     let text = format!("{text}{about}").trim().to_string();
                     convs[i].app.attach_images = images;
                     // A new conversation, or another one, for this device only.
                     if text == "/new" {
-                        let app = convs[0].app.fork();
+                        let app = convs[0].app.fork_for(&who);
                         let id = app.session_id.clone();
                         convs.push(Conv::new(app));
                         hub.attach(conn, &id);
-                        convs[0].app.log(Level::Info, format!("{device} started a new conversation"));
+                        convs[0].app.log(Level::Info, format!("{device} ({}) started a new conversation", who.name));
                     } else if let Some(key) = text.strip_prefix("/resume ").map(str::trim).filter(|k| !k.is_empty()) {
-                        let before = convs.len();
-                        let j = conv_for(&mut convs, key);
-                        if j == 0 && convs.len() == before && !convs[0].app.session_id.starts_with(key) {
-                            convs[i].app.messages.push(Message::new("error", format!("> {text}\nno saved conversation {key:?}")));
-                            convs[i].changed = true;
-                        } else {
-                            let id = convs[j].app.session_id.clone();
-                            hub.attach(conn, &id);
+                        let open = convs.iter().position(|c| c.app.owner == who.user && c.app.session_id.starts_with(key));
+                        match open.or_else(|| find_conv(&mut convs, key, &who)) {
+                            Some(j) => {
+                                let id = convs[j].app.session_id.clone();
+                                hub.attach(conn, &id);
+                            }
+                            None => {
+                                convs[i].app.messages.push(Message::new("error", format!("> {text}\nno saved conversation {key:?}")));
+                                convs[i].changed = true;
+                            }
                         }
                     } else {
                         let c = &mut convs[i];
@@ -439,20 +481,25 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         c.changed = true;
                     }
                 }
-                Inbound::Stop { device, session } => {
-                    let i = conv_for(&mut convs, &session);
+                Inbound::Stop { device, who, session } => {
+                    let i = conv_for(&mut convs, &session, &who);
                     convs[i].app.log(Level::Info, format!("{device} pressed stop"));
                     let _ = convs[i].app.stop();
                     convs[i].changed = true;
                 }
-                Inbound::Approve { id, answer, device } => {
-                    if let Some(c) = convs.iter_mut().find(|c| c.app.approvals.iter().any(|r| r.id == id)) {
+                Inbound::Approve { id, answer, device, who } => {
+                    // Only in the user's own conversations.
+                    if let Some(c) = convs.iter_mut().find(|c| c.app.owner == who.user && c.app.approvals.iter().any(|r| r.id == id)) {
                         c.app.log(Level::Agent, format!("{device} answered approval {id}: {answer}"));
                         c.app.answer_approval_id(id, &answer);
                         c.changed = true;
                     }
                 }
-                Inbound::Action { action, reference, device } => {
+                Inbound::Action { action, reference, device, who } => {
+                    // PMI is the owner's for now.
+                    if who.user != convs[0].app.owner {
+                        continue;
+                    }
                     convs[0].app.log(Level::Info, format!("{device} pressed {action} on a reminder"));
                     let tx = action_tx.clone();
                     std::thread::spawn(move || {
@@ -484,9 +531,14 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         });
                     }
                 }
-                Inbound::Get { what, arg, session, reply } => {
-                    let loaded: Loaded = convs.iter().map(|c| (c.app.session_id.clone(), c.app.waiting)).collect();
-                    let i = conv_for(&mut convs, &session);
+                Inbound::Get { what, arg, session, who, reply } => {
+                    // Pages a member may open; the rest are admins' (or still the owner's data).
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do") {
+                        let _ = reply.send(json!({ "error": "that's for admins" }));
+                        continue;
+                    }
+                    let loaded: Loaded = convs.iter().filter(|c| c.app.owner == who.user).map(|c| (c.app.session_id.clone(), c.app.waiting)).collect();
+                    let i = conv_for(&mut convs, &session, &who);
                     let machine = arg["machine"].as_str().unwrap_or("server").to_string();
                     match what.as_str() {
                         // A machine's rules: it answers (and checks changes) itself, off this loop.
@@ -584,19 +636,20 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         "approvals_waiting": convs.iter().map(|c| c.app.approvals.len()).sum::<usize>(),
                     }));
                 }
-                Inbound::Snapshot { session, reply } => {
-                    let i = conv_for(&mut convs, &session);
+                Inbound::Snapshot { session, who, reply } => {
+                    let i = conv_for(&mut convs, &session, &who);
                     let c = &mut convs[i];
-                    c.mirror.machines = machines.clone();
-                    c.mirror.extra = extra.clone();
-                    c.mirror.extra["conversations"] = last_open.clone();
-                    c.mirror.extra["server_health"] = server_health.clone();
-                    c.mirror.extra["server_harnesses"] = server_harnesses.clone();
-                    c.mirror.extra["routines"] = routines_view.clone();
-                    c.mirror.extra["status"] = status_view.clone();
-                    c.mirror.extra["diagnoses"] = diag_view.clone();
-                    c.mirror.extra["briefing"] = brief_view.clone();
-                    c.mirror.extra["pmi"] = pmi_view.clone();
+                    let mut all = extra.clone();
+                    all["conversations"] = last_open.clone();
+                    all["server_health"] = server_health.clone();
+                    all["server_harnesses"] = server_harnesses.clone();
+                    all["routines"] = routines_view.clone();
+                    all["status"] = status_view.clone();
+                    all["diagnoses"] = diag_view.clone();
+                    all["briefing"] = brief_view.clone();
+                    all["pmi"] = pmi_view.clone();
+                    c.mirror.machines = if c.app.admin { machines.clone() } else { Vec::new() };
+                    c.mirror.extra = for_viewer(&all, &c.app);
                     for u in c.mirror.updates(&mut c.app) {
                         hub.publish(Some(&c.app.session_id), u);
                     }
@@ -1003,7 +1056,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             }
         }
         // The conversations loaded now and which are answering, for every device.
-        let open = json!(convs.iter().map(|c| json!({ "session": c.app.session_id, "title": title(&c.app), "answering": c.app.waiting })).collect::<Vec<_>>());
+        let open = json!(convs.iter().map(|c| json!({ "session": c.app.session_id, "title": title(&c.app), "answering": c.app.waiting, "owner": c.app.owner })).collect::<Vec<_>>());
         if open != last_open {
             last_open = open.clone();
             everyone = true;
@@ -1023,8 +1076,8 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             if everyone || c.changed || (c.app.waiting && c.last_status.elapsed() > Duration::from_secs(1)) {
                 c.last_status = Instant::now();
                 c.changed = false;
-                c.mirror.machines = machines.clone();
-                c.mirror.extra = extra_now.clone();
+                c.mirror.machines = if c.app.admin { machines.clone() } else { Vec::new() };
+                c.mirror.extra = for_viewer(&extra_now, &c.app);
                 for u in c.mirror.updates(&mut c.app) {
                     hub.publish(Some(&c.app.session_id), u);
                 }
@@ -1191,7 +1244,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
     let page = |r: Result<Value, String>| r.unwrap_or_else(|e| json!({ "error": e }));
     match what {
         "sessions" => {
-            let all = crate::sessions::dir().map(|d| crate::sessions::list(&d)).unwrap_or_default();
+            let all = crate::sessions::dir().map(|d| crate::sessions::list_for(&d, &app.owner)).unwrap_or_default();
             json!(all.iter().take(60).map(|s| json!({
                 "id": s.id, "title": s.title, "turns": s.user_turns(), "updated": s.updated, "current": s.id == app.session_id,
                 "open": loaded.iter().any(|(id, _)| *id == s.id), "answering": loaded.iter().any(|(id, w)| *id == s.id && *w),
@@ -1199,7 +1252,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         }
         "search" => {
             let query = arg["query"].as_str().unwrap_or("").trim();
-            let all = crate::sessions::dir().map(|d| crate::sessions::list(&d)).unwrap_or_default();
+            let all = crate::sessions::dir().map(|d| crate::sessions::list_for(&d, &app.owner)).unwrap_or_default();
             json!(crate::sessions::search(&all, query, 30).iter().map(|h| json!({
                 "id": h.id, "title": h.title, "updated": h.updated, "role": h.role, "snippet": h.snippet, "score": h.score,
                 "current": h.id == app.session_id,
@@ -1209,7 +1262,16 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         "briefing" => crate::briefing::last().map_or(Value::Null, |b| json!(b)),
         "pmi" => crate::pmi::snapshot().map_or_else(|e| json!({ "error": e }), |s| json!(s)),
         "coding" => json!(crate::coding::jobs()),
-        "status" => crate::status::latest().map_or(Value::Null, |b| json!(b)),
+        "status" => {
+            let mut v = crate::status::latest().map_or(Value::Null, |b| json!(b));
+            // A member's view leaves the machines out.
+            if !app.admin
+                && let Some(rows) = v["rows"].as_array()
+            {
+                v["rows"] = json!(rows.iter().filter(|r| r["group"] != "Machines").cloned().collect::<Vec<_>>());
+            }
+            v
+        }
         "devices" => {
             let online: Vec<String> = hub.online_devices().into_iter().map(|(id, _)| id).collect();
             let machines: Vec<String> = hub.machines().into_iter().map(|m| m.name.to_lowercase()).collect();
@@ -1245,7 +1307,14 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
             "decide": crate::decide::model(),
             "session": app.session_id,
             "devices": hub.devices().list().len(),
-        }),
+        })
+        .as_object()
+        .map(|m| {
+            // A member sees what lyra is, not the server's backups or devices.
+            let keep = |k: &str| app.admin || !matches!(k, "backups" | "devices" | "node_build");
+            json!(m.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (k.clone(), v.clone())).collect::<serde_json::Map<_, _>>())
+        })
+        .unwrap_or_default(),
         other => json!({ "error": format!("nothing called {other:?}") }),
     }
 }
@@ -1414,6 +1483,60 @@ impl App {
         }
     }
 
+    /// `/users [approve|decline|admin|member|disable|enable <who>]`: the
+    /// people who use lyra (only with `lyra serve`, admins only).
+    pub(crate) fn users_command(&mut self, arg: &str) -> Result<String, String> {
+        use lyra_web::{Role, Status};
+        let hub = self.hub.clone().ok_or("users sign in to `lyra serve`; this lyra isn't serving")?;
+        let users = hub.users();
+        let (sub, rest) = arg.trim().split_once(' ').map_or((arg.trim(), ""), |(a, b)| (a, b.trim()));
+        let change = |role: Option<Role>, status: Option<Status>, what: &str| -> Result<String, String> {
+            if rest.is_empty() {
+                return Err(format!("usage: /users {sub} <name or email>"));
+            }
+            let u = users.update(rest, role, status)?;
+            Ok(format!("{} ({}) {what}", u.name, if u.email.is_empty() { u.id.clone() } else { u.email.clone() }))
+        };
+        match sub {
+            "" | "list" => {
+                let devices = hub.devices().list();
+                let mut out: Vec<String> = users
+                    .list()
+                    .iter()
+                    .map(|u| {
+                        let n = devices.iter().filter(|d| d.user.as_deref() == Some(u.id.as_str())).count();
+                        let status = match u.status {
+                            Status::Active => "",
+                            Status::Pending => " · ⏳ waiting to be let in (/users approve)",
+                            Status::Disabled => " · disabled",
+                        };
+                        format!(
+                            "{} {}{} · {} · {n} device{}{status}",
+                            if u.role == Role::Admin { "★" } else { "·" },
+                            u.name,
+                            if u.email.is_empty() { String::new() } else { format!(" <{}>", u.email) },
+                            if u.role == Role::Admin { "admin" } else { "member" },
+                            if n == 1 { "" } else { "s" }
+                        )
+                    })
+                    .collect();
+                out.push("/users approve|decline|admin|member|disable|enable <name or email>".into());
+                Ok(out.join("\n"))
+            }
+            "approve" | "enable" => change(None, Some(Status::Active), "can use lyra"),
+            "decline" | "disable" => change(None, Some(Status::Disabled), "can't use lyra (their devices stop working)"),
+            "admin" => change(Some(Role::Admin), None, "is an admin"),
+            "member" => change(Some(Role::Member), None, "is a member"),
+            _ => Err("usage: /users [approve|decline|admin|member|disable|enable <name or email>]".into()),
+        }
+    }
+
+    /// `/whoami`: who this conversation belongs to.
+    pub(crate) fn whoami(&self) -> String {
+        let name = self.hub.as_ref().and_then(|h| h.users().get(&self.owner)).map_or_else(|| self.owner.clone(), |u| if u.email.is_empty() { u.name } else { format!("{} <{}>", u.name, u.email) });
+        format!("{name} · {}", if self.admin { "admin" } else { "member" })
+    }
+
     /// `/devices [approve|deny <code> | remove <name|id>]` (only with `lyra serve`).
     pub(crate) fn devices_command(&mut self, arg: &str) -> Result<String, String> {
         let hub = self.hub.clone().ok_or("devices pair with `lyra serve`; this lyra isn't serving")?;
@@ -1450,7 +1573,7 @@ impl App {
                 out.push("pair with a code: `lyra pair` on the server · headless: lyra-node pair <url> (then approve here)".into());
                 Ok(out.join("\n"))
             }
-            "approve" | "deny" => hub.answer_pair(rest, sub == "approve"),
+            "approve" | "deny" => hub.answer_pair(rest, sub == "approve", &self.owner),
             "remove" => {
                 let d = hub.devices().remove(rest)?;
                 Ok(format!("removed {} ({}); it has to pair again{}", d.name, d.id, if d.kind == "node" { " — to uninstall lyra-node too, use /machines remove while it's online" } else { "" }))

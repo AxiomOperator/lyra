@@ -38,7 +38,14 @@ pub struct Session {
     /// The first thing the user said, for lists.
     #[serde(default)]
     pub title: String,
+    /// Whose conversation it is (`users.json`); earlier ones are the owner's.
+    #[serde(default = "owner")]
+    pub owner: String,
     pub messages: Vec<SavedMessage>,
+}
+
+fn owner() -> String {
+    lyra_web::users::OWNER.to_string()
 }
 
 pub fn dir() -> Option<PathBuf> {
@@ -66,6 +73,7 @@ impl Session {
             updated: Utc::now(),
             cwd: cwd(),
             title,
+            owner: owner(),
             messages: messages
                 .iter()
                 .map(|m| SavedMessage {
@@ -131,6 +139,17 @@ pub fn list(dir: &Path) -> Vec<Session> {
         .collect();
     all.sort_by_key(|s| std::cmp::Reverse(s.updated));
     all
+}
+
+/// One user's saved sessions, newest first.
+pub fn list_for(dir: &Path, owner: &str) -> Vec<Session> {
+    list(dir).into_iter().filter(|s| s.owner == owner).collect()
+}
+
+/// One of the user's own sessions by id or the start of one.
+pub fn find_for(dir: &Path, key: &str, owner: &str) -> Result<Session, String> {
+    let s = find(dir, key)?;
+    if s.owner == owner { Ok(s) } else { Err(format!("no saved session {:?} (lyra -r lists them)", key.trim())) }
 }
 
 /// The session to continue: the latest started in this folder, else the latest.
@@ -279,7 +298,7 @@ mod tests {
                 agents: vec![],
             })
             .collect();
-        Session { id: id.into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: lines[0].1.into(), messages }
+        Session { id: id.into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: lines[0].1.into(), owner: owner(), messages }
     }
 
     #[test]

@@ -427,6 +427,9 @@ struct App {
     /// Runs lyra's background work (schedules, goals); a conversation forked
     /// for another device doesn't.
     primary: bool,
+    /// Whose conversation this is (`users.json`), and whether they're an admin.
+    owner: String,
+    admin: bool,
     /// Stops the run in progress (a fresh one per run).
     cancel: Cancel,
     /// Agents' actions waiting for the user's y / n / a, oldest first.
@@ -562,6 +565,8 @@ impl App {
             attach_images: Vec::new(),
             shared,
             primary: true,
+            owner: lyra_web::users::OWNER.to_string(),
+            admin: true,
             cancel: Cancel::default(),
             approvals: Vec::new(),
             palette: 0,
@@ -665,7 +670,9 @@ impl App {
         self.cancel = Cancel::default();
         let cancel = self.cancel.clone();
         let (learning, evolution, caps) = (self.learning.clone(), self.evolution.clone(), self.caps.clone());
-        let goals_section = self.goals.as_ref().and_then(|g| g.prompt_section());
+        // A member's turn doesn't see the owner's goals or memories (theirs come later).
+        let member = !self.admin;
+        let goals_section = self.goals.as_ref().filter(|_| !member).and_then(|g| g.prompt_section());
         let mut agent_env = self.agent_env();
         // `@desktop`: that machine is where system work goes.
         if let (Some(env), Some(caps)) = (agent_env.as_mut(), &self.caps) {
@@ -687,7 +694,7 @@ impl App {
             if let Some(section) = &goals_section {
                 add_to_system(&mut history, section);
             }
-            if let Some(tools) = &tools {
+            if let Some(tools) = tools.as_ref().filter(|_| !member) {
                 apply_memories(&tools.mem, &content, run, &mut history, &tx);
             }
             if let Some(learning) = learning {
@@ -703,7 +710,7 @@ impl App {
                     add_to_system(&mut history, agents::MAIN_NOTE);
                 }
             }
-            let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref(), &content, max_rounds, run, &tx, &cancel) {
+            let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref(), &content, max_rounds, run, &tx, &cancel, member) {
                 Ok(stats) => StreamEvent::Done(stats),
                 Err(e) => StreamEvent::Error(e),
             };
@@ -1350,6 +1357,9 @@ impl App {
 
     fn command_result(&mut self, line: &str) -> Result<String, String> {
         let (name, arg) = line.split_once(' ').unwrap_or((line, ""));
+        if !self.admin && !member_may(name, arg) {
+            return Err(format!("{name} is for admins"));
+        }
         let learning = self.learning.clone();
         let need = || -> Result<Arc<Learning>, String> {
             learning.clone().ok_or_else(|| match &self.learning_status {
@@ -1413,16 +1423,18 @@ impl App {
                 if query.is_empty() {
                     Err("usage: /sessions search <words>".into())
                 } else {
-                    sessions::dir().ok_or("no home directory".to_string()).map(|d| sessions::describe_hits(&sessions::search(&sessions::list(&d), query, 15), query))
+                    sessions::dir().ok_or("no home directory".to_string()).map(|d| sessions::describe_hits(&sessions::search(&sessions::list_for(&d, &self.owner), query, 15), query))
                 }
             }
             "/sessions" => sessions::dir().ok_or("no home directory".to_string()).map(|d| {
-                format!("this one: {}\n{}\n\nlyra -c continues the latest here · /resume <id> or lyra -r <id> resumes one", self.session_id, sessions::describe(&sessions::list(&d), 20))
+                format!("this one: {}\n{}\n\nlyra -c continues the latest here · /resume <id> or lyra -r <id> resumes one", self.session_id, sessions::describe(&sessions::list_for(&d, &self.owner), 20))
             }),
             "/resume" => self.resume(arg),
             "/new" => self.new_session(),
             "/machines" => self.machines_command(arg),
             "/devices" => self.devices_command(arg),
+            "/users" => self.users_command(arg),
+            "/whoami" => Ok(self.whoami()),
             "/memory" => {
                 let mem = self.mem().ok_or_else(|| match &self.memory_status {
                     Err(why) => why.clone(),
@@ -2721,7 +2733,8 @@ impl App {
             return;
         }
         let Some(dir) = sessions::dir() else { return };
-        let s = sessions::Session::from_messages(&self.session_id, self.session_started, &self.messages);
+        let mut s = sessions::Session::from_messages(&self.session_id, self.session_started, &self.messages);
+        s.owner = self.owner.clone();
         if let Err(e) = sessions::save(&dir, &s) {
             self.log(Level::Error, format!("couldn't save the session: {e}"));
         }
@@ -2763,9 +2776,9 @@ impl App {
         }
         let dir = sessions::dir().ok_or("no home directory")?;
         if arg.trim().is_empty() {
-            return Ok(format!("{}\n\n/resume <id> to switch", sessions::describe(&sessions::list(&dir), 20)));
+            return Ok(format!("{}\n\n/resume <id> to switch", sessions::describe(&sessions::list_for(&dir, &self.owner), 20)));
         }
-        let s = sessions::find(&dir, arg)?;
+        let s = sessions::find_for(&dir, arg, &self.owner)?;
         if s.id == self.session_id {
             return Err("that's this session".into());
         }
@@ -2781,7 +2794,17 @@ impl App {
         let mut app = App::new(config, Context::load(), self.shared.clone());
         app.hub = self.hub.clone();
         app.primary = false;
+        app.owner = self.owner.clone();
+        app.admin = self.admin;
         app.refresh_agents();
+        app
+    }
+
+    /// A new conversation for a user (theirs, with their rights).
+    fn fork_for(&self, who: &lyra_web::Who) -> App {
+        let mut app = self.fork();
+        app.owner = who.user.clone();
+        app.admin = who.admin;
         app
     }
 
@@ -2835,6 +2858,32 @@ const MEMORY_GATE: &str = "Did the user share something worth remembering in fut
 const LESSON_GATE: &str = "Does this conversation teach the assistant a reusable procedure or rule: the user corrected it, \
      showed a better way, or a multi-step task worked after a failed attempt?";
 
+/// Commands a member (not an admin) may use. Their own memories, goals,
+/// routines, tasks and briefing come with per-user data; machines, system
+/// tools, coding, devices, backups, agents and skills' approval stay admins'.
+fn member_may(name: &str, arg: &str) -> bool {
+    match name {
+        "/help" | "/skills" | "/history" | "/outcome" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" => true,
+        // Which model is in use; changing it is the server's.
+        "/model" => arg.trim().is_empty(),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod member_tests {
+    #[test]
+    fn members_keep_to_their_own() {
+        for ok in ["/help", "/new", "/resume", "/sessions", "/status", "/whoami", "/skills"] {
+            assert!(super::member_may(ok, ""), "{ok}");
+        }
+        assert!(super::member_may("/model", "") && !super::member_may("/model", "other-model"), "look, not change");
+        for no in ["/machines", "/devices", "/users", "/backup", "/caps", "/approve", "/evolve", "/plan", "/agent", "/memory", "/goal", "/routine", "/pmi", "/tasks", "/coding", "/diagnose"] {
+            assert!(!super::member_may(no, "x"), "{no}");
+        }
+    }
+}
+
 /// A command line as it may be shown or logged: tokens hidden.
 pub(crate) fn shown(line: &str) -> String {
     match line.trim_start().strip_prefix("/pmi token") {
@@ -2865,6 +2914,8 @@ pub(crate) const COMMANDS: &str = "\
 /diagnose [<machine> <problem>]  problems researched (read-only); look into one now
 /tasks [today|overdue|week|project <name>]   your PMI tasks (personal and assigned), numbered
 /task add <what> [when] · /task done <n> [comment] · /task snooze <n> [1h|tomorrow]
+/users [approve|admin|member|disable <who>]   the people who use lyra serve (admins)
+/whoami                      who this conversation belongs to
 /pmi [token <token>]         the PMI connection (your project-management app)
 /briefing [now]              the daily briefing: what happened and what needs a look ([briefing] schedule)
 /status [now]                everything lyra depends on: models, search, APIs, address, storage, backups, machines
@@ -3016,6 +3067,7 @@ fn converse(
     run: Uuid,
     tx: &Sender<StreamEvent>,
     cancel: &Cancel,
+    member: bool,
 ) -> Result<Stats, String> {
     let start = Instant::now();
     let mut total: Option<Stats> = None;
@@ -3073,7 +3125,7 @@ fn converse(
                 history.push(json!({ "role": "tool", "tool_call_id": call.id, "content": "{\"error\":\"stopped by the user\"}" }));
                 continue;
             }
-            let ctx = CallContext::new(Some(run), &call.id);
+            let ctx = CallContext { member, ..CallContext::new(Some(run), &call.id) };
             // Policy, usage tracking and verification happen in there.
             let content = if let (Some(env), "delegate") = (agents, call.function.name.as_str()) {
                 agents::delegate_call(env, &call.function.arguments, run)
@@ -3403,7 +3455,7 @@ fn main() {
         app.log(Level::Tool, note);
     }
     // The server carries on the latest conversation, so a phone finds it after a restart.
-    let resume = resume.or_else(|| serving.then(|| sessions::dir().and_then(|d| sessions::list(&d).into_iter().next())).flatten());
+    let resume = resume.or_else(|| serving.then(|| sessions::dir().and_then(|d| sessions::list_for(&d, lyra_web::users::OWNER).into_iter().next())).flatten());
     if let Some(s) = resume {
         app.resume_session(s);
     }

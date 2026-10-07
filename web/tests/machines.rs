@@ -88,8 +88,8 @@ fn a_headless_machine_pairs_when_a_device_approves() {
     assert_eq!(hub.pair_requests().len(), 1);
     assert_eq!(get(&format!("/api/pair/request/{id}")).json::<Value>().unwrap()["state"], "waiting");
 
-    assert!(hub.answer_pair("ZZZZ", true).is_err(), "the code must match");
-    assert!(hub.answer_pair(&code.to_lowercase(), true).unwrap().contains("paired web1"));
+    assert!(hub.answer_pair("ZZZZ", true, "owner").is_err(), "the code must match");
+    assert!(hub.answer_pair(&code.to_lowercase(), true, "owner").unwrap().contains("paired web1"));
     let done = get(&format!("/api/pair/request/{id}")).json::<Value>().unwrap();
     assert_eq!(done["state"], "approved");
     let token = done["token"].as_str().unwrap();
@@ -98,7 +98,7 @@ fn a_headless_machine_pairs_when_a_device_approves() {
 
     // Denied, and too many at once.
     let denied = post("/api/pair/request", json!({ "name": "x" }));
-    hub.answer_pair(denied["code"].as_str().unwrap(), false).unwrap();
+    hub.answer_pair(denied["code"].as_str().unwrap(), false, "owner").unwrap();
     assert_eq!(get(&format!("/api/pair/request/{}", denied["id"].as_str().unwrap())).json::<Value>().unwrap()["state"], "denied");
     for i in 0..5 {
         post("/api/pair/request", json!({ "name": format!("m{i}") }));
@@ -133,7 +133,7 @@ fn devices_only_see_their_own_conversation() {
     std::thread::spawn(move || {
         while let Ok(msg) = inbound.recv() {
             match msg {
-                Inbound::Snapshot { session, reply } => {
+                Inbound::Snapshot { session, reply, .. } => {
                     let s = if session.is_empty() { "main".to_string() } else { session };
                     let _ = reply.send(json!({ "type": "snapshot", "session_id": s }));
                 }

@@ -135,6 +135,8 @@ pub struct Env {
     pub fleet: Option<String>,
     /// Set when the user stops the run.
     pub cancel: crate::Cancel,
+    /// Working for a member, not an admin: no Operator or Coder, no system tools.
+    pub member: bool,
 }
 
 /// The machine a message names with `@name` (one of `known`, or `server`).
@@ -443,6 +445,7 @@ pub fn delegate(
                     write_scopes: write_refs.as_deref(),
                     read_scopes: read_refs.as_deref(),
                     agent: Some(&profile.name),
+                    member: env.member,
                 };
                 match &env.caps {
                     None => json!({ "error": "tools are off" }).to_string(),
@@ -520,6 +523,9 @@ pub fn delegate_call(env: &Env, args: &str, run: Uuid) -> String {
     let Some(to) = a["agent"].as_str().and_then(|n| env.agents.registry.find(n).ok()).filter(|p| p.enabled) else {
         return json!({ "error": "no such agent; /agents lists them" }).to_string();
     };
+    if env.member && admin_only(&to.name) {
+        return json!({ "error": format!("{} works on machines and code: that's for admins", to.title) }).to_string();
+    }
     let r = delegate(env, &to, MAIN, a["task"].as_str().unwrap_or(""), a["input"].as_str(), a["expected_output"].as_str(), 1, "tool", None, Some(run));
     result_json(&to, &r).to_string()
 }
@@ -722,6 +728,10 @@ pub fn auto_delegate(env: &Env, message: &str, run: Uuid, history: &mut Vec<Valu
         _ => env.agents.route(env, message)?,
     };
     let profile = env.agents.registry.get(&d.agent)?;
+    // Machines and coding are admins' (the tools refuse them anyway).
+    if env.member && admin_only(&profile.name) {
+        return None;
+    }
     emit(&env.tx, AgentEvent::Routed { agent: profile.title.clone(), method: d.method, confidence: d.confidence, reason: d.reason.clone() });
     let input = delegation::extract_input(message);
     let r = delegate(env, &profile, MAIN, message, input.as_deref(), None, 1, d.method.as_str(), Some(d.confidence), Some(run));
@@ -734,6 +744,11 @@ pub fn auto_delegate(env: &Env, message: &str, run: Uuid, history: &mut Vec<Valu
     }));
     history.push(json!({ "role": "tool", "tool_call_id": id, "content": result_json(&profile, &r).to_string() }));
     Some(profile.title)
+}
+
+/// Agents that work on machines or code: only for admins.
+pub fn admin_only(agent: &str) -> bool {
+    matches!(agent, "operator" | "coder")
 }
 
 /// The wizard's finished draft (built and tested in the background).
@@ -753,6 +768,7 @@ impl crate::App {
             machine: None,
             fleet: None,
             cancel: self.cancel.clone(),
+            member: !self.admin,
         })
     }
 
@@ -1423,7 +1439,7 @@ mod tests {
         caps.set_agents(agents.clone());
         caps.refresh();
         let (tx, events) = mpsc::channel();
-        let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx, machine: None, fleet: None, cancel: Default::default() };
+        let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx, machine: None, fleet: None, cancel: Default::default(), member: false };
         Fixture { _rt: rt, env, events }
     }
 
