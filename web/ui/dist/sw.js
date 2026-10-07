@@ -78,7 +78,7 @@ self.addEventListener("push", (e) => {
     renotify: true,
     icon: "/icon-192.png",
     badge: "/icon-192.png",
-    data: { approval, url: approval ? "/?approval=" + approval : "/" },
+    data: { approval, url: approval ? "/?approval=" + approval : data.url || "/" },
   };
   if (approval) {
     options.requireInteraction = true;
@@ -105,8 +105,14 @@ function token() {
 
 async function openApp(url) {
   const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  // An open app is focused and told which page to show (from "/?page=…").
+  const page = new URL(url, self.location.origin).searchParams.get("page");
   for (const c of all) {
-    if ("focus" in c) { await c.focus(); return; }
+    if ("focus" in c) {
+      await c.focus();
+      if (page) c.postMessage({ page });
+      return;
+    }
   }
   await self.clients.openWindow(url);
 }

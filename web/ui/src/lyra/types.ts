@@ -84,6 +84,7 @@ export interface Status {
   machines_detail?: Machine[];
   /** Problems researched by themselves (read-only), newest first. */
   diagnoses?: Diagnosis[] | null;
+  briefing?: Briefing | null;
   /** Everything lyra depends on, checked every minute. */
   status?: StatusBoard | null;
   /** Named sets of machines (`[groups]`), for @group. */
@@ -302,4 +303,23 @@ export interface Diagnosis {
   session: string;
   at: string;
   resolved: boolean;
+}
+
+/** The daily briefing (lyra serve, `[briefing]`). */
+export type BriefingLevel = "attention" | "note" | "ok";
+
+export interface BriefingItem {
+  level: BriefingLevel;
+  text: string;
+  /** The page it's about: machines, status, routines, coding, goals. */
+  link: string;
+}
+
+export interface Briefing {
+  at: string;
+  since: string;
+  headline: string;
+  attention: number;
+  takeaway?: string | null;
+  sections: { name: string; items: BriefingItem[] }[];
 }

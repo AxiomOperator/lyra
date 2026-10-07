@@ -1,5 +1,6 @@
 mod agents;
 mod backup;
+mod briefing;
 mod caps;
 mod coding;
 mod commands;
@@ -1333,7 +1334,7 @@ impl App {
     /// the answer goes back to the page instead of into the conversation.
     pub fn quiet_command(&mut self, line: &str) -> Result<String, String> {
         let name = line.split_whitespace().next().unwrap_or("");
-        if !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate" | "/goal" | "/goals" | "/model" | "/backup" | "/routine" | "/routines" | "/status" | "/diagnose" | "/coding") {
+        if !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate" | "/goal" | "/goals" | "/model" | "/backup" | "/routine" | "/routines" | "/status" | "/diagnose" | "/coding" | "/briefing") {
             return Err(format!("{name} can't be run from a page"));
         }
         let result = self.command_result(line);
@@ -1453,6 +1454,7 @@ impl App {
             "/status" => self.status_command(arg),
             "/diagnose" => self.diagnose_command(arg),
             "/coding" => Ok(coding::describe()),
+            "/briefing" => self.briefing_command(arg),
             _ => Err(format!("unknown command {name} — try /help")),
         }
     }
@@ -1600,6 +1602,29 @@ impl App {
             let _ = tx.send(StreamEvent::Notice(status::describe(&board)));
         });
         Ok("checking everything lyra depends on…".into())
+    }
+
+    /// `/briefing [now]`: the daily briefing (lyra serve makes it on schedule).
+    fn briefing_command(&mut self, arg: &str) -> Result<String, String> {
+        let now = arg.trim() == "now";
+        if !now && !arg.trim().is_empty() {
+            return Err("usage: /briefing [now]".into());
+        }
+        if self.hub.is_some() {
+            if now || briefing::last().is_none() {
+                briefing::request();
+                return Ok("making a briefing now — it's pushed and shown on the Status page; /briefing in a moment shows it".into());
+            }
+            return Ok(briefing::last().map(|b| briefing::describe(&b)).unwrap_or_default());
+        }
+        if !now && let Some(b) = briefing::last() {
+            return Ok(briefing::describe(&b));
+        }
+        // The terminal on its own: what it knows locally (no machines), not saved.
+        let at = chrono::Utc::now();
+        let since = briefing::window_start(briefing::last().map(|b| b.at), at);
+        let b = briefing::gather(&briefing::local_inputs(self.goals.as_deref(), at, since));
+        Ok(briefing::describe(&b))
     }
 
     /// `/routine …`: scheduled things to ask lyra.
@@ -2619,6 +2644,7 @@ impl App {
                 decide::configure(config.decide.clone());
                 health::configure(config.health.clone());
                 coding::configure(config.coding.clone());
+                briefing::configure(config.briefing.clone());
                 self.pricing = pricing(&config);
                 if let Some(mem) = self.mem() {
                     for note in mem.reconfigure(config.memory.settings.clone(), config.embedding.clone()) {
@@ -2821,6 +2847,7 @@ pub(crate) const COMMANDS: &str = "\
 /routine run|pause|resume|delete|show <name> · /routine edit <name> schedule|prompt|notify|changes <value>
 /coding                      coding jobs handed to Claude Code / OpenCode (ask: 'fix … in ~/Projects/x on @desktop')
 /diagnose [<machine> <problem>]  problems researched (read-only); look into one now
+/briefing [now]              the daily briefing: what happened and what needs a look ([briefing] schedule)
 /status [now]                everything lyra depends on: models, search, APIs, address, storage, backups, machines
 /backup [now|list]           back up lyra (memory, skills, goals, sessions, config); nightly by itself
 /model [name]                the model in use and the ones on offer; switch (saved to config.toml)
@@ -3305,6 +3332,7 @@ fn main() {
     health::configure(config.health.clone());
     decide::configure(config.decide.clone());
     coding::configure(config.coding.clone());
+    briefing::configure(config.briefing.clone());
     let web = config.web.clone();
     let mut app = App::new(config, Context::load(), services);
     for note in migrated {

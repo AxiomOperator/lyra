@@ -6,7 +6,7 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
 
 - `src/` — the TUI binary: `main.rs` (app state, streaming, tool loop), `ui.rs` (all drawing), `markdown.rs` (replies as styled lines), `commands.rs` (the `/` command palette), `sessions.rs` (saved conversations, `-c`/`-r`), `serve.rs` (`lyra serve`), `connect.rs` (`lyra connect`: the TUI as a client of a server),
   `config.rs`, `context.rs` (SOUL/USER/AGENT.md), `tools.rs` (memory tools + composite tools), `caps.rs` (capabilities glue), `goals.rs` (goals glue), `mem.rs` (memory glue), `plan.rs` (planning glue), `learn.rs`
-  (self-learning glue), `evolve.rs` (evolution glue: evolved state, benchmark, `/evolve`), `retrieval.rs` (embedding/reranker clients), `stats.rs`.
+  (self-learning glue), `evolve.rs` (evolution glue: evolved state, benchmark, `/evolve`), `retrieval.rs` (embedding/reranker clients), `briefing.rs` (the daily briefing), `stats.rs`.
 - `memory/` — `lyra-memory` crate: memory behind `MemoryManager` (LanceDB by default: typed memory rows with
   their embedding, FTS + vector search, history tables; SQLite backend kept as an alternative; the
   `EmbeddingProvider` makes vectors outside the store; schema/embedding versioning, re-embed, backup;
@@ -48,7 +48,7 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
 - Runtime files live in `~/.lyra` (`$LYRA_HOME`): `config/config.toml`, `context/`
   (SOUL/USER/AGENT.md), `memory/lance/` (LanceDB), `plans/plans.db`, `skills/<name>.md` (one Markdown file per skill) + `skills/ledger.db`,
   `evolution/evolution.db`, `config/behavior.toml`, `workflows/<name>.toml`, `tools/<name>.toml` (evolved state),
-  `sessions/<id>.json` (saved conversations, `lyra -c` / `-r`), `web/` (paired devices, VAPID key),
+  `sessions/<id>.json` (saved conversations, `lyra -c` / `-r`), `briefing/last.json` (the last daily briefing), `web/` (paired devices, VAPID key),
   `agents/<name>.toml` (one file per subagent) + `agents/agents.db` + `agents/index/` (routing, LanceDB).
   `src/migrate.rs` brings older layouts up to date on startup.
 

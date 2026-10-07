@@ -136,6 +136,7 @@ fn alert(app: &mut App, hub: &Hub, machine: &str, text: &str, problem: bool) {
             body: text.to_string(),
             tag: format!("health-{}", machine.to_lowercase()),
             approval: None,
+            url: None,
         });
     }
 }
@@ -376,6 +377,12 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     crate::diagnose::requeue_running();
     let mut last_diag = Instant::now() - Duration::from_secs(60);
     let mut diag_view = Value::Null;
+    // The daily briefing: the last one (it survives restarts), when the next is due.
+    let (brief_tx, brief_rx) = std::sync::mpsc::channel::<crate::briefing::Briefing>();
+    let mut last_brief = crate::briefing::last();
+    let mut brief_view = last_brief.as_ref().map_or(Value::Null, |b| json!(b));
+    let mut brief_busy = false;
+    let mut last_brief_check = Instant::now() - Duration::from_secs(60);
     let started = Instant::now();
     let mut convs = vec![Conv::new(primary)];
     loop {
@@ -452,6 +459,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                             body: format!("A {what} ({}) asks to pair. Check its code is {} and approve it in lyra.", p.hostname, p.code),
                             tag: format!("pair-{}", p.code),
                             approval: None,
+                            url: None,
                         });
                     }
                 }
@@ -566,6 +574,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     c.mirror.extra["routines"] = routines_view.clone();
                     c.mirror.extra["status"] = status_view.clone();
                     c.mirror.extra["diagnoses"] = diag_view.clone();
+                    c.mirror.extra["briefing"] = brief_view.clone();
                     for u in c.mirror.updates(&mut c.app) {
                         hub.publish(Some(&c.app.session_id), u);
                     }
@@ -645,7 +654,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 };
                 if done {
                     let body = c.app.messages.iter().rev().find(|m| m.role == "assistant").map(|m| preview(&m.content)).unwrap_or_default();
-                    hub.notify(Notification { title: about("lyra replied".into()), body, tag: format!("reply-{}", c.app.session_id), approval: None });
+                    hub.notify(Notification { title: about("lyra replied".into()), body, tag: format!("reply-{}", c.app.session_id), approval: None, url: None });
                 }
                 if let Some(mut n) = note {
                     n.title = about(n.title);
@@ -659,7 +668,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 let head = crate::diagnose::headline(&d.summary);
                 convs[0].app.log(if d.state == "done" { Level::Agent } else { Level::Error }, format!("🔎 {}: {} — {head}", d.machine, d.problem));
                 if crate::health::settings().notify && d.state == "done" {
-                    hub.notify(Notification { title: format!("🔎 {}: {}", d.machine, d.problem), body: head, tag: format!("diag-{}", d.key), approval: None });
+                    hub.notify(Notification { title: format!("🔎 {}: {}", d.machine, d.problem), body: head, tag: format!("diag-{}", d.key), approval: None, url: None });
                 }
             }
             last_diag = Instant::now() - Duration::from_secs(60);
@@ -715,9 +724,51 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     body: preview(&run.summary),
                     tag: format!("routine-{}", r.name),
                     approval: None,
+                    url: None,
                 });
             }
             crate::routines::record(&r.name, run);
+            everyone = true;
+        }
+        // The daily briefing: on schedule or asked for, gathered and written off the loop.
+        let wanted = crate::briefing::take_request();
+        if !brief_busy && (wanted || last_brief_check.elapsed() >= Duration::from_secs(20)) {
+            last_brief_check = Instant::now();
+            let s = crate::briefing::settings();
+            let now = chrono::Local::now();
+            let due = s.enabled && crate::briefing::next(&s.schedule, last_brief.as_ref().map(|b| b.at), now).is_some_and(|t| t <= now);
+            if wanted || due {
+                brief_busy = true;
+                let at = chrono::Utc::now();
+                let since = crate::briefing::window_start(last_brief.as_ref().map(|b| b.at), at);
+                let mut inputs = crate::briefing::local_inputs(convs[0].app.goals.as_deref(), at, since);
+                inputs.machines = machines_detail(hub, node_build.as_deref());
+                inputs.server_health = (!server_health.is_null()).then(|| server_health.clone());
+                let (url, model, tx) = (format!("{}/chat/completions", convs[0].app.base_url.trim_end_matches('/')), convs[0].app.model.clone(), brief_tx.clone());
+                std::thread::spawn(move || {
+                    let mut b = crate::briefing::gather(&inputs);
+                    if s.summary {
+                        b.takeaway = crate::briefing::takeaway(&url, &model, &b);
+                    }
+                    let _ = tx.send(b);
+                });
+            }
+        }
+        while let Ok(b) = brief_rx.try_recv() {
+            brief_busy = false;
+            crate::briefing::save(&b);
+            convs[0].app.log(if b.attention > 0 { Level::Error } else { Level::Plan }, format!("briefing: {}{}", b.headline, b.takeaway.as_ref().map(|t| format!(" — {t}")).unwrap_or_default()));
+            if crate::briefing::settings().notify {
+                hub.notify(Notification {
+                    title: format!("☀ Briefing: {}", b.headline),
+                    body: crate::briefing::push_body(&b),
+                    tag: "briefing".into(),
+                    approval: None,
+                    url: Some("/?page=status".into()),
+                });
+            }
+            brief_view = json!(b);
+            last_brief = Some(b);
             everyone = true;
         }
         // Diagnoses: one at a time, each in its own conversation; their write-ups for the panels.
@@ -792,6 +843,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                                 body: text,
                                 tag: "status".into(),
                                 approval: None,
+                                url: None,
                             });
                         }
                     }
@@ -847,6 +899,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         extra_now["routines"] = routines_view.clone();
         extra_now["status"] = status_view.clone();
         extra_now["diagnoses"] = diag_view.clone();
+        extra_now["briefing"] = brief_view.clone();
         let attached = hub.attached_sessions();
         for c in convs.iter_mut() {
             // The phase timer ("thinking 4s") ticks while something is happening.
@@ -1036,6 +1089,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
             })).collect::<Vec<_>>())
         }
         "routines" => crate::routines::view(&[], 10),
+        "briefing" => crate::briefing::last().map_or(Value::Null, |b| json!(b)),
         "coding" => json!(crate::coding::jobs()),
         "status" => crate::status::latest().map_or(Value::Null, |b| json!(b)),
         "devices" => {
@@ -1296,8 +1350,9 @@ fn notification(event: &StreamEvent) -> Option<Notification> {
             body: format!("{}: {}{}", r.what, r.detail.lines().next().unwrap_or(""), if r.dangerous { format!(" — {}", r.why) } else { String::new() }),
             tag: format!("approval-{}", r.id),
             approval: Some(r.id),
+            url: None,
         }),
-        StreamEvent::Error(e) => Some(Notification { title: "lyra hit an error".into(), body: preview(e), tag: "error".into(), approval: None }),
+        StreamEvent::Error(e) => Some(Notification { title: "lyra hit an error".into(), body: preview(e), tag: "error".into(), approval: None, url: None }),
         StreamEvent::PlanFinished(result) => Some(Notification {
             title: "Plan update".into(),
             body: match result {
@@ -1306,6 +1361,7 @@ fn notification(event: &StreamEvent) -> Option<Notification> {
             },
             tag: "plan".into(),
             approval: None,
+            url: None,
         }),
         _ => None,
     }

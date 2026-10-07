@@ -238,6 +238,20 @@ function Shell() {
     });
   }, [ready]);
   const [tab, setTab] = useState<Tab>("chat");
+  // Opened from a notification for a page (the briefing → Status): go there.
+  useEffect(() => {
+    const go = (page: string | null) => {
+      if (page && (["status", "machines", "activity", ...manage] as string[]).includes(page)) setTab(page as Tab);
+    };
+    const asked = new URLSearchParams(location.search).get("page");
+    if (asked) {
+      history.replaceState(null, "", "/");
+      go(asked);
+    }
+    const onMessage = (e: MessageEvent) => go(e.data?.page ?? null);
+    navigator.serviceWorker?.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker?.removeEventListener("message", onMessage);
+  }, []);
   const pairing = status.pairing?.length ?? 0;
   const updates = (status.machines_detail ?? []).filter((m) => m.update_available).length;
   // Machines (and the server) with a health problem.
@@ -326,7 +340,7 @@ function Shell() {
 
         <div className="flex min-h-0 flex-1 flex-col">
           {tab === "chat" && <ChatPage />}
-          {tab === "status" && <StatusPage toMachines={() => setTab("machines")} toChat={() => setTab("chat")} />}
+          {tab === "status" && <StatusPage toMachines={() => setTab("machines")} toChat={() => setTab("chat")} go={(p) => setTab(p as Tab)} />}
           {tab === "machines" && <MachinesPage mention={mention} toStatus={() => setTab("status")} toChat={() => setTab("chat")} />}
           {tab === "devices" && <DevicesPage />}
           {tab === "activity" && <ActivityPage />}

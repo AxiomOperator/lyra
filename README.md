@@ -802,6 +802,36 @@ mute = []            # checks never pushed about, e.g. ["Web search"]
 
 `lyra connect`'s side panel lists whatever isn't up.
 
+## Daily briefing
+
+Each morning `lyra serve` puts together one briefing covering what happened since the last one
+and what needs a look. It covers:
+- **Machines:** health problems, pending updates, a newer lyra-node, machines offline
+- **lyra's checks:** anything down or degraded, and anything that missed checks in the last day
+- **Routines:** failures and runs that need you
+- **Diagnoses** written since the last briefing
+- **Coding jobs** that finished or didn't
+- **Goals:** progress, new blockers, overdue goals
+
+The facts come from what lyra already keeps. The chat model adds a one-line takeaway, and the
+briefing goes out without it if the model can't be reached. Making a briefing doesn't touch any
+machine.
+
+The briefing is pushed as "☀ Briefing: All quiet" or "… 2 things need a look", and tapping the
+push opens the Status page. There, the Briefing card lists what needs a look first; each item
+opens its page, and **Brief me now** makes a new one. `/briefing` shows the latest and
+`/briefing now` makes one. `lyra connect`'s panel shows its headline. The last briefing is kept
+in `~/.lyra/briefing/last.json`, so a restart doesn't send it again. If lyra was down at
+briefing time, the briefing is made when lyra starts, unless that's more than 3 hours late.
+
+```toml
+[briefing]
+schedule = "every day at 07:30"   # same words as routines: "weekdays at 8", …
+notify = true
+summary = true                    # the chat model's one-line takeaway
+# enabled = true
+```
+
 ## Backups
 
 lyra backs itself up every night: memory, skills, goals, plans, agents, saved conversations,

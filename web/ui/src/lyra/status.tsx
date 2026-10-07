@@ -6,13 +6,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { ChevronDown, CircleCheck, CircleX, RefreshCw, TriangleAlert } from "lucide-react";
+import { ChevronDown, CircleCheck, CircleX, RefreshCw, Sun, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import { DiagnosisNote } from "./diagnosis";
 import { Page } from "./parts";
 import { ago } from "./push";
 import { useLyra } from "./store";
-import type { CheckState, StatusRow } from "./types";
+import type { Briefing, BriefingLevel, CheckState, StatusRow } from "./types";
 
 const dot: Record<CheckState, string> = {
   up: "bg-emerald-500",
@@ -157,7 +157,72 @@ function SectionCards({ rows, at, banner }: { rows: StatusRow[]; at?: string; ba
   );
 }
 
-export function StatusPage({ toMachines, toChat }: { toMachines: () => void; toChat: () => void }) {
+const mark: Record<BriefingLevel, { icon: typeof Sun; cls: string }> = {
+  attention: { icon: TriangleAlert, cls: "text-amber-400" },
+  note: { icon: ChevronDown, cls: "text-muted-foreground -rotate-90" },
+  ok: { icon: CircleCheck, cls: "text-emerald-500" },
+};
+
+/** The daily briefing: what needs a look first; the rest folded away. */
+function BriefingCard({ briefing, go }: { briefing: Briefing | null | undefined; go: (page: string) => void }) {
+  const { run } = useLyra();
+  const [asked, setAsked] = useState(false);
+  const [open, setOpen] = useState(false);
+  const items = (briefing?.sections ?? []).flatMap((s) => s.items.map((it) => ({ ...it, section: s.name })));
+  const shown = items.filter((it) => it.level !== "ok");
+  const fine = items.length - shown.length;
+  const row = (it: (typeof items)[number], i: number) => {
+    const M = mark[it.level];
+    return (
+      <button key={i} type="button" onClick={() => go(it.link)} className="flex w-full items-start gap-2 rounded-md px-1 py-1 text-left text-sm hover:bg-muted/50">
+        <M.icon className={cn("mt-0.5 size-4 shrink-0", M.cls)} />
+        <span className="min-w-0 flex-1">
+          <span className="text-muted-foreground">{it.section} · </span>
+          {it.text}
+        </span>
+      </button>
+    );
+  };
+  return (
+    <Card className={cn("gap-2 py-4", briefing?.attention ? "border-amber-700/50" : "")}>
+      <CardHeader className="px-4">
+        <CardDescription className="flex items-center gap-1.5">
+          <Sun className="size-4" /> Briefing{briefing && ` · ${ago(briefing.at)}`}
+        </CardDescription>
+        <CardTitle className="text-lg">{briefing?.headline ?? "No briefing yet"}</CardTitle>
+        <CardAction>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={asked}
+            onClick={async () => {
+              setAsked(true);
+              await run("/briefing now");
+              setTimeout(() => setAsked(false), 8000);
+            }}
+          >
+            <RefreshCw className={cn(asked && "animate-spin")} /> Brief me now
+          </Button>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="space-y-1 px-4">
+        {briefing?.takeaway && <p className="pb-1 text-sm">{briefing.takeaway}</p>}
+        {!briefing && <p className="text-muted-foreground text-sm">One is made each morning ([briefing] schedule) and pushed to your devices.</p>}
+        {shown.map(row)}
+        {fine > 0 && (
+          <>
+            <button type="button" onClick={() => setOpen(!open)} className="text-muted-foreground flex items-center gap-1 px-1 py-1 text-sm">
+              <ChevronDown className={cn("size-4 transition-transform", !open && "-rotate-90")} /> {fine} fine
+            </button>
+            {open && items.filter((it) => it.level === "ok").map(row)}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+export function StatusPage({ toMachines, toChat, go }: { toMachines: () => void; toChat: () => void; go: (page: string) => void }) {
   const { status, run } = useLyra();
   const [asked, setAsked] = useState(false);
   const board = status.status;
@@ -191,6 +256,7 @@ export function StatusPage({ toMachines, toChat }: { toMachines: () => void; toC
         </Button>
       }
     >
+      <BriefingCard briefing={status.briefing} go={go} />
       <SectionCards rows={rows} at={board?.at} banner={banner.text} />
       {groups.map((g) => (
         <Card key={g} className="gap-1 py-3">

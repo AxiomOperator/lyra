@@ -144,6 +144,8 @@ pub struct Notification {
     pub tag: String,
     /// An approval it asks about (Android shows Allow / Deny buttons).
     pub approval: Option<u64>,
+    /// The app page a tap opens ("/?page=status"); the chat when none.
+    pub url: Option<String>,
 }
 
 struct Shared {
@@ -454,7 +456,7 @@ impl Hub {
     pub fn notify(&self, n: Notification) {
         let shared = self.shared.clone();
         std::thread::spawn(move || {
-            let payload = json!({ "title": n.title, "body": n.body, "tag": n.tag, "approval": n.approval }).to_string();
+            let payload = json!({ "title": n.title, "body": n.body, "tag": n.tag, "approval": n.approval, "url": n.url }).to_string();
             for d in shared.devices.list() {
                 let Some(sub) = &d.push else { continue };
                 match push::send(&shared.vapid, &shared.subject, sub, payload.as_bytes()) {

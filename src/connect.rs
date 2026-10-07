@@ -595,6 +595,15 @@ fn draw_panel(f: &mut Frame, s: &Screen, area: Rect) {
             lines.push(Line::styled(truncate(&format!("{} {}: {}", if r["state"] == "down" { "✗" } else { "◐" }, str_of(&r["name"]), str_of(&r["detail"])), width), Style::default().fg(color)));
         }
     }
+    // The latest daily briefing: its headline, and what needs a look.
+    if let Ok(b) = serde_json::from_value::<crate::briefing::Briefing>(st["briefing"].clone()) {
+        lines.push(Line::default());
+        let color = if b.attention > 0 { Color::Yellow } else { Color::Green };
+        lines.push(Line::from(vec!["Briefing ".bold(), Span::styled(truncate(&crate::briefing::line(&b), width.saturating_sub(9)), Style::default().fg(color))]));
+        for it in b.sections.iter().flat_map(|s| &s.items).filter(|it| it.level == crate::briefing::Level::Attention).take(3) {
+            lines.push(Line::styled(truncate(&format!("⚠ {}", it.text), width), Style::default().fg(Color::Yellow)));
+        }
+    }
     let routines = st["routines"].as_array().cloned().unwrap_or_default();
     if !routines.is_empty() {
         lines.push(Line::default());

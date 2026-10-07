@@ -42,6 +42,8 @@ pub struct Config {
     pub status: crate::status::Settings,
     /// `[health]` table: machine health limits and alerts.
     pub health: crate::health::Settings,
+    /// `[briefing]` table: the daily briefing (lyra serve).
+    pub briefing: crate::briefing::Settings,
     /// `[groups]` table: named sets of machines (web = ["web1", "web2"]) for @group and fleet_run.
     pub groups: std::collections::HashMap<String, Vec<String>>,
     /// `[backup]` table: nightly backups of the lyra home.
@@ -319,6 +321,7 @@ impl Default for Config {
             backup: Default::default(),
             groups: Default::default(),
             health: Default::default(),
+            briefing: Default::default(),
             status: Default::default(),
             diagnose: Default::default(),
             coding: Default::default(),
