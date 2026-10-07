@@ -53,6 +53,8 @@ pub enum AgentEvent {
     Tool { agent: String, tool: String, id: String, args: String },
     /// What that call returned (clipped for the screen).
     ToolResult { agent: String, id: String, output: String },
+    /// A long tool's progress (a coding job's steps), shown live under its call.
+    ToolProgress { agent: String, id: String, event: Value },
     Finished { agent: String, status: DelegationStatus, confidence: Option<f32>, ms: u64, output: String, depth: u32 },
 }
 
@@ -170,7 +172,7 @@ fn with_machine(env: &Env, tool: &str, args: &str) -> String {
         return v.to_string();
     }
     let (Some(machine), Some(caps)) = (&env.machine, &env.caps) else { return args.to_string() };
-    if tool == "ssh_run" || caps.manager.get(tool).is_none_or(|c| c.source != "system") {
+    if tool == "ssh_run" || caps.manager.get(tool).is_none_or(|c| c.source != "system" && c.source != "coding") {
         return args.to_string();
     }
     let mut v: Value = serde_json::from_str(args).unwrap_or(json!({}));
@@ -447,6 +449,11 @@ pub fn delegate(
                     // Changes wait for the user's yes (asked in the TUI).
                     Some(c) => match c.approval(name, args) {
                         Some(ask) => match approve(env, profile, name, ask) {
+                            // A coding job: its steps show live, and stop stops it.
+                            Ok(()) if c.manager.get(name).is_some_and(|x| x.source == "coding") => {
+                                let progress = |event: Value| emit(&env.tx, AgentEvent::ToolProgress { agent: profile.title.clone(), id: shown_id.clone(), event });
+                                crate::coding::run(c, &serde_json::from_str(args).unwrap_or(json!({})), &env.cancel, &progress, Some((&env.url, &env.model))).to_string()
+                            }
                             Ok(()) => c.invoke(name, args, ctx, true, true),
                             Err(why) => json!({ "error": why }).to_string(),
                         },
@@ -704,7 +711,12 @@ pub fn panel(agents: &Agents) -> Vec<PanelRow> {
 pub fn auto_delegate(env: &Env, message: &str, run: Uuid, history: &mut Vec<Value>) -> Option<String> {
     // `@desktop …`: the Operator, on that machine.
     let operator = env.agents.registry.get("operator").is_some_and(|p| p.enabled);
+    let coder = env.agents.registry.get("coder").is_some_and(|p| p.enabled);
     let d = match (&env.machine, &env.fleet) {
+        // Coding work on a machine goes to the Coder, not the Operator.
+        (Some(m), _) if coder && crate::coding::looks_like_code(message) => {
+            RoutingDecision { agent: "coder".into(), confidence: 1.0, reason: format!("coding work on @{m}"), method: RouteMethod::Explicit }
+        }
         (_, Some(f)) if operator => RoutingDecision { agent: "operator".into(), confidence: 1.0, reason: format!("@{f}"), method: RouteMethod::Explicit },
         (Some(m), _) if operator => RoutingDecision { agent: "operator".into(), confidence: 1.0, reason: format!("@{m}"), method: RouteMethod::Explicit },
         _ => env.agents.route(env, message)?,
@@ -968,10 +980,47 @@ impl crate::App {
             }
             AgentEvent::ToolResult { agent, id, output } => {
                 self.log(Level::Agent, format!("{agent} ↳ {}", output.chars().take(120).collect::<String>()));
-                // Shown with its call; never part of the model's history.
-                let mut m = Message::new("agent_tool", output);
-                m.tool_call_id = Some(id);
-                self.messages.push(m);
+                // Shown with its call; never part of the model's history. A live
+                // progress message for the same call becomes the result.
+                match self.messages.iter().rposition(|m| m.role == "agent_tool" && m.tool_call_id.as_deref() == Some(id.as_str())) {
+                    Some(i) => {
+                        self.messages[i].content = output;
+                        self.touch(i);
+                    }
+                    None => {
+                        let mut m = Message::new("agent_tool", output);
+                        m.tool_call_id = Some(id);
+                        self.messages.push(m);
+                    }
+                }
+            }
+            AgentEvent::ToolProgress { agent, id, event } => {
+                let text = event["text"].as_str().unwrap_or("").chars().take(140).collect::<String>();
+                if !text.is_empty() && event["kind"] != "text" {
+                    self.log(Level::Agent, format!("{agent} · {text}"));
+                }
+                if event["kind"] == "tool" {
+                    self.set_phase(Phase::Delegating(format!("{agent} · {}", text.chars().take(40).collect::<String>())));
+                }
+                // One live message per call: {"progress": [events…]}.
+                let i = match self.messages.iter().rposition(|m| m.role == "agent_tool" && m.tool_call_id.as_deref() == Some(id.as_str())) {
+                    Some(i) => i,
+                    None => {
+                        let mut m = Message::new("agent_tool", json!({ "progress": [] }).to_string());
+                        m.tool_call_id = Some(id);
+                        self.messages.push(m);
+                        self.messages.len() - 1
+                    }
+                };
+                let mut v: Value = serde_json::from_str(&self.messages[i].content).unwrap_or(json!({ "progress": [] }));
+                if let Some(list) = v["progress"].as_array_mut() {
+                    list.push(event);
+                    if list.len() > 60 {
+                        list.remove(0);
+                    }
+                }
+                self.messages[i].content = v.to_string();
+                self.touch(i);
             }
             AgentEvent::Finished { agent, status, confidence, ms, output, depth } => {
                 let conf = confidence.map_or(String::new(), |c| format!(", confidence {c:.2}"));

@@ -5,6 +5,7 @@ import { Conversation, ConversationContent, ConversationEmptyState, Conversation
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, PromptInputHeader, PromptInputSubmit, PromptInputTextarea, PromptInputTools } from "@/components/ai-elements/prompt-input";
 import { SpeechInput } from "@/components/ai-elements/speech-input";
+import { CodingCard } from "./coding";
 import { withDictation } from "./dictation";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { Shimmer } from "@/components/ai-elements/shimmer";
@@ -65,6 +66,8 @@ function MachineResult({ r }: { r: FleetResult }) {
 }
 
 function ToolCallView({ name, args, result }: { name: string; args: string; result?: string }) {
+  // Coding work has its own card: live steps, then what changed.
+  if (name === "code_task") return <CodingCard args={parse(args) as Record<string, unknown>} result={result} />;
   const input = parse(args) as Record<string, unknown>;
   const output = result === undefined ? undefined : parse(result);
   const obj = output && typeof output === "object" ? (output as Record<string, unknown>) : null;
@@ -356,7 +359,13 @@ function Composer() {
   useEffect(() => {
     const fill = (e: Event) => setText(`@${(e as CustomEvent<string>).detail} `);
     window.addEventListener("lyra-mention", fill);
-    return () => window.removeEventListener("lyra-mention", fill);
+    // A card's "Continue": text to finish typing.
+    const prefill = (e: Event) => setText((e as CustomEvent<string>).detail);
+    window.addEventListener("lyra-prefill", prefill);
+    return () => {
+      window.removeEventListener("lyra-mention", fill);
+      window.removeEventListener("lyra-prefill", prefill);
+    };
   }, []);
   useEffect(() => {
     listRef.current?.querySelector(`[data-i="${selected}"]`)?.scrollIntoView({ block: "nearest" });

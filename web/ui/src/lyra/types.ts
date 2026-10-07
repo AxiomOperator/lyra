@@ -53,6 +53,8 @@ export interface Machine {
   last_seen: string;
   /** Its latest health report, with what's wrong in it. */
   health?: Health | null;
+  /** Coding agents it has: {"claude": "2.1.291 (Claude Code)", "opencode": "1.18.29"}. */
+  harnesses?: Record<string, string> | null;
 }
 
 export interface Health {

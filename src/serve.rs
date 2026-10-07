@@ -59,6 +59,14 @@ impl crate::caps::Remote for HubRemote {
         self.0.call_machine(machine, request, timeout)
     }
 
+    fn call_streaming(&self, machine: &str, request: Value, timeout: Duration, cancel: &std::sync::atomic::AtomicBool, progress: &dyn Fn(Value)) -> Result<Value, String> {
+        self.0.call_machine_streaming(machine, request, timeout, cancel, progress)
+    }
+
+    fn harnesses(&self) -> Vec<(String, Value)> {
+        self.0.machines().into_iter().filter(|m| m.harnesses.as_object().is_some_and(|h| !h.is_empty())).map(|m| (m.name, m.harnesses)).collect()
+    }
+
     fn upload_path(&self, id: &str) -> Option<std::path::PathBuf> {
         self.0.upload(id).map(|(_, path)| path)
     }
@@ -442,6 +450,19 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                             std::thread::spawn(move || {
                                 let answer = hub.call_machine(&machine, request, Duration::from_secs(20));
                                 let _ = reply.send(answer.unwrap_or_else(|e| json!({ "error": e })));
+                            });
+                        }
+                        // A coding job's changes: `git diff` in its folder, read-only, on its machine.
+                        "coding_diff" => {
+                            let (dir, caps) = (arg["dir"].as_str().unwrap_or("").to_string(), convs[0].app.caps.clone());
+                            std::thread::spawn(move || {
+                                let shell = json!({ "command": "git diff --stat HEAD~0 && git diff && git status --short", "cwd": dir });
+                                let answer = if machine == crate::caps::HERE {
+                                    caps.as_ref().and_then(|c| c.system.as_ref()).ok_or("system access is off".to_string()).and_then(|s| s.call("shell_run", &shell))
+                                } else {
+                                    caps.as_ref().and_then(|c| c.remote()).ok_or("no machines".to_string()).and_then(|r| r.call(&machine, json!({ "type": "call", "tool": "shell_run", "args": shell, "approved": false }), Duration::from_secs(30)))
+                                };
+                                let _ = reply.send(answer.map(|v| json!({ "diff": v["stdout"], "error": v["error"] })).unwrap_or_else(|e| json!({ "error": e })));
                             });
                         }
                         "set_rules" => {
@@ -988,6 +1009,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
             })).collect::<Vec<_>>())
         }
         "routines" => crate::routines::view(&[], 10),
+        "coding" => json!(crate::coding::jobs()),
         "status" => crate::status::latest().map_or(Value::Null, |b| json!(b)),
         "devices" => {
             let online: Vec<String> = hub.online_devices().into_iter().map(|(id, _)| id).collect();

@@ -1,6 +1,7 @@
 mod agents;
 mod backup;
 mod caps;
+mod coding;
 mod commands;
 mod config;
 mod connect;
@@ -11,6 +12,7 @@ mod evolve;
 mod goals;
 mod health;
 mod markdown;
+mod mcp_server;
 mod learn;
 mod lock;
 mod mem;
@@ -1331,7 +1333,7 @@ impl App {
     /// the answer goes back to the page instead of into the conversation.
     pub fn quiet_command(&mut self, line: &str) -> Result<String, String> {
         let name = line.split_whitespace().next().unwrap_or("");
-        if !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate" | "/goal" | "/goals" | "/model" | "/backup" | "/routine" | "/routines" | "/status" | "/diagnose") {
+        if !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate" | "/goal" | "/goals" | "/model" | "/backup" | "/routine" | "/routines" | "/status" | "/diagnose" | "/coding") {
             return Err(format!("{name} can't be run from a page"));
         }
         let result = self.command_result(line);
@@ -1450,6 +1452,7 @@ impl App {
             "/routine" | "/routines" => self.routine_command(arg),
             "/status" => self.status_command(arg),
             "/diagnose" => self.diagnose_command(arg),
+            "/coding" => Ok(coding::describe()),
             _ => Err(format!("unknown command {name} — try /help")),
         }
     }
@@ -2615,6 +2618,7 @@ impl App {
                 });
                 decide::configure(config.decide.clone());
                 health::configure(config.health.clone());
+                coding::configure(config.coding.clone());
                 self.pricing = pricing(&config);
                 if let Some(mem) = self.mem() {
                     for note in mem.reconfigure(config.memory.settings.clone(), config.embedding.clone()) {
@@ -2815,6 +2819,7 @@ pub(crate) const COMMANDS: &str = "\
 /routine [list]              scheduled things to ask lyra; runs tell you only when something needs you
 /routine new <name> | <schedule> | <what to do> [| notify problems|always|never] [| changes]
 /routine run|pause|resume|delete|show <name> · /routine edit <name> schedule|prompt|notify|changes <value>
+/coding                      coding jobs handed to Claude Code / OpenCode (ask: 'fix … in ~/Projects/x on @desktop')
 /diagnose [<machine> <problem>]  problems researched (read-only); look into one now
 /status [now]                everything lyra depends on: models, search, APIs, address, storage, backups, machines
 /backup [now|list]           back up lyra (memory, skills, goals, sessions, config); nightly by itself
@@ -3171,6 +3176,7 @@ fn main() {
         Some("service") => return service_command(),
         Some("node") => return lyra_node::main(&args[2..]),
         Some("connect") => return connect::main(&args[2..]),
+        Some("mcp") => return mcp_server::main(&args[2..]),
         // No lyra of its own here, but a paired terminal: open that.
         None if connect::configured() && !config::home().is_some_and(|h| h.join("config").join("config.toml").exists()) => return connect::main(&[]),
         _ => {}
@@ -3298,6 +3304,7 @@ fn main() {
     });
     health::configure(config.health.clone());
     decide::configure(config.decide.clone());
+    coding::configure(config.coding.clone());
     let web = config.web.clone();
     let mut app = App::new(config, Context::load(), services);
     for note in migrated {
@@ -3658,6 +3665,12 @@ fn open_agents(config: &Config, runtime: &tokio::runtime::Handle) -> (Option<Arc
                 && let Some(p) = lyra_agents::templates::template("operator")
             {
                 let _ = a.registry.create(p, "installed with system access");
+            }
+            // Coding agents come with a Coder to hand work to them (once: deleting it sticks).
+            if config.coding.enabled && a.registry.get("coder").is_none() && a.registry.versions("coder").is_ok_and(|v| v.is_empty())
+                && let Some(p) = lyra_agents::templates::template("coder")
+            {
+                let _ = a.registry.create(p, "installed with coding agents (Claude Code, OpenCode)");
             }
             // System tools added since the Operator was installed from its template.
             if let Some(mut op) = a.registry.get("operator").filter(|p| p.template.as_deref() == Some("operator")) {

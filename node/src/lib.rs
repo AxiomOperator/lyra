@@ -9,6 +9,7 @@
 //! itself when asked. The pairing and connection helpers are shared with
 //! `lyra connect`.
 
+pub mod coding;
 pub mod health;
 
 use std::path::{Path, PathBuf};
@@ -357,6 +358,7 @@ fn hello() -> Value {
         "version": VERSION,
         "build": own_hash(),
         "self_update": standalone(),
+        "harnesses": coding::available(),
     })
 }
 
@@ -388,6 +390,8 @@ async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<(String, Option<bool>)>();
     let mut ping = tokio::time::interval(Duration::from_secs(30));
     let mut heard = std::time::Instant::now();
+    // Coding jobs running here, by request id, so lyra can stop them.
+    let jobs: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, std::sync::Arc<std::sync::atomic::AtomicBool>>>> = Default::default();
     // Health now, then every few minutes (read off the connection's thread).
     let mut checkup = tokio::time::interval(health::EVERY);
     loop {
@@ -471,6 +475,33 @@ async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System
                             }
                             let _ = out.send((reply(&v["id"], result), None));
                         });
+                    }
+                    // A coding harness, run here for lyra; progress goes back as it happens.
+                    "code" => {
+                        let (system, out, jobs) = (system.clone(), out_tx.clone(), jobs.clone());
+                        let id = v["id"].as_u64().unwrap_or(0);
+                        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        jobs.lock().unwrap_or_else(|e| e.into_inner()).insert(id, cancel.clone());
+                        tokio::task::spawn_blocking(move || {
+                            let result = coding::Job::from_request(&v).and_then(|job| {
+                                // This machine's rules still hold: no work in folders that are off limits.
+                                if let lyra_system::Check::Forbidden(why) = system.check("file_list", &json!({ "path": job.dir.display().to_string() })) {
+                                    return Err(format!("refused here: {why}"));
+                                }
+                                println!("{} in {}: {}", job.harness.title(), job.dir.display(), job.task.chars().take(80).collect::<String>());
+                                let progress = |e: Value| {
+                                    let _ = out.send((json!({ "type": "progress", "id": id, "event": e }).to_string(), None));
+                                };
+                                coding::run(&job, &cancel, &progress)
+                            });
+                            jobs.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+                            let _ = out.send((reply(&v["id"], result), None));
+                        });
+                    }
+                    "code_stop" => {
+                        if let Some(c) = jobs.lock().unwrap_or_else(|e| e.into_inner()).get(&v["job"].as_u64().unwrap_or(0)) {
+                            c.store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
                     }
                     "rules" => {
                         let result = rules(&system, &config_path(), &v);

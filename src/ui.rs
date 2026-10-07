@@ -133,6 +133,46 @@ fn draw_palette(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(Block::bordered().title(title).border_style(Style::default().fg(Color::Cyan))), popup);
 }
 
+/// A tool result that reads better as several lines: a fleet run (a line per
+/// machine) or a coding job (live steps, then what it changed).
+pub fn tool_lines(content: &str) -> Option<Vec<(bool, String)>> {
+    fleet_lines(content).or_else(|| coding_lines(content))
+}
+
+/// A coding job: its latest steps while it runs, then the harness, what changed and its summary.
+pub fn coding_lines(content: &str) -> Option<Vec<(bool, String)>> {
+    let v: serde_json::Value = serde_json::from_str(content).ok()?;
+    if let Some(steps) = v["progress"].as_array() {
+        let mut out: Vec<(bool, String)> = steps.iter().filter(|e| matches!(e["kind"].as_str(), Some("harness" | "handover"))).map(|e| (true, format!("  ↳ {}", e["text"].as_str().unwrap_or("")))).collect();
+        for e in steps.iter().filter(|e| matches!(e["kind"].as_str(), Some("tool" | "error"))).rev().take(3).collect::<Vec<_>>().into_iter().rev() {
+            out.push((e["kind"] != "error", format!("    · {}", truncate(e["text"].as_str().unwrap_or(""), 120))));
+        }
+        return Some(out);
+    }
+    let harness = v["harness"].as_str()?;
+    v["dir"].as_str()?;
+    let name = match harness {
+        "claude" => "Claude Code",
+        "opencode" => "OpenCode",
+        h => h,
+    };
+    let ok = v["ok"] == true;
+    let files = v["files"].as_array().map_or(0, Vec::len);
+    let mut out = vec![(ok, format!(
+        "  ↳ {name} {} · {} file{} · {}{}",
+        if ok { "✓" } else { "✗" },
+        files,
+        if files == 1 { "" } else { "s" },
+        v["diff_stat"].as_str().filter(|d| !d.is_empty()).unwrap_or("no diff"),
+        v["handed_over_from"]["harness"].as_str().map_or(String::new(), |h| format!(" · took over from {h}"))
+    ))];
+    let said = v["summary"].as_str().filter(|t| !t.is_empty()).or(v["error"].as_str()).unwrap_or("");
+    for line in said.lines().filter(|l| !l.trim().is_empty()).take(3) {
+        out.push((ok, format!("    {}", truncate(line, 140))));
+    }
+    Some(out)
+}
+
 /// A `fleet_run` result as a line per machine: (worked, text).
 pub fn fleet_lines(content: &str) -> Option<Vec<(bool, String)>> {
     let v: serde_json::Value = serde_json::from_str(content).ok()?;
@@ -161,7 +201,7 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         if m.role == "tool" || m.role == "agent_tool" {
             // Tool results: one dim line, under the call that produced them
             // (a line per machine for one run on several).
-            match fleet_lines(&m.content) {
+            match tool_lines(&m.content) {
                 Some(each) => lines.extend(each.into_iter().map(|(ok, text)| Line::styled(text, if ok { dim } else { Style::default().fg(Color::Red) }))),
                 None => lines.push(Line::styled(format!("  ↳ {}", truncate(&m.content, 160)), dim)),
             }

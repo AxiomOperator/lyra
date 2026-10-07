@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { Activity as ActivityIcon, AlarmClock, Archive, Bell, BellOff, Bot, Brain, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, Unplug } from "lucide-react";
+import { Activity as ActivityIcon, AlarmClock, Code2, Archive, Bell, BellOff, Bot, Brain, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, Unplug } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PairCard } from "./chat";
 import { DiagnosisNote } from "./diagnosis";
@@ -104,6 +104,11 @@ export function MachinesPage({ mention, toStatus, toChat }: { mention: (name: st
                 : `offline · last seen ${ago(m.last_seen)}`}
             </CardDescription>
             <CardAction className="flex gap-1.5">
+              {Object.keys(m.harnesses ?? {}).map((h) => (
+                <Badge key={h} variant="outline" title={String(m.harnesses?.[h])}>
+                  {h === "claude" ? "Claude Code" : "OpenCode"}
+                </Badge>
+              ))}
               {m.update_available && <Badge className="bg-amber-500/20 text-amber-300">update</Badge>}
               {m.online && !!m.health?.problems.length && <Badge className="bg-red-500/20 text-red-300">⚠ {m.health.problems.length}</Badge>}
               <Badge variant={m.online ? "default" : "secondary"} className={m.online ? "bg-emerald-600/80 text-white" : ""}>
@@ -336,7 +341,7 @@ function Notifications() {
   );
 }
 
-export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "routines" | "memory" | "skills" | "goals" | "model" | "devices") => void; update: () => void }) {
+export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "devices") => void; update: () => void }) {
   const { say, unpaired, token, serverVersion, status } = useLyra();
   const [sessions] = useData<Session[]>("sessions");
   // Asked again when a backup starts or finishes.
@@ -416,6 +421,9 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
           </Button>
           <Button variant="secondary" onClick={() => open("routines")}>
             <AlarmClock /> Routines
+          </Button>
+          <Button variant="secondary" onClick={() => open("coding")}>
+            <Code2 /> Coding
           </Button>
           <Button variant="secondary" onClick={() => open("memory")}>
             <Brain /> Memory

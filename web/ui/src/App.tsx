@@ -28,6 +28,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
   Activity,
+  Code2,
   AlarmClock,
   Bell,
   Brain,
@@ -49,6 +50,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
 import { GoalsPage, MemoryPage, ModelsPage, RoutinesPage, SkillsPage } from "./lyra/manage";
 import { StatusPage } from "./lyra/status";
+import { CodingPage } from "./lyra/coding";
 import { ActivityPage, DevicesPage, MachinesPage, MorePage } from "./lyra/pages";
 import { ago } from "./lyra/push";
 import { SearchBox, SearchHits, useConversationSearch } from "./lyra/search";
@@ -59,8 +61,8 @@ import { loadToken, saveToken, takeShared } from "./lyra/token";
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "routines" | "memory" | "skills" | "goals" | "model";
-const manage: Manage[] = ["routines", "memory", "skills", "goals", "model"];
+type Manage = "routines" | "coding" | "memory" | "skills" | "goals" | "model";
+const manage: Manage[] = ["routines", "coding", "memory", "skills", "goals", "model"];
 
 type TabItem = {
   id: Tab;
@@ -252,6 +254,7 @@ function Shell() {
 
   const more: TabItem[] = [
     { id: "routines", label: "Routines", icon: AlarmClock, badge: (status.routines ?? []).filter((r) => r.runs[0]?.needs_user).length },
+    { id: "coding", label: "Coding", icon: Code2 },
     { id: "memory", label: "Memory", icon: Brain },
     { id: "skills", label: "Skills", icon: GraduationCap },
     { id: "goals", label: "Goals", icon: Target },
@@ -329,6 +332,7 @@ function Shell() {
           {tab === "activity" && <ActivityPage />}
           {tab === "more" && <MorePage toChat={() => setTab("chat")} open={setTab} update={updateApp} />}
           {tab === "routines" && <RoutinesPage onBack={toMore} toChat={() => setTab("chat")} />}
+          {tab === "coding" && <CodingPage onBack={toMore} />}
           {tab === "memory" && <MemoryPage onBack={toMore} />}
           {tab === "skills" && <SkillsPage onBack={toMore} />}
           {tab === "goals" && <GoalsPage onBack={toMore} />}

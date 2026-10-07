@@ -20,6 +20,7 @@ pub const NAMES: &[&str] = &[
     "data-analyst",
     "archivist",
     "operator",
+    "coder",
     "custom",
 ];
 
@@ -111,6 +112,44 @@ pub fn template(name: &str) -> Option<AgentProfile> {
             ]);
             p.permission_policy.max_risk = "destructive".into();
             p.test_task = Some("Report this machine's OS, uptime, CPU count and free disk space.".into());
+            p
+        }
+        "coder" => {
+            let mut p = t(
+                "Coder",
+                "Hands coding work in a project to a coding agent (Claude Code or OpenCode) on a machine: fixes, features, refactors, tests.",
+            );
+            p.role = "Engineering lead who delegates hands-on coding to Claude Code and OpenCode and checks their work.".into();
+            p.instructions = "For coding work in a project folder, use code_task: give the folder (dir), the machine if the user \
+                named one, and a self-contained task (the goal, what done looks like, constraints). Leave harness empty unless \
+                the user named Claude Code or OpenCode: lyra picks (OpenCode for simple work, Claude Code for complex, Claude \
+                Code taking over if OpenCode can't finish). Use mode=plan when the user wants a plan or review only, and \
+                continue=true for a follow-up on the last job in that folder. Look first with file_read/file_list if you need \
+                to understand the project. Then report: which agent did it and why, what changed (files, diff stat, local \
+                commits), whether it handed over, and what's left. Never push."
+                .into();
+            p.delegation = DelegationProfile {
+                auto_delegate: true,
+                intents: strs(&["write_code", "fix_bug", "refactor", "write_tests", "implement_feature", "code_review"]),
+                keywords: strs(&[
+                    "code", "coding", "bug", "fix", "refactor", "implement", "feature", "test", "tests", "compile", "build",
+                    "function", "repo", "repository", "project", "claude code", "opencode", "pull request", "typo",
+                ]),
+                examples: strs(&[
+                    "Fix the failing test in ~/Projects/foo",
+                    "Have Claude Code refactor the parser in ~/Projects/lyra into its own module",
+                    "Use OpenCode to fix the typo in the README of ~/Projects/planix",
+                    "Add pagination to the API in ~/Projects/planix on my desktop",
+                    "Write tests for src/health.rs in ~/Projects/lyra",
+                    "Review the last change in ~/Projects/foo and plan the next step",
+                ]),
+                priority: 9,
+                exclusions: strs(&["disk space", "restart", "uptime", "what's running"]),
+            };
+            p.memory_policy = MemoryPolicy { mode: MemoryMode::Scoped, read: strs(&["user", "project:*"]), write: Vec::new() };
+            p.tools = strs(&["code_task", "file_read", "file_list", "memory_recall"]);
+            p.permission_policy.max_risk = "destructive".into();
+            p.test_task = Some("Say which coding agents (Claude Code, OpenCode) you can use and how you pick one.".into());
             p
         }
         "developer" => {

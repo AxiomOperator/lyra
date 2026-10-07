@@ -302,3 +302,12 @@ currency = "$"
 # [diagnose]
 # auto = true
 # enabled = true
+
+# Coding agents (see README): coding work handed to OpenCode (simple) and Claude
+# Code (complex, and taking over when OpenCode can't finish), full auto, never pushing.
+# [coding]
+# simple = "opencode"
+# complex = "claude"
+# fallback = "claude"
+# timeout_minutes = 30
+# allow_push = false

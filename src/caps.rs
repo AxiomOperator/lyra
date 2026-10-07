@@ -70,6 +70,15 @@ pub trait Remote: Send + Sync {
         let _ = id;
         None
     }
+    /// A long job on a machine (a coding harness): progress as it comes, stoppable.
+    fn call_streaming(&self, machine: &str, request: Value, timeout: std::time::Duration, cancel: &std::sync::atomic::AtomicBool, progress: &dyn Fn(Value)) -> Result<Value, String> {
+        let _ = (cancel, progress);
+        self.call(machine, request, timeout)
+    }
+    /// The coding harnesses each connected machine has ({"claude": "2.1.291", …}).
+    fn harnesses(&self) -> Vec<(String, Value)> {
+        Vec::new()
+    }
 }
 
 /// What the machine lyra itself runs on is called in the `machine` argument.
@@ -463,6 +472,11 @@ impl Caps {
         out
     }
 
+    /// The machines connection (lyra serve), when there is one.
+    pub fn remote(&self) -> Option<Arc<dyn Remote>> {
+        self.remote.get().cloned()
+    }
+
     pub fn set_agents(&self, agents: Arc<crate::agents::Agents>) {
         let _ = self.agents.set(agents);
     }
@@ -507,6 +521,9 @@ impl Caps {
             caps.extend(crate::websearch::capabilities());
         }
         caps.extend(crate::routines::capabilities());
+        if crate::coding::settings().enabled {
+            caps.push(crate::coding::capability());
+        }
         if self.system.as_ref().is_some_and(|s| s.settings().enabled) {
             let machines = self.machines();
             if !machines.is_empty() {
@@ -591,6 +608,9 @@ impl Caps {
         let args: Value = serde_json::from_str(if arguments.trim().is_empty() { "{}" } else { arguments }).unwrap_or(json!({}));
         if c.name == "fleet_run" {
             return self.fleet_approval(&args);
+        }
+        if c.source == "coding" {
+            return Some(crate::coding::approval(&args));
         }
         // Another machine decides for itself (its own rules), and says what it would do.
         if c.source == "system"
@@ -732,6 +752,15 @@ impl Caps {
                 Some(client) => client.call(&c.id, &args),
                 None => Err(format!("{} has no provider", c.id)),
             },
+            _ if c.source == "coding" => {
+                if ctx.agent.is_none() {
+                    Err("coding work goes to the Coder agent: delegate it".into())
+                } else if !approved {
+                    Err("needs the user's approval".into())
+                } else {
+                    Ok(crate::coding::run(self, &args, &std::sync::atomic::AtomicBool::new(false), &|_| {}, None))
+                }
+            }
             _ if c.source == "routines" => crate::routines::call(&c.name, &args),
             _ if c.source == "web" => match &self.search {
                 Some(s) => crate::websearch::call(s, &c.name, &args),

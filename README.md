@@ -669,6 +669,71 @@ run and last verdict, and has **New**, **Run now**, Pause/Resume, Edit, Delete a
 runs. A routine whose last run needs you gets a badge. `lyra connect`'s side panel lists them
 too (✓ all clear, ⚠ needs you, ↻ running).
 
+## Coding agents: Claude Code and OpenCode
+
+lyra hands coding work to the coding agents you already use, on the machine where the project
+is. Ask in chat:
+
+> fix the failing test in ~/Projects/foo on @desktop
+
+> have Claude Code refactor the parser in ~/Projects/lyra into its own module
+
+**Who does it:**
+- **The Coder agent** (installed by itself) takes the request and calls `code_task` with the
+  folder and a self-contained task.
+- **lyra rates the task:**
+  - **Simple** (one file, a rename, a small fix with a clear cause, docs, a test) goes to
+    **OpenCode**.
+  - **Complex** (several files, architecture, an unknown bug, a feature across modules) goes to
+    **Claude Code**.
+  - The decision model rates it when there is one, otherwise the chat model.
+- **Backup:** when OpenCode can't finish (an error, a timeout, or it says it couldn't), Claude
+  Code takes over, told what OpenCode tried and what it changed.
+- **Naming wins:** "with Claude Code" or "use OpenCode" in the request overrides the rating.
+
+**How it runs:**
+- **Full auto:** you approve once, then the agent works on its own in that folder: Claude Code
+  with `bypassPermissions`, OpenCode with `--auto`. It never pushes, and commits only if the task
+  asks.
+- **Plan only:** "just plan …" gives `mode=plan`, which reads and proposes without changing
+  anything.
+- **Where:** it runs on the machine, through lyra-node (the Machines page shows which coding
+  agents each has), or on the server if one is installed there.
+- **Models and logins:** the agents keep their own (here, Opus 5.5 in Claude Code and GPT-5.6
+  Terra Pro in OpenCode).
+
+**What you see:**
+- **While it works:** the chat shows its steps live ("apply_patch README.md", "Bash cargo
+  test").
+- **When it's done:** which agent did it and why, the summary, the files changed, the diff stat,
+  any local commits, the time and cost, plus:
+  - **Show diff**
+  - **Continue** (the same session: "also add tests")
+  - **Copy resume command** (`claude --resume …` / `opencode -s …`, to pick it up yourself)
+- **Stopping:** `/stop` (or the stop button) stops the agent.
+- **Past jobs:** listed in More → Coding (the sidebar's Coding) and `/coding`.
+
+```toml
+[coding]
+simple = "opencode"       # who gets simple work
+complex = "claude"        # and complex work
+fallback = "claude"       # takes over when simple work fails
+timeout_minutes = 30
+allow_push = false
+# enabled = true
+```
+
+### The other way: Claude Code and OpenCode using lyra
+
+`lyra mcp` is an MCP server, using the pairing `lyra connect` made on that machine.
+`lyra mcp --install` registers it with Claude Code (user scope) and OpenCode
+(`~/.config/opencode/opencode.json`). In those agents you then have:
+- `lyra_ask`: ask lyra; it answers in a conversation of its own
+- `lyra_memory_recall`: what lyra remembers
+- `lyra_status`
+- `lyra_machines`: machines with their health
+- `lyra_routines` and `lyra_run_routine`
+
 ## Problems researched by themselves
 
 When something goes wrong, lyra looks into it before you ask:

@@ -119,12 +119,16 @@ pub struct MachineInfo {
     pub self_update: bool,
     /// Its latest health report (`lyra_node::health::report`).
     pub health: Option<Value>,
+    /// Coding harnesses it has and their versions ({"claude": "2.1.291", …}).
+    pub harnesses: Value,
 }
 
 type Pending = Arc<Mutex<HashMap<u64, std::sync::mpsc::Sender<Result<Value, String>>>>>;
 
 struct MachineConn {
     info: MachineInfo,
+    /// Progress for long calls (coding jobs), by request id.
+    progress: Arc<Mutex<HashMap<u64, std::sync::mpsc::Sender<Value>>>>,
     /// This connection (a reconnect replaces it; only the newest may remove itself).
     conn: u64,
     to_node: tokio::sync::mpsc::UnboundedSender<String>,
@@ -374,6 +378,59 @@ impl Hub {
                 Err(format!("{name} didn't answer within {}s", timeout.as_secs()))
             }
         }
+    }
+
+    /// Like `call_machine`, for long jobs: `on_progress` gets the machine's
+    /// progress events as they come; setting `cancel` asks it to stop.
+    pub fn call_machine_streaming(
+        &self,
+        name: &str,
+        mut request: Value,
+        timeout: std::time::Duration,
+        cancel: &std::sync::atomic::AtomicBool,
+        on_progress: &dyn Fn(Value),
+    ) -> Result<Value, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (ptx, prx) = std::sync::mpsc::channel();
+        let id = self.shared.next_call.fetch_add(1, Ordering::SeqCst);
+        let (pending, progress, to_node) = {
+            let machines = self.shared.machines.lock().unwrap_or_else(|e| e.into_inner());
+            let m = machines
+                .values()
+                .find(|m| m.info.name.eq_ignore_ascii_case(name))
+                .ok_or_else(|| format!("{name} isn't connected (is `lyra node` running on it?)"))?;
+            m.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(id, tx);
+            m.progress.lock().unwrap_or_else(|e| e.into_inner()).insert(id, ptx);
+            request["id"] = json!(id);
+            m.to_node.send(request.to_string()).map_err(|_| format!("{name} just disconnected"))?;
+            (m.pending.clone(), m.progress.clone(), m.to_node.clone())
+        };
+        let started = std::time::Instant::now();
+        let mut asked_stop = false;
+        let result = loop {
+            while let Ok(e) = prx.try_recv() {
+                on_progress(e);
+            }
+            match rx.recv_timeout(std::time::Duration::from_millis(250)) {
+                Ok(r) => break r,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break Err(format!("{name} disconnected")),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if cancel.load(Ordering::SeqCst) && !asked_stop {
+                asked_stop = true;
+                let _ = to_node.send(json!({ "type": "code_stop", "job": id }).to_string());
+            }
+            if started.elapsed() > timeout {
+                let _ = to_node.send(json!({ "type": "code_stop", "job": id }).to_string());
+                pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+                break Err(format!("{name} didn't finish within {} min", timeout.as_secs() / 60));
+            }
+        };
+        while let Ok(e) = prx.try_recv() {
+            on_progress(e);
+        }
+        progress.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        result
     }
 
     pub fn connections(&self) -> usize {
@@ -839,11 +896,13 @@ async fn node_connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
         build: hello["build"].as_str().unwrap_or("").chars().take(64).collect(),
         self_update: hello["self_update"] == true,
         health: None,
+        harnesses: hello["harnesses"].clone(),
     };
     let conn = s.next_conn.fetch_add(1, Ordering::SeqCst);
     let (to_node, mut outgoing) = tokio::sync::mpsc::unbounded_channel::<String>();
     let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
-    let replaced = s.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(d.name.to_lowercase(), MachineConn { info, conn, to_node, pending: pending.clone() });
+    let progress: Arc<Mutex<HashMap<u64, std::sync::mpsc::Sender<Value>>>> = Default::default();
+    let replaced = s.machines.lock().unwrap_or_else(|e| e.into_inner()).insert(d.name.to_lowercase(), MachineConn { info, conn, to_node, pending: pending.clone(), progress: progress.clone() });
     if let Some(old) = replaced {
         fail_pending(&old.pending, &format!("{} reconnected", d.name));
     }
@@ -873,6 +932,11 @@ async fn node_connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
                     }
                     "ping" => {
                         let _ = socket.send(Message::Text(json!({ "type": "pong" }).to_string().into())).await;
+                    }
+                    "progress" => {
+                        if let Some(tx) = progress.lock().unwrap_or_else(|e| e.into_inner()).get(&v["id"].as_u64().unwrap_or(0)) {
+                            let _ = tx.send(v["event"].clone());
+                        }
                     }
                     "health" if v["health"].is_object() => {
                         if let Some(m) = s.machines.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&d.name.to_lowercase()).filter(|m| m.conn == conn) {
