@@ -555,6 +555,10 @@ fn draw_panel(f: &mut Frame, s: &Screen, area: Rect) {
     }
     if st["server_health"].is_object() {
         lines.push(Line::raw("● server"));
+        if let Some(h) = st["server_harnesses"].as_object().filter(|h| !h.is_empty()) {
+            let names: Vec<&str> = h.keys().map(|k| if k == "claude" { "Claude Code" } else if k == "opencode" { "OpenCode" } else { k.as_str() }).collect();
+            lines.push(Line::styled(format!("  ⌨ {}", truncate(&names.join(", "), width.saturating_sub(4))), Style::default().fg(Color::Magenta)));
+        }
         health_lines(&st["server_health"], width, &mut lines);
         diagnosis_lines(&st["diagnoses"], "server", width, &mut lines);
     }

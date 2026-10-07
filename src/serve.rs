@@ -358,6 +358,8 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut status_view = Value::Null;
     let mut status_busy = false;
     let mut last_status: Option<Instant> = None;
+    // The coding agents installed here (the server's card shows them like a machine's).
+    let mut server_harnesses = lyra_node::coding::available();
     let (health_tx, health_rx) = std::sync::mpsc::channel::<Value>();
     let mut server_health = Value::Null;
     let mut last_checkup: Option<Instant> = None;
@@ -555,6 +557,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     c.mirror.extra = extra.clone();
                     c.mirror.extra["conversations"] = last_open.clone();
                     c.mirror.extra["server_health"] = server_health.clone();
+                    c.mirror.extra["server_harnesses"] = server_harnesses.clone();
                     c.mirror.extra["routines"] = routines_view.clone();
                     c.mirror.extra["status"] = status_view.clone();
                     c.mirror.extra["diagnoses"] = diag_view.clone();
@@ -764,6 +767,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             i.machines = machines_detail(hub, node_build.as_deref());
             i.server_health = server_health.clone();
             status_busy = status_tx.send(i).is_ok();
+            server_harnesses = lyra_node::coding::available();
         }
         while let Ok(board) = status_rx.try_recv() {
             status_busy = false;
@@ -834,6 +838,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         let mut extra_now = extra.clone();
         extra_now["conversations"] = open;
         extra_now["server_health"] = server_health.clone();
+        extra_now["server_harnesses"] = server_harnesses.clone();
         extra_now["routines"] = routines_view.clone();
         extra_now["status"] = status_view.clone();
         extra_now["diagnoses"] = diag_view.clone();
@@ -1076,10 +1081,12 @@ impl App {
         let all = machines_detail(&hub, node_build.as_deref());
         match sub {
             "" | "list" => {
+                let here = coding_agents(&json!({ "harnesses": lyra_node::coding::available() }));
+                let server = format!("● server — where lyra runs{}", if here.is_empty() { " · coding: none installed".to_string() } else { here });
                 if all.is_empty() {
-                    return Ok("no machines yet. On a machine: curl -fsSL <lyra url>/install.sh | sh  (or lyra-node pair <url>)".into());
+                    return Ok(format!("{server}\n\nno machines yet. On a machine: curl -fsSL <lyra url>/install.sh | sh  (or lyra-node pair <url>)"));
                 }
-                Ok(all
+                Ok(server + "\n" + &all
                     .iter()
                     .map(|m| {
                         format!(

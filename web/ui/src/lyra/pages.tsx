@@ -80,8 +80,16 @@ export function MachinesPage({ mention, toStatus, toChat }: { mention: (name: st
           <CardTitle className="flex items-center gap-2 text-base">
             <Dot on /> server
           </CardTitle>
-          <CardDescription>Where lyra itself runs.</CardDescription>
-          <CardAction>
+          <CardDescription>
+            Where lyra itself runs.
+            {status.server_harnesses && !Object.keys(status.server_harnesses).length && " No coding agents installed here; coding work runs on machines that have them."}
+          </CardDescription>
+          <CardAction className="flex gap-1.5">
+            {Object.keys(status.server_harnesses ?? {}).map((h) => (
+              <Badge key={h} variant="outline" title={String(status.server_harnesses?.[h])}>
+                {h === "claude" ? "Claude Code" : h === "opencode" ? "OpenCode" : h}
+              </Badge>
+            ))}
             <Badge variant="secondary">home</Badge>
           </CardAction>
         </CardHeader>

@@ -88,6 +88,8 @@ export interface Status {
   status?: StatusBoard | null;
   /** Named sets of machines (`[groups]`), for @group. */
   groups?: { name: string; machines: string[] }[] | null;
+  /** Coding agents installed on the server itself. */
+  server_harnesses?: Record<string, string> | null;
   /** The server's own health (as a machine's). */
   server_health?: Health | null;
   /** Conversations loaded on the server, and which are answering. */
