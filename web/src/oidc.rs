@@ -41,7 +41,15 @@ pub struct Pending {
     /// What to call the device it signs in.
     pub device: String,
     pub created: std::time::Instant,
+    /// Not a sign-in: this user connecting their Microsoft account to a
+    /// service (their calendar), with the account's object id it must be.
+    pub connect: Option<(String, String)>,
 }
+
+/// Signing in only.
+pub const SIGN_IN: &str = "openid profile email";
+/// Their calendar too, kept up with a refresh token.
+pub const CALENDAR: &str = "openid profile email offline_access Calendars.ReadWrite";
 
 /// PKCE: the code challenge for a verifier.
 pub fn challenge(verifier: &str) -> String {
@@ -56,12 +64,17 @@ pub fn encode(s: &str) -> String {
 
 /// Where to send the browser.
 pub fn authorize_url(e: &Entra, redirect: &str, state: &str, nonce: &str, verifier: &str) -> String {
+    authorize_url_for(e, redirect, state, nonce, verifier, SIGN_IN)
+}
+
+/// The same, asking for `scope` (`CALENDAR` to connect a calendar).
+pub fn authorize_url_for(e: &Entra, redirect: &str, state: &str, nonce: &str, verifier: &str, scope: &str) -> String {
     format!(
         "https://login.microsoftonline.com/{}/oauth2/v2.0/authorize?client_id={}&response_type=code&redirect_uri={}&response_mode=query&scope={}&state={}&nonce={}&code_challenge={}&code_challenge_method=S256&prompt=select_account",
         encode(e.tenant.trim()),
         encode(e.client_id.trim()),
         encode(redirect),
-        encode("openid profile email"),
+        encode(scope),
         encode(state),
         encode(nonce),
         challenge(verifier)
@@ -74,6 +87,10 @@ pub fn token_url(e: &Entra) -> String {
 
 /// The form posted to the token endpoint.
 pub fn token_form(e: &Entra, code: &str, redirect: &str, verifier: &str) -> String {
+    token_form_for(e, code, redirect, verifier, SIGN_IN)
+}
+
+pub fn token_form_for(e: &Entra, code: &str, redirect: &str, verifier: &str, scope: &str) -> String {
     [
         ("grant_type", "authorization_code"),
         ("client_id", e.client_id.trim()),
@@ -81,7 +98,7 @@ pub fn token_form(e: &Entra, code: &str, redirect: &str, verifier: &str) -> Stri
         ("code", code),
         ("redirect_uri", redirect),
         ("code_verifier", verifier),
-        ("scope", "openid profile email"),
+        ("scope", scope),
     ]
     .iter()
     .map(|(k, v)| format!("{k}={}", encode(v)))

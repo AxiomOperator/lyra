@@ -103,6 +103,8 @@ pub struct Inputs {
     pub goal_events: Vec<GoalEvent>,
     /// The user's PMI: tasks, what waits on them, projects.
     pub pmi: Option<crate::pmi::State>,
+    /// Their Outlook calendar today (`calendar::today`), when connected.
+    pub calendar: Option<Value>,
 }
 
 fn item(level: Level, link: &str, text: impl Into<String>) -> Item {
@@ -238,6 +240,28 @@ fn tasks(i: &Inputs) -> Vec<Item> {
     out
 }
 
+/// Today's meetings, clashes and invites waiting for an answer.
+fn calendar(i: &Inputs) -> Vec<Item> {
+    let Some(c) = &i.calendar else { return vec![] };
+    let mut out = Vec::new();
+    for clash in c["clashes"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        out.push(item(Level::Attention, "tasks", format!("double-booked: {clash}")));
+    }
+    for inv in c["invites"].as_array().into_iter().flatten() {
+        out.push(item(Level::Attention, "tasks", format!("invite to answer: {} ({}, from {})", inv["title"].as_str().unwrap_or("?"), inv["start"].as_str().unwrap_or("?"), inv["organizer"].as_str().unwrap_or("?"))));
+    }
+    let events = c["events"].as_array().cloned().unwrap_or_default();
+    for e in events.iter().take(10) {
+        let at = e["start"].as_str().and_then(|s| s.rsplit(' ').next()).unwrap_or("");
+        let at = if e["all_day"] == true { "all day" } else { at };
+        out.push(item(Level::Note, "tasks", format!("{at} {}", e["title"].as_str().unwrap_or("?")).trim().to_string()));
+    }
+    if events.is_empty() && out.is_empty() {
+        out.push(item(Level::Ok, "tasks", "nothing on the calendar today"));
+    }
+    out
+}
+
 fn diagnoses(i: &Inputs) -> Vec<Item> {
     i.diagnoses
         .iter()
@@ -302,7 +326,7 @@ fn goals(i: &Inputs) -> Vec<Item> {
 
 /// Make a briefing from what's known.
 pub fn gather(i: &Inputs) -> Briefing {
-    let mut sections: Vec<Section> = [("Tasks", tasks(i)), ("Machines", machines(i)), ("lyra", checks(i)), ("Routines", routines(i)), ("Diagnoses", diagnoses(i)), ("Coding", coding(i)), ("Goals", goals(i))]
+    let mut sections: Vec<Section> = [("Today", calendar(i)), ("Tasks", tasks(i)), ("Machines", machines(i)), ("lyra", checks(i)), ("Routines", routines(i)), ("Diagnoses", diagnoses(i)), ("Coding", coding(i)), ("Goals", goals(i))]
         .into_iter()
         .filter(|(_, items)| !items.is_empty())
         .map(|(name, items)| Section { name: name.into(), items })

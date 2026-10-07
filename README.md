@@ -892,6 +892,30 @@ nag_max = 3
 # enabled = true
 ```
 
+## Outlook calendar
+
+Each person can connect their own Outlook calendar from the app (More → Outlook calendar →
+**Connect**). It uses the same Microsoft app as signing in. The account connected must be the
+one they sign in to lyra with. lyra keeps only a refresh token, in that person's own secrets
+file (`[graph] token`). That file is left out of backups, and `/calendar disconnect` forgets it.
+
+In chat:
+- **Reading:** "What's on my calendar today?", "When am I free Thursday for an hour?", "Any
+  invites I haven't answered?"
+- **Your own events:** "Put the dentist on Friday at 3." With nobody else on it, it's added at
+  once, and so are moving or removing it.
+- **Anything others see** waits for your **Allow**: "Set up a 30-minute sync with
+  dana@fbcad.org tomorrow at 10 with a Teams link", "decline the budget review", or moving or
+  cancelling a meeting with attendees. The approval shows up in the app and as a push.
+
+Each person's morning briefing starts with **Today**: their meetings, double bookings and
+invites waiting for an answer. The Tasks page shows today's calendar. `/calendar
+[today|tomorrow|week|<day>]` lists events in the terminal.
+
+Setup, once, in the Entra admin center: in the lyra app registration, go to API permissions →
+Add → Microsoft Graph → Delegated, and add **Calendars.ReadWrite** and **offline_access**.
+Then choose **Grant admin consent**.
+
 ## Backups
 
 lyra backs itself up every night: memory, skills, goals, plans, agents, saved conversations,

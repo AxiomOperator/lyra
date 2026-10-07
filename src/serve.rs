@@ -561,6 +561,14 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     }
                     everyone = true;
                 }
+                Inbound::Connected { user, service, token } => {
+                    match crate::secrets::set_token_for(&service, &token, &user) {
+                        Ok(()) if user == convs[0].app.owner => convs[0].app.log(Level::Info, "your Outlook calendar is connected".to_string()),
+                        Ok(()) => {}
+                        Err(e) => convs[0].app.log(Level::Error, format!("couldn't keep a calendar connection: {e}")),
+                    }
+                    everyone = true;
+                }
                 Inbound::DevicesChanged => {
                     extra = hub_status(hub, node_build.as_deref());
                     everyone = true;
@@ -584,7 +592,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -1029,19 +1037,29 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 let (url, model, tx) = (format!("{}/chat/completions", convs[0].app.base_url.trim_end_matches('/')), convs[0].app.model.clone(), brief_tx.clone());
                 let owner = convs[0].app.owner.clone();
                 // Everyone else with PMI: their own, with just their tasks.
-                let others: Vec<(String, crate::briefing::Inputs)> = pmi
-                    .iter()
-                    .filter(|(u, p)| **u != owner && p.state.at.is_some())
-                    .map(|(u, p)| {
-                        let since = crate::briefing::window_start(crate::briefing::last_for(u).map(|b| b.at), at);
+                // Everyone else with PMI or a calendar connected: their own.
+                let others: Vec<(String, crate::briefing::Inputs)> = hub
+                    .users()
+                    .list()
+                    .into_iter()
+                    .filter(|u| u.status == lyra_web::Status::Active && u.id != owner)
+                    .map(|u| u.id)
+                    .filter(|u| pmi.get(u).is_some_and(|p| p.state.at.is_some()) || crate::calendar::connected_for(u))
+                    .map(|u| {
+                        let since = crate::briefing::window_start(crate::briefing::last_for(&u).map(|b| b.at), at);
                         // Their tasks, routines and goals.
-                        let (goals, goal_events) = crate::goals::for_user(u).map_or_else(Default::default, |g| (g.manager.all().unwrap_or_default(), g.manager.events(None, 300).unwrap_or_default()));
-                        let runs = crate::acting::run(u, crate::routines::runs);
-                        (u.clone(), crate::briefing::Inputs { now: at, since, pmi: Some(p.state.clone()), runs, goals, goal_events, ..Default::default() })
+                        let (goals, goal_events) = crate::goals::for_user(&u).map_or_else(Default::default, |g| (g.manager.all().unwrap_or_default(), g.manager.events(None, 300).unwrap_or_default()));
+                        let runs = crate::acting::run(&u, crate::routines::runs);
+                        let pmi = pmi.get(&u).filter(|p| p.state.at.is_some()).map(|p| p.state.clone());
+                        (u, crate::briefing::Inputs { now: at, since, pmi, runs, goals, goal_events, ..Default::default() })
                     })
                     .collect();
                 std::thread::spawn(move || {
-                    for (user, inputs) in std::iter::once((owner, inputs)).chain(others) {
+                    for (user, mut inputs) in std::iter::once((owner, inputs)).chain(others) {
+                        // Their calendar today, when they've connected it.
+                        if crate::calendar::connected_for(&user) {
+                            inputs.calendar = crate::acting::run(&user, crate::calendar::today).ok();
+                        }
                         let mut b = crate::briefing::gather(&inputs);
                         if s.summary {
                             b.takeaway = crate::briefing::takeaway(&url, &model, &b);
@@ -1399,6 +1417,23 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         }
         "routines" => crate::acting::run(&app.owner, || crate::routines::view(&[], 10)),
         "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
+        // Today's calendar (theirs), or how to connect it.
+        "calendar" => {
+            if !crate::calendar::available() {
+                json!({ "available": false })
+            } else if !crate::calendar::connected_for(&app.owner) {
+                json!({ "available": true, "connected": false })
+            } else {
+                match crate::acting::run(&app.owner, crate::calendar::today) {
+                    Ok(mut v) => {
+                        v["available"] = json!(true);
+                        v["connected"] = json!(true);
+                        v
+                    }
+                    Err(e) => json!({ "available": true, "connected": true, "error": e }),
+                }
+            }
+        }
         "pmi" => crate::pmi::as_user(&app.owner, crate::pmi::snapshot).map_or_else(|e| json!({ "error": e }), |s| json!(s)),
         "coding" => json!(crate::coding::jobs()),
         // The people who use lyra (admins: the gate is in the loop).

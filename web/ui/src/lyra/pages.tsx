@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { Activity as ActivityIcon, AlarmClock, Code2, Archive, Bell, BellOff, Bot, Brain, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, Unplug, Users as UsersIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PairCard } from "./chat";
+import { CalendarCard } from "./calendar";
 import { DiagnosisNote } from "./diagnosis";
 import { RulesDialog } from "./manage";
 import { SearchBox, SearchHits, useConversationSearch } from "./search";
@@ -430,6 +431,8 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
       </Card>
 
       <Notifications />
+
+      <CalendarCard />
 
       <Card className="py-4">
         <CardHeader className="px-4">

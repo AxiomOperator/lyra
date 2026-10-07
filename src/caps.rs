@@ -573,6 +573,9 @@ impl Caps {
         if crate::pmi::anyone() {
             caps.extend(crate::pmi::capabilities());
         }
+        if crate::calendar::available() {
+            caps.extend(crate::calendar::capabilities());
+        }
         if self.system.as_ref().is_some_and(|s| s.settings().enabled) {
             let machines = self.machines();
             if !machines.is_empty() {
@@ -664,6 +667,9 @@ impl Caps {
         }
         if c.source == "pmi" {
             return crate::pmi::approval(&c.name, &args);
+        }
+        if c.source == "calendar" {
+            return crate::calendar::approval(&c.name, &args);
         }
         // Another machine decides for itself (its own rules), and says what it would do.
         if c.source == "system"
@@ -831,6 +837,11 @@ impl Caps {
                 Some(ask) if !approved && ctx.agent.is_none() => Err(format!("{} changes something others see ({}): delegate it to the Project Manager, which asks the user", c.name, ask.what)),
                 Some(_) if !approved => Err("needs the user's approval".into()),
                 _ => crate::pmi::call(&c.name, &args),
+            },
+            // The calendar of whoever this turn is for; what others see needs their yes.
+            _ if c.source == "calendar" => match crate::calendar::approval(&c.name, &args) {
+                Some(ask) if !approved => Err(format!("{} needs the user's approval ({})", c.name, ask.what)),
+                _ => crate::calendar::call(&c.name, &args),
             },
             _ if c.source == "routines" => crate::routines::call(&c.name, &args),
             _ if c.source == "web" => match &self.search {

@@ -396,3 +396,26 @@ export interface UserRow {
   microsoft: boolean;
   devices: { name: string; last_seen: string }[];
 }
+
+/** An Outlook calendar event as lyra shows it. */
+export interface CalEvent {
+  id: string;
+  title: string;
+  start: string | null;
+  end: string | null;
+  all_day?: boolean;
+  where?: string;
+  with?: string[];
+  organizer?: string;
+  your_answer?: string;
+  online?: boolean;
+}
+
+export interface CalendarToday {
+  available: boolean;
+  connected?: boolean;
+  error?: string;
+  events?: CalEvent[];
+  clashes?: string[];
+  invites?: CalEvent[];
+}

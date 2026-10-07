@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { AlarmClock, Check, Circle, Plus, Radio } from "lucide-react";
 import { useState, type FormEvent } from "react";
+import { TodayCard } from "./calendar";
 import { Back, Failed, useAction } from "./manage";
 import { Page } from "./parts";
 import { ago } from "./push";
@@ -134,6 +135,7 @@ export function TasksPage({ onBack }: { onBack: () => void }) {
           PMI isn't connected yet. Make an access token in PMI (Your account → Security), then on the server run <code>lyra pmi token</code> or send <code>/pmi token &lt;token&gt;</code> here in the chat.
         </p>
       )}
+      <TodayCard />
       <Failed error={pmi?.error ?? undefined} />
       {note}
       <form onSubmit={add} className="flex gap-2">

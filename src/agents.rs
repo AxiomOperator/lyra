@@ -760,6 +760,11 @@ pub fn auto_delegate(env: &Env, message: &str, run: Uuid, history: &mut Vec<Valu
     Some(profile.title)
 }
 
+/// lyra itself, when the main conversation asks the user to approve something.
+pub fn main_profile() -> AgentProfile {
+    AgentProfile::new("lyra", "lyra", "the main conversation")
+}
+
 /// Agents that work on machines or code: only for admins.
 pub fn admin_only(agent: &str) -> bool {
     matches!(agent, "operator" | "coder")

@@ -82,6 +82,9 @@ pub enum Inbound {
     Note(String),
     /// Someone new signed in with Microsoft and waits for an admin.
     SignIn { name: String, email: String },
+    /// Someone connected their Microsoft account to a service (their
+    /// calendar): its refresh token, to keep with their secrets.
+    Connected { user: String, service: String, token: String },
     /// A device asks for a list (sessions, devices, activity…) for a page.
     Get { what: String, arg: Value, session: String, who: Who, reply: oneshot::Sender<Value> },
 }
@@ -555,6 +558,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/auth/login", get(auth_login))
         .route("/auth/callback", get(auth_callback))
         .route("/api/auth/redeem", post(auth_redeem))
+        .route("/api/connect/calendar", post(connect_calendar))
         .route("/api/vapid", get(vapid_key))
         .route("/api/push", post(set_push))
         .route("/api/test-push", post(test_push))
@@ -699,7 +703,7 @@ async fn auth_login(State(s): State<Arc<Shared>>, Query(q): Query<LoginQuery>) -
         if logins.len() > 200 {
             return signin_error("too many sign-ins at once: try again in a few minutes");
         }
-        logins.insert(state.clone(), oidc::Pending { verifier: verifier.clone(), nonce: nonce.clone(), device: if device.is_empty() { "browser".into() } else { device }, created: Instant::now() });
+        logins.insert(state.clone(), oidc::Pending { verifier: verifier.clone(), nonce: nonce.clone(), device: if device.is_empty() { "browser".into() } else { device }, created: Instant::now(), connect: None });
     }
     let callback = format!("{}/auth/callback", s.public_url);
     // The sign-in belongs to this browser: only it can finish it.
@@ -711,6 +715,37 @@ async fn auth_login(State(s): State<Arc<Shared>>, Query(q): Query<LoginQuery>) -
 }
 
 const LOGIN_COOKIE: &str = "lyra_login";
+
+/// A signed-in person connects their own Outlook calendar: where to send
+/// their browser (the sign-in cookie comes with the answer).
+async fn connect_calendar(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Response {
+    let (_, who) = match device(&s, &headers) {
+        Ok(x) => x,
+        Err(r) => return *r,
+    };
+    if !s.entra.ready() || s.public_url.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "Microsoft sign-in isn't set up on this server");
+    }
+    // The Microsoft account connected must be their own (when lyra knows it).
+    let oid = s.users.get(&who.user).map(|u| u.oid).unwrap_or_default();
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let (state, verifier, nonce) = (devices::random(32, alphabet), devices::random(64, alphabet), devices::random(32, alphabet));
+    {
+        let mut logins = s.logins.lock().unwrap_or_else(|e| e.into_inner());
+        logins.retain(|_, p| p.created.elapsed() < std::time::Duration::from_secs(600));
+        if logins.len() > 200 {
+            return error(StatusCode::TOO_MANY_REQUESTS, "too many sign-ins at once");
+        }
+        logins.insert(state.clone(), oidc::Pending { verifier: verifier.clone(), nonce: nonce.clone(), device: String::new(), created: Instant::now(), connect: Some((who.user.clone(), oid)) });
+    }
+    let callback = format!("{}/auth/callback", s.public_url);
+    let url = oidc::authorize_url_for(&s.entra, &callback, &state, &nonce, &verifier, oidc::CALENDAR);
+    let mut r = Json(json!({ "url": url })).into_response();
+    if let Ok(v) = HeaderValue::from_str(&format!("{LOGIN_COOKIE}={state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600")) {
+        r.headers_mut().insert(header::SET_COOKIE, v);
+    }
+    r
+}
 
 /// The browser's sign-in cookie (its state), if any.
 fn login_cookie(headers: &HeaderMap) -> Option<String> {
@@ -768,7 +803,8 @@ async fn auth_callback(State(s): State<Arc<Shared>>, Query(q): Query<CallbackQue
         return signin_error(if q.error_description.is_empty() { "Microsoft didn't sign you in" } else { &q.error_description });
     }
     let callback = format!("{}/auth/callback", s.public_url);
-    let form = oidc::token_form(&s.entra, &q.code, &callback, &pending.verifier);
+    let scope = if pending.connect.is_some() { oidc::CALENDAR } else { oidc::SIGN_IN };
+    let form = oidc::token_form_for(&s.entra, &q.code, &callback, &pending.verifier, scope);
     let answer = async {
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build().map_err(|e| e.to_string())?;
         let resp = client.post(oidc::token_url(&s.entra)).header(header::CONTENT_TYPE, "application/x-www-form-urlencoded").body(form).send().await.map_err(|e| format!("Microsoft isn't answering: {e}"))?;
@@ -777,10 +813,11 @@ async fn auth_callback(State(s): State<Arc<Shared>>, Query(q): Query<CallbackQue
         if !ok {
             return Err(body["error_description"].as_str().unwrap_or("Microsoft refused the sign-in").lines().next().unwrap_or("").to_string());
         }
-        body["id_token"].as_str().map(str::to_string).ok_or_else(|| "Microsoft sent no id_token".to_string())
+        let id = body["id_token"].as_str().map(str::to_string).ok_or_else(|| "Microsoft sent no id_token".to_string())?;
+        Ok((id, body["refresh_token"].as_str().unwrap_or("").to_string()))
     }
     .await;
-    let id_token = match answer {
+    let (id_token, refresh) = match answer {
         Ok(t) => t,
         Err(e) => return signin_error(&e),
     };
@@ -788,6 +825,17 @@ async fn auth_callback(State(s): State<Arc<Shared>>, Query(q): Query<CallbackQue
         Ok(p) => p,
         Err(e) => return signin_error(&e),
     };
+    // Connecting a calendar: theirs only, then back to the app.
+    if let Some((user, oid)) = pending.connect {
+        if !oid.is_empty() && oid != person.oid {
+            return redirect(&format!("/?page=more#connect-error={}", oidc::encode("that's a different Microsoft account from the one you sign in to lyra with")));
+        }
+        if refresh.is_empty() {
+            return redirect(&format!("/?page=more#connect-error={}", oidc::encode("Microsoft didn't allow lasting access (offline_access)")));
+        }
+        let _ = s.inbound.send(Inbound::Connected { user, service: "graph".into(), token: refresh });
+        return redirect("/?page=more#connected=calendar");
+    }
     // A guest from another organization never becomes the owner.
     let owner_email = if person.guest { "" } else { s.entra.owner_email.as_str() };
     let user = match s.users.signed_in(&person.oid, &person.tenant, &person.name, &person.email, owner_email) {

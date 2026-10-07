@@ -250,7 +250,7 @@ function Shell() {
   // Opened from a notification for a page (the briefing → Status): go there.
   useEffect(() => {
     const go = (page: string | null) => {
-      if (page && (["status", "machines", "activity", ...manage] as string[]).includes(page)) setTab(page as Tab);
+      if (page && (["status", "machines", "activity", "more", ...manage] as string[]).includes(page)) setTab(page as Tab);
     };
     const asked = new URLSearchParams(location.search).get("page");
     if (asked) {
