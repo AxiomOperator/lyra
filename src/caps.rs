@@ -567,6 +567,8 @@ impl Caps {
             caps.extend(crate::websearch::capabilities());
         }
         caps.extend(crate::routines::capabilities());
+        caps.extend(crate::notes::capabilities());
+        caps.extend(crate::people::capabilities());
         if crate::coding::settings().enabled {
             caps.push(crate::coding::capability());
         }
@@ -854,6 +856,9 @@ impl Caps {
                 _ => crate::mail::call(&c.name, &args),
             },
             _ if c.source == "style" => crate::style::call(&c.name, &args),
+            // The notes and people of whoever this turn is for.
+            _ if c.source == "notes" => crate::notes::call(&c.name, &args),
+            _ if c.source == "people" => crate::people::call(&c.name, &args, self.tools.as_ref().map(|t| t.mem.as_ref())),
             _ if c.source == "routines" => crate::routines::call(&c.name, &args),
             _ if c.source == "web" => match &self.search {
                 Some(s) => crate::websearch::call(s, &c.name, &args),

@@ -31,6 +31,7 @@ import {
   Code2,
   AlarmClock,
   ListTodo,
+  NotebookPen,
   Users,
   Bell,
   Brain,
@@ -52,6 +53,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
 import { GoalsPage, MemoryPage, ModelsPage, RoutinesPage, SkillsPage } from "./lyra/manage";
 import { TasksPage } from "./lyra/tasks";
+import { NotesPage } from "./lyra/notes";
 import { UsersPage } from "./lyra/users";
 import { StatusPage } from "./lyra/status";
 import { CodingPage } from "./lyra/coding";
@@ -65,10 +67,10 @@ import { loadToken, saveToken, takeShared } from "./lyra/token";
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "tasks" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "users";
-const manage: Manage[] = ["tasks", "routines", "coding", "memory", "skills", "goals", "model", "users"];
+type Manage = "tasks" | "notes" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "users";
+const manage: Manage[] = ["tasks", "notes", "routines", "coding", "memory", "skills", "goals", "model", "users"];
 /** What a member (not an admin) has: their chats, tasks, status, activity, skills. */
-const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "tasks", "routines", "goals", "memory"];
+const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "tasks", "notes", "routines", "goals", "memory"];
 
 type TabItem = {
   id: Tab;
@@ -280,6 +282,7 @@ function Shell() {
   const pmiWaiting = (status.pmi?.waiting.task_transfers?.length ?? 0) + (status.pmi?.waiting.project_transfers?.length ?? 0) + (status.pmi?.waiting.approvals?.length ?? 0);
   const more: TabItem[] = ([
     { id: "tasks", label: "Tasks", icon: ListTodo, badge: (status.pmi?.tasks ?? []).filter((t) => t.due && t.due < todayKey).length + pmiWaiting },
+    { id: "notes", label: "Notes", icon: NotebookPen },
     { id: "routines", label: "Routines", icon: AlarmClock, badge: (status.routines ?? []).filter((r) => r.runs[0]?.needs_user).length },
     { id: "coding", label: "Coding", icon: Code2 },
     { id: "memory", label: "Memory", icon: Brain },
@@ -360,6 +363,7 @@ function Shell() {
           {tab === "activity" && <ActivityPage />}
           {tab === "more" && <MorePage toChat={() => setTab("chat")} open={setTab} update={updateApp} />}
           {tab === "tasks" && <TasksPage onBack={toMore} />}
+          {tab === "notes" && <NotesPage onBack={toMore} />}
           {tab === "routines" && <RoutinesPage onBack={toMore} toChat={() => setTab("chat")} />}
           {tab === "coding" && <CodingPage onBack={toMore} />}
           {tab === "memory" && <MemoryPage onBack={toMore} />}

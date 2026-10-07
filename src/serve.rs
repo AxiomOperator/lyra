@@ -606,7 +606,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -1538,6 +1538,8 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         }
         "routines" => crate::acting::run(&app.owner, || crate::routines::view(&[], 10)),
         "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
+        // Their notes and lists.
+        "notes" => crate::acting::run(&app.owner, crate::notes::page),
         // Their inbox at a glance (the last day).
         "mail" => match crate::mail::connected_for(&app.owner) {
             false => json!({ "connected": false }),

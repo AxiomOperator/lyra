@@ -964,6 +964,27 @@ max_share = 0.5
 # enabled = true
 ```
 
+## Notes, lists and people
+
+**Notes and lists** are each person's own. Every note or list is a Markdown file: the
+owner's in `~/.lyra/notes/`, anyone else's in `~/.lyra/users/<id>/notes/`. A list is a note of
+checklist lines (`- [ ] milk`).
+- **Say or type it in chat:** "note that the gate code is 4411", "jot down: ask Insight about
+  licensing", "add milk and eggs to groceries", "tick off eggs", "what's on my groceries
+  list?"
+- **The Notes page in the app:** a quick-add box (`groceries: milk, eggs` adds to a list,
+  `title: text` makes a note), lists you tick with a tap, and delete buttons.
+- **In the terminal:** `/notes [words]`, `/note <title>: <text>`, `/note delete <title>`,
+  `/list <name> [add <a, b> | done | undone | remove <item>]`.
+
+**People:** "who is Dana?" or "what do I have with Juan?" pulls together:
+- what your memory says about them
+- recent mail from them
+- meetings with them in the last and next three weeks
+- PMI tasks you share
+
+It uses your own accounts only, and the permissions you've already granted.
+
 ## Your writing style
 
 lyra learns how each person writes from their own sent mail. It uses only their own words:

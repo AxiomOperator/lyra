@@ -20,6 +20,8 @@ mod learn;
 mod mail;
 mod lock;
 mod mem;
+mod notes;
+mod people;
 mod plan;
 mod planner;
 mod pmi;
@@ -1502,6 +1504,7 @@ impl App {
             "/calendar" => calendar::command(arg, &self.owner.clone()),
             "/mail" => crate::acting::run(&self.owner.clone(), || mail::command(arg)),
             "/today" => crate::acting::run(&self.owner.clone(), || planner::command(arg)),
+            "/notes" | "/note" | "/list" => crate::acting::run(&self.owner.clone(), || notes::command(name, arg)),
             "/style" => {
                 let (url, model) = (format!("{}/chat/completions", self.base_url.trim_end_matches('/')), self.model.clone());
                 crate::acting::run(&self.owner.clone(), || style::command(arg, &url, &model))
@@ -2931,7 +2934,7 @@ fn member_may(name: &str, arg: &str) -> bool {
     match name {
         "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" => true,
         // Their own PMI account, routines and goals.
-        "/pmi" | "/tasks" | "/task" | "/routine" | "/routines" | "/calendar" | "/mail" | "/today" | "/style" => true,
+        "/pmi" | "/tasks" | "/task" | "/routine" | "/routines" | "/calendar" | "/mail" | "/today" | "/style" | "/notes" | "/note" | "/list" => true,
         // Looking after their own memories (held to their scope there).
         "/memory" => matches!(arg.split_whitespace().next().unwrap_or(""), "inspect" | "forget" | "archive" | "restore" | "correct"),
         // Goals are tracked and planned, never worked on unattended: no plans,
@@ -2998,6 +3001,7 @@ pub(crate) const COMMANDS: &str = "\
 /pmi [token <token>]         the PMI connection (your project-management app)
 /calendar [today|tomorrow|week|<day>|disconnect]   your Outlook calendar (connect it from More in the app)
 /today [plan]                plan my day: meetings, focus blocks for tasks due soon, mail to answer first (plan: re-plan now)
+/notes [words] · /note <title>: <text> · /list <name> [add <a, b>|done|undone|remove <item>]   your notes and lists
 /style [learn|note <text>|clear notes]   how you write, learned from your sent mail (used for drafts)
 /mail [all|search <words>]   your Outlook inbox: new mail from people (all: newsletters too)
 /briefing [now]              the daily briefing: what happened and what needs a look ([briefing] schedule)
