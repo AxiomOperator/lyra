@@ -20,12 +20,37 @@ pub fn capabilities() -> Vec<Capability> {
     vec![c]
 }
 
-/// The attendee in an event matching `who` (name or email).
+/// The words of a name worth matching ("Juan from Dell" → juan, dell).
+fn words(who: &str) -> Vec<String> {
+    const SMALL: &[&str] = &["from", "at", "the", "of", "with", "and", "mr", "ms", "mrs", "dr"];
+    who.split(|c: char| !c.is_alphanumeric() && c != '@' && c != '.')
+        .map(str::to_lowercase)
+        .filter(|w| w.len() >= 3 && !SMALL.contains(&w.as_str()))
+        .collect()
+}
+
+/// The attendee in an event matching `who`: their address, or any word of
+/// the name ("Juan Dell" finds Juan Pérez).
 fn matches(a: &Value, who: &str) -> bool {
     let w = who.trim().to_lowercase();
     let name = a["emailAddress"]["name"].as_str().unwrap_or("").to_lowercase();
     let addr = a["emailAddress"]["address"].as_str().unwrap_or("").to_lowercase();
-    !w.is_empty() && (addr == w || name.contains(&w) || w.split_whitespace().all(|p| name.contains(p)))
+    if w.is_empty() {
+        return false;
+    }
+    if addr == w {
+        return true;
+    }
+    let name_words: Vec<&str> = name.split(|c: char| !c.is_alphanumeric()).filter(|x| !x.is_empty()).collect();
+    let local = addr.split('@').next().unwrap_or("");
+    words(who).iter().any(|x| name_words.contains(&x.as_str()) || (x.len() >= 4 && local.contains(x.as_str())))
+}
+
+/// A meeting is with them: they're on it, or its title names them.
+fn with_them(e: &Value, who: &str) -> bool {
+    let title = e["subject"].as_str().unwrap_or("").to_lowercase();
+    let title_words: Vec<&str> = title.split(|c: char| !c.is_alphanumeric()).collect();
+    e["attendees"].as_array().is_some_and(|a| a.iter().any(|x| matches(x, who))) || words(who).iter().any(|x| title_words.contains(&x.as_str()))
 }
 
 pub fn call(name: &str, args: &Value, mem: Option<&crate::mem::Mem>) -> Result<Value, String> {
@@ -50,15 +75,22 @@ pub fn call(name: &str, args: &Value, mem: Option<&crate::mem::Mem>) -> Result<V
         }
     }
     if crate::mail::connected_for(&user) {
-        let q = if who.contains('@') { format!("from:{who}") } else { who.clone() };
-        if let Ok(v) = crate::mail::call("mail_search", &json!({ "query": q, "count": 5 })) {
-            out["recent_mail"] = json!(v["messages"].as_array().into_iter().flatten().map(|m| json!({ "from": m["from"], "subject": m["subject"], "received": m["received"] })).collect::<Vec<_>>());
+        // The whole name, else its first word ("Juan Dell" → Juan).
+        let first = words(&who).into_iter().next().unwrap_or_else(|| who.clone());
+        let queries = if who.contains('@') { vec![format!("from:{who}")] } else { vec![who.clone(), first] };
+        for q in queries {
+            if let Ok(v) = crate::mail::call("mail_search", &json!({ "query": q, "count": 5 }))
+                && let Some(found) = v["messages"].as_array().filter(|m| !m.is_empty())
+            {
+                out["recent_mail"] = json!(found.iter().map(|m| json!({ "from": m["from"], "subject": m["subject"], "received": m["received"] })).collect::<Vec<_>>());
+                break;
+            }
         }
     }
     if crate::calendar::connected_for(&user) {
         let now = Utc::now();
         if let Ok(events) = crate::calendar::events(now - Duration::days(21), now + Duration::days(21)) {
-            let with: Vec<&Value> = events.iter().filter(|e| e["attendees"].as_array().is_some_and(|a| a.iter().any(|x| matches(x, &who)))).collect();
+            let with: Vec<&Value> = events.iter().filter(|e| with_them(e, &who)).collect();
             let (past, next): (Vec<&Value>, Vec<&Value>) = with.into_iter().partition(|e| crate::calendar::utc(&e["start"]).is_some_and(|s| s < now));
             let show = |e: &&Value| json!({ "title": e["subject"], "when": crate::calendar::utc(&e["start"]).map(|t| t.with_timezone(&chrono::Local).format("%a %b %-d %H:%M").to_string()) });
             out["last_meetings"] = json!(past.iter().rev().take(3).map(show).collect::<Vec<_>>());
@@ -94,6 +126,9 @@ mod tests {
     fn people_match_by_name_or_address() {
         let a = json!({ "emailAddress": { "name": "Dana Doe", "address": "dana@fbcad.org" } });
         assert!(matches(&a, "dana") && matches(&a, "Dana Doe") && matches(&a, "DANA@fbcad.org") && matches(&a, "doe dana"));
-        assert!(!matches(&a, "jeremy") && !matches(&a, ""));
+        assert!(matches(&a, "Dana from Fort Bend"), "any word of the name");
+        assert!(!matches(&a, "jeremy") && !matches(&a, "") && !matches(&a, "Dan"), "whole words only");
+        let e = json!({ "subject": "Dell & FBC Quarterly Sync: Juan x Garrett", "attendees": [] });
+        assert!(with_them(&e, "Juan Dell") && !with_them(&e, "Jeremy"), "a meeting named for them");
     }
 }
