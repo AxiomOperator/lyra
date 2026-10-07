@@ -147,6 +147,45 @@ struct MachineConn {
     pending: Pending,
 }
 
+/// A folder a person's open page lends lyra (File System Access, in their
+/// browser): only that person's requests ever reach it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize)]
+pub struct Folder {
+    pub name: String,
+    /// They allowed changes (readwrite), not just reading.
+    #[serde(default)]
+    pub writable: bool,
+    /// The browser still has their OK (after a restart it may ask again).
+    #[serde(default)]
+    pub allowed: bool,
+}
+
+/// An open page and the folders it lends.
+struct Browser {
+    user: String,
+    device: String,
+    to_page: tokio::sync::mpsc::UnboundedSender<String>,
+    folders: Vec<Folder>,
+    pending: Pending,
+}
+
+/// Which of a person's open pages has `folder` (allowed ones first, then the
+/// one seen on screen most recently). `pages`: (connection, user, folders,
+/// last visible).
+fn pick_page(pages: &[(u64, &str, &[Folder], Option<Instant>)], user: &str, folder: &str) -> Result<u64, String> {
+    let theirs: Vec<_> = pages.iter().filter(|p| p.1 == user && p.2.iter().any(|f| f.name.eq_ignore_ascii_case(folder))).collect();
+    if theirs.is_empty() {
+        return Err(format!("no open lyra page has the folder {folder:?}: open lyra (Projects) on the PC that has it"));
+    }
+    let allowed = |p: &&&(u64, &str, &[Folder], Option<Instant>)| p.2.iter().any(|f| f.name.eq_ignore_ascii_case(folder) && f.allowed);
+    theirs
+        .iter()
+        .filter(allowed)
+        .max_by_key(|p| p.3)
+        .map(|p| p.0)
+        .ok_or_else(|| format!("lyra needs your OK for {folder:?} again: open Projects in lyra and tap Allow"))
+}
+
 /// Who a notification is for.
 #[derive(Debug, Clone, PartialEq)]
 pub enum To {
@@ -196,6 +235,8 @@ struct Shared {
     push_failed: AtomicU64,
     push_error: Mutex<String>,
     machines: Mutex<HashMap<String, MachineConn>>,
+    /// Open pages lending folders, by connection.
+    browsers: Mutex<HashMap<u64, Browser>>,
     next_call: AtomicU64,
     /// Devices connected now: connection → (device id, name).
     online: Mutex<HashMap<u64, (String, String)>>,
@@ -260,6 +301,7 @@ impl Hub {
             push_failed: AtomicU64::new(0),
             push_error: Mutex::new(String::new()),
             machines: Mutex::new(HashMap::new()),
+            browsers: Mutex::new(HashMap::new()),
             next_call: AtomicU64::new(1),
             online: Mutex::new(HashMap::new()),
             conns: Mutex::new(HashMap::new()),
@@ -435,6 +477,41 @@ impl Hub {
             Err(_) => {
                 pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
                 Err(format!("{name} didn't answer within {}s", timeout.as_secs()))
+            }
+        }
+    }
+
+    /// The folders `user`'s open pages lend, with the device each is on.
+    pub fn folders(&self, user: &str) -> Vec<(String, Folder)> {
+        let mut out: Vec<(String, Folder)> = self.shared.browsers.lock().unwrap_or_else(|e| e.into_inner()).values().filter(|b| b.user == user).flat_map(|b| b.folders.iter().map(|f| (b.device.clone(), f.clone()))).collect();
+        out.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+        out.dedup_by(|a, b| a.1.name.eq_ignore_ascii_case(&b.1.name) && a.0 == b.0);
+        out
+    }
+
+    /// Ask `user`'s open page with `folder` to do something in it, and wait
+    /// (blocking, like `call_machine`). Never another person's page.
+    pub fn call_folder(&self, user: &str, folder: &str, mut request: Value, timeout: std::time::Duration) -> Result<Value, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let id = self.shared.next_call.fetch_add(1, Ordering::SeqCst);
+        let pending = {
+            let browsers = self.shared.browsers.lock().unwrap_or_else(|e| e.into_inner());
+            let visible = self.shared.visible.lock().unwrap_or_else(|e| e.into_inner());
+            let pages: Vec<(u64, &str, &[Folder], Option<Instant>)> = browsers.iter().map(|(c, b)| (*c, b.user.as_str(), b.folders.as_slice(), visible.get(c).and_then(|v| v.1))).collect();
+            let conn = pick_page(&pages, user, folder)?;
+            let b = &browsers[&conn];
+            b.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(id, tx);
+            request["type"] = json!("fs");
+            request["id"] = json!(id);
+            request["folder"] = json!(folder);
+            b.to_page.send(request.to_string()).map_err(|_| "that page just closed".to_string())?;
+            b.pending.clone()
+        };
+        match rx.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(_) => {
+                pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+                Err(format!("the page with {folder:?} didn't answer within {}s (is lyra still open there?)", timeout.as_secs()))
             }
         }
     }
@@ -1079,6 +1156,9 @@ async fn snapshot(s: &Shared, d: &Device, who: &Who, session: &str) -> Option<Va
 async fn connection(s: Arc<Shared>, d: Device, mut who: Who, session: String, mut socket: WebSocket) {
     let conn = s.next_conn.fetch_add(1, Ordering::SeqCst);
     let (moved_tx, mut moved) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // lyra's requests for this page's folders.
+    let (page_tx, mut to_page) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let page_pending: Pending = Arc::new(Mutex::new(HashMap::new()));
     s.visible.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, (who.user.clone(), Some(Instant::now())));
     s.online.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, (d.id.clone(), d.name.clone()));
     // Subscribe before asking for the snapshot, so nothing falls in between.
@@ -1093,6 +1173,9 @@ async fn connection(s: Arc<Shared>, d: Device, mut who: Who, session: String, mu
         s.visible.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn);
         s.online.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn);
         s.conns.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn);
+        if let Some(b) = s.browsers.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn) {
+            fail_pending(&b.pending, "that lyra page closed");
+        }
         let _ = s.inbound.send(Inbound::DevicesChanged);
     };
     if socket.send(Message::Text(first.to_string().into())).await.is_err() {
@@ -1114,6 +1197,11 @@ async fn connection(s: Arc<Shared>, d: Device, mut who: Who, session: String, mu
                         let _ = socket.send(Message::Close(None)).await;
                         break;
                     }
+                }
+            }
+            Some(req) = to_page.recv() => {
+                if socket.send(Message::Text(req.into())).await.is_err() {
+                    break;
                 }
             }
             to = moved.recv() => {
@@ -1178,6 +1266,26 @@ async fn connection(s: Arc<Shared>, d: Device, mut who: Who, session: String, mu
                     }
                     "ping" => {
                         let _ = socket.send(Message::Text(json!({ "type": "pong" }).to_string().into())).await;
+                    }
+                    // The folders this page lends lyra (on connect and on every change).
+                    "folders" => {
+                        let folders: Vec<Folder> = serde_json::from_value(v["folders"].clone()).unwrap_or_default();
+                        let folders: Vec<Folder> = folders.into_iter().filter(|f| !f.name.trim().is_empty()).take(50).collect();
+                        let mut browsers = s.browsers.lock().unwrap_or_else(|e| e.into_inner());
+                        // Always the person signed in now (re-checked above).
+                        let b = browsers.entry(conn).or_insert_with(|| Browser { user: who.user.clone(), device: d.name.clone(), to_page: page_tx.clone(), folders: vec![], pending: page_pending.clone() });
+                        b.user = who.user.clone();
+                        b.folders = folders;
+                    }
+                    "fs_result" => {
+                        let id = v["id"].as_u64().unwrap_or(0);
+                        if let Some(tx) = page_pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
+                            let result = match v["error"].as_str() {
+                                Some(e) => Err(e.to_string()),
+                                None => Ok(v["result"].clone()),
+                            };
+                            let _ = tx.send(result);
+                        }
                     }
                     "pair_answer" => {
                         let hub = Hub { shared: s.clone(), address: "0.0.0.0:0".parse().expect("address") };
@@ -1479,4 +1587,23 @@ fn app_version() -> &'static str {
         }
         h.finalize().iter().take(6).map(|b| format!("{b:02x}")).collect()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_requests_only_reach_the_persons_own_pages() {
+        let f = |name: &str, allowed: bool| Folder { name: name.into(), writable: true, allowed };
+        let (dana, admin) = ([f("Firewall", true)], [f("Firewall", true), f("Budget", true)]);
+        let earlier = Instant::now();
+        let later = earlier + std::time::Duration::from_secs(5);
+        let stale = [f("Firewall", false)];
+        let pages = [(1, "dana", &dana[..], Some(earlier)), (2, "owner", &admin[..], Some(later)), (3, "dana", &stale[..], Some(later))];
+        assert_eq!(pick_page(&pages, "dana", "firewall"), Ok(1), "Dana's allowed page, not the owner's newer one");
+        assert_eq!(pick_page(&pages, "owner", "Firewall"), Ok(2));
+        assert!(pick_page(&pages, "dana", "Budget").unwrap_err().contains("no open lyra page"), "never someone else's folder");
+        assert!(pick_page(&pages[2..], "dana", "Firewall").unwrap_err().contains("needs your OK"));
+    }
 }

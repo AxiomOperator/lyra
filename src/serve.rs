@@ -71,6 +71,14 @@ impl crate::caps::Remote for HubRemote {
         self.0.machines().into_iter().filter(|m| m.harnesses.as_object().is_some_and(|h| !h.is_empty())).map(|m| (m.name, m.harnesses)).collect()
     }
 
+    fn folders(&self, user: &str) -> Vec<(String, lyra_web::Folder)> {
+        self.0.folders(user)
+    }
+
+    fn call_folder(&self, user: &str, folder: &str, request: Value, timeout: Duration) -> Result<Value, String> {
+        self.0.call_folder(user, folder, request, timeout)
+    }
+
     fn upload_path(&self, id: &str) -> Option<std::path::PathBuf> {
         self.0.upload(id).map(|(_, path)| path)
     }

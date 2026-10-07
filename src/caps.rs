@@ -65,6 +65,16 @@ pub trait Remote: Send + Sync {
     fn machines(&self) -> Vec<(String, bool)>;
     /// Send a request to a machine and wait for its answer.
     fn call(&self, machine: &str, request: Value, timeout: std::time::Duration) -> Result<Value, String>;
+    /// The project folders `user`'s open pages lend: (the device, the folder).
+    fn folders(&self, user: &str) -> Vec<(String, lyra_web::Folder)> {
+        let _ = user;
+        Vec::new()
+    }
+    /// Ask `user`'s own page with `folder` to do something in it.
+    fn call_folder(&self, user: &str, folder: &str, request: Value, timeout: std::time::Duration) -> Result<Value, String> {
+        let _ = (user, folder, request, timeout);
+        Err("project folders come through lyra's app (lyra serve)".into())
+    }
     /// Where a file a device sent is on this server.
     fn upload_path(&self, id: &str) -> Option<std::path::PathBuf> {
         let _ = id;
@@ -569,6 +579,10 @@ impl Caps {
         caps.extend(crate::routines::capabilities());
         caps.extend(crate::notes::capabilities());
         caps.extend(crate::people::capabilities());
+        // Folders lent by people's open pages (only through lyra serve).
+        if self.remote.get().is_some() {
+            caps.extend(crate::projects::capabilities());
+        }
         if crate::coding::settings().enabled {
             caps.push(crate::coding::capability());
         }
@@ -679,6 +693,9 @@ impl Caps {
         }
         if c.source == "mail" {
             return crate::mail::approval(&c.name, &args);
+        }
+        if c.source == "projects" {
+            return crate::projects::approval(&c.name, &args);
         }
         // Another machine decides for itself (its own rules), and says what it would do.
         if c.source == "system"
@@ -856,6 +873,11 @@ impl Caps {
             _ if c.source == "mail" => match crate::mail::approval(&c.name, &args) {
                 Some(ask) if !approved => Err(format!("{} needs the user's approval ({})", c.name, ask.what)),
                 _ => crate::mail::call(&c.name, &args),
+            },
+            // Folders on the person's own PC, through their own open page; a write needs their yes.
+            _ if c.source == "projects" => match crate::projects::approval(&c.name, &args) {
+                Some(ask) if !approved => Err(format!("{} needs the user's approval ({})", c.name, ask.what)),
+                _ => crate::projects::call(self.remote.get().map(|r| r.as_ref()), &c.name, &args),
             },
             _ if c.source == "style" => crate::style::call(&c.name, &args),
             // Teams and files of whoever this turn is for (read-only; attaching only touches their draft).
@@ -1201,6 +1223,46 @@ mod tests {
         // A member's agent can't either, approved or not.
         let member = CallContext { agent: Some("operator"), member: true, ..CallContext::new(None, "") };
         assert!(caps.invoke("shell_run", args, member, true, true).contains("for admins"));
+    }
+
+    /// One person's open page lending a folder; it says whose request reached it.
+    struct Pages;
+
+    impl Remote for Pages {
+        fn machines(&self) -> Vec<(String, bool)> {
+            Vec::new()
+        }
+        fn call(&self, machine: &str, _: Value, _: std::time::Duration) -> Result<Value, String> {
+            Err(format!("{machine} isn't connected"))
+        }
+        fn folders(&self, user: &str) -> Vec<(String, lyra_web::Folder)> {
+            (user == "dana").then(|| ("Dana's PC".to_string(), lyra_web::Folder { name: "Firewall".into(), writable: true, allowed: true })).into_iter().collect()
+        }
+        fn call_folder(&self, user: &str, folder: &str, req: Value, _: std::time::Duration) -> Result<Value, String> {
+            Ok(json!({ "user": user, "folder": folder, "op": req["op"], "path": req["path"] }))
+        }
+    }
+
+    #[test]
+    fn members_reach_their_own_project_folders_and_writes_wait() {
+        let (_rt, mut caps) = caps();
+        caps.system = Some(lyra_system::System::new(Default::default(), crate::config::expand_path));
+        caps.set_remote(Arc::new(Pages));
+        caps.refresh();
+        let member = CallContext { member: true, ..CallContext::new(None, "") };
+        let listed: Value = crate::acting::run("dana", || serde_json::from_str(&caps.invoke("project_folders", "{}", member, false, true)).unwrap());
+        assert_eq!(listed["folders"][0]["folder"], "Firewall");
+        // Asked as the person this turn is for, never anyone else.
+        let read: Value = crate::acting::run("dana", || serde_json::from_str(&caps.invoke("project_read", r#"{"folder":"Firewall","path":"docs/../plan.md"}"#, member, false, true)).unwrap());
+        assert!(read["error"].as_str().unwrap_or("").contains("outside the folder"), "{read}");
+        let listed: Value = crate::acting::run("dana", || serde_json::from_str(&caps.invoke("project_list", r#"{"folder":"Firewall","path":"docs"}"#, member, false, true)).unwrap());
+        assert_eq!((listed["user"].as_str(), listed["path"].as_str()), (Some("dana"), Some("docs")));
+        // A write waits for their yes.
+        let w = r#"{"folder":"Firewall","path":"notes.md","content":"hi"}"#;
+        assert!(caps.approval("project_write", w).unwrap().what.contains("notes.md in Firewall"));
+        assert!(crate::acting::run("dana", || caps.invoke("project_write", w, member, false, true)).contains("approval"));
+        // Still no shell for members.
+        assert!(caps.invoke("shell_run", r#"{"command":"ls"}"#, CallContext { agent: Some("operator"), member: true, ..CallContext::new(None, "") }, true, true).contains("for admins"));
     }
 
     #[test]

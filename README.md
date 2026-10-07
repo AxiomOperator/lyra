@@ -1126,6 +1126,21 @@ The first user is the **owner**, an admin. Devices paired before users existed a
 `/users` lists everyone, and `/users approve|admin|member|disable <who>` changes someone.
 `/whoami` says who a conversation belongs to.
 
+### Projects: folders on your PC
+
+In the app, **More → Projects → Open folder…** lends lyra a folder on this PC. It
+uses the File System Access API, so it works in Chrome, Edge, or lyra installed
+from them. The folder stays in that browser: lyra only reaches it while lyra is
+open there, and only for that person's own conversations. No one else can, not
+even an admin.
+
+lyra can list the folder, read files in it (text, code, Word, Excel, PowerPoint)
+and search it (`project_folders`, `project_list`, `project_read`,
+`project_search`). It can also write a file (`project_write`), which waits for
+your Allow and shows what will change. There's no shell and nothing outside the
+folder. After the browser restarts it may want your OK again: tap **Allow** on
+the Projects page. Members have this too.
+
 ### AI usage
 
 Every model call lyra makes is kept in `~/.lyra/usage/<YYYY-MM>.jsonl`, credited to

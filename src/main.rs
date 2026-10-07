@@ -13,6 +13,7 @@ mod decide;
 mod diagnose;
 mod evolve;
 mod files;
+mod projects;
 mod goals;
 mod health;
 mod markdown;
@@ -4065,6 +4066,15 @@ fn open_agents(config: &Config, runtime: &tokio::runtime::Handle) -> (Option<Arc
                 {
                     p.tools.extend(["who_is".to_string(), "note_find".to_string()]);
                     let _ = a.registry.update(p, "new tools: who_is, note_find");
+                }
+            }
+            // …and can read the user's project folders.
+            for name in ["researcher", "assistant"] {
+                if let Some(mut p) = a.registry.get(name).filter(|p| p.template.as_deref() == Some(name))
+                    && !p.tools.iter().any(|t| t == "project_read")
+                {
+                    p.tools.extend(["project_folders", "project_list", "project_read", "project_search"].map(String::from));
+                    let _ = a.registry.update(p, "new tools: project folders (read)");
                 }
             }
             // The Coder's instructions as its template has them now (work stays on the server).

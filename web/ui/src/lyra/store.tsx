@@ -3,6 +3,7 @@
 // state. Sends messages, approvals, pairing answers and page requests.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import { answer as answerFolder, folderStates, onFoldersChanged } from "./folders";
 import { saveToken } from "./token";
 import type { ChatMessage, Command, Me, Status, ThisDevice } from "./types";
 
@@ -125,9 +126,16 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
         setConnected(true);
         setBanner("");
         sock.send(JSON.stringify({ type: "visible", visible: document.visibilityState === "visible" }));
+        void tellFolders(sock);
       };
       sock.onmessage = (e) => {
         const msg = JSON.parse(e.data) as Update;
+        // lyra asking for something in one of this page's project folders.
+        if (msg.type === "fs") {
+          const id = msg.id;
+          void answerFolder(msg as unknown as Parameters<typeof answerFolder>[0]).then((r) => sock.readyState === 1 && sock.send(JSON.stringify({ type: "fs_result", id, ...r })));
+          return;
+        }
         if (msg.type === "data") {
           const done = typeof msg.id === "number" ? waiting.current.get(msg.id) : undefined;
           if (done) {
@@ -181,7 +189,8 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
       };
     };
     connect();
-    // On screen? Then lyra needn't send notifications.
+    // Folders added, removed or allowed again: tell lyra.
+    const offFolders = onFoldersChanged(() => ws.current?.readyState === 1 && void tellFolders(ws.current));
     const visible = () => {
       const s = ws.current;
       if (document.visibilityState === "visible" && !s) connect();
@@ -194,6 +203,7 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
       window.clearTimeout(timer);
       window.clearInterval(beat);
       document.removeEventListener("visibilitychange", visible);
+      offFolders();
       ws.current?.close();
     };
   }, [token, onUnpaired]);
@@ -238,6 +248,12 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
     [state, token, connected, banner, send, say, ask, call, run, onData, setPush, unpaired],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+}
+
+/** The folders this page lends lyra, for it to route requests here. */
+async function tellFolders(sock: WebSocket) {
+  const folders = await folderStates();
+  if (sock.readyState === 1) sock.send(JSON.stringify({ type: "folders", folders }));
 }
 
 /** Ask for a page's data and keep the latest answer. */
