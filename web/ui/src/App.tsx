@@ -30,6 +30,7 @@ import {
   Activity,
   Code2,
   AlarmClock,
+  ListTodo,
   Bell,
   Brain,
   Cpu,
@@ -49,6 +50,7 @@ import {
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
 import { GoalsPage, MemoryPage, ModelsPage, RoutinesPage, SkillsPage } from "./lyra/manage";
+import { TasksPage } from "./lyra/tasks";
 import { StatusPage } from "./lyra/status";
 import { CodingPage } from "./lyra/coding";
 import { ActivityPage, DevicesPage, MachinesPage, MorePage } from "./lyra/pages";
@@ -61,8 +63,8 @@ import { loadToken, saveToken, takeShared } from "./lyra/token";
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "routines" | "coding" | "memory" | "skills" | "goals" | "model";
-const manage: Manage[] = ["routines", "coding", "memory", "skills", "goals", "model"];
+type Manage = "tasks" | "routines" | "coding" | "memory" | "skills" | "goals" | "model";
+const manage: Manage[] = ["tasks", "routines", "coding", "memory", "skills", "goals", "model"];
 
 type TabItem = {
   id: Tab;
@@ -266,7 +268,11 @@ function Shell() {
     setTimeout(() => window.dispatchEvent(new CustomEvent("lyra-mention", { detail: name })), 0);
   };
 
+  const day = new Date();
+  const todayKey = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+  const pmiWaiting = (status.pmi?.waiting.task_transfers?.length ?? 0) + (status.pmi?.waiting.project_transfers?.length ?? 0) + (status.pmi?.waiting.approvals?.length ?? 0);
   const more: TabItem[] = [
+    { id: "tasks", label: "Tasks", icon: ListTodo, badge: (status.pmi?.tasks ?? []).filter((t) => t.due && t.due < todayKey).length + pmiWaiting },
     { id: "routines", label: "Routines", icon: AlarmClock, badge: (status.routines ?? []).filter((r) => r.runs[0]?.needs_user).length },
     { id: "coding", label: "Coding", icon: Code2 },
     { id: "memory", label: "Memory", icon: Brain },
@@ -345,6 +351,7 @@ function Shell() {
           {tab === "devices" && <DevicesPage />}
           {tab === "activity" && <ActivityPage />}
           {tab === "more" && <MorePage toChat={() => setTab("chat")} open={setTab} update={updateApp} />}
+          {tab === "tasks" && <TasksPage onBack={toMore} />}
           {tab === "routines" && <RoutinesPage onBack={toMore} toChat={() => setTab("chat")} />}
           {tab === "coding" && <CodingPage onBack={toMore} />}
           {tab === "memory" && <MemoryPage onBack={toMore} />}

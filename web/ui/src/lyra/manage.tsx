@@ -32,7 +32,7 @@ function usePage<T>(what: string, arg?: unknown) {
 }
 
 /** Run a command, show lyra's answer, reload the page. */
-function useAction(reload: () => void) {
+export function useAction(reload: () => void) {
   const { run } = useLyra();
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -58,7 +58,7 @@ function useAction(reload: () => void) {
   return { act, busy, note: shown };
 }
 
-function Back({ onBack }: { onBack: () => void }) {
+export function Back({ onBack }: { onBack: () => void }) {
   return (
     // Wide screens have the sidebar instead.
     <Button size="icon" variant="ghost" onClick={onBack} aria-label="Back" className="md:hidden">
@@ -67,7 +67,7 @@ function Back({ onBack }: { onBack: () => void }) {
   );
 }
 
-function Failed({ error }: { error?: string }) {
+export function Failed({ error }: { error?: string }) {
   return error ? <p className="rounded-md border border-red-800/60 bg-red-950/30 px-3 py-2 text-red-200 text-sm">{error}</p> : null;
 }
 

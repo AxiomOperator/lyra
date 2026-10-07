@@ -85,6 +85,7 @@ export interface Status {
   /** Problems researched by themselves (read-only), newest first. */
   diagnoses?: Diagnosis[] | null;
   briefing?: Briefing | null;
+  pmi?: PmiState | null;
   /** Everything lyra depends on, checked every minute. */
   status?: StatusBoard | null;
   /** Named sets of machines (`[groups]`), for @group. */
@@ -322,4 +323,56 @@ export interface Briefing {
   attention: number;
   takeaway?: string | null;
   sections: { name: string; items: BriefingItem[] }[];
+}
+
+/** PMI, the project-management app: a task as lyra shows it. */
+export interface PmiTask {
+  id: string;
+  title: string;
+  status: "todo" | "in_progress" | "done";
+  /** "personal", "project Website", "team IT". */
+  where: string;
+  due: string | null;
+  priority: "low" | "medium" | "high" | "urgent";
+  assignees?: string[];
+  blocked?: boolean;
+  approval?: string;
+  checklist?: string;
+  repeat?: string;
+}
+
+export interface PmiProject {
+  id: string;
+  name: string;
+  status: string;
+  health: "on_track" | "at_risk" | "off_track" | "no_tasks";
+  reported_health: string | null;
+  tasks: { total: number; done: number; open: number; overdue: number; dueSoon: number };
+  risks: { open: number; high: number };
+  last_update: string | null;
+  leads: string[];
+}
+
+export interface PmiInboxItem {
+  id: string;
+  reason: string;
+  at: string;
+  read: boolean;
+  task?: { id: string; title: string; where: string };
+  what?: string;
+  by?: string;
+  points?: string;
+}
+
+export interface PmiState {
+  at: string | null;
+  error: string | null;
+  live: boolean;
+  user: string;
+  org: string;
+  tasks: PmiTask[];
+  waiting: { task_transfers?: { id: string; task: string; expires: string }[]; project_transfers?: { id: string; project: string; expires: string }[]; approvals?: PmiInboxItem[] };
+  inbox_unread: number;
+  inbox: PmiInboxItem[];
+  projects: PmiProject[];
 }

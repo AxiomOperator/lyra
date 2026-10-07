@@ -864,7 +864,17 @@ In the terminal and the app:
 - `/task done <n> [comment]` completes one.
 - `/task snooze <n> [1h|tomorrow|<when>]` moves its reminder.
 
-The Status page shows a PMI row (signed in, or "token rejected").
+lyra serve follows PMI's live updates, so its view of PMI changes within seconds of anything
+changing there. That view shows up in several places:
+- **The app's Tasks page:** open tasks grouped Overdue / Today / Upcoming / No date, and what
+  waits on you. Tap the circle to complete a task (with an optional closing comment) or the
+  clock to be reminded in an hour, and add tasks in plain words from the box at the top.
+  The Projects tab shows each project's health and progress, and the badge counts overdue and
+  waiting items.
+- **The morning briefing:** a Tasks section with overdue tasks, today's tasks, what waits on
+  you, projects at risk and the unread inbox.
+- **`lyra connect`'s panel:** a Tasks line and today's tasks.
+- **The Status page:** a PMI row (signed in, or "token rejected").
 
 ```toml
 [pmi]

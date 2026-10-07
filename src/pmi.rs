@@ -10,9 +10,10 @@ use std::time::Duration;
 
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use lyra_capabilities::{Capability, CapabilityKind, RiskLevel};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::caps::Ask;
 
@@ -468,8 +469,16 @@ pub fn approval(name: &str, args: &Value) -> Option<Ask> {
     }
 }
 
-/// Run a PMI tool. `approved`: the user said yes (or none was needed).
+/// Run a PMI tool (asked about first by the caller when `approval` says so).
 pub fn call(name: &str, args: &Value) -> Result<Value, String> {
+    let out = run(name, args);
+    if out.is_ok() && !matches!(name, "pmi_tasks" | "pmi_task" | "pmi_search" | "pmi_waiting" | "pmi_projects" | "pmi_project" | "pmi_draft_update") {
+        mark_stale();
+    }
+    out
+}
+
+fn run(name: &str, args: &Value) -> Result<Value, String> {
     let today = Local::now().date_naive();
     match name {
         "pmi_tasks" => {
@@ -700,6 +709,170 @@ pub fn waiting() -> Result<Value, String> {
     Ok(json!({ "task_transfers": tasks, "project_transfers": projects, "approvals": approvals }))
 }
 
+// ---- the live view (lyra serve): what's open, what waits, kept fresh by PMI's events
+
+/// The user's PMI at a glance, for the Tasks page, the briefing and the panels.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct State {
+    pub at: Option<DateTime<Utc>>,
+    /// Why it couldn't be read (the rest is the last good read).
+    pub error: Option<String>,
+    /// Following PMI's live events.
+    pub live: bool,
+    pub user: String,
+    pub org: String,
+    /// Open tasks, personal and assigned, soonest due first.
+    pub tasks: Vec<Value>,
+    pub waiting: Value,
+    pub inbox_unread: u64,
+    pub inbox: Vec<Value>,
+    /// Open projects with their health.
+    pub projects: Vec<Value>,
+}
+
+impl State {
+    /// (overdue, due today, waiting on the user).
+    pub fn counts(&self, today: NaiveDate) -> (usize, usize, usize) {
+        let due = |t: &&Value| t["due"].as_str().and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+        let overdue = self.tasks.iter().filter(|t| due(t).is_some_and(|d| d < today)).count();
+        let today_n = self.tasks.iter().filter(|t| due(t) == Some(today)).count();
+        let waiting = ["task_transfers", "project_transfers", "approvals"].iter().map(|k| self.waiting[*k].as_array().map_or(0, Vec::len)).sum();
+        (overdue, today_n, waiting)
+    }
+
+    /// "2 overdue · 3 today · 1 waiting" (or "nothing due").
+    pub fn line(&self, today: NaiveDate) -> String {
+        if let Some(e) = &self.error {
+            return format!("⚠ {e}");
+        }
+        let (o, t, w) = self.counts(today);
+        let parts: Vec<String> = [(o, "overdue"), (t, "today"), (w, "waiting")].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{n} {w}")).collect();
+        if parts.is_empty() { format!("{} open · nothing due", self.tasks.len()) } else { parts.join(" · ") }
+    }
+}
+
+/// Read everything the view needs (a few requests).
+pub fn snapshot() -> Result<State, String> {
+    let w = who()?;
+    let mut tasks = tasks_of(&get(&format!("{}?personal=true", org("/tasks")?))?);
+    for t in tasks_of(&get(&org("/tasks/assigned")?)?) {
+        if !tasks.iter().any(|x| x["id"] == t["id"]) {
+            tasks.push(t);
+        }
+    }
+    tasks.retain(|t| t["status"] != "done" && t["parentId"].is_null());
+    sort_tasks(&mut tasks);
+    let inbox = get(&format!("{}?filter=unread", org("/inbox")?))?;
+    let today = Local::now().date_naive();
+    let projects = get(&format!("{}?today={today}", org("/portfolio")?))?["projects"].as_array().cloned().unwrap_or_default();
+    Ok(State {
+        at: Some(Utc::now()),
+        error: None,
+        live: false,
+        user: w.user,
+        org: w.org,
+        tasks: tasks.iter().take(200).map(brief).collect(),
+        waiting: waiting()?,
+        inbox_unread: inbox["unread"].as_u64().unwrap_or(0),
+        inbox: inbox["items"].as_array().into_iter().flatten().take(20).map(inbox_item).collect(),
+        projects: projects.iter().filter(|p| !matches!(p["status"].as_str(), Some("completed" | "cancelled"))).map(portfolio_item).collect(),
+    })
+}
+
+/// A change was made through lyra: read again soon.
+static STALE: AtomicBool = AtomicBool::new(false);
+
+pub fn mark_stale() {
+    STALE.store(true, Ordering::SeqCst);
+}
+
+pub fn take_stale() -> bool {
+    STALE.swap(false, Ordering::SeqCst)
+}
+
+/// What PMI's event stream says.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    /// Connected (true) or not.
+    Live(bool),
+    /// Something changed in these areas ("tasks", "projects", …; "resync": everything).
+    Changed(Vec<String>),
+}
+
+/// Server-Sent Events, a line at a time: `event:` then `data:`, a blank line ends one.
+#[derive(Default)]
+pub struct Sse {
+    event: String,
+    data: String,
+}
+
+impl Sse {
+    pub fn line(&mut self, line: &str) -> Option<Event> {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            let (event, data) = (std::mem::take(&mut self.event), std::mem::take(&mut self.data));
+            let v: Value = serde_json::from_str(&data).unwrap_or(Value::Null);
+            let kind = v["type"].as_str().map(str::to_string).unwrap_or(event);
+            return match kind.as_str() {
+                "ready" => Some(Event::Live(true)),
+                "change" => Some(Event::Changed(v["areas"].as_array().into_iter().flatten().filter_map(|a| a.as_str().map(str::to_string)).collect())),
+                "resync" => Some(Event::Changed(vec!["resync".into()])),
+                _ => None,
+            };
+        }
+        if let Some(e) = line.strip_prefix("event:") {
+            self.event = e.trim().to_string();
+        } else if let Some(d) = line.strip_prefix("data:") {
+            if !self.data.is_empty() {
+                self.data.push('\n');
+            }
+            self.data.push_str(d.trim_start());
+        }
+        None
+    }
+}
+
+/// Follow PMI's live events for as long as lyra runs (a thread): reconnects
+/// with a growing pause, and a connection is renewed every 10 minutes so a
+/// silent one can't hang on.
+pub fn follow(tx: std::sync::mpsc::Sender<Event>) {
+    use std::io::BufRead;
+    let mut pause = 5;
+    loop {
+        if !configured() {
+            std::thread::sleep(Duration::from_secs(60));
+            continue;
+        }
+        let connected = (|| -> Result<(), String> {
+            let path = org("/events")?;
+            let token = crate::secrets::token("pmi").ok_or("no token")?;
+            let client = reqwest::blocking::Client::builder().connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(600)).build().map_err(|e| e.to_string())?;
+            let resp = client
+                .get(format!("{}{path}", settings().url.trim_end_matches('/')))
+                .bearer_auth(token)
+                .header("Accept", "text/event-stream")
+                .send()
+                .map_err(|e| e.to_string())?;
+            if !resp.status().is_success() {
+                return Err(format!("events: {}", resp.status()));
+            }
+            let mut sse = Sse::default();
+            for line in std::io::BufReader::new(resp).lines() {
+                let Ok(line) = line else { break };
+                if let Some(e) = sse.line(&line)
+                    && tx.send(e).is_err()
+                {
+                    return Ok(());
+                }
+            }
+            Ok(())
+        })();
+        let _ = tx.send(Event::Live(false));
+        pause = if connected.is_ok() { 5 } else { (pause * 2).min(300) };
+        std::thread::sleep(Duration::from_secs(pause));
+    }
+}
+
 // ---- for the terminal and the status page
 
 /// `/pmi`.
@@ -928,6 +1101,29 @@ mod tests {
         assert!(log.iter().any(|(m, p, b)| m == "PUT" && p == "/v1/orgs/o1/tasks/t1/reminder" && b["at"].is_string()));
         assert!(log.iter().any(|(m, _, b)| m == "PATCH" && b == &json!({ "status": "done", "closingComment": "Done (via lyra)" })));
         *TEST.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn live_events_read_line_by_line() {
+        let mut sse = Sse::default();
+        let mut got = Vec::new();
+        for line in ["event: ready", "data: {\"type\":\"ready\"}", "", ": keep-alive", "event: ping", "data: {}", "", "data: {\"type\":\"change\",\"areas\":[\"tasks\",\"projects\"]}\r", "\r", "event: resync", "data:", ""] {
+            got.extend(sse.line(line));
+        }
+        assert_eq!(got, vec![Event::Live(true), Event::Changed(vec!["tasks".into(), "projects".into()]), Event::Changed(vec!["resync".into()])]);
+    }
+
+    #[test]
+    fn the_view_counts_what_needs_the_user() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+        let s = State {
+            tasks: vec![json!({ "due": "2026-10-01" }), json!({ "due": "2026-10-07" }), json!({ "due": "2026-10-07" }), json!({ "due": null })],
+            waiting: json!({ "task_transfers": [1], "project_transfers": [], "approvals": [] }),
+            ..Default::default()
+        };
+        assert_eq!(s.counts(today), (1, 2, 1));
+        assert_eq!(s.line(today), "1 overdue · 2 today · 1 waiting");
+        assert_eq!(State { tasks: vec![json!({ "due": null })], ..Default::default() }.line(today), "1 open · nothing due");
     }
 
     #[test]

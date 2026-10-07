@@ -383,6 +383,15 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut brief_view = last_brief.as_ref().map_or(Value::Null, |b| json!(b));
     let mut brief_busy = false;
     let mut last_brief_check = Instant::now() - Duration::from_secs(60);
+    // PMI: its live events (a thread), and the view read after each change.
+    let (pmi_events_tx, pmi_events) = std::sync::mpsc::channel::<crate::pmi::Event>();
+    std::thread::spawn(move || crate::pmi::follow(pmi_events_tx));
+    let (pmi_tx, pmi_rx) = std::sync::mpsc::channel::<Result<crate::pmi::State, String>>();
+    let mut pmi_state = crate::pmi::State::default();
+    let mut pmi_view = Value::Null;
+    let mut pmi_busy = false;
+    let mut pmi_due: Option<Instant> = Some(Instant::now());
+    let mut last_pmi = Instant::now();
     let started = Instant::now();
     let mut convs = vec![Conv::new(primary)];
     loop {
@@ -575,6 +584,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     c.mirror.extra["status"] = status_view.clone();
                     c.mirror.extra["diagnoses"] = diag_view.clone();
                     c.mirror.extra["briefing"] = brief_view.clone();
+                    c.mirror.extra["pmi"] = pmi_view.clone();
                     for u in c.mirror.updates(&mut c.app) {
                         hub.publish(Some(&c.app.session_id), u);
                     }
@@ -730,6 +740,63 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             crate::routines::record(&r.name, run);
             everyone = true;
         }
+        // PMI: read again shortly after a change (its events, or lyra's own), and every 5 minutes.
+        while let Ok(e) = pmi_events.try_recv() {
+            match e {
+                crate::pmi::Event::Live(live) => {
+                    if live != pmi_state.live {
+                        pmi_state.live = live;
+                        convs[0].app.log(Level::Info, if live { "PMI: following its live updates".to_string() } else { "PMI: live updates dropped, reconnecting".to_string() });
+                        pmi_view = json!(pmi_state);
+                        everyone = true;
+                    }
+                    if live {
+                        pmi_due = Some(Instant::now());
+                    }
+                }
+                crate::pmi::Event::Changed(areas) => {
+                    if areas.iter().any(|a| matches!(a.as_str(), "tasks" | "projects" | "resync" | "structure")) {
+                        pmi_due = Some(pmi_due.map_or(Instant::now() + Duration::from_secs(5), |d| d.min(Instant::now() + Duration::from_secs(5))));
+                    }
+                }
+            }
+        }
+        if crate::pmi::take_stale() {
+            pmi_due = Some(Instant::now() + Duration::from_secs(2));
+        }
+        if !pmi_busy && crate::pmi::configured() && (pmi_due.is_some_and(|d| Instant::now() >= d) || last_pmi.elapsed() >= Duration::from_secs(300)) {
+            pmi_busy = true;
+            pmi_due = None;
+            last_pmi = Instant::now();
+            let tx = pmi_tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::pmi::snapshot());
+            });
+        }
+        while let Ok(r) = pmi_rx.try_recv() {
+            pmi_busy = false;
+            let live = pmi_state.live;
+            match r {
+                Ok(mut s) => {
+                    s.live = live;
+                    if pmi_state.error.is_some() {
+                        convs[0].app.log(Level::Info, format!("PMI: back ({})", s.line(chrono::Local::now().date_naive())));
+                    }
+                    pmi_state = s;
+                }
+                Err(e) => {
+                    if pmi_state.error.as_deref() != Some(e.as_str()) {
+                        convs[0].app.log(Level::Error, format!("PMI: {e}"));
+                    }
+                    pmi_state.error = Some(e);
+                }
+            }
+            let view = json!(pmi_state);
+            if view != pmi_view {
+                pmi_view = view;
+                everyone = true;
+            }
+        }
         // The daily briefing: on schedule or asked for, gathered and written off the loop.
         let wanted = crate::briefing::take_request();
         if !brief_busy && (wanted || last_brief_check.elapsed() >= Duration::from_secs(20)) {
@@ -744,6 +811,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 let mut inputs = crate::briefing::local_inputs(convs[0].app.goals.as_deref(), at, since);
                 inputs.machines = machines_detail(hub, node_build.as_deref());
                 inputs.server_health = (!server_health.is_null()).then(|| server_health.clone());
+                inputs.pmi = (crate::pmi::configured() && pmi_state.at.is_some()).then(|| pmi_state.clone());
                 let (url, model, tx) = (format!("{}/chat/completions", convs[0].app.base_url.trim_end_matches('/')), convs[0].app.model.clone(), brief_tx.clone());
                 std::thread::spawn(move || {
                     let mut b = crate::briefing::gather(&inputs);
@@ -900,6 +968,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         extra_now["status"] = status_view.clone();
         extra_now["diagnoses"] = diag_view.clone();
         extra_now["briefing"] = brief_view.clone();
+        extra_now["pmi"] = pmi_view.clone();
         let attached = hub.attached_sessions();
         for c in convs.iter_mut() {
             // The phase timer ("thinking 4s") ticks while something is happening.
@@ -1090,6 +1159,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         }
         "routines" => crate::routines::view(&[], 10),
         "briefing" => crate::briefing::last().map_or(Value::Null, |b| json!(b)),
+        "pmi" => crate::pmi::snapshot().map_or_else(|e| json!({ "error": e }), |s| json!(s)),
         "coding" => json!(crate::coding::jobs()),
         "status" => crate::status::latest().map_or(Value::Null, |b| json!(b)),
         "devices" => {

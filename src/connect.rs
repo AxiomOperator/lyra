@@ -595,6 +595,22 @@ fn draw_panel(f: &mut Frame, s: &Screen, area: Rect) {
             lines.push(Line::styled(truncate(&format!("{} {}: {}", if r["state"] == "down" { "✗" } else { "◐" }, str_of(&r["name"]), str_of(&r["detail"])), width), Style::default().fg(color)));
         }
     }
+    // PMI: what's overdue and due today, and what waits on the user.
+    if let Ok(p) = serde_json::from_value::<crate::pmi::State>(st["pmi"].clone())
+        && p.at.is_some()
+    {
+        let today = chrono::Local::now().date_naive();
+        let (overdue, _, waiting) = p.counts(today);
+        lines.push(Line::default());
+        let color = if p.error.is_some() || overdue + waiting > 0 { Color::Yellow } else { Color::Green };
+        lines.push(Line::from(vec!["Tasks ".bold(), Span::styled(truncate(&p.line(today), width.saturating_sub(6)), Style::default().fg(color))]));
+        let today_s = today.to_string();
+        for t in p.tasks.iter().filter(|t| t["due"].as_str().is_some_and(|d| d <= today_s.as_str())).take(5) {
+            let late = t["due"].as_str().is_some_and(|d| d < today_s.as_str());
+            let text = format!("{} {}", if late { "⚠" } else { "·" }, str_of(&t["title"]));
+            lines.push(Line::styled(truncate(&text, width), Style::default().fg(if late { Color::Yellow } else { Color::Reset })));
+        }
+    }
     // The latest daily briefing: its headline, and what needs a look.
     if let Ok(b) = serde_json::from_value::<crate::briefing::Briefing>(st["briefing"].clone()) {
         lines.push(Line::default());
