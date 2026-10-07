@@ -36,7 +36,7 @@ pub fn is_admin() -> bool {
 pub fn os_name() -> String {
     static NAME: OnceLock<String> = OnceLock::new();
     NAME.get_or_init(|| {
-        let mut c = quiet(Command::new("powershell"));
+        let mut c = quiet(Command::new(lyra_system::shell_program("powershell")));
         c.args(["-NoProfile", "-NonInteractive", "-Command", "$o = Get-CimInstance Win32_OperatingSystem; $o.Caption + ' ' + $o.Version"]);
         c.output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "Windows".into())
     })

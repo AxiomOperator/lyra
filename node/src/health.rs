@@ -63,7 +63,7 @@ pub fn failed_units(listing: &str) -> Vec<String> {
 fn count_updates() -> Option<u64> {
     if cfg!(windows) {
         let script = "(New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher().Search('IsInstalled=0 and IsHidden=0').Updates.Count";
-        return output("powershell", &["-NoProfile", "-NonInteractive", "-Command", script]).and_then(|(code, out)| (code == 0).then(|| out.trim().parse().ok()).flatten());
+        return output(&lyra_system::shell_program("powershell").to_string_lossy(), &["-NoProfile", "-NonInteractive", "-Command", script]).and_then(|(code, out)| (code == 0).then(|| out.trim().parse().ok()).flatten());
     }
     if let Some((code, out)) = output("dnf", &["-q", "--cacheonly", "check-update"]) {
         // 100: updates are available; 0: none.
@@ -97,8 +97,14 @@ fn updates() -> Option<u64> {
 const WINDOWS_QUIET: &[&str] = &[
     "gupdate", "gupdatem", "edgeupdate", "edgeupdatem", "mapsbroker", "sppsvc", "remoteregistry", "trustedinstaller", "wbiosrvc",
     "cdpsvc", "tiledatamodelsvc", "sysmain", "wuauserv", "bits", "usosvc", "dosvc", "clicktorunsvc", "onesyncsvc", "googleupdaterservice",
-    "googleupdaterinternalservice", "brokerinfrastructure", "shellhwdetection", "wscsvc", "stisvc", "msiserver", "uhssvc",
+    "googleupdaterinternalservice", "brokerinfrastructure", "shellhwdetection", "wscsvc", "stisvc", "msiserver", "uhssvc", "wslinstaller",
 ];
+
+/// Quiet by name, also with a version on the end ("GoogleUpdaterService156.0.8067.0").
+fn quiet_service(name: &str) -> bool {
+    let n = name.to_lowercase();
+    WINDOWS_QUIET.iter().any(|q| n == *q || n.strip_prefix(q).is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit())))
+}
 
 /// The Windows readings (one PowerShell call) in the same shape as Linux's.
 pub fn windows_report(json_text: &str) -> Value {
@@ -117,7 +123,7 @@ pub fn windows_report(json_text: &str) -> Value {
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
     // CPU busy % as a load (busy share × CPUs), so the same per-CPU limit applies.
     let busy = v["cpu_pct"].as_f64().unwrap_or(0.0) / 100.0 * cpus;
-    let failed: Vec<String> = list(&v["stopped_auto"]).iter().filter_map(Value::as_str).filter(|s| !WINDOWS_QUIET.contains(&s.to_lowercase().as_str())).map(str::to_string).collect();
+    let failed: Vec<String> = list(&v["stopped_auto"]).iter().filter_map(Value::as_str).filter(|s| !quiet_service(s)).map(str::to_string).collect();
     json!({
         "at": chrono::Utc::now().to_rfc3339(),
         "disks": disks,
@@ -139,9 +145,9 @@ pub fn report() -> Value {
           mem_total_kb = $o.TotalVisibleMemorySize; mem_free_kb = $o.FreePhysicalMemory; \
           cpu_pct = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average; \
           uptime_s = [math]::Round(((Get-Date) - $o.LastBootUpTime).TotalSeconds); \
-          stopped_auto = @(Get-CimInstance Win32_Service -Filter \"StartMode='Auto' AND State='Stopped'\" | ForEach-Object { $_.Name }) \
+          stopped_auto = @(Get-CimInstance Win32_Service -Filter \"StartMode='Auto' AND State='Stopped' AND ExitCode<>0\" | ForEach-Object { $_.Name }) \
         } | ConvertTo-Json -Compress -Depth 4";
-    let out = output("powershell", &["-NoProfile", "-NonInteractive", "-Command", script]).map(|o| o.1).unwrap_or_default();
+    let out = output(&lyra_system::shell_program("powershell").to_string_lossy(), &["-NoProfile", "-NonInteractive", "-Command", script]).map(|o| o.1).unwrap_or_default();
     windows_report(&out)
 }
 
@@ -186,7 +192,7 @@ mod tests {
         let r = report();
         assert!(r["disks"].is_array() && r["cpus"].as_u64().unwrap() >= 1);
         // Windows: one PowerShell answer (a single disk comes as an object, not a list).
-        let w = windows_report(r#"{"disks":{"DeviceID":"C:","Size":512000000000,"FreeSpace":51200000000},"mem_total_kb":16000000,"mem_free_kb":4000000,"cpu_pct":37,"uptime_s":3600,"stopped_auto":["Spooler","gupdate"]}"#);
+        let w = windows_report(r#"{"disks":{"DeviceID":"C:","Size":512000000000,"FreeSpace":51200000000},"mem_total_kb":16000000,"mem_free_kb":4000000,"cpu_pct":37,"uptime_s":3600,"stopped_auto":["Spooler","gupdate","GoogleUpdaterService156.0.8067.0"]}"#);
         assert_eq!((w["disks"][0]["mount"].as_str(), w["disks"][0]["used_pct"].as_u64()), (Some("C:"), Some(90)));
         assert_eq!(w["memory"]["used_pct"], 75);
         assert_eq!(w["failed_units"], json!(["Spooler"]), "services that are often off are left out");

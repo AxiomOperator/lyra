@@ -67,13 +67,51 @@ impl Settings {
     }
 }
 
-/// The shell commands run in: bash, or PowerShell on Windows (pwsh if it's installed).
+/// The shell commands run in: bash, or PowerShell on Windows (pwsh is used
+/// instead when the service can find it, see [`shell_program`]).
 pub fn default_shell() -> String {
-    if cfg!(windows) {
-        let pwsh = std::env::var_os("PATH").into_iter().flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).any(|d| d.join("pwsh.exe").is_file());
-        if pwsh { "pwsh".into() } else { "powershell".into() }
+    if cfg!(windows) { "powershell".into() } else { "bash".into() }
+}
+
+/// The program to start for a shell name. On Windows a service (LocalSystem)
+/// doesn't see the user's PATH, so PowerShell is looked for where it's
+/// installed, and Windows PowerShell (always there) stands in for a missing pwsh.
+pub fn shell_program(shell: &str) -> PathBuf {
+    if !cfg!(windows) || !is_powershell(shell) || Path::new(shell).is_absolute() {
+        return PathBuf::from(shell);
+    }
+    let on_path = |exe: &str| std::env::var_os("PATH").into_iter().flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).map(|d| d.join(exe)).find(|p| p.is_file());
+    let env_dir = |var: &str, default: &str| std::env::var_os(var).map_or_else(|| PathBuf::from(default), PathBuf::from);
+    let windows_powershell = || env_dir("SystemRoot", "C:\\Windows").join("System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    if shell.to_lowercase().contains("pwsh") {
+        let installed = env_dir("ProgramFiles", "C:\\Program Files").join("PowerShell\\7\\pwsh.exe");
+        on_path("pwsh.exe").or_else(|| installed.is_file().then_some(installed)).unwrap_or_else(windows_powershell)
     } else {
-        "bash".into()
+        on_path("powershell.exe").unwrap_or_else(windows_powershell)
+    }
+}
+
+/// On Windows the node runs as SYSTEM, whose `~` isn't anyone's home: the
+/// `~/…` deny paths hold for every profile in `C:\Users` too.
+fn every_profile(deny: &[String]) -> Vec<String> {
+    if !cfg!(windows) {
+        return vec![];
+    }
+    let users = PathBuf::from(std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()) + "\\Users");
+    let profiles: Vec<PathBuf> = std::fs::read_dir(&users).map(|d| d.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default();
+    deny.iter()
+        .filter_map(|d| d.strip_prefix("~/").or_else(|| d.strip_prefix("~\\")))
+        .flat_map(|rest| profiles.iter().map(move |p| p.join(rest).display().to_string()))
+        .collect()
+}
+
+/// `\\?\C:\x` → `C:\x`: Windows' canonical paths carry a verbatim prefix that
+/// PowerShell and people don't expect (UNC and other forms are left alone).
+fn plain(p: PathBuf) -> PathBuf {
+    let s = p.to_string_lossy();
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => p,
     }
 }
 
@@ -316,7 +354,7 @@ impl System {
         let p = if path == "~" { self.home() } else { (self.expand)(path) };
         let p = if p.is_relative() { self.home().join(p) } else { p };
         if let Ok(real) = std::fs::canonicalize(&p) {
-            return real;
+            return plain(real);
         }
         // Not there yet: resolve the nearest existing parent.
         let p = normalize(&p);
@@ -331,7 +369,7 @@ impl System {
                 _ => return p,
             }
         }
-        let mut out = std::fs::canonicalize(&existing).unwrap_or(existing);
+        let mut out = std::fs::canonicalize(&existing).map_or(existing, plain);
         out.extend(rest.iter().rev());
         out
     }
@@ -341,7 +379,9 @@ impl System {
     }
 
     fn denied(&self, path: &Path) -> Option<String> {
-        self.under(path, &self.settings().deny_paths).then(|| format!("{} is off limits ([system] deny_paths)", path.display()))
+        let deny = self.settings().deny_paths;
+        let hit = self.under(path, &deny) || every_profile(&deny).iter().any(|d| path.starts_with(self.resolve(d)));
+        hit.then(|| format!("{} is off limits ([system] deny_paths)", path.display()))
     }
 
     /// What this call may do, decided before it runs.
@@ -438,7 +478,7 @@ impl System {
             "system_info" => Ok(self.info()),
             "shell_run" => {
                 let shell = self.settings().shell;
-                let mut cmd = Command::new(&shell);
+                let mut cmd = Command::new(shell_program(&shell));
                 if is_powershell(&shell) {
                     cmd.args(["-NoProfile", "-NonInteractive", "-Command"]).arg(arg(args, "command")?);
                 } else {
@@ -607,7 +647,7 @@ impl System {
             model = $c.Manufacturer + ' ' + $c.Model; \
             disks = (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { '{0} {1:N0} GB free of {2:N0} GB' -f $_.DeviceID, ($_.FreeSpace/1GB), ($_.Size/1GB) }) -join '; '; \
             top_processes = (Get-Process | Sort-Object CPU -Descending | Select-Object -First 8 | ForEach-Object { '{0} {1} cpu {2:N0}s mem {3:N0} MB' -f $_.Id, $_.ProcessName, $_.CPU, ($_.WS/1MB) }) -join '; ' } | ConvertTo-Json -Compress";
-        let mut c = Command::new(self.settings().shell);
+        let mut c = Command::new(shell_program(&self.settings().shell));
         c.args(["-NoProfile", "-NonInteractive", "-Command", script]);
         let mut v: Value = shell::run(c, Duration::from_secs(20), 8000)
             .ok()

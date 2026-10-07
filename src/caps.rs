@@ -112,7 +112,7 @@ fn system_tools(machines: &[(String, bool)], windows: &[String]) -> Vec<Capabili
                 let listed: Vec<String> = machines
                     .iter()
                     .map(|(m, on)| {
-                        let win = if windows.iter().any(|w| w.eq_ignore_ascii_case(m)) { ", Windows: use PowerShell commands and Windows paths" } else { "" };
+                        let win = if windows.iter().any(|w| w.eq_ignore_ascii_case(m)) { ", Windows: commands already run in PowerShell (don't wrap them in powershell/pwsh), use Windows paths" } else { "" };
                         format!("{m} ({}{win})", if *on { "online" } else { "offline now" })
                     })
                     .collect();
