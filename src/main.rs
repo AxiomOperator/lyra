@@ -1373,7 +1373,7 @@ impl App {
     /// the answer goes back to the page instead of into the conversation.
     pub fn quiet_command(&mut self, line: &str) -> Result<String, String> {
         let name = line.split_whitespace().next().unwrap_or("");
-        if !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate" | "/goal" | "/goals" | "/model" | "/backup" | "/routine" | "/routines" | "/status" | "/diagnose" | "/coding" | "/briefing" | "/tasks" | "/task" | "/pmi") {
+        if !PAGE_COMMANDS.contains(&name) {
             return Err(format!("{name} can't be run from a page"));
         }
         let result = self.command_result(line);
@@ -2929,6 +2929,12 @@ const MEMORY_GATE: &str = "Did the user share something worth remembering in fut
 const LESSON_GATE: &str = "Does this conversation teach the assistant a reusable procedure or rule: the user corrected it, \
      showed a better way, or a multi-step task worked after a failed attempt?";
 
+/// Commands the app's pages and buttons may run (each still checked by role).
+const PAGE_COMMANDS: &[&str] = &[
+    "/memory", "/approve", "/reject", "/deprecate", "/goal", "/goals", "/model", "/backup", "/routine", "/routines", "/status", "/diagnose", "/coding",
+    "/briefing", "/tasks", "/task", "/pmi", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami",
+];
+
 /// Commands a member (not an admin) may use. Their own memories, goals,
 /// routines, tasks and briefing come with per-user data; machines, system
 /// tools, coding, devices, backups, agents and skills' approval stay admins'.
@@ -2945,6 +2951,37 @@ fn member_may(name: &str, arg: &str) -> bool {
         // Which model is in use; changing it is the server's.
         "/model" => arg.trim().is_empty(),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod page_tests {
+    /// Every command the app runs from a page or button (web/ui/src) is one it may run.
+    #[test]
+    fn the_apps_buttons_may_run_their_commands() {
+        let mut found = Vec::new();
+        let mut stack = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/web/ui/src"))];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "tsx") {
+                    let text = std::fs::read_to_string(&p).unwrap_or_default();
+                    for start in ["run(\"/", "run(`/", "act(`/", "act(\"/"] {
+                        for (i, _) in text.match_indices(start) {
+                            let rest = &text[i + start.len() - 1..];
+                            let cmd: String = rest.chars().take_while(|c| *c == '/' || c.is_ascii_lowercase() || *c == '-').collect();
+                            found.push(cmd);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(found.len() > 10, "found the app's commands: {found:?}");
+        for c in &found {
+            assert!(super::PAGE_COMMANDS.contains(&c.as_str()), "the app runs {c} but pages may not");
+        }
     }
 }
 
