@@ -448,11 +448,11 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
               <Button variant="secondary" onClick={() => open("coding")}>
                 <Code2 /> Coding
               </Button>
-              <Button variant="secondary" onClick={() => open("memory")}>
-                <Brain /> Memory
-              </Button>
             </>
           )}
+          <Button variant="secondary" onClick={() => open("memory")}>
+            <Brain /> Memory
+          </Button>
           <Button variant="secondary" onClick={() => open("routines")}>
             <AlarmClock /> Routines
           </Button>

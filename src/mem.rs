@@ -299,6 +299,28 @@ impl Mem {
 
     /// `/memory …` commands that don't need the model. (`curate` and
     /// `episode` are started by the app, which runs them in the background.)
+    /// `/memory` for one person (`user:<id>`): their own memories only, and
+    /// only looking after them (inspect, forget, archive, restore, correct).
+    pub fn command_for(&self, args: &str, scope: &str) -> Result<String, String> {
+        let args = args.trim();
+        let (sub, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
+        let rest = rest.trim();
+        let find = |key: &str| self.run(self.manager.find(key)).and_then(|m| if m.scope == scope { Ok(m) } else { Err(format!("no memory matches {key:?}")) });
+        match sub {
+            "inspect" => self.inspect_text(&find(rest)?),
+            "forget" => self.run(self.manager.forget(find(rest)?.id, "forgotten by the user", None)).map(|m| format!("forgot [{}] (/memory restore {} undoes it)", m.short_id(), m.short_id())),
+            "archive" => self.run(self.manager.archive(find(rest)?.id, "archived by the user", None)).map(|m| format!("archived [{}]", m.short_id())),
+            "restore" => self.run(self.manager.restore(find(rest)?.id)).map(|m| format!("restored [{}]", m.short_id())),
+            "correct" => {
+                let (key, text) = rest.split_once(char::is_whitespace).ok_or("usage: /memory correct <id> <new text>")?;
+                let m = find(key)?;
+                let v = self.run(self.manager.correct(m.id, text, "corrected by the user", None))?;
+                Ok(format!("corrected [{}], now v{v}", m.short_id()))
+            }
+            _ => Err("your memories: /memory inspect|forget|archive|restore|correct <id> (the Memory page lists them)".into()),
+        }
+    }
+
     pub fn command(&self, args: &str) -> Result<String, String> {
         let args = args.trim();
         let (sub, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
@@ -351,10 +373,20 @@ impl Mem {
 
     /// The app's Memory page: memories (matching `query`, else the latest,
     /// optionally one scope), what's waiting for approval, and the scopes.
-    pub fn page(&self, query: &str, scope: &str) -> Result<serde_json::Value, String> {
+    /// The Memory page. `mine`: one person's own scope (`user:<id>`): only
+    /// theirs, whatever scope is asked for, and no review proposals. The
+    /// owner's page never shows anyone's own memories.
+    pub fn page(&self, query: &str, scope: &str, mine: Option<&str>) -> Result<serde_json::Value, String> {
+        let scope = match mine {
+            Some(m) => m,
+            None if lyra_memory::personal(scope) => return Err("that scope is someone's own".into()),
+            None => scope,
+        };
         let found: Vec<(Memory, Option<f32>)> = if query.trim().is_empty() {
             let filter = Filter { scope: (!scope.is_empty()).then(|| scope.to_string()), statuses: vec![MemoryStatus::Active], kind: None };
             self.run(self.manager.list(&filter, 200))?.into_iter().map(|m| (m, None)).collect()
+        } else if let Some(m) = mine {
+            self.recall(Some(m), query.trim(), 30, true)?.into_iter().map(|r| (r.memory, Some(r.score.total))).collect()
         } else {
             self.recall_all(query.trim(), 30)?
                 .into_iter()
@@ -364,11 +396,22 @@ impl Mem {
         };
         let stats = self.run(self.manager.stats())?;
         let recent = self.run(self.manager.list(&Filter::active(), 30))?;
-        let proposals: Vec<serde_json::Value> = self
-            .run(self.manager.proposals())?
+        let proposals: Vec<serde_json::Value> = if mine.is_some() {
+            Vec::new()
+        } else {
+            self.run(self.manager.proposals())?.iter().map(|p| serde_json::json!({ "id": p.id.to_string()[..8], "text": describe_proposal(&p.change, &p.id, &recent) })).collect()
+        };
+        // Scope counts: a person's own only; for the owner, nobody's own.
+        let scopes: Vec<serde_json::Value> = stats
+            .by_scope
             .iter()
-            .map(|p| serde_json::json!({ "id": p.id.to_string()[..8], "text": describe_proposal(&p.change, &p.id, &recent) }))
+            .filter(|(s, _)| match mine {
+                Some(m) => s == m,
+                None => !lyra_memory::personal(s),
+            })
+            .map(|(s, n)| serde_json::json!({ "scope": s, "count": n }))
             .collect();
+        let active = if mine.is_some() { found.iter().filter(|(m, _)| m.status == MemoryStatus::Active).count() } else { stats.active };
         Ok(serde_json::json!({
             "memories": found.iter().map(|(m, score)| serde_json::json!({
                 "id": m.short_id(), "kind": m.kind.as_str(), "scope": m.scope, "content": m.content,
@@ -376,8 +419,8 @@ impl Mem {
                 "updated": m.updated_at.to_rfc3339(), "tags": m.tags, "score": score,
             })).collect::<Vec<_>>(),
             "proposals": proposals,
-            "scopes": stats.by_scope.iter().map(|(s, n)| serde_json::json!({ "scope": s, "count": n })).collect::<Vec<_>>(),
-            "active": stats.active,
+            "scopes": scopes,
+            "active": active,
         }))
     }
 

@@ -1455,6 +1455,10 @@ impl App {
                     Err(why) => why.clone(),
                     Ok(_) => "memory is off".to_string(),
                 });
+                // Anyone but the owner looks after their own memories only.
+                if let (Ok(m), Some(u)) = (&mem, self.personal()) {
+                    return m.command_for(arg, &format!("user:{u}"));
+                }
                 mem.and_then(|m| match arg.split_whitespace().next().unwrap_or("") {
                     "curate" if self.memory_curating => Err("a memory curation is already running".into()),
                     "curate" => Ok("curating memories…".into()),
@@ -2907,6 +2911,8 @@ fn member_may(name: &str, arg: &str) -> bool {
         "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" => true,
         // Their own PMI account, routines and goals.
         "/pmi" | "/tasks" | "/task" | "/routine" | "/routines" => true,
+        // Looking after their own memories (held to their scope there).
+        "/memory" => matches!(arg.split_whitespace().next().unwrap_or(""), "inspect" | "forget" | "archive" | "restore" | "correct"),
         // Goals are tracked and planned, never worked on unattended: no plans,
         // triggers or autonomy for anyone but the owner's admins.
         "/goal" | "/goals" => !matches!(arg.split_whitespace().next().unwrap_or(""), "work" | "when" | "autonomy"),
@@ -2924,7 +2930,8 @@ mod member_tests {
             assert!(super::member_may(ok, ""), "{ok}");
         }
         assert!(super::member_may("/model", "") && !super::member_may("/model", "other-model"), "look, not change");
-        for no in ["/outcome", "/machines", "/devices", "/users", "/backup", "/caps", "/approve", "/evolve", "/plan", "/agent", "/memory", "/coding", "/diagnose"] {
+        assert!(super::member_may("/memory", "forget 1a2b") && !super::member_may("/memory", "curate") && !super::member_may("/memory", "approve 1a2b"));
+        for no in ["/outcome", "/machines", "/devices", "/users", "/backup", "/caps", "/approve", "/evolve", "/plan", "/agent", "/coding", "/diagnose"] {
             assert!(!super::member_may(no, "x"), "{no}");
         }
         // Their own routines and goals, but no plans or autonomy.

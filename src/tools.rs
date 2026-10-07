@@ -587,6 +587,33 @@ mod tests {
         assert!(wm["error"].is_string());
     }
 
+    #[test]
+    fn the_memory_page_is_each_persons_own() {
+        let (_rt, t) = tools();
+        call(&t, "memory_remember", r#"{"content":"The owner's server is called atlas.","scope":"user"}"#);
+        let mine: &[&str] = &["user:dana"];
+        let dana = CallContext { member: true, read_scopes: Some(mine), write_scopes: Some(mine), ..CallContext::new(None, "") };
+        t.run("memory_remember", r#"{"content":"Dana's desk is by the window."}"#, dana);
+        let page = t.mem.page("", "", Some("user:dana")).unwrap();
+        let shown: Vec<&str> = page["memories"].as_array().unwrap().iter().filter_map(|m| m["content"].as_str()).collect();
+        assert_eq!(shown, ["Dana's desk is by the window."], "only hers");
+        assert_eq!(page["scopes"], json!([{ "scope": "user:dana", "count": 1 }]));
+        let asked = t.mem.page("", "user", Some("user:dana")).unwrap();
+        assert_eq!(asked["memories"].as_array().unwrap().len(), 1, "asking for another scope still shows hers");
+        let searched = t.mem.page("server called", "", Some("user:dana")).unwrap();
+        assert!(!searched.to_string().contains("atlas"), "search stays in her scope");
+        // The owner's page: never anyone's own.
+        let owner = t.mem.page("", "", None).unwrap();
+        assert!(!owner.to_string().contains("window") && !owner.to_string().contains("user:dana"), "{owner}");
+        assert!(t.mem.page("", "user:dana", None).is_err());
+        // Her commands: her memories only.
+        let ids: Vec<String> = t.mem.page("", "", None).unwrap()["memories"].as_array().unwrap().iter().filter_map(|m| m["id"].as_str().map(str::to_string)).collect();
+        assert!(t.mem.command_for(&format!("forget {}", ids[0]), "user:dana").is_err(), "not the owner's");
+        let hers = page["memories"][0]["id"].as_str().unwrap();
+        assert!(t.mem.command_for(&format!("archive {hers}"), "user:dana").unwrap().starts_with("archived"));
+        assert!(t.mem.command_for("curate", "user:dana").is_err());
+    }
+
     fn call(t: &Tools, name: &str, args: &str) -> Value {
         let ctx = CallContext::new(Some(Uuid::new_v4()), "call_1");
         serde_json::from_str(&t.run(name, args, ctx)).unwrap()

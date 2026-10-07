@@ -584,7 +584,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -1434,7 +1434,10 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         "agents" => text(app.agents.as_deref().map(crate::agents::list).ok_or("agents are off".into())),
         "goals" => page(app.goals.clone().ok_or("goals are off ([goals] enabled)".to_string()).and_then(|g| crate::goals::page(&g))),
         "skills" => page(app.learning.clone().ok_or("learning is off".to_string()).and_then(|l| l.page())),
-        "memory" => page(app.mem().ok_or("memory is off".to_string()).and_then(|m| m.page(arg["query"].as_str().unwrap_or(""), arg["scope"].as_str().unwrap_or("")))),
+        "memory" => {
+            let mine = app.personal().map(|u| format!("user:{u}"));
+            page(app.mem().ok_or("memory is off".to_string()).and_then(|m| m.page(arg["query"].as_str().unwrap_or(""), arg["scope"].as_str().unwrap_or(""), mine.as_deref())))
+        }
         "rules" => json!({
             "system": app.caps.as_ref().and_then(|c| c.system.as_ref()).map(|s| s.settings()).unwrap_or_default(),
             "path": crate::config::path().map(|p| crate::context::show(&p)),

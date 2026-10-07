@@ -930,7 +930,10 @@ There are two roles:
   agents. They never get the Operator or the Coder, and the tools themselves refuse them,
   in Rust.
 
-Each person has their own memories, kept in the scope `user:<id>`. A member's conversations
+Each person has their own memories, kept in the scope `user:<id>`. Their Memory page lists
+and searches only those, and they can inspect, correct, archive, restore or forget them
+(`/memory inspect|correct|archive|restore|forget <id>`). The owner's page never shows anyone's
+own memories, not even in the scope counts. A member's conversations
 only recall and save theirs, and neither the owner's nor anyone else's turns ever see them.
 Each person also has their own `USER.md` (`~/.lyra/users/<id>/USER.md`); without one, lyra
 just knows their name.
