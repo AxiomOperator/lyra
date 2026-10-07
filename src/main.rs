@@ -3998,6 +3998,15 @@ fn open_agents(config: &Config, runtime: &tokio::runtime::Handle) -> (Option<Arc
                 pm.instructions = lyra_agents::templates::PM_NOTE.into();
                 let _ = a.registry.update(pm, "PMI tools");
             }
+            // Agents that look things up know the user's people and notes too.
+            for name in ["researcher", "assistant"] {
+                if let Some(mut p) = a.registry.get(name).filter(|p| p.template.as_deref() == Some(name))
+                    && !p.tools.iter().any(|t| t == "who_is")
+                {
+                    p.tools.extend(["who_is".to_string(), "note_find".to_string()]);
+                    let _ = a.registry.update(p, "new tools: who_is, note_find");
+                }
+            }
             // The Coder's instructions as its template has them now (work stays on the server).
             if let Some(mut coder) = a.registry.get("coder").filter(|p| p.template.as_deref() == Some("coder"))
                 && let Some(t) = lyra_agents::templates::template("coder")
