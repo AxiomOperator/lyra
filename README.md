@@ -1141,6 +1141,24 @@ your Allow and shows what will change. There's no shell and nothing outside the
 folder. After the browser restarts it may want your OK again: tap **Allow** on
 the Projects page. Members have this too.
 
+### PDFs, scans and pictures
+
+lyra reads a PDF's text itself, whether it comes from a project folder, OneDrive
+or a chat attachment. A scanned PDF has no text, only page pictures, and those
+need a vision model, as do photos and screenshots. Set one up under
+`[vision_model]` and lyra hands the model the pictures (scans: the first
+`max_pages` pages). The model answers with the text it sees plus a short
+description, so the chat model doesn't need vision itself:
+
+```toml
+[vision_model]
+url = "http://172.99.99.11:8190/v1"   # any OpenAI-compatible server taking image_url parts
+model = "Qwen3-VL-8B"                  # e.g. a Qwen-VL GGUF on llama-server with --mmproj
+max_pages = 6
+```
+
+Its calls count under `vision` in AI usage.
+
 ### AI usage
 
 Every model call lyra makes is kept in `~/.lyra/usage/<YYYY-MM>.jsonl`, credited to

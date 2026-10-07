@@ -44,9 +44,9 @@ pub fn capabilities() -> Vec<Capability> {
         ),
         tool(
             "project_read",
-            "The text of a file in a project folder (text, code, Markdown, CSV, Word, Excel, PowerPoint).",
+            "What a file in a project folder says: text, code, Markdown, CSV, Word, Excel, PowerPoint, PDFs (scanned ones too) and pictures (what they show and any text in them).",
             RiskLevel::ReadOnly,
-            json!({ "folder": folder, "path": { "type": "string" }, "max_chars": { "type": "integer" } }),
+            json!({ "folder": folder, "path": { "type": "string" }, "max_chars": { "type": "integer" }, "question": { "type": "string", "description": "For a picture or a scan: what to look for in it." } }),
             &["folder", "path"],
         ),
         tool("project_search", "Find files in a project folder by name or by the text in them.", RiskLevel::ReadOnly, json!({ "folder": folder, "query": { "type": "string" } }), &["folder", "query"]),
@@ -108,9 +108,13 @@ pub fn call(remote: Option<&dyn Remote>, name: &str, args: &Value) -> Result<Val
             }
             let max = args["max_chars"].as_u64().unwrap_or(12_000).clamp(500, 40_000) as usize;
             let office = OFFICE.iter().any(|x| path.to_lowercase().ends_with(x));
-            let v = ask(json!({ "op": "read", "path": path, "binary": office, "max_bytes": if office { 15_000_000 } else { 400_000 } }), 60)?;
+            let seen = crate::vision::handles(&path);
+            let v = ask(json!({ "op": "read", "path": path, "binary": office || seen, "max_bytes": if office || seen { 25_000_000 } else { 400_000 } }), 60)?;
             let text = match v["base64"].as_str() {
-                Some(b) => crate::files::office_text(&base64::engine::general_purpose::STANDARD.decode(b).map_err(|e| e.to_string())?, &path)?,
+                Some(b) => {
+                    let bytes = base64::engine::general_purpose::STANDARD.decode(b).map_err(|e| e.to_string())?;
+                    if seen { crate::vision::read(&path, &bytes, args["question"].as_str())? } else { crate::files::office_text(&bytes, &path)? }
+                }
                 None => match v["text"].as_str() {
                     Some(t) => t.to_string(),
                     None => return Ok(v),

@@ -34,6 +34,9 @@ pub struct Config {
     /// `[decide]` table: a decision model (clef-flash) for yes/no and
     /// pick-one questions; without it the chat model answers them.
     pub decide: Option<crate::decide::Settings>,
+    /// `[vision_model]` table: a model that looks at pictures and scanned
+    /// PDFs and answers in text (for a chat model that can't see).
+    pub vision_model: Option<crate::vision::Settings>,
     /// `[coding]` table: coding work handed to Claude Code / OpenCode.
     pub coding: crate::coding::Settings,
     /// `[diagnose]` table: problems researched by themselves.
@@ -324,6 +327,7 @@ impl Default for Config {
             embedding: None,
             reranker: None,
             decide: None,
+            vision_model: None,
             backup: Default::default(),
             groups: Default::default(),
             health: Default::default(),

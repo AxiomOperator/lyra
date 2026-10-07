@@ -22,7 +22,7 @@ type UsageData = {
   error?: string;
 };
 
-const KINDS: Record<string, string> = { chat: "Chat", agent: "Agents & plans", background: "lyra's own work", decision: "Decisions", embedding: "Embeddings", reranker: "Reranking" };
+const KINDS: Record<string, string> = { chat: "Chat", agent: "Agents & plans", background: "lyra's own work", decision: "Decisions", embedding: "Embeddings", reranker: "Reranking", vision: "Vision" };
 
 function tokens(n: number) {
   return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);

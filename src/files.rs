@@ -113,11 +113,12 @@ pub fn capabilities() -> Vec<Capability> {
     });
     let mut read_props = which.clone();
     read_props["max_chars"] = json!({ "type": "integer" });
+    read_props["question"] = json!({ "type": "string", "description": "For a picture or a scan: what to look for in it." });
     let mut attach_props = which.clone();
     attach_props["draft"] = json!({ "type": "string", "description": "The draft's id (from mail_draft)." });
     vec![
         tool("files_search", "Search the user's OneDrive and SharePoint files by name or content.", RiskLevel::ReadOnly, json!({ "query": { "type": "string" }, "count": { "type": "integer" } }), &["query"]),
-        tool("files_read", "The text of one file (Word, Excel, PowerPoint, text, CSV, Markdown); PDFs and others give their link.", RiskLevel::ReadOnly, read_props, &["id", "drive"]),
+        tool("files_read", "What one file says (Word, Excel, PowerPoint, text, CSV, Markdown, PDFs including scans, pictures); others give their link.", RiskLevel::ReadOnly, read_props, &["id", "drive"]),
         tool("files_attach", "Attach a file to a mail draft (as the file up to 3 MB, else a link in the text). Sending still waits for the user's yes.", RiskLevel::LowWrite, attach_props, &["id", "drive", "draft"]),
     ]
 }
@@ -139,6 +140,8 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
             }
             let text = if [".docx", ".pptx", ".xlsx"].iter().any(|x| lower.ends_with(x)) {
                 office_text(&content(drive, id)?, &fname)?
+            } else if crate::vision::handles(&fname) {
+                crate::vision::read(&fname, &content(drive, id)?, args["question"].as_str())?
             } else if [".txt", ".md", ".csv", ".json", ".log", ".xml", ".html", ".yaml", ".yml", ".ini", ".conf", ".ps1", ".sh", ".py"].iter().any(|x| lower.ends_with(x)) {
                 String::from_utf8_lossy(&content(drive, id)?).to_string()
             } else {

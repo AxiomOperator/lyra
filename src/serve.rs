@@ -302,6 +302,10 @@ pub fn attachments(hub: &Hub, files: &[String], vision: bool, who: &Who) -> (Str
         {
             let lang = if ext.len() <= 5 { ext.as_str() } else { "" };
             text += &format!("\n\n{head}\n```{lang}\n{}\n```", content.trim_end());
+        } else if (up.mime == "application/pdf" || ext == "pdf") && up.size <= 20 * 1024 * 1024
+            && let Some(content) = std::fs::read(&path).ok().and_then(|b| crate::vision::pdf_text(&b))
+        {
+            text += &format!("\n\n{head}\n```\n{}\n```", content.chars().take(40_000).collect::<String>().trim_end());
         } else if up.mime.starts_with("image/") && vision {
             if let Ok(bytes) = std::fs::read(&path) {
                 images.push(format!("data:{};base64,{}", up.mime, base64::engine::general_purpose::STANDARD.encode(bytes)));

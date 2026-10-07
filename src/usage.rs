@@ -19,7 +19,7 @@ pub struct Call {
     pub at: DateTime<Utc>,
     pub user: String,
     /// "chat", "agent" (agents and plans), "background" (capture, triage, briefings, reviews…),
-    /// "decision" (the `[decide]` model), "embedding", "reranker".
+    /// "decision" (the `[decide]` model), "embedding", "reranker", "vision" (`[vision_model]`).
     pub kind: String,
     pub model: String,
     pub input: u64,
