@@ -47,12 +47,19 @@ impl Harness {
     /// Where its program is: on PATH, else where its installer puts it.
     pub fn program(self) -> Option<PathBuf> {
         let name = self.id();
-        let on_path = std::env::var_os("PATH").into_iter().flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).map(|d| d.join(name)).find(|p| p.is_file());
+        let names: Vec<String> = if cfg!(windows) { vec![format!("{name}.exe"), format!("{name}.cmd")] } else { vec![name.to_string()] };
+        let on_path = std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+            .flat_map(|d| names.iter().map(move |n| d.join(n)))
+            .find(|p| p.is_file());
         on_path.or_else(|| {
             let home = crate::home();
-            let known: &[&str] = match self {
-                Harness::Claude => &[".local/bin/claude", ".claude/local/claude", ".npm-global/bin/claude"],
-                Harness::OpenCode => &[".opencode/bin/opencode", ".local/bin/opencode"],
+            let known: &[&str] = match (self, cfg!(windows)) {
+                (Harness::Claude, false) => &[".local/bin/claude", ".claude/local/claude", ".npm-global/bin/claude"],
+                (Harness::OpenCode, false) => &[".opencode/bin/opencode", ".local/bin/opencode"],
+                (Harness::Claude, true) => &[".local/bin/claude.exe", "AppData/Roaming/npm/claude.cmd", ".claude/local/claude.exe"],
+                (Harness::OpenCode, true) => &[".opencode/bin/opencode.exe", "AppData/Roaming/npm/opencode.cmd"],
             };
             known.iter().map(|p| home.join(p)).find(|p| p.is_file())
         })
@@ -290,16 +297,13 @@ pub fn changes(dir: &Path, before: Option<&str>) -> Value {
     json!({ "git": true, "files": files, "diff_stat": stat.lines().last().unwrap_or("").trim(), "commits": commits })
 }
 
-/// Stop a process and everything it started (its own process group).
+/// Stop a process and everything it started.
 fn kill_group(pid: u32) {
-    let _ = Command::new("kill").args(["-TERM", &format!("-{pid}")]).status();
-    std::thread::sleep(Duration::from_millis(500));
-    let _ = Command::new("kill").args(["-KILL", &format!("-{pid}")]).status();
+    lyra_system::shell::kill_tree(pid);
 }
 
 /// Run a job to the end (or `cancel`/timeout), telling `progress` as it goes.
 pub fn run(job: &Job, cancel: &AtomicBool, progress: &dyn Fn(Value)) -> Result<Value, String> {
-    use std::os::unix::process::CommandExt;
     if !job.dir.is_dir() {
         return Err(format!("{} isn't a folder here", job.dir.display()));
     }
@@ -307,14 +311,10 @@ pub fn run(job: &Job, cancel: &AtomicBool, progress: &dyn Fn(Value)) -> Result<V
     let before = head(&job.dir);
     let (args, env) = command(job);
     let started = Instant::now();
-    let mut child = Command::new(&program)
-        .args(&args)
-        .envs(env)
-        .current_dir(&job.dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
+    let mut command = Command::new(&program);
+    command.args(&args).envs(env).current_dir(&job.dir).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    lyra_system::shell::own_group(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|e| format!("couldn't start {}: {e}", job.harness.title()))?;
     let pid = child.id();

@@ -66,7 +66,7 @@ const DANGEROUS: &[(&str, &str)] = &[
 
 /// Split a command line into simple commands (on `;`, `&&`, `||`, `|`, `&`
 /// and newlines outside quotes), each as words with quotes removed.
-fn segments(line: &str) -> Vec<Vec<String>> {
+pub(crate) fn segments(line: &str) -> Vec<Vec<String>> {
     let mut out: Vec<Vec<String>> = vec![Vec::new()];
     let mut word = String::new();
     let mut quote: Option<char> = None;
@@ -107,7 +107,7 @@ fn segments(line: &str) -> Vec<Vec<String>> {
 
 /// Whether the line writes a file with `>` (outside quotes); redirecting to
 /// /dev/null or between streams doesn't count.
-fn redirects(line: &str) -> bool {
+pub(crate) fn redirects(line: &str) -> bool {
     let mut quote: Option<char> = None;
     let chars: Vec<char> = line.chars().collect();
     for (i, &c) in chars.iter().enumerate() {
@@ -276,11 +276,44 @@ pub fn clip(text: &str, max: usize) -> (String, bool) {
     (format!("{kept}\n… ({} more characters cut)", text.chars().count() - max), true)
 }
 
+/// Start a process apart from lyra, so it and what it starts can be stopped
+/// together (its own process group; on Windows, no console window).
+pub fn own_group(cmd: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
+/// Stop a process and everything it started.
+pub fn kill_tree(pid: u32) {
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill").args(["-TERM", &format!("-{pid}")]).status();
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = Command::new("kill").args(["-KILL", &format!("-{pid}")]).status();
+    }
+    #[cfg(windows)]
+    {
+        let mut c = Command::new("taskkill");
+        c.args(["/T", "/F", "/PID", &pid.to_string()]);
+        own_group(&mut c);
+        let _ = c.status();
+    }
+}
+
 /// Run a process with a timeout (its whole process group is killed when it
 /// runs over), capturing at most `max` characters of each stream.
 pub fn run(mut cmd: Command, timeout: Duration, max: usize) -> Result<Value, String> {
-    use std::os::unix::process::CommandExt;
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    own_group(&mut cmd);
     let start = Instant::now();
     let mut child = cmd.spawn().map_err(|e| format!("couldn't start it: {e}"))?;
     let limit = (max as u64) * 4 + 1024;
@@ -304,7 +337,7 @@ pub fn run(mut cmd: Command, timeout: Duration, max: usize) -> Result<Value, Str
         }
         if start.elapsed() > timeout {
             timed_out = true;
-            let _ = Command::new("kill").args(["-KILL", &format!("-{}", child.id())]).status();
+            kill_tree(child.id());
             let _ = child.kill();
             let _ = child.wait();
             break None;

@@ -63,6 +63,10 @@ impl crate::caps::Remote for HubRemote {
         self.0.call_machine_streaming(machine, request, timeout, cancel, progress)
     }
 
+    fn windows_machines(&self) -> Vec<String> {
+        self.0.machines().into_iter().filter(|m| m.os.to_lowercase().contains("windows")).map(|m| m.name).collect()
+    }
+
     fn harnesses(&self) -> Vec<(String, Value)> {
         self.0.machines().into_iter().filter(|m| m.harnesses.as_object().is_some_and(|h| !h.is_empty())).map(|m| (m.name, m.harnesses)).collect()
     }
@@ -901,7 +905,9 @@ fn machines_detail(hub: &Hub, node_build: Option<&str>) -> Vec<Value> {
         .filter(|d| d.kind == "node")
         .map(|d| {
             let m = online.iter().find(|m| m.name.eq_ignore_ascii_case(&d.name));
-            let update = m.is_some_and(|m| m.self_update && node_build.is_some_and(|b| b != m.build));
+            // Each platform against its own build (Windows nodes against lyra-node.exe).
+            let build = |m: &lyra_web::MachineInfo| if m.os.to_lowercase().contains("windows") { hub.node_build_windows() } else { node_build.map(str::to_string) };
+            let update = m.is_some_and(|m| m.self_update && build(m).is_some_and(|b| b != m.build));
             json!({
                 "name": d.name,
                 "id": d.id,
@@ -1108,7 +1114,7 @@ impl App {
                     })
                     .collect::<Vec<_>>()
                     .join("\n")
-                    + "\n\n/machines health [name] · /machines update <name|all> · /machines remove <name> · add one: curl -fsSL <lyra url>/install.sh | sh")
+                    + "\n\n/machines health [name] · /machines update <name|all> · /machines remove <name> · add one: curl -fsSL <lyra url>/install.sh | sh (Linux) · irm <lyra url>/install.ps1 | iex (Windows, as administrator)")
             }
             "update" | "remove" => {
                 if rest.is_empty() {
@@ -1122,7 +1128,7 @@ impl App {
                 if targets.is_empty() {
                     return Err(format!("no machine {rest:?} (/machines lists them)"));
                 }
-                if sub == "update" && node_build.is_none() {
+                if sub == "update" && node_build.is_none() && hub.node_build_windows().is_none() {
                     return Err("this server has no lyra-node to hand out (build it next to lyra: see the README)".into());
                 }
                 let tx = self.tx.clone();

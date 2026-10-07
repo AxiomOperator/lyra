@@ -343,6 +343,12 @@ impl Hub {
         node_build(&self.shared.node_binary)
     }
 
+    /// The Windows lyra-node's build (`lyra-node.exe` next to the Linux one), read once.
+    pub fn node_build_windows(&self) -> Option<String> {
+        static BUILD: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        BUILD.get_or_init(|| node_build(&self.shared.node_binary.with_extension("exe"))).clone()
+    }
+
     /// The web app's version: changes whenever its files do.
     pub fn app_version(&self) -> &'static str {
         app_version()
@@ -477,6 +483,9 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/download/lyra-node", get(download_node))
         .route("/download/lyra-node.sha256", get(download_node_sha))
         .route("/install.sh", get(install_script))
+        .route("/download/lyra-node.exe", get(download_node_exe))
+        .route("/download/lyra-node.exe.sha256", get(download_node_exe_sha))
+        .route("/install.ps1", get(install_ps1))
         .route("/api/me", get(me))
         .route("/api/vapid", get(vapid_key))
         .route("/api/push", post(set_push))
@@ -1061,6 +1070,36 @@ async fn download_node_sha(State(s): State<Arc<Shared>>) -> Response {
         Some(sum) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], format!("{sum}  lyra-node\n")).into_response(),
         None => error(StatusCode::NOT_FOUND, "this server has no lyra-node to hand out"),
     }
+}
+
+async fn download_node_exe(State(s): State<Arc<Shared>>) -> Response {
+    let path = s.node_binary.with_extension("exe");
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, "application/octet-stream"), (header::CONTENT_DISPOSITION, "attachment; filename=\"lyra-node.exe\"")], bytes).into_response(),
+        Err(_) => error(StatusCode::NOT_FOUND, &format!("this server has no Windows lyra-node to hand out ({})", path.display())),
+    }
+}
+
+async fn download_node_exe_sha(State(s): State<Arc<Shared>>) -> Response {
+    let path = s.node_binary.with_extension("exe");
+    match tokio::task::spawn_blocking(move || node_build(&path)).await.ok().flatten() {
+        Some(sum) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], format!("{sum}  lyra-node.exe\n")).into_response(),
+        None => error(StatusCode::NOT_FOUND, "this server has no Windows lyra-node to hand out"),
+    }
+}
+
+const INSTALL_PS1: &str = include_str!("../assets/install.ps1");
+
+/// `irm https://lyra…/install.ps1 | iex` (as administrator) on Windows.
+async fn install_ps1(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Response {
+    let url = if s.public_url.is_empty() {
+        let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("localhost");
+        let proto = headers.get("x-forwarded-proto").and_then(|h| h.to_str().ok()).unwrap_or("http");
+        format!("{proto}://{host}")
+    } else {
+        s.public_url.clone()
+    };
+    ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], INSTALL_PS1.replace("__LYRA_URL__", &url)).into_response()
 }
 
 const INSTALL_SH: &str = include_str!("../assets/install.sh");

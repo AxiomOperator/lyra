@@ -6,6 +6,7 @@
 //! (batch mode, no passwords) and HTTP headers can name environment
 //! variables (`$TOKEN`).
 
+pub mod powershell;
 pub mod shell;
 
 use std::path::{Component, Path, PathBuf};
@@ -66,16 +67,55 @@ impl Settings {
     }
 }
 
+/// The shell commands run in: bash, or PowerShell on Windows (pwsh if it's installed).
+pub fn default_shell() -> String {
+    if cfg!(windows) {
+        let pwsh = std::env::var_os("PATH").into_iter().flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).any(|d| d.join("pwsh.exe").is_file());
+        if pwsh { "pwsh".into() } else { "powershell".into() }
+    } else {
+        "bash".into()
+    }
+}
+
+/// Keys, credentials and lyra's own config: never read or written.
+fn default_deny_paths() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &[
+            "~/.ssh",
+            "~/.gnupg",
+            "~/.aws",
+            "~/.kube/config",
+            "~/.docker/config.json",
+            "~/AppData/Roaming/Microsoft/Credentials",
+            "~/AppData/Local/Microsoft/Credentials",
+            "~/AppData/Roaming/Microsoft/Protect",
+            "~/AppData/Local/Google/Chrome/User Data",
+            "~/AppData/Local/Microsoft/Edge/User Data",
+            "~/AppData/Roaming/Mozilla/Firefox/Profiles",
+            "C:/ProgramData/lyra",
+            "C:/Windows/System32/config",
+        ]
+    } else {
+        &["~/.ssh", "~/.gnupg", "~/.lyra/config", "~/.aws", "~/.kube/config", "~/.docker/config.json", "~/.netrc", "/etc/shadow", "/etc/gshadow", "/etc/sudoers"]
+    }
+}
+
+/// The shell is PowerShell (its commands are classified as PowerShell).
+pub fn is_powershell(shell: &str) -> bool {
+    let s = shell.to_lowercase();
+    s.contains("powershell") || s.contains("pwsh")
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
             enabled: true,
-            shell: "bash".into(),
+            shell: default_shell(),
             timeout_seconds: 60,
             max_output: 20_000,
             allow_commands: Vec::new(),
             write_roots: Vec::new(),
-            deny_paths: ["~/.ssh", "~/.gnupg", "~/.lyra/config", "~/.aws", "~/.kube/config", "~/.docker/config.json", "~/.netrc", "/etc/shadow", "/etc/gshadow", "/etc/sudoers"]
+            deny_paths: default_deny_paths()
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
@@ -318,6 +358,8 @@ impl System {
         match tool {
             "system_info" => Check::Auto,
             "shell_run" => match arg(args, "command") {
+                // The shell's own rules: PowerShell's on Windows, bash's elsewhere.
+                Ok(c) if is_powershell(&self.settings().shell) => from_class(powershell::classify(c, &self.settings().allow_commands)),
                 Ok(c) => from_class(classify(c, &self.settings().allow_commands)),
                 Err(e) => Check::Forbidden(e),
             },
@@ -395,8 +437,13 @@ impl System {
         match tool {
             "system_info" => Ok(self.info()),
             "shell_run" => {
-                let mut cmd = Command::new(&self.settings().shell);
-                cmd.arg("-c").arg(arg(args, "command")?);
+                let shell = self.settings().shell;
+                let mut cmd = Command::new(&shell);
+                if is_powershell(&shell) {
+                    cmd.args(["-NoProfile", "-NonInteractive", "-Command"]).arg(arg(args, "command")?);
+                } else {
+                    cmd.arg("-c").arg(arg(args, "command")?);
+                }
                 let cwd = args["cwd"].as_str().filter(|c| !c.trim().is_empty()).map_or_else(|| self.home(), |c| self.resolve(c));
                 if !cwd.is_dir() {
                     return Err(format!("{} isn't a directory", cwd.display()));
@@ -552,6 +599,27 @@ impl System {
         Ok(json!({ "status": status, "content_type": content_type, "body": body, "truncated": truncated }))
     }
 
+    #[cfg(windows)]
+    fn info(&self) -> Value {
+        let script = "$o = Get-CimInstance Win32_OperatingSystem; $c = Get-CimInstance Win32_ComputerSystem; \
+            [pscustomobject]@{ os = $o.Caption + ' ' + $o.Version; uptime_hours = [math]::Round(((Get-Date) - $o.LastBootUpTime).TotalHours, 1); \
+            memory_mb = @{ total = [math]::Round($o.TotalVisibleMemorySize / 1024); available = [math]::Round($o.FreePhysicalMemory / 1024) }; \
+            model = $c.Manufacturer + ' ' + $c.Model; \
+            disks = (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { '{0} {1:N0} GB free of {2:N0} GB' -f $_.DeviceID, ($_.FreeSpace/1GB), ($_.Size/1GB) }) -join '; '; \
+            top_processes = (Get-Process | Sort-Object CPU -Descending | Select-Object -First 8 | ForEach-Object { '{0} {1} cpu {2:N0}s mem {3:N0} MB' -f $_.Id, $_.ProcessName, $_.CPU, ($_.WS/1MB) }) -join '; ' } | ConvertTo-Json -Compress";
+        let mut c = Command::new(self.settings().shell);
+        c.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+        let mut v: Value = shell::run(c, Duration::from_secs(20), 8000)
+            .ok()
+            .and_then(|r| r["stdout"].as_str().and_then(|s| serde_json::from_str(s).ok()))
+            .unwrap_or_else(|| json!({}));
+        v["hostname"] = json!(std::env::var("COMPUTERNAME").unwrap_or_default());
+        v["user"] = json!(std::env::var("USERNAME").unwrap_or_default());
+        v["cpus"] = json!(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
+        v
+    }
+
+    #[cfg(not(windows))]
     fn info(&self) -> Value {
         let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
         let out = |cmd: &str| {

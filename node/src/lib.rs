@@ -11,6 +11,8 @@
 
 pub mod coding;
 pub mod health;
+#[cfg(windows)]
+pub mod windows;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -51,38 +53,56 @@ pub struct NodeConfig {
 // ---- small helpers (shared with `lyra connect`)
 
 pub fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var).or_else(|| std::env::var_os("HOME")).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// `~` and `~/…` → the home directory.
+/// `~` and `~/…` (or `~\…`) → the home directory.
 pub fn expand(path: &str) -> PathBuf {
     match path.strip_prefix('~') {
         Some("") => home(),
-        Some(rest) if rest.starts_with('/') => home().join(rest.trim_start_matches('/')),
+        Some(rest) if rest.starts_with(['/', '\\']) => home().join(rest.trim_start_matches(['/', '\\'])),
         _ => PathBuf::from(path),
     }
 }
 
 pub fn config_dir() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return Some(PathBuf::from(std::env::var_os("APPDATA")?).join("lyra"));
+    }
     match std::env::var_os("XDG_CONFIG_HOME") {
         Some(d) if !d.is_empty() => Some(PathBuf::from(d).join("lyra")),
         _ => Some(PathBuf::from(std::env::var_os("HOME")?).join(".config/lyra")),
     }
 }
 
+/// The node's settings: `~/.config/lyra/node.toml`; on Windows (a service)
+/// `%ProgramData%\lyra\node.toml`.
 pub fn config_path() -> PathBuf {
+    if cfg!(windows) {
+        let data = std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("C:\\ProgramData"));
+        return data.join("lyra").join("node.toml");
+    }
     config_dir().unwrap_or_else(|| PathBuf::from("/etc/lyra")).join("node.toml")
 }
 
-/// Write a file only its owner can read.
+/// Write a file only its owner can read (on Windows: SYSTEM and Administrators).
 pub fn write_private(path: &Path, text: &str) -> Result<(), String> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path).map_err(|e| e.to_string())?;
-    f.write_all(text.as_bytes()).map_err(|e| e.to_string())
+    #[cfg(unix)]
+    let mut f = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path).map_err(|e| e.to_string())?
+    };
+    #[cfg(not(unix))]
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(path).map_err(|e| e.to_string())?;
+    f.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    windows::lock_down(path);
+    Ok(())
 }
 
 /// rustls needs one crypto provider picked for the process.
@@ -106,21 +126,42 @@ pub fn socket_url(base: &str, path: &str, token: &str) -> String {
     format!("{ws}/{path}?token={token}")
 }
 
+/// Root on Linux; an administrator on Windows.
 fn is_root() -> bool {
-    std::fs::read_to_string("/proc/self/status").is_ok_and(|s| s.lines().any(|l| l.starts_with("Uid:") && l.split_whitespace().nth(1) == Some("0")))
+    #[cfg(windows)]
+    {
+        windows::is_admin()
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::read_to_string("/proc/self/status").is_ok_and(|s| s.lines().any(|l| l.starts_with("Uid:") && l.split_whitespace().nth(1) == Some("0")))
+    }
 }
 
 fn hostname() -> String {
+    if cfg!(windows) {
+        return std::env::var("COMPUTERNAME").unwrap_or_default().to_lowercase();
+    }
     std::fs::read_to_string("/etc/hostname").map(|h| h.trim().to_string()).unwrap_or_default()
 }
 
 fn os_name() -> String {
-    std::fs::read_to_string("/etc/os-release")
-        .unwrap_or_default()
-        .lines()
-        .find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim_matches('"').to_string()))
-        .unwrap_or_default()
+    #[cfg(windows)]
+    {
+        windows::os_name()
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::read_to_string("/etc/os-release")
+            .unwrap_or_default()
+            .lines()
+            .find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim_matches('"').to_string()))
+            .unwrap_or_default()
+    }
 }
+
+/// The download this build updates from: `lyra-node`, or `lyra-node.exe` on Windows.
+pub const DOWNLOAD: &str = if cfg!(windows) { "lyra-node.exe" } else { "lyra-node" };
 
 /// The sha256 of this program's file (how lyra tells builds apart), for the
 /// standalone `lyra-node` (the full lyra can't update itself, and is big).
@@ -273,7 +314,7 @@ fn update(config: &NodeConfig) -> Result<Value, String> {
     let base = config.url.trim_end_matches('/');
     let client = http()?;
     let expected = client
-        .get(format!("{base}/download/lyra-node.sha256"))
+        .get(format!("{base}/download/{DOWNLOAD}.sha256"))
         .send()
         .and_then(|r| r.error_for_status())
         .and_then(|r| r.text())
@@ -284,7 +325,7 @@ fn update(config: &NodeConfig) -> Result<Value, String> {
         return Ok(json!({ "updated": false, "why": "already the server's version" }));
     }
     let bytes = client
-        .get(format!("{base}/download/lyra-node"))
+        .get(format!("{base}/download/{DOWNLOAD}"))
         .send()
         .and_then(|r| r.error_for_status())
         .and_then(|r| r.bytes())
@@ -296,19 +337,37 @@ fn update(config: &NodeConfig) -> Result<Value, String> {
     let exe = exe();
     let tmp = exe.with_extension("new");
     std::fs::write(&tmp, &bytes).map_err(|e| format!("can't write {}: {e}", tmp.display()))?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    }
+    // Windows can't replace a running program, but it can move it aside.
+    #[cfg(windows)]
+    {
+        let old = exe.with_extension("old");
+        let _ = std::fs::remove_file(&old);
+        std::fs::rename(&exe, &old).map_err(|e| format!("can't move {} aside: {e}", exe.display()))?;
+    }
     std::fs::rename(&tmp, &exe).map_err(|e| format!("can't replace {}: {e}", exe.display()))?;
     Ok(json!({ "updated": true, "from": &current[..12.min(current.len())], "to": &expected[..12.min(expected.len())] }))
 }
 
-/// Restart as the (new) program in place, same pid, same arguments.
+/// Restart as the (new) program in place, same pid, same arguments. (On
+/// Windows the service ends and its recovery setting starts the new one.)
 fn restart_in_place() -> ! {
-    use std::os::unix::process::CommandExt;
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let err = std::process::Command::new(exe()).args(args).exec();
-    eprintln!("lyra-node: couldn't restart after updating: {err}");
-    std::process::exit(1);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let err = std::process::Command::new(exe()).args(args).exec();
+        eprintln!("lyra-node: couldn't restart after updating: {err}");
+        std::process::exit(1);
+    }
+    #[cfg(not(unix))]
+    {
+        std::process::exit(3);
+    }
 }
 
 /// The service unit's path for this user (root: a system service).
@@ -327,6 +386,18 @@ fn systemctl(args: &[&str]) -> bool {
 /// Remove this node from the machine: its service, its settings and (the
 /// standalone build) its program. Returns what was removed.
 fn uninstall() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        windows::uninstall()
+    }
+    #[cfg(not(windows))]
+    {
+        uninstall_unix()
+    }
+}
+
+#[cfg(not(windows))]
+fn uninstall_unix() -> Vec<String> {
     let mut removed = Vec::new();
     let unit = unit_path();
     if unit.exists() {
@@ -531,7 +602,7 @@ async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System
 }
 
 /// `lyra-node` (no arguments): stay connected, reconnecting with a growing pause.
-fn run() {
+pub(crate) fn run() {
     let path = config_path();
     let config: NodeConfig = match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| toml::from_str(&t).map_err(|e| e.to_string())) {
         Ok(c) => c,
@@ -553,6 +624,7 @@ fn run() {
             }
             End::Removed => {
                 // Last: stop the service (if any) so it doesn't come back.
+                #[cfg(not(windows))]
                 systemctl(&["stop", "--no-block", "lyra-node"]);
                 std::process::exit(0);
             }
@@ -657,6 +729,31 @@ pub fn main(args: &[String]) {
                 std::process::exit(1);
             }
         },
+        #[cfg(windows)]
+        Some("install") => {
+            let flag = |n: &str| args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned();
+            let Some(url) = flag("--url") else {
+                eprintln!("usage: lyra-node.exe install --url <https://lyra…> [--name NAME]");
+                std::process::exit(2);
+            };
+            let name = flag("--name").unwrap_or_else(hostname);
+            match windows::install(&url, &name) {
+                Ok(text) => println!("{text}"),
+                Err(e) => {
+                    eprintln!("lyra-node: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        #[cfg(windows)]
+        Some("service-run") => {
+            if let Err(e) = windows::run_service() {
+                eprintln!("lyra-node: {e}");
+                std::process::exit(1);
+            }
+        }
+        #[cfg(windows)]
+        Some("uninstall") => println!("removed: {}", uninstall().join(", ")),
         Some("version" | "--version") => println!("lyra-node {VERSION} ({})", &own_hash()[..12.min(own_hash().len())]),
         Some("-h" | "--help" | "help") => println!("{USAGE}"),
         None => run(),

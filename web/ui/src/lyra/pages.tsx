@@ -61,7 +61,8 @@ export function MachinesPage({ mention, toStatus, toChat }: { mention: (name: st
   const [copied, setCopied] = useState(false);
   const [rules, setRules] = useState<string | null>(null);
   const machines = status.machines_detail ?? [];
-  const install = `curl -fsSL ${location.origin}/install.sh | sh -s -- --name NAME`;
+  const [platform, setPlatform] = useState<"linux" | "windows">("linux");
+  const install = platform === "linux" ? `curl -fsSL ${location.origin}/install.sh | sh -s -- --name NAME` : `irm ${location.origin}/install.ps1 | iex`;
   return (
     <Page
       title="Machines"
@@ -166,7 +167,18 @@ export function MachinesPage({ mention, toStatus, toChat }: { mention: (name: st
       <Card className="py-4">
         <CardHeader className="px-4">
           <CardTitle className="text-base">Add a machine</CardTitle>
-          <CardDescription>On the machine (x86_64 Linux), run this — then approve its pairing request here.</CardDescription>
+          <CardDescription>
+            {platform === "linux"
+              ? "On the machine (x86_64 Linux), run this — then approve its pairing request here."
+              : "On the PC, open PowerShell as administrator and run this — it installs the lyra node service; then approve its pairing request here."}
+          </CardDescription>
+          <CardAction className="flex gap-1">
+            {(["linux", "windows"] as const).map((p) => (
+              <Button key={p} size="sm" variant={platform === p ? "secondary" : "ghost"} className="h-7 text-xs" onClick={() => setPlatform(p)}>
+                {p === "linux" ? "Linux" : "Windows"}
+              </Button>
+            ))}
+          </CardAction>
         </CardHeader>
         <CardContent className="flex gap-2 px-4">
           <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-md bg-black/40 px-3 py-2 font-mono text-cyan-300 text-sm">{install}</code>

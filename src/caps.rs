@@ -79,6 +79,10 @@ pub trait Remote: Send + Sync {
     fn harnesses(&self) -> Vec<(String, Value)> {
         Vec::new()
     }
+    /// Connected machines running Windows (their commands are PowerShell).
+    fn windows_machines(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// What the machine lyra itself runs on is called in the `machine` argument.
@@ -92,7 +96,7 @@ fn remote_machine(args: &Value) -> Option<String> {
 
 /// The system tools as capabilities; with machines connected, each (but
 /// `ssh_run`) can be pointed at one of them.
-fn system_tools(machines: &[(String, bool)]) -> Vec<Capability> {
+fn system_tools(machines: &[(String, bool)], windows: &[String]) -> Vec<Capability> {
     lyra_system::specs()
         .into_iter()
         .map(|s| {
@@ -105,7 +109,13 @@ fn system_tools(machines: &[(String, bool)]) -> Vec<Capability> {
             c.input_schema = s.parameters;
             if !machines.is_empty() && s.name != "ssh_run" {
                 let names: Vec<String> = std::iter::once(HERE.to_string()).chain(machines.iter().map(|m| m.0.clone())).collect();
-                let listed: Vec<String> = machines.iter().map(|(m, on)| format!("{m} ({})", if *on { "online" } else { "offline now" })).collect();
+                let listed: Vec<String> = machines
+                    .iter()
+                    .map(|(m, on)| {
+                        let win = if windows.iter().any(|w| w.eq_ignore_ascii_case(m)) { ", Windows: use PowerShell commands and Windows paths" } else { "" };
+                        format!("{m} ({}{win})", if *on { "online" } else { "offline now" })
+                    })
+                    .collect();
                 c.input_schema["properties"]["machine"] = json!({
                     "type": "string",
                     "enum": names,
@@ -529,7 +539,8 @@ impl Caps {
             if !machines.is_empty() {
                 caps.push(fleet_capability(&machines, &self.groups));
             }
-            caps.extend(system_tools(&machines));
+            let windows = self.remote.get().map(|r| r.windows_machines()).unwrap_or_default();
+            caps.extend(system_tools(&machines, &windows));
         }
         caps.extend(self.openapi.iter().flat_map(OpenApiClient::capabilities));
         caps.extend(self.mcp.iter().flat_map(McpClient::capabilities));

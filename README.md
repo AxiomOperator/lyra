@@ -1144,6 +1144,43 @@ Where it shows:
   gives the full report.
 - **`lyra connect`:** the side panel lists problems under each machine.
 
+### Windows machines
+
+lyra-node also runs on 64-bit Windows, as a service. In PowerShell **as administrator**:
+
+```powershell
+irm https://lyra.example.com/install.ps1 | iex
+# or with a name: & ([scriptblock]::Create((irm https://lyra.example.com/install.ps1))) -Name office-pc
+```
+
+**What the installer does:**
+- downloads `lyra-node.exe` and checks it against the server's checksum
+- installs it to `C:\Program Files\lyra`, with settings in `C:\ProgramData\lyra\node.toml`
+  (readable by SYSTEM and Administrators only)
+- asks lyra to pair: approve the request in the app, which shows the code to compare
+- starts it as the **lyra node** service (automatic, runs at boot as LocalSystem). The
+  Machines page's "Add a machine" card has a Windows tab with this command.
+
+**Commands on Windows** are PowerShell (`pwsh` when installed, else Windows PowerShell), judged
+by the same rules as on Linux:
+- *Run at once (read-only):* Get-, Test-, Select-, Measure- and other reading verbs, and tools
+  like ipconfig, systeminfo, tasklist, netstat, `ping -n`, `git status`.
+- *Ask first (changes):* Set-, New-, Copy-, Start-, Restart- and anything unknown.
+- *Warn (dangerous):* Remove-Item, Stop-Process, taskkill, `reg delete`, Restart-Computer,
+  Invoke-Expression.
+- *Never run:* wiping a drive, `C:\Windows`, the user profiles or Program Files.
+
+**Off limits by default:** credentials, browser profiles and lyra's own settings.
+
+**Same as Linux nodes:**
+- **Health:** disks, memory, CPU, uptime, automatic services that are stopped, and pending
+  Windows updates.
+- **Management:** `/machines update` replaces the program, and the service's recovery setting
+  restarts it. `/machines remove` deletes the service, its settings and the program.
+
+**One limit:** as a LocalSystem service it doesn't see coding agents (Claude Code, OpenCode)
+that are logged in under your own account.
+
 ### Terminals: `lyra connect`
 
 `lyra connect` is the terminal UI for the server: the same chat, Markdown,
