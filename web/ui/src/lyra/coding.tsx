@@ -178,7 +178,11 @@ interface Job {
 export function CodingPage({ onBack }: { onBack: () => void }) {
   const [jobs] = useData<Job[]>("coding");
   const { status } = useLyra();
-  const machines = (status.machines_detail ?? []).filter((m) => m.online && m.harnesses && Object.keys(m.harnesses).length);
+  // The server first (where coding work runs unless a machine is named), then machines that have agents.
+  const places: { name: string; harnesses: Record<string, string> }[] = [
+    { name: "server", harnesses: status.server_harnesses ?? {} },
+    ...(status.machines_detail ?? []).filter((m) => m.online).map((m) => ({ name: m.name, harnesses: m.harnesses ?? {} })),
+  ].filter((p) => Object.keys(p.harnesses).length);
   return (
     <Page
       title="Coding"
@@ -192,17 +196,23 @@ export function CodingPage({ onBack }: { onBack: () => void }) {
       <Card className="py-4">
         <CardHeader className="px-4">
           <CardTitle className="text-base">Coding agents</CardTitle>
-          <CardDescription>Ask in chat: "fix the failing test in ~/Projects/foo on @desktop", "have Claude Code refactor …".</CardDescription>
+          <CardDescription>
+            Ask in chat: "fix the failing test in ~/Projects/foo", "have Claude Code refactor …". Work runs on the server unless you name a machine ("… on @desktop").
+          </CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-wrap gap-2 px-4">
-          {machines.length === 0 && <span className="text-muted-foreground text-sm">No connected machine has Claude Code or OpenCode.</span>}
-          {machines.map((m) =>
-            Object.entries(m.harnesses ?? {}).map(([h, v]) => (
-              <Badge key={m.name + h} variant="outline">
-                {title(h)} {String(v).split(" ")[0]} · {m.name}
-              </Badge>
-            )),
-          )}
+        <CardContent className="space-y-2 px-4">
+          {places.length === 0 && <span className="text-muted-foreground text-sm">Neither the server nor a connected machine has Claude Code or OpenCode.</span>}
+          {places.map((p) => (
+            <div key={p.name} className="flex flex-wrap items-center gap-2">
+              <span className="w-20 shrink-0 font-medium text-sm">{p.name}</span>
+              {p.name === "server" && <Badge variant="secondary">default</Badge>}
+              {Object.entries(p.harnesses).map(([h, v]) => (
+                <Badge key={h} variant="outline">
+                  {title(h)} {String(v).split(" ")[0]}
+                </Badge>
+              ))}
+            </div>
+          ))}
         </CardContent>
       </Card>
       {(jobs ?? []).length === 0 && <p className="text-muted-foreground text-sm">No coding jobs yet.</p>}
