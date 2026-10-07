@@ -876,7 +876,9 @@ impl MemoryManager {
     /// memories and record an episode, each through the usual checks.
     /// `similar` are the memories the reviewer was shown (ids it may target).
     /// Returns notes for the log.
-    pub async fn apply_capture(&self, plan: capture::Plan, similar: &[Memory], run: Option<Uuid>, started: Option<DateTime<Utc>>) -> Result<Vec<String>> {
+    /// `scope`: everything goes there whatever the model said (a person's own
+    /// capture, `user:<id>`); `similar` must come from it too.
+    pub async fn apply_capture(&self, plan: capture::Plan, similar: &[Memory], run: Option<Uuid>, started: Option<DateTime<Utc>>, scope: Option<&str>) -> Result<Vec<String>> {
         let mut notes = Vec::new();
         let target = |key: &str| similar.iter().find(|m| !key.is_empty() && m.id.to_string().starts_with(key.trim_matches(['[', ']'])));
         for item in plan.memories {
@@ -885,7 +887,13 @@ impl MemoryManager {
                 continue;
             }
             let new = NewMemory {
-                scope: if item.scope.trim().is_empty() { self.settings().default_scope.clone() } else { item.scope.trim().to_string() },
+                scope: match scope {
+                    Some(s) => s.to_string(),
+                    None if item.scope.trim().is_empty() => self.settings().default_scope.clone(),
+                    // Nobody's own memories by the model's choice.
+                    None if personal(item.scope.trim()) => self.settings().default_scope.clone(),
+                    None => item.scope.trim().to_string(),
+                },
                 kind: item.kind.parse().unwrap_or(MemoryKind::Semantic),
                 content: item.content.clone(),
                 tags: item.tags.clone(),
@@ -912,7 +920,7 @@ impl MemoryManager {
             notes.push(result.unwrap_or_else(|e| format!("skipped: {e:#}")));
         }
         if let Some(ep) = plan.episode.filter(|e| !e.summary.trim().is_empty()) {
-            let scope = self.settings().default_scope.clone();
+            let scope = scope.map_or_else(|| self.settings().default_scope.clone(), str::to_string);
             match self.add_episode(&scope, &ep.summary, &ep.outcome, ep.entities, run, started).await {
                 Ok(m) => notes.push(format!("episode [{}] {}", m.short_id(), truncate(&ep.summary, 60))),
                 Err(e) => notes.push(format!("episode skipped: {e:#}")),
@@ -1391,6 +1399,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_persons_capture_stays_in_their_scope() {
+        let m = manager(Settings::default()).await;
+        let plan = capture::Plan {
+            memories: vec![
+                Item { action: "create".into(), content: "Dana's standup is at 9:15.".into(), scope: "user".into(), ..Item::default() },
+                Item { action: "create".into(), content: "The Phones project is hers.".into(), scope: "project:phones".into(), ..Item::default() },
+            ],
+            episode: Some(EpisodeItem { summary: "Planned Dana's week.".into(), outcome: "Done.".into(), entities: vec![] }),
+        };
+        m.apply_capture(plan, &[], None, None, Some("user:dana")).await.unwrap();
+        let all = m.list(&Filter { scope: Some("user:dana".into()), ..Filter::default() }, 10).await.unwrap();
+        assert_eq!(all.len(), 3, "both facts and the episode, whatever scope the model said: {all:?}");
+        assert!(m.list(&Filter::default(), 10).await.unwrap().is_empty(), "nothing anywhere else");
+        // And the owner's capture can't be steered into someone's own memories.
+        let sneaky = capture::Plan { memories: vec![Item { action: "create".into(), content: "Dana owes me lunch.".into(), scope: "user:dana".into(), ..Item::default() }], episode: None };
+        m.apply_capture(sneaky, &[], None, None, None).await.unwrap();
+        let theirs = m.list(&Filter { scope: Some("user:dana".into()), ..Filter::default() }, 10).await.unwrap();
+        assert_eq!(theirs.len(), 3, "not added to Dana's");
+        assert_eq!(m.list(&Filter::default(), 10).await.unwrap()[0].scope, "user");
+    }
+
+    #[tokio::test]
     async fn capture_plans_create_update_supersede_and_record_episodes() {
         let m = manager(Settings::default()).await;
         let port = m.remember(fact("project:api", "The API listens on port 8000.")).await.unwrap().memory().clone();
@@ -1405,7 +1435,7 @@ mod tests {
             ],
             episode: Some(EpisodeItem { summary: "Moved the API to port 8080.".into(), outcome: "Done.".into(), entities: vec!["api".into()] }),
         };
-        let notes = m.apply_capture(plan, &[port.clone(), typo.clone()], None, None).await.unwrap();
+        let notes = m.apply_capture(plan, &[port.clone(), typo.clone()], None, None, None).await.unwrap();
         assert_eq!(notes.len(), 5, "{notes:?}");
         assert!(notes[3].starts_with("skipped: not stored"), "{notes:?}");
         assert_eq!(m.get(port.id).await.unwrap().unwrap().status, MemoryStatus::Superseded);

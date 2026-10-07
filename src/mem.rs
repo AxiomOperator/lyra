@@ -217,6 +217,8 @@ impl Mem {
     /// Ask the chat model what the turn taught that's worth remembering (M2,
     /// M3, M8), and store it.
     /// `started` is when the conversation (or plan) began, for episodes.
+    /// `scope`: a person's own (`user:<id>`): only their memories are looked
+    /// at, and everything learned goes there.
     #[allow(clippy::too_many_arguments)]
     pub fn capture(
         &self,
@@ -227,18 +229,20 @@ impl Mem {
         query: &str,
         run: Option<Uuid>,
         started: Option<chrono::DateTime<chrono::Utc>>,
+        scope: Option<&str>,
     ) -> Review<Vec<String>> {
-        let similar: Vec<Memory> = match self.recall(None, query, 6, false) {
+        let similar: Vec<Memory> = match self.recall(scope, query, 6, false) {
             Ok(r) => r.into_iter().map(|r| r.memory).collect(),
             Err(e) => return Review { outcome: Err(e), usage: None },
         };
-        let prompt = capture::prompt(reason, transcript, &similar, &self.manager.settings().default_scope);
+        let default_scope = scope.map_or_else(|| self.manager.settings().default_scope.clone(), str::to_string);
+        let prompt = capture::prompt(reason, transcript, &similar, &default_scope);
         let (reply, usage) = match complete(url, model, capture::SYSTEM_PROMPT, &prompt) {
             Ok(r) => r,
             Err(e) => return Review { outcome: Err(e), usage: None },
         };
         let outcome = capture::parse(&reply).and_then(|plan| {
-            let mut notes = self.run(self.manager.apply_capture(plan, &similar, run, started))?;
+            let mut notes = self.run(self.manager.apply_capture(plan, &similar, run, started, scope))?;
             notes.extend(self.backfill());
             Ok(notes)
         });

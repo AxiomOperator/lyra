@@ -490,7 +490,7 @@ mod tests {
     fn each_persons_routines_are_their_own() {
         let owner = dir().unwrap();
         assert!(owner.ends_with("routines") && !owner.to_string_lossy().contains("/users/"));
-        let dana = crate::acting::run("oid-dana", || dir()).unwrap();
+        let dana = crate::acting::run("oid-dana", dir).unwrap();
         assert!(dana.ends_with("users/oid-dana/routines"), "{}", dana.display());
         assert_eq!(dir().unwrap(), owner, "back to the owner afterwards");
         crate::acting::run("oid-dana", || request_run("standup"));

@@ -1782,10 +1782,8 @@ impl App {
     /// Review the turn just finished for things worth remembering (M2, M8):
     /// after every turn when the capture trigger fires, or on `/memory episode`.
     fn capture(&mut self, episode: bool) {
-        // Only from the owner's conversations (what's learned elsewhere isn't theirs).
-        if self.personal().is_some() {
-            return;
-        }
+        // Anyone but the owner: captured into their own memories only.
+        let scope = self.personal().map(|u| format!("user:{u}"));
         let Some(mem) = self.mem() else { return };
         if self.capturing || (!episode && mem.manager.settings().capture == CaptureMode::Off) {
             return;
@@ -1832,7 +1830,7 @@ impl App {
                     }
                 },
             };
-            let review = mem.capture(&url, &model, reason, &transcript, &query, run, Some(started));
+            let review = mem.capture(&url, &model, reason, &transcript, &query, run, Some(started), scope.as_deref());
             let _ = tx.send(StreamEvent::MemoryReview { curation: false, review });
         });
     }
@@ -2047,7 +2045,7 @@ impl App {
                 };
                 let _ = tx.send(StreamEvent::MemoryNotes(vec![note]));
                 let reason = "a plan finished; keep the durable facts it discovered or changed (state, configuration, decisions), not the steps themselves";
-                let review = mem.capture(&url, &model, reason, &transcript, &goal_text_for(&transcript), Some(plan_id), Some(started));
+                let review = mem.capture(&url, &model, reason, &transcript, &goal_text_for(&transcript), Some(plan_id), Some(started), None);
                 let _ = tx.send(StreamEvent::MemoryReview { curation: false, review });
             });
             self.capturing = true;

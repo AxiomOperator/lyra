@@ -954,8 +954,10 @@ owner's stay where they are):
 - **Briefings:** a coworker's morning briefing also covers their own routine runs and goals.
 
 What stays shared, and what each person keeps:
-- **Learning:** skills, evolution and automatic memory capture learn only from the owner's
-  conversations.
+- **Learning:** skills and evolution learn only from the owner's conversations. Automatic
+  memory capture works for everyone, but each person's capture compares against their own
+  memories and saves only into their own scope, whatever the model suggests. The owner's
+  capture can never write into anyone else's.
 - **Working memory** is the owner's alone.
 - **Tools with lyra's own credentials** (OpenAPI and MCP providers), plus machines, coding
   agents and the agent wizard, are admins'. A member's agents can't hand work to the Operator
