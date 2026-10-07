@@ -964,6 +964,24 @@ max_share = 0.5
 # enabled = true
 ```
 
+## Your writing style
+
+lyra learns how each person writes from their own sent mail. It uses only their own words:
+quoted replies, forwarded mail and "Sent from my iPhone" are cut off. It keeps a short
+description in their own `STYLE.md` (the owner's in `~/.lyra/context/`, anyone else's in
+`~/.lyra/users/<id>/`): greetings and sign-offs, length, tone, favourite phrases, formatting,
+and how they ask for things.
+
+lyra uses it whenever it writes as them: replies and messages drafted in chat, and the drafts
+proactive triage leaves in Drafts. The file has two parts:
+- **Learned** is refreshed from their mail each week. It's learned first once mail is
+  connected.
+- **Your notes** are their corrections, which always win and are never overwritten. Say
+  "don't sign off with Thanks" in chat and lyra keeps it there, or use `/style note <text>`.
+
+`/style` shows it, `/style learn` learns it again now, and `/style clear notes` drops the
+corrections.
+
 ## Proactive help
 
 For anyone with Outlook connected, during the working day (`[planner]` hours):

@@ -31,6 +31,7 @@ mod serve;
 mod secrets;
 mod sessions;
 mod stats;
+mod style;
 mod status;
 mod tools;
 mod websearch;
@@ -680,6 +681,8 @@ impl App {
         let member = !self.admin;
         let viewer = self.personal();
         let goals_section = self.goals.as_ref().and_then(|g| g.prompt_section());
+        // How this person writes, for anything lyra writes as them.
+        let style_section = style::section(&self.owner);
         let mut agent_env = self.agent_env();
         // `@desktop`: that machine is where system work goes.
         if let (Some(env), Some(caps)) = (agent_env.as_mut(), &self.caps) {
@@ -702,6 +705,9 @@ impl App {
                 }
             }
             if let Some(section) = &goals_section {
+                add_to_system(&mut history, section);
+            }
+            if let Some(section) = &style_section {
                 add_to_system(&mut history, section);
             }
             if let Some(tools) = &tools {
@@ -1496,6 +1502,10 @@ impl App {
             "/calendar" => calendar::command(arg, &self.owner.clone()),
             "/mail" => crate::acting::run(&self.owner.clone(), || mail::command(arg)),
             "/today" => crate::acting::run(&self.owner.clone(), || planner::command(arg)),
+            "/style" => {
+                let (url, model) = (format!("{}/chat/completions", self.base_url.trim_end_matches('/')), self.model.clone());
+                crate::acting::run(&self.owner.clone(), || style::command(arg, &url, &model))
+            }
             // In the person's own PMI account.
             "/pmi" => pmi::as_user(&self.owner.clone(), || pmi::command(arg)),
             "/tasks" => pmi::as_user(&self.owner.clone(), || pmi::tasks_text(arg)),
@@ -2921,7 +2931,7 @@ fn member_may(name: &str, arg: &str) -> bool {
     match name {
         "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" => true,
         // Their own PMI account, routines and goals.
-        "/pmi" | "/tasks" | "/task" | "/routine" | "/routines" | "/calendar" | "/mail" | "/today" => true,
+        "/pmi" | "/tasks" | "/task" | "/routine" | "/routines" | "/calendar" | "/mail" | "/today" | "/style" => true,
         // Looking after their own memories (held to their scope there).
         "/memory" => matches!(arg.split_whitespace().next().unwrap_or(""), "inspect" | "forget" | "archive" | "restore" | "correct"),
         // Goals are tracked and planned, never worked on unattended: no plans,
@@ -2988,6 +2998,7 @@ pub(crate) const COMMANDS: &str = "\
 /pmi [token <token>]         the PMI connection (your project-management app)
 /calendar [today|tomorrow|week|<day>|disconnect]   your Outlook calendar (connect it from More in the app)
 /today [plan]                plan my day: meetings, focus blocks for tasks due soon, mail to answer first (plan: re-plan now)
+/style [learn|note <text>|clear notes]   how you write, learned from your sent mail (used for drafts)
 /mail [all|search <words>]   your Outlook inbox: new mail from people (all: newsletters too)
 /briefing [now]              the daily briefing: what happened and what needs a look ([briefing] schedule)
 /status [now]                everything lyra depends on: models, search, APIs, address, storage, backups, machines

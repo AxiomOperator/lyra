@@ -576,6 +576,7 @@ impl Caps {
         if crate::calendar::available() {
             caps.extend(crate::calendar::capabilities());
             caps.extend(crate::mail::capabilities());
+            caps.extend(crate::style::capabilities());
         }
         if self.system.as_ref().is_some_and(|s| s.settings().enabled) {
             let machines = self.machines();
@@ -852,6 +853,7 @@ impl Caps {
                 Some(ask) if !approved => Err(format!("{} needs the user's approval ({})", c.name, ask.what)),
                 _ => crate::mail::call(&c.name, &args),
             },
+            _ if c.source == "style" => crate::style::call(&c.name, &args),
             _ if c.source == "routines" => crate::routines::call(&c.name, &args),
             _ if c.source == "web" => match &self.search {
                 Some(s) => crate::websearch::call(s, &c.name, &args),

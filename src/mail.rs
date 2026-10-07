@@ -94,6 +94,35 @@ pub fn inbox(unread: bool, focused: bool, count: usize) -> Result<Vec<Value>, St
     list(&format!("/me/mailFolders/inbox/messages?$top={}&$select={SELECT}&$orderby=receivedDateTime desc{filter}", count.clamp(1, 50)))
 }
 
+/// Only what the sender wrote: quoted replies, forwarded mail and phone
+/// signatures cut off.
+pub fn own_text(body: &str) -> String {
+    let mut out = Vec::new();
+    for line in body.lines() {
+        let t = line.trim();
+        let quote_start = t.starts_with("-----Original Message")
+            || t.starts_with("________________________________")
+            || (t.starts_with("From:") && !out.is_empty())
+            || (t.starts_with("On ") && t.ends_with("wrote:"))
+            || t.starts_with("Sent from my ")
+            || t.starts_with("Get Outlook for ");
+        if quote_start {
+            break;
+        }
+        if !t.starts_with('>') {
+            out.push(line.trim_end());
+        }
+    }
+    out.join("\n").trim().to_string()
+}
+
+/// The person's own words from their latest sent mail (to learn how they write).
+pub fn sent_texts(n: usize) -> Result<Vec<String>, String> {
+    ready()?;
+    let found = list(&format!("/me/mailFolders/sentitems/messages?$top={}&$orderby=sentDateTime desc&$select=body,subject", n.clamp(1, 50)))?;
+    Ok(found.iter().map(|m| own_text(m["body"]["content"].as_str().unwrap_or(""))).filter(|t| !t.is_empty()).collect())
+}
+
 /// Mail sent between two times (for follow-ups).
 pub fn sent_between(from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<Value>, String> {
     ready()?;
@@ -377,6 +406,14 @@ mod tests {
         assert!(html("<p>already <b>html</b></p>").contains("<p>already <b>html</b></p>"), "HTML stays");
         let reply = above_quote("<html><head><style></style></head><body dir=\"ltr\"><div>original</div></body></html>", "<p>yes</p>");
         assert_eq!(reply, "<html><head><style></style></head><body dir=\"ltr\"><p>yes</p><br><div>original</div></body></html>");
+    }
+
+    #[test]
+    fn only_the_senders_own_words() {
+        let body = "Hi Dana,\n\nSure, I'll send it Friday.\n\nThanks,\nGarrett\n\nSent from my iPhone\n\nFrom: Dana <d@x.org>\nSent: Monday\n> old";
+        assert_eq!(own_text(body), "Hi Dana,\n\nSure, I'll send it Friday.\n\nThanks,\nGarrett");
+        assert_eq!(own_text("Yes.\n________________________________\nFrom: x"), "Yes.");
+        assert_eq!(own_text("Agreed.\n\nOn Tue, Oct 6, Dana wrote:\n> numbers?"), "Agreed.");
     }
 
     #[test]

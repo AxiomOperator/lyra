@@ -64,6 +64,9 @@ pub struct Seen {
     pub mail_since: Option<DateTime<Utc>>,
     #[serde(default)]
     pub last_followups: Option<DateTime<Utc>>,
+    /// The last try at learning how they write.
+    #[serde(default)]
+    pub style_tried: Option<DateTime<Utc>>,
 }
 
 fn path() -> Option<PathBuf> {
@@ -204,7 +207,12 @@ pub fn triage_mail(seen: &mut Seen, url: &str, model: &str) -> Vec<String> {
         seen.mail.insert(id.to_string(), Utc::now());
         let Ok(full) = crate::mail::call("mail_read", &json!({ "id": id })) else { continue };
         let text = format!("From: {}\nSubject: {}\n\n{}", full["from"].as_str().unwrap_or(""), full["subject"].as_str().unwrap_or(""), full["text"].as_str().unwrap_or("").chars().take(4000).collect::<String>());
-        let Some(t) = crate::learn::complete(url, model, TRIAGE, &text).ok().and_then(|(r, _)| parse_triage(&r)) else { continue };
+        // Drafts in their own voice when lyra knows it.
+        let system = match crate::style::section(&user) {
+            Some(st) => format!("{TRIAGE}\n\n{st}"),
+            None => TRIAGE.to_string(),
+        };
+        let Some(t) = crate::learn::complete(url, model, &system, &text).ok().and_then(|(r, _)| parse_triage(&r)) else { continue };
         if !t.needs_user {
             continue;
         }
@@ -298,6 +306,13 @@ pub fn pass(url: &str, model: &str, mail_due: bool) -> Pass {
         }
     }
     if mail_due {
+        // How they write: learned once mail is connected, again each week (tried once a day).
+        if crate::mail::connected_for(&user) && crate::style::stale(&user) && seen.style_tried.is_none_or(|t| now - t > Duration::hours(20)) {
+            seen.style_tried = Some(now);
+            if let Ok(line) = crate::style::learn(url, model) {
+                out.done.push(line);
+            }
+        }
         out.done.extend(triage_mail(&mut seen, url, model));
         out.done.extend(followups(&mut seen));
     }
