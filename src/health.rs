@@ -125,7 +125,7 @@ pub fn describe(name: &str, h: &Value) -> String {
         out.push(format!("  ⚠ {}", p.text));
     }
     for d in h["disks"].as_array().into_iter().flatten() {
-        out.push(format!("  disk {}: {}% used, {} free", d["mount"].as_str().unwrap_or("?"), d["used_pct"].as_u64().unwrap_or(0), kb(d["avail_kb"].as_u64().unwrap_or(0))));
+        out.push(format!("  disk {} {}% used, {} free", d["mount"].as_str().unwrap_or("?"), d["used_pct"].as_u64().unwrap_or(0), kb(d["avail_kb"].as_u64().unwrap_or(0))));
     }
     if let Some(m) = h["memory"].as_object() {
         out.push(format!("  memory: {}% used of {}", m["used_pct"].as_u64().unwrap_or(0), kb(m["total_kb"].as_u64().unwrap_or(0))));
