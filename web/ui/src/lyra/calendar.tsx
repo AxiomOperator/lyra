@@ -41,15 +41,17 @@ export function CalendarCard() {
         </CardTitle>
         <CardDescription>
           {cal.connected
-            ? cal.mail
-              ? "Calendar and mail: lyra sees your meetings and inbox, finds free time and drafts invites and replies. Anything sent or seen by others waits for your Approve."
-              : "Calendar only. Connect again to let lyra read your mail and draft replies (sending always waits for your Approve)."
+            ? cal.teams
+              ? "Calendar, mail, Teams chats and files: lyra sees your meetings, inbox, chats and documents, and drafts invites and replies. Anything sent or seen by others waits for your Approve."
+              : cal.mail
+                ? "Calendar and mail. Connect again to add your Teams chats and OneDrive/SharePoint files (read-only)."
+                : "Calendar only. Connect again to let lyra read your mail and draft replies (sending always waits for your Approve)."
             : "Connect your own Outlook: today's meetings and new mail in your briefing, free time, and invites and replies drafted for your approval."}
         </CardDescription>
         <CardAction className="flex gap-1">
-          {cal.connected && !cal.mail && (
+          {cal.connected && !cal.teams && (
             <Button size="sm" onClick={() => void connect()}>
-              <Link2 /> Add mail
+              <Link2 /> {cal.mail ? "Add Teams & files" : "Add mail"}
             </Button>
           )}
           {cal.connected ? (

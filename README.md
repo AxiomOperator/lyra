@@ -892,7 +892,7 @@ nag_max = 3
 # enabled = true
 ```
 
-## Outlook: calendar and mail
+## Microsoft 365: calendar, mail, Teams and files
 
 Each person can connect their own Outlook calendar from the app (More → Outlook calendar →
 **Connect**). It uses the same Microsoft app as signing in. The account connected must be the
@@ -923,10 +923,20 @@ Each person's briefing gets a **Mail** section: new mail from people since the l
 (Outlook's Focused inbox, so not newsletters) and what's flagged. The Tasks page shows the
 inbox. In the terminal, `/mail [all|search <words>]`.
 
+**Teams and files** (read-only) come with the same connection too.
+- **Teams chats:** "Any new Teams messages?", "What did Juan say in our chat?". Each person's
+  briefing gets a **Teams** section listing chats with something unread.
+- **OneDrive and SharePoint:** "Find the firewall plan", "Summarize the Q4 budget spreadsheet".
+  lyra reads the text of Word, Excel, PowerPoint, text and CSV files; PDFs and other files
+  give their link.
+- **Attaching:** "Attach it to the reply to Dana." The file is attached if it's up to 3 MB,
+  otherwise a link goes into the draft. Sending still waits for your Allow.
+
 Setup, once, in the Entra admin center: in the lyra app registration, go to API permissions →
 Add → Microsoft Graph → Delegated. Add **Calendars.ReadWrite**, **Mail.ReadWrite**,
-**Mail.Send** and **offline_access**, then choose **Grant admin consent**. Anyone who
-connected before mail existed reconnects once (More → Outlook → **Add mail**).
+**Mail.Send**, **Chat.Read**, **Files.Read.All** and **offline_access**, then choose **Grant
+admin consent**. Anyone who connected before reconnects once (More → Outlook → **Add mail** /
+**Add Teams & files**).
 
 ## Plan my day
 

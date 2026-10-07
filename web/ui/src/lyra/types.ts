@@ -416,6 +416,8 @@ export interface CalendarToday {
   connected?: boolean;
   /** The connection includes mail. */
   mail?: boolean;
+  /** …and Teams chats and files. */
+  teams?: boolean;
   error?: string;
   events?: CalEvent[];
   clashes?: string[];

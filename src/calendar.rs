@@ -42,9 +42,13 @@ pub fn has(user: &str, scope: &str) -> bool {
     granted(user).iter().any(|s| s.eq_ignore_ascii_case(scope) || s.to_lowercase().ends_with(&format!("/{}", scope.to_lowercase())))
 }
 
-/// "calendar and mail" / "calendar".
+/// "calendar, mail, Teams and files" / "calendar and mail" / "calendar".
 pub fn granted_text(user: &str) -> String {
-    if has(user, "Mail.ReadWrite") { "calendar and mail".into() } else { "calendar".into() }
+    match (has(user, "Mail.ReadWrite"), has(user, "Chat.Read")) {
+        (_, true) => "calendar, mail, Teams and files".into(),
+        (true, false) => "calendar and mail".into(),
+        _ => "calendar".into(),
+    }
 }
 
 /// Keep what Microsoft granted (its answer lists scopes with spaces; kept with commas).
@@ -80,7 +84,14 @@ fn access(user: &str) -> Result<String, String> {
     let refresh = crate::secrets::token_for("graph", user).ok_or("your Outlook calendar isn't connected: More → Connect Outlook calendar in the app")?;
     let entra = ENTRA.read().unwrap_or_else(|e| e.into_inner()).clone().filter(|e| e.ready()).ok_or("Microsoft sign-in isn't set up on this server")?;
     // Ask for what they granted (a connection from before mail: the calendar only).
-    let scope = if has(user, "Mail.ReadWrite") { lyra_web::oidc::OUTLOOK } else { lyra_web::oidc::CALENDAR }.to_string();
+    let scope = if has(user, "Chat.Read") {
+        lyra_web::oidc::OUTLOOK
+    } else if has(user, "Mail.ReadWrite") {
+        lyra_web::oidc::OUTLOOK_MAIL
+    } else {
+        lyra_web::oidc::CALENDAR
+    }
+    .to_string();
     let form = [
         ("grant_type", "refresh_token"),
         ("client_id", entra.client_id.trim()),
@@ -128,6 +139,16 @@ pub fn disconnect(user: &str) -> Result<(), String> {
 /// One Graph request as the person this thread works for. Times come in UTC.
 pub(crate) fn graph(method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<Value, String> {
     graph_with(method, path, body, "outlook.timezone=\"UTC\"")
+}
+
+/// A file's bytes (a Graph content URL; its download redirect is followed).
+pub(crate) fn graph_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let token = access(&crate::acting::current())?;
+    let resp = http()?.get(url).bearer_auth(token).send().map_err(|e| format!("Microsoft 365 isn't answering: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("couldn't get the file ({})", resp.status()));
+    }
+    resp.bytes().map(|b| b.to_vec()).map_err(|e| e.to_string())
 }
 
 /// The same with its own `Prefer` (mail bodies as text).

@@ -107,6 +107,8 @@ pub struct Inputs {
     pub calendar: Option<Value>,
     /// Their mail since the last briefing (`mail::glance`), when connected.
     pub mail: Option<Value>,
+    /// Their Teams chats with something unread, when connected.
+    pub teams: Option<Vec<Value>>,
 }
 
 fn item(level: Level, link: &str, text: impl Into<String>) -> Item {
@@ -289,6 +291,23 @@ fn mail(i: &Inputs) -> Vec<Item> {
     out
 }
 
+/// Teams chats waiting for them.
+fn teams(i: &Inputs) -> Vec<Item> {
+    let Some(chats) = &i.teams else { return vec![] };
+    let mut out: Vec<Item> = chats
+        .iter()
+        .take(6)
+        .map(|c| {
+            let last = c["last"].as_str().unwrap_or("");
+            item(Level::Note, "tasks", format!("{}: {}{}", c["chat"].as_str().unwrap_or("a chat"), last.chars().take(80).collect::<String>(), if last.chars().count() > 80 { "…" } else { "" }))
+        })
+        .collect();
+    if chats.len() > 6 {
+        out.push(item(Level::Note, "tasks", format!("and {} more chats with something new", chats.len() - 6)));
+    }
+    out
+}
+
 fn diagnoses(i: &Inputs) -> Vec<Item> {
     i.diagnoses
         .iter()
@@ -353,7 +372,7 @@ fn goals(i: &Inputs) -> Vec<Item> {
 
 /// Make a briefing from what's known.
 pub fn gather(i: &Inputs) -> Briefing {
-    let mut sections: Vec<Section> = [("Today", calendar(i)), ("Mail", mail(i)), ("Tasks", tasks(i)), ("Machines", machines(i)), ("lyra", checks(i)), ("Routines", routines(i)), ("Diagnoses", diagnoses(i)), ("Coding", coding(i)), ("Goals", goals(i))]
+    let mut sections: Vec<Section> = [("Today", calendar(i)), ("Mail", mail(i)), ("Teams", teams(i)), ("Tasks", tasks(i)), ("Machines", machines(i)), ("lyra", checks(i)), ("Routines", routines(i)), ("Diagnoses", diagnoses(i)), ("Coding", coding(i)), ("Goals", goals(i))]
         .into_iter()
         .filter(|(_, items)| !items.is_empty())
         .map(|(name, items)| Section { name: name.into(), items })

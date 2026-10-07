@@ -1177,6 +1177,9 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         if crate::calendar::connected_for(&user) {
                             inputs.calendar = crate::acting::run(&user, crate::calendar::today).ok();
                         }
+                        if crate::teams::connected_for(&user) {
+                            inputs.teams = crate::acting::run(&user, || crate::teams::chats(25)).ok().map(|c| c.into_iter().filter(|x| x["unread"] == true).collect());
+                        }
                         if crate::mail::connected_for(&user) {
                             let since = inputs.since;
                             inputs.mail = crate::acting::run(&user, || crate::mail::glance(since)).ok();
@@ -1560,6 +1563,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
                         v["available"] = json!(true);
                         v["connected"] = json!(true);
                         v["mail"] = json!(crate::mail::connected_for(&app.owner));
+                        v["teams"] = json!(crate::teams::connected_for(&app.owner));
                         v
                     }
                     Err(e) => json!({ "available": true, "connected": true, "error": e }),
