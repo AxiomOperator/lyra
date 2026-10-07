@@ -945,6 +945,18 @@ With a token they get:
 lyra serve follows each person's PMI separately. Goals and routines are still the owner's
 until they're per person, and a member's turns don't use them.
 
+What stays shared, and what each person keeps:
+- **Learning:** skills, evolution and automatic memory capture learn only from the owner's
+  conversations.
+- **Working memory** is the owner's alone.
+- **Tools with lyra's own credentials** (OpenAPI and MCP providers), plus machines, coding
+  agents and the agent wizard, are admins'. A member's agents can't hand work to the Operator
+  or the Coder either.
+- **Changes take effect at once:** turning someone off, removing their device or changing
+  their role applies immediately, even to connections already open.
+- **Devices:** a device paired with a code is the owner's unless you say whose: `lyra pair
+  --user <email>`. A terminal asking to pair needs `/devices approve <code> for <email>`.
+
 The first user is the **owner**, an admin. Devices paired before users existed are theirs.
 `/users` lists everyone, and `/users approve|admin|member|disable <who>` changes someone.
 `/whoami` says who a conversation belongs to.
@@ -968,6 +980,11 @@ and anyone new waits until an admin lets them in. You get a push, then run `/use
    ```
 4. **Restart `lyra serve`.** The app's sign-in screen then shows **Sign in with Microsoft**.
    Pairing codes still work for terminals and machines.
+
+Only the browser that started a sign-in can finish it: a cookie binds the sign-in, and the
+device token is collected with a one-time code, so a link made from someone else's sign-in does
+nothing. A guest account from another organization never becomes the owner. Devices send
+their token as a WebSocket subprotocol, which keeps it out of URLs and proxy logs.
 
 lyra asks only for `openid profile email`. It trades the code for an id_token directly with
 Microsoft over TLS, using PKCE and the client secret, and checks the token's tenant, audience,

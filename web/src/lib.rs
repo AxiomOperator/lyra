@@ -202,6 +202,8 @@ struct Shared {
     entra: oidc::Entra,
     /// Microsoft sign-ins on their way, by state.
     logins: Mutex<HashMap<String, oidc::Pending>>,
+    /// Finished sign-ins waiting for their browser: code → (device token, the sign-in's state, when).
+    handoffs: Mutex<HashMap<String, (String, String, Instant)>>,
 }
 
 /// The running server, as the app sees it.
@@ -268,6 +270,7 @@ impl Hub {
             public_url: settings.public_url.trim_end_matches('/').to_string(),
             entra: settings.entra.clone(),
             logins: Mutex::new(HashMap::new()),
+            handoffs: Mutex::new(HashMap::new()),
         });
         let addr: SocketAddr = settings.listen.parse().map_err(|e| format!("[web] listen {:?}: {e}", settings.listen))?;
         let listener = rt.block_on(tokio::net::TcpListener::bind(addr)).map_err(|e| format!("can't listen on {addr}: {e}"))?;
@@ -340,7 +343,7 @@ impl Hub {
 
     /// Approve or deny a pairing request (by its code or id). A device (a
     /// terminal) becomes `user`'s; a machine is nobody's.
-    pub fn answer_pair(&self, key: &str, approve: bool, user: &str) -> Result<String, String> {
+    pub fn answer_pair(&self, key: &str, approve: bool, user: Option<&str>) -> Result<String, String> {
         let key = key.trim().to_uppercase().replace('-', "");
         let mut r = self.shared.requests.lock().unwrap_or_else(|e| e.into_inner());
         let p = r
@@ -351,7 +354,13 @@ impl Hub {
             p.state = PairState::Denied;
             return Ok(format!("denied {} ({})", p.name, p.hostname));
         }
-        let (d, token) = self.shared.devices.add(&p.name, &p.kind, Some(user))?;
+        // A terminal acts as someone: say whose, never by default.
+        let owner = match (p.kind.as_str(), user) {
+            ("node", _) => None,
+            (_, Some(u)) => Some(self.shared.users.find(u).filter(|u| u.status == users::Status::Active).ok_or_else(|| format!("no active user {u:?}"))?.id),
+            (_, None) => return Err(format!("{} is a terminal: say whose it is (/devices approve {} for <name or email>)", p.name, p.code)),
+        };
+        let (d, token) = self.shared.devices.add(&p.name, &p.kind, owner.as_deref())?;
         p.state = PairState::Approved(token);
         Ok(format!("paired {} ({}) as a {}", d.name, p.hostname, if d.kind == "node" { "machine" } else { "device" }))
     }
@@ -545,6 +554,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/api/auth", get(auth_info))
         .route("/auth/login", get(auth_login))
         .route("/auth/callback", get(auth_callback))
+        .route("/api/auth/redeem", post(auth_redeem))
         .route("/api/vapid", get(vapid_key))
         .route("/api/push", post(set_push))
         .route("/api/test-push", post(test_push))
@@ -692,7 +702,44 @@ async fn auth_login(State(s): State<Arc<Shared>>, Query(q): Query<LoginQuery>) -
         logins.insert(state.clone(), oidc::Pending { verifier: verifier.clone(), nonce: nonce.clone(), device: if device.is_empty() { "browser".into() } else { device }, created: Instant::now() });
     }
     let callback = format!("{}/auth/callback", s.public_url);
-    redirect(&oidc::authorize_url(&s.entra, &callback, &state, &nonce, &verifier))
+    // The sign-in belongs to this browser: only it can finish it.
+    let mut r = redirect(&oidc::authorize_url(&s.entra, &callback, &state, &nonce, &verifier));
+    if let Ok(v) = HeaderValue::from_str(&format!("{LOGIN_COOKIE}={state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600")) {
+        r.headers_mut().insert(header::SET_COOKIE, v);
+    }
+    r
+}
+
+const LOGIN_COOKIE: &str = "lyra_login";
+
+/// The browser's sign-in cookie (its state), if any.
+fn login_cookie(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|c| c.trim().strip_prefix(&format!("{LOGIN_COOKIE}=")).map(str::to_string))
+        .find(|c| !c.is_empty())
+}
+
+#[derive(Deserialize)]
+struct RedeemBody {
+    code: String,
+}
+
+/// The browser that signed in collects its device token (once, soon, with
+/// its own sign-in cookie): a link made from someone else's sign-in is useless.
+async fn auth_redeem(State(s): State<Arc<Shared>>, headers: HeaderMap, Json(b): Json<RedeemBody>) -> Response {
+    let cookie = login_cookie(&headers);
+    let found = s.handoffs.lock().unwrap_or_else(|e| e.into_inner()).remove(b.code.trim());
+    let clear = (header::SET_COOKIE, format!("{LOGIN_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"));
+    match found {
+        Some((token, state, at)) if at.elapsed() < std::time::Duration::from_secs(120) && cookie.as_deref() == Some(state.as_str()) => {
+            ([clear], Json(json!({ "token": token }))).into_response()
+        }
+        _ => error(StatusCode::FORBIDDEN, "that sign-in didn't start in this browser (or it's too old): sign in again"),
+    }
 }
 
 #[derive(Deserialize)]
@@ -706,7 +753,11 @@ struct CallbackQuery {
 }
 
 /// Back from Microsoft: who it is, then a device token for this browser.
-async fn auth_callback(State(s): State<Arc<Shared>>, Query(q): Query<CallbackQuery>) -> Response {
+async fn auth_callback(State(s): State<Arc<Shared>>, Query(q): Query<CallbackQuery>, headers: HeaderMap) -> Response {
+    // Only the browser that started this sign-in may finish it.
+    if login_cookie(&headers).as_deref() != Some(q.state.as_str()) {
+        return signin_error("that sign-in didn't start in this browser: sign in again");
+    }
     let Some(pending) = s.logins.lock().unwrap_or_else(|e| e.into_inner()).remove(&q.state) else {
         return signin_error("that sign-in has expired: try again");
     };
@@ -737,7 +788,9 @@ async fn auth_callback(State(s): State<Arc<Shared>>, Query(q): Query<CallbackQue
         Ok(p) => p,
         Err(e) => return signin_error(&e),
     };
-    let user = match s.users.signed_in(&person.oid, &person.tenant, &person.name, &person.email, &s.entra.owner_email) {
+    // A guest from another organization never becomes the owner.
+    let owner_email = if person.guest { "" } else { s.entra.owner_email.as_str() };
+    let user = match s.users.signed_in(&person.oid, &person.tenant, &person.name, &person.email, owner_email) {
         Ok(u) => u,
         Err(e) => return signin_error(&e),
     };
@@ -748,8 +801,14 @@ async fn auth_callback(State(s): State<Arc<Shared>>, Query(q): Query<CallbackQue
         let _ = s.inbound.send(Inbound::SignIn { name: user.name.clone(), email: user.email.clone() });
     }
     match s.devices.add(&format!("{} · {}", user.name, pending.device), "device", Some(&user.id)) {
-        // The token rides in the fragment: it never reaches a server log.
-        Ok((_, token)) => redirect(&format!("/#signed-in={token}")),
+        // The browser collects the token with a one-time code (and its cookie).
+        Ok((_, token)) => {
+            let code = devices::random(32, b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
+            let mut h = s.handoffs.lock().unwrap_or_else(|e| e.into_inner());
+            h.retain(|_, v| v.2.elapsed() < std::time::Duration::from_secs(120));
+            h.insert(code.clone(), (token, q.state.clone(), Instant::now()));
+            redirect(&format!("/#signin-code={code}"))
+        }
         Err(e) => signin_error(&e),
     }
 }
@@ -841,7 +900,15 @@ async fn download(State(s): State<Arc<Shared>>, headers: HeaderMap, axum::extrac
         }
     }
     match tokio::fs::read(&path).await {
-        Ok(bytes) => ([(header::CONTENT_TYPE, up.mime.clone())], bytes).into_response(),
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, up.mime.clone()),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", up.name.replace('"', ""))),
+            ],
+            bytes,
+        )
+            .into_response(),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
 }
@@ -928,11 +995,23 @@ struct ConnState {
     moved: tokio::sync::mpsc::UnboundedSender<String>,
 }
 
-async fn ws(State(s): State<Arc<Shared>>, Query(q): Query<WsQuery>, upgrade: WebSocketUpgrade) -> Response {
-    let Some(d) = s.devices.authenticate(&q.token).filter(|d| d.kind == "device") else { return error(StatusCode::UNAUTHORIZED, "not paired") };
+/// A WebSocket's token: offered as a subprotocol (`lyra, <token>`) so it stays
+/// out of URLs and proxy logs; the query string still works for old clients.
+fn socket_token(headers: &HeaderMap, query: &str) -> String {
+    let offered = headers.get(header::SEC_WEBSOCKET_PROTOCOL).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let mut parts = offered.split(',').map(str::trim);
+    match (parts.next(), parts.next()) {
+        (Some("lyra"), Some(t)) if !t.is_empty() => t.to_string(),
+        _ => query.to_string(),
+    }
+}
+
+async fn ws(State(s): State<Arc<Shared>>, Query(q): Query<WsQuery>, headers: HeaderMap, upgrade: WebSocketUpgrade) -> Response {
+    let token = socket_token(&headers, &q.token);
+    let Some(d) = s.devices.authenticate(&token).filter(|d| d.kind == "device") else { return error(StatusCode::UNAUTHORIZED, "not paired") };
     let Some(who) = s.users.who(d.user.as_deref()) else { return error(StatusCode::FORBIDDEN, "your lyra account isn't active: ask an admin") };
     let session = if q.session.is_empty() { d.last_session.clone().unwrap_or_default() } else { q.session.clone() };
-    let mut r = upgrade.on_upgrade(move |socket| connection(s, d, who, session, socket));
+    let mut r = upgrade.protocols(["lyra"]).on_upgrade(move |socket| connection(s, d, who, session, socket));
     r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     r
 }
@@ -949,7 +1028,7 @@ async fn snapshot(s: &Shared, d: &Device, who: &Who, session: &str) -> Option<Va
 
 /// One device's live connection: a conversation's state, then its updates
 /// (and everyone's); its messages go to that conversation.
-async fn connection(s: Arc<Shared>, d: Device, who: Who, session: String, mut socket: WebSocket) {
+async fn connection(s: Arc<Shared>, d: Device, mut who: Who, session: String, mut socket: WebSocket) {
     let conn = s.next_conn.fetch_add(1, Ordering::SeqCst);
     let (moved_tx, mut moved) = tokio::sync::mpsc::unbounded_channel::<String>();
     s.visible.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, (who.user.clone(), Some(Instant::now())));
@@ -972,8 +1051,23 @@ async fn connection(s: Arc<Shared>, d: Device, who: Who, session: String, mut so
         forget(&s);
         return;
     }
+    // Still paired, still let in, still the same role? Asked before every
+    // message and every half minute: removing a device, turning someone off
+    // or changing their role takes effect at once.
+    let current = |s: &Shared| s.devices.get(&d.id).and_then(|dev| s.users.who(dev.user.as_deref()));
+    let mut recheck = tokio::time::interval(std::time::Duration::from_secs(30));
+    recheck.tick().await;
     loop {
         tokio::select! {
+            _ = recheck.tick() => {
+                match current(&s) {
+                    Some(now) if now == who => {}
+                    _ => {
+                        let _ = socket.send(Message::Close(None)).await;
+                        break;
+                    }
+                }
+            }
             to = moved.recv() => {
                 let Some(to) = to else { break };
                 session = to;
@@ -1004,6 +1098,13 @@ async fn connection(s: Arc<Shared>, d: Device, who: Who, session: String, mut so
                 let Some(Ok(msg)) = incoming else { break };
                 let Message::Text(text) = msg else { continue };
                 let Ok(v) = serde_json::from_str::<Value>(text.as_str()) else { continue };
+                match current(&s) {
+                    Some(now) => who = now,
+                    None => {
+                        let _ = socket.send(Message::Close(None)).await;
+                        break;
+                    }
+                }
                 match v["type"].as_str().unwrap_or("") {
                     "send" => {
                         let text = v["text"].as_str().unwrap_or("").trim().to_string();
@@ -1036,7 +1137,8 @@ async fn connection(s: Arc<Shared>, d: Device, who: Who, session: String, mut so
                         let text = if !who.admin {
                             "only an admin can let a machine or terminal in".to_string()
                         } else {
-                            match hub.answer_pair(&key, v["approve"] == true, &who.user) {
+                            let user = v["user"].as_str().filter(|u| !u.trim().is_empty());
+                            match hub.answer_pair(&key, v["approve"] == true, user) {
                                 Ok(t) => t,
                                 Err(e) => e,
                             }
@@ -1068,9 +1170,9 @@ async fn connection(s: Arc<Shared>, d: Device, who: Who, session: String, mut so
 // system tools there. Calls go out as `{id, type: check|call, …}`; answers
 // come back as `{type: result, id, ok, value | error}`.
 
-async fn node_ws(State(s): State<Arc<Shared>>, Query(q): Query<WsQuery>, upgrade: WebSocketUpgrade) -> Response {
-    let Some(d) = s.devices.authenticate(&q.token).filter(|d| d.kind == "node") else { return error(StatusCode::UNAUTHORIZED, "not a paired machine") };
-    upgrade.on_upgrade(move |socket| node_connection(s, d, socket))
+async fn node_ws(State(s): State<Arc<Shared>>, Query(q): Query<WsQuery>, headers: HeaderMap, upgrade: WebSocketUpgrade) -> Response {
+    let Some(d) = s.devices.authenticate(&socket_token(&headers, &q.token)).filter(|d| d.kind == "node") else { return error(StatusCode::UNAUTHORIZED, "not a paired machine") };
+    upgrade.protocols(["lyra"]).on_upgrade(move |socket| node_connection(s, d, socket))
 }
 
 /// No message (a ping at least) for this long: the machine is gone.

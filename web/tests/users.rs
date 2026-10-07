@@ -52,8 +52,22 @@ fn devices_act_as_their_user() {
     // Who am I.
     let me: Value = get("/api/me", &member).json().unwrap();
     assert_eq!((me["user"]["user"].as_str(), me["user"]["admin"].as_bool()), (Some("oid-dana"), Some(false)));
-    // A disabled account is shut out at once.
+    // The token works as a subprotocol too (kept out of URLs).
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = format!("ws://{addr}/ws").into_client_request().unwrap();
+    req.headers_mut().insert("Sec-WebSocket-Protocol", format!("lyra, {member}").parse().unwrap());
+    let (mut open_ws, _) = rt.block_on(tokio_tungstenite::connect_async(req)).unwrap();
+    let first = rt.block_on(async { tokio::time::timeout(Duration::from_secs(5), open_ws.next()).await }).unwrap().unwrap().unwrap();
+    assert!(first.to_text().unwrap().contains("oid-dana-main"));
+    // A disabled account is shut out at once, also where it's already connected.
     Users::open(&dir).update("dana", None, Some(Status::Disabled)).unwrap();
     assert_eq!(get("/api/me", &member).status(), 403);
     assert!(rt.block_on(tokio_tungstenite::connect_async(format!("ws://{addr}/ws?token={member}"))).is_err());
+    use futures_util::SinkExt;
+    rt.block_on(open_ws.send(tokio_tungstenite::tungstenite::Message::Text(json!({ "type": "ping" }).to_string().into()))).unwrap();
+    let next = rt.block_on(async { tokio::time::timeout(Duration::from_secs(5), open_ws.next()).await }).unwrap();
+    assert!(!matches!(next, Some(Ok(tokio_tungstenite::tungstenite::Message::Text(ref t))) if t.contains("pong")), "no answer for a turned-off account: {next:?}");
+    // A sign-in code is only good in the browser that started the sign-in.
+    let redeemed = http.post(format!("http://{addr}/api/auth/redeem")).json(&json!({ "code": "made-up" })).send().unwrap();
+    assert_eq!(redeemed.status(), 403);
 }

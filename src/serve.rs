@@ -102,6 +102,13 @@ fn status(app: &App, machines: &[String]) -> Value {
         }),
         "agents": app.agents_panel.iter().map(|a| json!({ "title": a.title, "working": active.contains(&a.title), "enabled": a.enabled })).collect::<Vec<_>>(),
     })
+    .as_object()
+    .map(|m| {
+        // A member's devices: nothing about machines, backups or the decision model.
+        let keep = |k: &str| app.admin || !matches!(k, "groups" | "backup" | "backing_up" | "decide" | "machines");
+        json!(m.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (k.clone(), v.clone())).collect::<serde_json::Map<_, _>>())
+    })
+    .unwrap_or_default()
 }
 
 /// A machine's (or the server's) health report: new problems are logged and
@@ -266,12 +273,13 @@ fn size_text(n: u64) -> String {
 /// What a message says about its attached files: a text file's content, or
 /// what the file is (the Operator can put it on a machine); images go to a
 /// model that can see.
-pub fn attachments(hub: &Hub, files: &[String], vision: bool) -> (String, Vec<String>) {
+pub fn attachments(hub: &Hub, files: &[String], vision: bool, who: &Who) -> (String, Vec<String>) {
     use base64::Engine;
     let mut text = String::new();
     let mut images = Vec::new();
     for id in files {
-        let Some((up, path)) = hub.upload(id) else {
+        // Someone else's upload isn't there, as far as this person knows.
+        let Some((up, path)) = hub.upload(id).filter(|(up, _)| who.admin || up.user.as_deref().unwrap_or(lyra_web::users::OWNER) == who.user) else {
             text += &format!("\n\n(an attachment, {id}, couldn't be found)");
             continue;
         };
@@ -341,6 +349,14 @@ impl Conv {
 
 /// Unopened conversations nobody looks at are put away after this long.
 const IDLE: Duration = Duration::from_secs(15 * 60);
+
+/// A person's conversations act with the role they have now (an admin made
+/// a member loses admin rights at once, also where they were already talking).
+fn sync_role(convs: &mut [Conv], who: &Who) {
+    for c in convs.iter_mut().filter(|c| c.app.owner == who.user) {
+        c.app.admin = who.admin;
+    }
+}
 
 /// What a conversation's devices are sent: their own conversations only, and
 /// for a member nothing about machines, devices, the server's health or data
@@ -461,9 +477,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         while let Some(msg) = next.take() {
             match msg {
                 Inbound::Send { text, device, who, session, conn, files } => {
+                    sync_role(&mut convs, &who);
                     let i = conv_for(&mut convs, &session, &who);
                     // Attached files: described (or read) in the message itself.
-                    let (about, images) = attachments(hub, &files, convs[i].app.vision);
+                    let (about, images) = attachments(hub, &files, convs[i].app.vision, &who);
                     let text = format!("{text}{about}").trim().to_string();
                     convs[i].app.attach_images = images;
                     // A new conversation, or another one, for this device only.
@@ -498,12 +515,14 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     }
                 }
                 Inbound::Stop { device, who, session } => {
+                    sync_role(&mut convs, &who);
                     let i = conv_for(&mut convs, &session, &who);
                     convs[i].app.log(Level::Info, format!("{device} pressed stop"));
                     let _ = convs[i].app.stop();
                     convs[i].changed = true;
                 }
                 Inbound::Approve { id, answer, device, who } => {
+                    sync_role(&mut convs, &who);
                     // Only in the user's own conversations.
                     if let Some(c) = convs.iter_mut().find(|c| c.app.owner == who.user && c.app.approvals.iter().any(|r| r.id == id)) {
                         c.app.log(Level::Agent, format!("{device} answered approval {id}: {answer}"));
@@ -512,7 +531,9 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     }
                 }
                 Inbound::Action { action, reference, device, who } => {
-                    convs[0].app.log(Level::Info, format!("{device} ({}) pressed {action} on a reminder", who.name));
+                    if who.user == convs[0].app.owner {
+                        convs[0].app.log(Level::Info, format!("{device} pressed {action} on a reminder"));
+                    }
                     let tx = action_tx.clone();
                     std::thread::spawn(move || {
                         // In their own PMI account.
@@ -560,6 +581,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     }
                 }
                 Inbound::Get { what, arg, session, who, reply } => {
+                    sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
                     if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
@@ -665,6 +687,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     }));
                 }
                 Inbound::Snapshot { session, who, reply } => {
+                    sync_role(&mut convs, &who);
                     let i = conv_for(&mut convs, &session, &who);
                     let c = &mut convs[i];
                     let mut all = extra.clone();
@@ -933,8 +956,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             for (user, p) in pmi.iter_mut().filter(|(_, p)| p.state.at.is_some() && p.state.error.is_none()) {
                 let (due, changed) = p.nags.due(&p.state, &s, chrono::Utc::now());
                 for n in due {
-                    let whose = if *user == owner { String::new() } else { format!(" ({})", hub.users().get(user).map_or(user.clone(), |u| u.name)) };
-                    convs[0].app.log(Level::Plan, format!("⏰ still to do{whose}: {} (reminder {} of {})", n.title, n.sent, s.nag_max));
+                    // Only the owner's own reminders in the owner's Activity.
+                    if *user == owner {
+                        convs[0].app.log(Level::Plan, format!("⏰ still to do: {} (reminder {} of {})", n.title, n.sent, s.nag_max));
+                    }
                     hub.notify(Notification {
                         title: format!("⏰ Still to do: {}", n.title),
                         body: format!("The reminder went off {}. Done, or later?", n.fired.with_timezone(&chrono::Local).format("%a %H:%M")),
@@ -954,14 +979,18 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         while let Ok((user, action, task, r)) = action_rx.try_recv() {
             match r {
                 Ok(what) => {
-                    convs[0].app.log(Level::Plan, format!("reminder: {what}"));
+                    if user == convs[0].app.owner {
+                        convs[0].app.log(Level::Plan, format!("reminder: {what}"));
+                    }
                     if let Some(p) = pmi.get_mut(&user) {
                         p.nags.items.retain(|_, n| n.task != task);
                         p.nags.save_for(&user);
                     }
                 }
                 Err(e) => {
-                    convs[0].app.log(Level::Error, format!("reminder {action} failed: {e}"));
+                    if user == convs[0].app.owner {
+                        convs[0].app.log(Level::Error, format!("reminder {action} failed: {e}"));
+                    }
                     hub.notify(Notification { title: "Couldn't update the task".into(), body: e, tag: format!("nag-{task}"), approval: None, url: Some("/?page=tasks".into()), actions: vec![], reference: None, to: To::User(user) });
                 }
             }
@@ -1349,7 +1378,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
             })).collect::<Vec<_>>())
         }
         "routines" => crate::routines::view(&[], 10),
-        "briefing" => crate::briefing::last().map_or(Value::Null, |b| json!(b)),
+        "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
         "pmi" => crate::pmi::as_user(&app.owner, crate::pmi::snapshot).map_or_else(|e| json!({ "error": e }), |s| json!(s)),
         "coding" => json!(crate::coding::jobs()),
         // The people who use lyra (admins: the gate is in the loop).
@@ -1663,7 +1692,7 @@ impl App {
                     })
                     .collect();
                 for p in hub.pair_requests() {
-                    out.push(format!("? {} ({}, {}) asks to pair — code {}: /devices approve {} · /devices deny {}", p.name, p.hostname, p.kind, p.code, p.code, p.code));
+                    out.push(format!("? {} ({}, {}) asks to pair — code {}: /devices approve {}{} · /devices deny {}", p.name, p.hostname, p.kind, p.code, p.code, if p.kind == "node" { "" } else { " for <whose>" }, p.code));
                 }
                 if out.is_empty() {
                     out.push("no paired devices".into());
@@ -1672,12 +1701,16 @@ impl App {
                 out.push("pair with a code: `lyra pair` on the server · headless: lyra-node pair <url> (then approve here)".into());
                 Ok(out.join("\n"))
             }
-            "approve" | "deny" => hub.answer_pair(rest, sub == "approve", &self.owner),
+            // "/devices approve CODE for dana@…": a terminal is someone's; a machine isn't.
+            "approve" | "deny" => {
+                let (code, user) = rest.split_once(" for ").map_or((rest, None), |(c, u)| (c.trim(), Some(u.trim())));
+                hub.answer_pair(code, sub == "approve", user)
+            }
             "remove" => {
                 let d = hub.devices().remove(rest)?;
                 Ok(format!("removed {} ({}); it has to pair again{}", d.name, d.id, if d.kind == "node" { " — to uninstall lyra-node too, use /machines remove while it's online" } else { "" }))
             }
-            _ => Err("usage: /devices [approve <code> | deny <code> | remove <name|id>]".into()),
+            _ => Err("usage: /devices [approve <code> [for <name or email>] | deny <code> | remove <name|id>]".into()),
         }
     }
 }

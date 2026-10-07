@@ -630,7 +630,7 @@ impl App {
             }
             return;
         }
-        // The agent wizard takes plain lines as its answers.
+        // The agent wizard takes plain lines as its answers (in the conversation that opened it).
         if self.wizard_active() {
             self.wizard_input(&content);
             return;
@@ -670,10 +670,11 @@ impl App {
         self.cancel = Cancel::default();
         let cancel = self.cancel.clone();
         let (learning, evolution, caps) = (self.learning.clone(), self.evolution.clone(), self.caps.clone());
-        // A member's turn sees only their own memories, and not the owner's goals.
+        // Anyone but the owner sees only their own memories, and not the owner's
+        // goals; a member (not an admin) also gets no admin tools.
         let member = !self.admin;
-        let viewer = member.then(|| self.owner.clone());
-        let goals_section = self.goals.as_ref().filter(|_| !member).and_then(|g| g.prompt_section());
+        let viewer = self.personal();
+        let goals_section = self.goals.as_ref().filter(|_| viewer.is_none()).and_then(|g| g.prompt_section());
         let mut agent_env = self.agent_env();
         // `@desktop`: that machine is where system work goes.
         if let (Some(env), Some(caps)) = (agent_env.as_mut(), &self.caps) {
@@ -715,7 +716,7 @@ impl App {
                     add_to_system(&mut history, agents::MAIN_NOTE);
                 }
             }
-            let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref(), &content, max_rounds, run, &tx, &cancel, viewer.as_deref()) {
+            let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref(), &content, max_rounds, run, &tx, &cancel, viewer.as_deref(), member) {
                 Ok(stats) => StreamEvent::Done(stats),
                 Err(e) => StreamEvent::Error(e),
             };
@@ -782,8 +783,8 @@ impl App {
                 let skills = self.applied_skills.clone();
                 let memories = self.applied_memories.clone();
                 let evo = self.record_chat_run(&stats, None);
-                // Working memory tracks what both sides mention (M7).
-                if let Some(mem) = self.mem() {
+                // Working memory tracks what both sides mention (M7): the owner's only.
+                if let Some(mem) = self.mem().filter(|_| self.personal().is_none()) {
                     let text = self.reply().content.clone();
                     mem.working().note_entities(&text);
                 }
@@ -1206,6 +1207,10 @@ impl App {
     /// used: a correction is a failure, thanks a success.
     fn judge_last_run(&mut self, message: &str) {
         self.corrected_skills.clear();
+        if self.personal().is_some() {
+            self.last_run = None;
+            return;
+        }
         let Some(last) = self.last_run.take() else { return };
         let Some(outcome) = evaluator::outcome_signal(message) else { return };
         self.judge_delegations(last.id, outcome, message);
@@ -1283,6 +1288,10 @@ impl App {
     /// Review the conversation for a reusable lesson in the background: after
     /// every turn when a trigger fires, or on /learn (`forced`).
     fn review(&mut self, forced: bool) {
+        // Skills are shared: they learn only from the owner's conversations.
+        if self.personal().is_some() {
+            return;
+        }
         let Some(learning) = self.learning.clone() else { return };
         if learning.mode() == Mode::Off || self.reviewing {
             return;
@@ -1609,11 +1618,17 @@ impl App {
         }
         if self.hub.is_some() {
             // lyra serve checks every minute and keeps the history.
-            if now || status::latest().is_none() {
+            if (now && self.admin) || status::latest().is_none() {
                 status::request();
                 return Ok("checking everything now — /status in a moment shows it (the app's Status page updates by itself)".into());
             }
-            return Ok(status::latest().map(|b| status::describe(&b)).unwrap_or_default());
+            return Ok(status::latest().map(|mut b| {
+                // A member's view leaves the machines out.
+                if !self.admin {
+                    b.rows.retain(|r| r.probe.group != "Machines");
+                }
+                status::describe(&b)
+            }).unwrap_or_default());
         }
         if !now && let Some(b) = status::latest() {
             return Ok(status::describe(&b));
@@ -1766,8 +1781,8 @@ impl App {
     /// Review the turn just finished for things worth remembering (M2, M8):
     /// after every turn when the capture trigger fires, or on `/memory episode`.
     fn capture(&mut self, episode: bool) {
-        // Not from a member's conversation (what's learned there isn't the owner's).
-        if !self.admin {
+        // Only from the owner's conversations (what's learned elsewhere isn't theirs).
+        if self.personal().is_some() {
             return;
         }
         let Some(mem) = self.mem() else { return };
@@ -2476,6 +2491,10 @@ impl App {
 
     /// E1: record the turn just answered (or failed) for evolution. Returns its id.
     fn record_chat_run(&mut self, stats: &Stats, error: Option<&str>) -> Option<Uuid> {
+        // Evolution learns from the owner's conversations only.
+        if self.personal().is_some() {
+            return None;
+        }
         let evolution = self.evolution.clone()?;
         let start = self.messages.iter().rposition(|m| m.role == "user")?;
         let turn = &self.messages[start..];
@@ -2810,6 +2829,12 @@ impl App {
         app
     }
 
+    /// The memory scope this conversation is kept to: its person's own
+    /// (`user:<id>`) for anyone but the owner.
+    fn personal(&self) -> Option<String> {
+        (self.owner != lyra_web::users::OWNER).then(|| self.owner.clone())
+    }
+
     /// A new conversation for a user: theirs, with their rights and their USER.md.
     fn fork_for(&self, who: &lyra_web::Who) -> App {
         let config = Config::load().unwrap_or_default();
@@ -2877,7 +2902,7 @@ const LESSON_GATE: &str = "Does this conversation teach the assistant a reusable
 /// tools, coding, devices, backups, agents and skills' approval stay admins'.
 fn member_may(name: &str, arg: &str) -> bool {
     match name {
-        "/help" | "/skills" | "/history" | "/outcome" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" => true,
+        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" => true,
         // Their own PMI account.
         "/pmi" | "/tasks" | "/task" => true,
         // Which model is in use; changing it is the server's.
@@ -2894,7 +2919,7 @@ mod member_tests {
             assert!(super::member_may(ok, ""), "{ok}");
         }
         assert!(super::member_may("/model", "") && !super::member_may("/model", "other-model"), "look, not change");
-        for no in ["/machines", "/devices", "/users", "/backup", "/caps", "/approve", "/evolve", "/plan", "/agent", "/memory", "/goal", "/routine", "/coding", "/diagnose"] {
+        for no in ["/outcome", "/machines", "/devices", "/users", "/backup", "/caps", "/approve", "/evolve", "/plan", "/agent", "/memory", "/goal", "/routine", "/coding", "/diagnose"] {
             assert!(!super::member_may(no, "x"), "{no}");
         }
     }
@@ -3103,6 +3128,7 @@ fn converse(
     tx: &Sender<StreamEvent>,
     cancel: &Cancel,
     viewer: Option<&str>,
+    member: bool,
 ) -> Result<Stats, String> {
     let start = Instant::now();
     // A member's calls: their own memory scope only, and no admin tools.
@@ -3164,7 +3190,7 @@ fn converse(
                 history.push(json!({ "role": "tool", "tool_call_id": call.id, "content": "{\"error\":\"stopped by the user\"}" }));
                 continue;
             }
-            let ctx = CallContext { member: viewer.is_some(), read_scopes: scopes, write_scopes: scopes, ..CallContext::new(Some(run), &call.id) };
+            let ctx = CallContext { member, read_scopes: scopes, write_scopes: scopes, ..CallContext::new(Some(run), &call.id) };
             // Policy, usage tracking and verification happen in there.
             let content = if let (Some(env), "delegate") = (agents, call.function.name.as_str()) {
                 agents::delegate_call(env, &call.function.arguments, run)
@@ -3386,7 +3412,7 @@ fn main() {
         Some(i) => {
             let dir = config::home().map(|h| h.join("sessions"));
             match (args.get(i + 1).filter(|a| !a.starts_with('-')), dir) {
-                (Some(key), Some(dir)) => match sessions::find(&dir, key) {
+                (Some(key), Some(dir)) => match sessions::find_for(&dir, key, lyra_web::users::OWNER) {
                     Ok(s) => Some(s),
                     Err(e) => {
                         eprintln!("lyra: {e}");
@@ -3394,7 +3420,7 @@ fn main() {
                     }
                 },
                 (None, dir) => {
-                    let all = dir.map(|d| sessions::list(&d)).unwrap_or_default();
+                    let all = dir.map(|d| sessions::list_for(&d, lyra_web::users::OWNER)).unwrap_or_default();
                     println!("{}\n\nlyra -r <id> resumes one · lyra -c continues the latest", sessions::describe(&all, 20));
                     return;
                 }
@@ -3569,22 +3595,41 @@ fn serve_main(mut app: App, web: &lyra_web::Settings, rt: &tokio::runtime::Handl
 
 /// `lyra pair`: a code for pairing a phone or browser (valid 10 minutes).
 fn pair_command(args: &[String]) {
-    let minutes = match args {
-        [] => 10,
-        [flag, n] if flag == "--minutes" => match n.parse::<i64>() {
-            Ok(n) if (1..=60).contains(&n) => n,
-            _ => {
-                eprintln!("lyra: --minutes takes 1 to 60");
-                std::process::exit(2);
+    let usage = || -> ! {
+        eprintln!("usage: lyra pair [--minutes N] [--user <name or email>]   (without --user the device is the owner's)");
+        std::process::exit(2);
+    };
+    let (mut minutes, mut user) = (10, None::<String>);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--minutes" => match it.next().and_then(|n| n.parse::<i64>().ok()) {
+                Some(n) if (1..=60).contains(&n) => minutes = n,
+                _ => {
+                    eprintln!("lyra: --minutes takes 1 to 60");
+                    std::process::exit(2);
+                }
+            },
+            "--user" => user = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            _ => usage(),
+        }
+    }
+    let dir = config::home().map(|h| h.join("web")).expect("a home directory");
+    // Whose device it will be: a coworker's phone is theirs, not the owner's.
+    let whose = match &user {
+        None => None,
+        Some(key) => match lyra_web::Users::open(&dir).find(key).filter(|u| u.status == lyra_web::Status::Active) {
+            Some(u) => Some(u.id),
+            None => {
+                eprintln!("lyra: no active user {key:?} (lyra serve's /users lists them)");
+                std::process::exit(1);
             }
         },
-        _ => {
-            eprintln!("usage: lyra pair [--minutes N]");
-            std::process::exit(2);
-        }
     };
-    let dir = config::home().map(|h| h.join("web")).expect("a home directory");
-    match lyra_web::Devices::open(&dir).and_then(|d| d.new_code(minutes)) {
+    if whose.is_none() {
+        eprintln!("This device will be the owner's (an admin). For a coworker, use Microsoft sign-in or lyra pair --user <their email>.");
+    }
+    match lyra_web::Devices::open(&dir).and_then(|d| d.new_code_for(minutes, whose.as_deref())) {
         Ok(code) => {
             let url = Config::load().map(|c| c.web.public_url).unwrap_or_default();
             let shown = format!("{}-{}", &code[..4], &code[4..]);

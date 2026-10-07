@@ -770,6 +770,9 @@ impl Caps {
             if matches!(c.source.as_str(), "system" | "coding") || c.name == "fleet_run" {
                 return json!({ "error": "machines, system tools and coding agents are for admins" }).to_string();
             }
+            if matches!(c.kind, CapabilityKind::OpenApi | CapabilityKind::Mcp) {
+                return json!({ "error": format!("{} uses lyra's own credentials: that's for admins", c.name) }).to_string();
+            }
             if matches!(c.source.as_str(), "goals" | "routines") || c.name == "working_memory" {
                 return json!({ "error": format!("{} isn't set up for your account yet", c.name) }).to_string();
             }

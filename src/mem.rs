@@ -299,7 +299,8 @@ impl Mem {
         let args = args.trim();
         let (sub, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
         let rest = rest.trim();
-        let find = |key: &str| self.run(self.manager.find(key));
+        // /memory is the owner's: people's own memories aren't found here.
+        let find = |key: &str| self.run(self.manager.find(key)).and_then(|m| if lyra_memory::personal(&m.scope) { Err(format!("no memory matches {key:?}")) } else { Ok(m) });
         match sub {
             "" | "stats" => self.stats_text(),
             "search" => self.search_text(rest),

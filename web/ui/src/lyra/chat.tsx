@@ -241,11 +241,13 @@ export function ApprovalCard({ a, more }: { a: Approval; more: number }) {
 }
 
 export function PairCard({ p, className }: { p: PairRequest; className?: string }) {
-  const { send } = useLyra();
+  const { send, user } = useLyra();
   const [sent, setSent] = useState(false);
+  // A terminal acts as someone: approved here, it's yours.
+  const terminal = p.kind !== "node";
   const answer = (approve: boolean) => {
     setSent(true);
-    send({ type: "pair_answer", id: p.id, approve });
+    send({ type: "pair_answer", id: p.id, approve, ...(terminal && approve && user ? { user: user.user } : {}) });
   };
   return (
     <Card className={cn("gap-3 border-2 border-teal-500/60 bg-teal-950/20 py-4", className)}>
@@ -264,6 +266,11 @@ export function PairCard({ p, className }: { p: PairRequest; className?: string 
         <div className="text-muted-foreground text-sm">
           Check it shows this code: <span className="font-mono text-lg text-teal-300 tracking-[0.2em]">{p.code}</span>
         </div>
+        {terminal && (
+          <div className="text-amber-300 text-sm">
+            Approved here, this terminal signs in as you ({user?.name ?? "your account"}). For a coworker's terminal, use /devices approve {p.code} for &lt;their email&gt;.
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-2">
           <Button disabled={sent} onClick={() => answer(true)} className="bg-emerald-600 text-white hover:bg-emerald-500">Approve</Button>
           <Button disabled={sent} onClick={() => answer(false)} variant="destructive">Deny</Button>

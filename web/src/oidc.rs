@@ -97,6 +97,8 @@ pub struct Person {
     pub tenant: String,
     pub name: String,
     pub email: String,
+    /// A guest from another organization (B2B): never the owner.
+    pub guest: bool,
 }
 
 /// The claims of an id_token (its middle part), unverified.
@@ -139,7 +141,8 @@ pub fn check(e: &Entra, id_token: &str, nonce: &str, now: i64) -> Result<Person,
     }
     let email = [s("email"), s("preferred_username"), s("upn")].into_iter().find(|x| x.contains('@')).unwrap_or_default();
     let name = Some(s("name")).filter(|n| !n.is_empty()).unwrap_or_else(|| email.clone());
-    Ok(Person { oid, tenant: s("tid"), name, email })
+    let guest = c["acct"].as_i64() == Some(1) || [s("upn"), s("preferred_username"), s("unique_name")].iter().any(|u| u.contains("#EXT#"));
+    Ok(Person { oid, tenant: s("tid"), name, email, guest })
 }
 
 #[cfg(test)]
@@ -166,7 +169,10 @@ mod tests {
     #[test]
     fn a_good_sign_in_says_who() {
         let p = check(&entra(), &token(good()), "n1", 1_000).unwrap();
-        assert_eq!(p, Person { oid: "oid-1".into(), tenant: TENANT.into(), name: "Dana Doe".into(), email: "dana@fbcad.org".into() });
+        assert_eq!(p, Person { oid: "oid-1".into(), tenant: TENANT.into(), name: "Dana Doe".into(), email: "dana@fbcad.org".into(), guest: false });
+        let mut g = good();
+        g["upn"] = "boss_other.com#EXT#@fbcad.onmicrosoft.com".into();
+        assert!(check(&entra(), &token(g), "n1", 1_000).unwrap().guest, "a guest is known as one");
     }
 
     #[test]

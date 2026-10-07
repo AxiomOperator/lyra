@@ -74,6 +74,16 @@ pub struct Users {
     path: PathBuf,
 }
 
+/// Who `key` is: an id, else an email, else a name nobody else has.
+fn index(all: &[User], key: &str) -> Option<usize> {
+    let key = key.trim();
+    let k = key.to_lowercase();
+    all.iter().position(|u| u.id == key).or_else(|| all.iter().position(|u| !u.email.is_empty() && u.email.to_lowercase() == k)).or_else(|| {
+        let named: Vec<usize> = all.iter().enumerate().filter(|(_, u)| u.name.to_lowercase() == k).map(|(i, _)| i).collect();
+        (named.len() == 1).then(|| named[0])
+    })
+}
+
 impl Users {
     pub fn open(dir: &Path) -> Users {
         Users { path: dir.join("users.json") }
@@ -91,10 +101,10 @@ impl Users {
         self.list().into_iter().find(|u| u.id == id)
     }
 
-    /// By id, email or name (ignoring case).
+    /// By id, then email, then a name only one person has (ignoring case).
     pub fn find(&self, key: &str) -> Option<User> {
-        let k = key.trim().to_lowercase();
-        self.list().into_iter().find(|u| u.id == key.trim() || (!u.email.is_empty() && u.email.to_lowercase() == k) || u.name.to_lowercase() == k)
+        let all = self.list();
+        index(&all, key).map(|i| all[i].clone())
     }
 
     /// The first user (an admin) when there are none yet. Returns whether one was made.
@@ -130,11 +140,7 @@ impl Users {
     /// Change someone: role and/or status. The last active admin stays one.
     pub fn update(&self, key: &str, role: Option<Role>, status: Option<Status>) -> Result<User, String> {
         let mut all = self.list();
-        let k = key.trim().to_lowercase();
-        let i = all
-            .iter()
-            .position(|u| u.id == key.trim() || (!u.email.is_empty() && u.email.to_lowercase() == k) || u.name.to_lowercase() == k)
-            .ok_or_else(|| format!("no user {key:?}"))?;
+        let i = index(&all, key).ok_or_else(|| format!("no user {key:?} (or more than one by that name: use their email)"))?;
         let admins = all.iter().filter(|u| u.role == Role::Admin && u.status == Status::Active).count();
         let losing = all[i].role == Role::Admin && all[i].status == Status::Active && (role == Some(Role::Member) || status.is_some_and(|s| s != Status::Active));
         if losing && admins <= 1 {

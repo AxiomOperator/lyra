@@ -117,7 +117,8 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
       } catch {
         // no storage: the server's memory of it will do
       }
-      const sock = new WebSocket(`${proto}//${location.host}/ws?token=${encodeURIComponent(token)}&session=${encodeURIComponent(session)}`);
+      // The token goes as a subprotocol, out of the URL (and proxy logs).
+      const sock = new WebSocket(`${proto}//${location.host}/ws?session=${encodeURIComponent(session)}`, ["lyra", token]);
       ws.current = sock;
       sock.onopen = () => {
         retry.current = 0;

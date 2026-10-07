@@ -148,28 +148,23 @@ pub fn list_for(dir: &Path, owner: &str) -> Vec<Session> {
 
 /// One of the user's own sessions by id or the start of one.
 pub fn find_for(dir: &Path, key: &str, owner: &str) -> Result<Session, String> {
-    let s = find(dir, key)?;
-    if s.owner == owner { Ok(s) } else { Err(format!("no saved session {:?} (lyra -r lists them)", key.trim())) }
-}
-
-/// The session to continue: the latest started in this folder, else the latest.
-pub fn latest(dir: &Path) -> Option<Session> {
-    let here = cwd();
-    let mut all = list(dir);
-    let i = all.iter().position(|s| s.cwd == here).unwrap_or(0);
-    (!all.is_empty()).then(|| all.swap_remove(i))
-}
-
-/// A session by id or the start of one.
-pub fn find(dir: &Path, key: &str) -> Result<Session, String> {
     let key = key.trim();
-    let matches: Vec<Session> = list(dir).into_iter().filter(|s| s.id.starts_with(key) || s.id.ends_with(key)).collect();
+    let matches: Vec<Session> = list_for(dir, owner).into_iter().filter(|s| s.id.starts_with(key) || s.id.ends_with(key)).collect();
     match matches.len() {
         0 => Err(format!("no saved session {key:?} (lyra -r lists them)")),
         1 => Ok(matches.into_iter().next().expect("one")),
         n => Err(format!("{n} sessions match {key:?}; use more of the id")),
     }
 }
+
+/// The session to continue: the latest started in this folder, else the latest.
+pub fn latest(dir: &Path) -> Option<Session> {
+    let here = cwd();
+    let mut all = list_for(dir, lyra_web::users::OWNER);
+    let i = all.iter().position(|s| s.cwd == here).unwrap_or(0);
+    (!all.is_empty()).then(|| all.swap_remove(i))
+}
+
 
 /// A conversation that matched a search, with where.
 pub struct Hit {
@@ -336,12 +331,12 @@ mod tests {
 
         assert_eq!(list(&dir).len(), 2, "sessions without a user turn aren't listed");
         assert_eq!(latest(&dir).unwrap().id, "20260102-000000-bbbbbb");
-        let back = find(&dir, "20260101").unwrap();
+        let back = find_for(&dir, "20260101", "owner").unwrap();
         assert_eq!(back.title, "first question");
         let messages = back.into_messages();
         assert_eq!((messages.len(), messages[1].agents.clone(), messages[2].tool_calls.len()), (3, vec!["Writer".to_string()], 1));
-        assert!(find(&dir, "2026010").err().unwrap().contains("match"));
-        assert!(find(&dir, "nope").is_err());
+        assert!(find_for(&dir, "2026010", "owner").err().unwrap().contains("match"));
+        assert!(find_for(&dir, "nope", "owner").is_err());
         assert!(describe(&list(&dir), 10).contains("second chat"));
     }
 }

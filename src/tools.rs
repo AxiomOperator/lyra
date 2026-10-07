@@ -63,6 +63,9 @@ impl CallContext<'_> {
     }
 
     fn check_write(&self, scope: &str) -> Result<(), String> {
+        if lyra_memory::personal(scope) && !self.write_scopes.is_some_and(|w| w.contains(&scope)) {
+            return Err("that memory scope is someone else's".into());
+        }
         match self.write_scopes {
             Some(allowed) if !in_scopes(allowed, scope) => {
                 Err(format!("this agent may not write to scope {scope:?} (only {})", allowed.join(", ")))
@@ -72,7 +75,16 @@ impl CallContext<'_> {
     }
 
     fn can_read(&self, scope: &str) -> bool {
+        // Someone's own memories: only for them, named exactly.
+        if lyra_memory::personal(scope) {
+            return self.read_scopes.is_some_and(|allowed| allowed.contains(&scope));
+        }
         self.read_scopes.is_none_or(|allowed| in_scopes(allowed, scope))
+    }
+
+    /// Kept to one person's own memories (anyone but the owner).
+    fn personal(&self) -> bool {
+        Self::only_scope(self.read_scopes).is_some_and(|s| lyra_memory::personal(&s))
     }
 
     /// The one scope the caller is kept to (a member's `user:<id>`), if any.
@@ -258,6 +270,8 @@ impl Tools {
             "memory_supersede" => self.supersede(arguments, ctx),
             "memory_archive" => self.set_status(arguments, ctx, true),
             "memory_forget" => self.set_status(arguments, ctx, false),
+            // The working memory is the owner's.
+            "working_memory" if ctx.personal() => Err("working memory isn't available here".into()),
             "working_memory" => self.working(arguments),
             _ => match self.composite(name) {
                 Some(c) => self.run_composite(&c, arguments, ctx),
@@ -266,7 +280,9 @@ impl Tools {
         };
         let result = result.unwrap_or_else(|e| json!({ "error": e }));
         let text = result.to_string();
-        self.mem.working().note_tool(name, &text);
+        if !ctx.personal() {
+            self.mem.working().note_tool(name, &text);
+        }
         text
     }
 
@@ -355,7 +371,8 @@ impl Tools {
         let a: Args = parse(arguments)?;
         let m = self.mem.run(self.mem.manager.find(&a.id))?;
         if !ctx.can_read(&m.scope) {
-            return Err(format!("this agent may not read scope {:?}", m.scope));
+            // Someone else's memory doesn't exist, as far as this caller knows.
+            return Err(if lyra_memory::personal(&m.scope) { format!("no memory matches {:?}", a.id) } else { format!("this agent may not read scope {:?}", m.scope) });
         }
         Ok(json!({ "memory": self.mem.inspect_text(&m)? }))
     }
@@ -555,9 +572,19 @@ mod tests {
         assert!(asked["error"].is_string(), "naming the owner's scope doesn't help");
         let wrote: Value = serde_json::from_str(&t.run("memory_remember", r#"{"content":"x","scope":"user"}"#, dana)).unwrap();
         assert!(wrote["error"].is_string());
-        // And the owner's recall doesn't bring up Dana's.
+        // And the owner's recall doesn't bring up Dana's, not even asked by scope, listed or by id.
         let owner = call(&t, "memory_recall", r#"{"query":"morning meetings"}"#);
         assert!(owner.as_array().unwrap().iter().all(|m| m["scope"] != "user:dana"), "{owner}");
+        assert!(call(&t, "memory_recall", r#"{"query":"morning meetings","scope":"user:dana"}"#)["error"].is_string());
+        let listed = call(&t, "memory_list", r#"{}"#);
+        assert!(!listed.to_string().contains("morning meetings"), "{listed}");
+        let id = saved["id"].as_str().unwrap();
+        let peek = call(&t, "memory_inspect", &format!(r#"{{"id":"{id}"}}"#));
+        assert!(peek["error"].as_str().is_some_and(|e| !e.contains("user:")), "no hint of whose: {peek}");
+        assert!(call(&t, "memory_forget", &format!(r#"{{"id":"{id}"}}"#))["error"].is_string());
+        // Working memory is the owner's: Dana's turns neither use nor feed it.
+        let wm: Value = serde_json::from_str(&t.run("working_memory", r#"{}"#, dana)).unwrap();
+        assert!(wm["error"].is_string());
     }
 
     fn call(t: &Tools, name: &str, args: &str) -> Value {

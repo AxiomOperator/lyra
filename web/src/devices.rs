@@ -172,6 +172,11 @@ impl Devices {
         Ok((device, token))
     }
 
+    /// A device by its id (still paired?).
+    pub fn get(&self, id: &str) -> Option<Device> {
+        self.list().into_iter().find(|d| d.id == id)
+    }
+
     /// The device a token belongs to (and note that it was seen).
     pub fn authenticate(&self, token: &str) -> Option<Device> {
         if token.trim().len() < 20 {

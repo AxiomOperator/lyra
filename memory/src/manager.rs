@@ -394,7 +394,9 @@ impl MemoryManager {
     /// Newest first, within allowed scopes.
     pub async fn list(&self, filter: &Filter, limit: usize) -> Result<Vec<Memory>> {
         let all = self.store.list(filter, limit.saturating_mul(4).max(limit)).await?;
-        let allowed: Vec<Memory> = all.into_iter().filter(|m| self.allowed(&m.scope)).take(limit).collect();
+        // People's own memories only when their scope is asked for.
+        let asked = filter.scope.as_deref();
+        let allowed: Vec<Memory> = all.into_iter().filter(|m| self.allowed(&m.scope) && (!personal(&m.scope) || asked == Some(m.scope.as_str()))).take(limit).collect();
         self.with_usage(allowed).await
     }
 
@@ -973,6 +975,10 @@ impl MemoryManager {
             }
             for c in plan.contradictions {
                 let Some(found) = resolve(&c.memories).filter(|f| f.len() == 2) else { continue };
+                // One person's memory never marks another's (or the owner's) as contradicted.
+                if found[0].scope != found[1].scope && (personal(&found[0].scope) || personal(&found[1].scope)) {
+                    continue;
+                }
                 self.store.relate(found[0].id, found[1].id, Relationship::Contradicts, &c.reason).await?;
                 self.store.record(&Event::new("contradiction", Some(found[0].id), c.reason.clone()).run(run)).await?;
                 notes.push(format!("contradiction: [{}] vs [{}] — {}", found[0].short_id(), found[1].short_id(), c.reason));

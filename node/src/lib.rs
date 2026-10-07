@@ -116,6 +116,19 @@ fn http() -> Result<reqwest::blocking::Client, String> {
 }
 
 /// `ws(s)://host/<path>?token=…` from lyra's https address.
+/// A WebSocket request to lyra serve: the token as a subprotocol (`lyra,
+/// <token>`) so it stays out of URLs and proxy logs; `query` is the rest.
+pub fn socket_request(base: &str, path: &str, token: &str, query: &str) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, String> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let url = socket_url(base, path, "");
+    let url = url.trim_end_matches("?token=");
+    let url = if query.is_empty() { url.to_string() } else { format!("{url}?{query}") };
+    let mut req = url.into_client_request().map_err(|e| e.to_string())?;
+    let value = format!("lyra, {token}").parse().map_err(|_| "the token has odd characters".to_string())?;
+    req.headers_mut().insert("Sec-WebSocket-Protocol", value);
+    Ok(req)
+}
+
 pub fn socket_url(base: &str, path: &str, token: &str) -> String {
     let base = base.trim_end_matches('/');
     let ws = base
@@ -446,8 +459,11 @@ enum End {
 }
 
 async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System>) -> End {
-    let url = socket_url(&config.url, "node", &config.token);
-    let ws = match tokio_tungstenite::connect_async(url.as_str()).await {
+    let request = match socket_request(&config.url, "node", &config.token, "") {
+        Ok(r) => r,
+        Err(e) => return End::Lost(e),
+    };
+    let ws = match tokio_tungstenite::connect_async(request).await {
         Ok((ws, _)) => ws,
         Err(tokio_tungstenite::tungstenite::Error::Http(r)) if r.status().as_u16() == 401 => {
             return End::Lost("lyra doesn't know this machine any more: pair it again (lyra-node pair …)".into());

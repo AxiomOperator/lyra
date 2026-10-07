@@ -514,22 +514,47 @@ function Waiting({ onIn, onOther }: { onIn: () => void; onOther: () => void }) {
   );
 }
 
-/** Back from Microsoft: the device's token (or what went wrong) is in the fragment. */
-function fromSignIn(): { token?: string; error?: string } {
+/** Back from Microsoft: a one-time code (or what went wrong) is in the
+ * fragment. The code is traded for this device's token only together with
+ * the sign-in cookie this browser got when it started signing in, so a link
+ * made from someone else's sign-in does nothing here. */
+function fromSignIn(): { code?: string; error?: string } {
   const h = new URLSearchParams(location.hash.slice(1));
-  const token = h.get("signed-in") ?? undefined;
+  const code = h.get("signin-code") ?? undefined;
   const error = h.get("signin-error") ?? undefined;
-  if (token || error) history.replaceState(null, "", "/");
-  if (token) saveToken(token);
-  return { token, error };
+  if (code || error || h.has("signed-in")) history.replaceState(null, "", "/");
+  return { code, error };
 }
 
 const signIn = fromSignIn();
+
+async function redeem(code: string): Promise<{ token?: string; error?: string }> {
+  try {
+    const r = await fetch("/api/auth/redeem", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify({ code }) });
+    const b = await r.json().catch(() => ({}));
+    return r.ok && b.token ? { token: b.token } : { error: b.error || "The sign-in didn't finish: try again." };
+  } catch {
+    return { error: "Couldn't reach lyra to finish signing in." };
+  }
+}
 
 export default function App() {
   const [token, setToken] = useState<string | null>(() => loadToken());
   const [why, setWhy] = useState<string | undefined>(signIn.error);
   const [waiting, setWaiting] = useState(false);
+  const [finishing, setFinishing] = useState(!!signIn.code);
+  useEffect(() => {
+    if (!signIn.code) return;
+    const code = signIn.code;
+    signIn.code = undefined;
+    void redeem(code).then((r) => {
+      if (r.token) {
+        saveToken(r.token);
+        setToken(r.token);
+      } else setWhy(r.error);
+      setFinishing(false);
+    });
+  }, []);
   const unpaired = useCallback((message?: string) => {
     // An account waiting for an admin keeps its token and waits.
     if (message === "waiting") {
@@ -553,6 +578,7 @@ export default function App() {
         }}
       />
     );
+  if (finishing) return <div className="flex min-h-dvh items-center justify-center bg-background text-muted-foreground text-sm">Signing you in…</div>;
   if (!token) return <Pair onPaired={setToken} message={why} />;
   return (
     <LyraProvider token={token} onUnpaired={unpaired}>

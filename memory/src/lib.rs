@@ -27,7 +27,7 @@ mod working;
 
 pub use manager::{
     Budget, CaptureMode, Compiled, Inspection, MaintenanceMode, MemoryManager, Recalled, Reembedded, Remembered,
-    Report, Settings, approx_tokens, visible,
+    Report, Settings, approx_tokens, personal, visible,
 };
 pub use memory::{
     Episode, Memory, MemoryKind, MemorySource, MemoryStatus, NewMemory, Provenance, Relationship, Usage,

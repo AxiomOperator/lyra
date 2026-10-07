@@ -63,8 +63,9 @@ pub struct Agents {
     pub router: SemanticRouter,
     rt: Handle,
     pub settings: Mutex<Settings>,
-    /// The agent being created, if any (A3).
+    /// The agent being created, if any (A3), and the conversation creating it.
     pub wizard: Mutex<Option<AgentCreationDraft>>,
+    pub wizard_session: Mutex<Option<String>>,
     /// Agents working right now (for the panel).
     pub active: Mutex<Vec<String>>,
     /// Actions the user allowed for the rest of the session ("a").
@@ -97,7 +98,7 @@ pub struct ApprovalRequest {
 /// Ask the user (through the TUI) to approve an agent's action, and wait.
 /// No answer in time, or lyra closing, is a no.
 pub fn approve(env: &Env, profile: &AgentProfile, tool: &str, ask: crate::caps::Ask) -> Result<(), String> {
-    let key = format!("{}|{tool}|{}|{}", profile.name, ask.what, ask.detail);
+    let key = format!("{}|{}|{tool}|{}|{}", env.owner, profile.name, ask.what, ask.detail);
     let action = format!("{}: {}", ask.what, ask.detail.replace('\n', " "));
     if env.agents.allowed.lock().unwrap_or_else(|e| e.into_inner()).contains(&key) {
         return Ok(());
@@ -137,8 +138,10 @@ pub struct Env {
     pub cancel: crate::Cancel,
     /// Working for a member, not an admin: no Operator or Coder, no system tools.
     pub member: bool,
-    /// That member (their own memories, `user:<id>`, are all the agent sees).
+    /// Anyone but the owner: their own memories (`user:<id>`) are all the agent sees.
     pub viewer: Option<String>,
+    /// Whose turn it is (their "always" answers are theirs alone).
+    pub owner: String,
 }
 
 /// The machine a message names with `@name` (one of `known`, or `server`).
@@ -204,6 +207,7 @@ impl Agents {
             wizard: Mutex::new(None),
             active: Mutex::new(Vec::new()),
             allowed: Mutex::new(Default::default()),
+            wizard_session: Mutex::new(None),
         })
     }
 
@@ -379,7 +383,8 @@ pub fn delegate(
         .unwrap_or_default();
     let mut defs: Vec<Value> = allowed.iter().map(lyra_capabilities::Capability::definition).collect();
     let can_delegate = profile.permission_policy.can_delegate && depth < s.max_depth;
-    let others: Vec<AgentProfile> = env.agents.registry.enabled().into_iter().filter(|a| a.name != profile.name).collect();
+    // A member's agents can't hand work to the Operator or the Coder.
+    let others: Vec<AgentProfile> = env.agents.registry.enabled().into_iter().filter(|a| a.name != profile.name && !(env.member && admin_only(&a.name))).collect();
     if can_delegate && !others.is_empty() {
         defs.push(delegate_tool(&others));
     }
@@ -456,6 +461,9 @@ pub fn delegate(
                     Some(c) => match c.approval(name, args) {
                         Some(ask) => match approve(env, profile, name, ask) {
                             // A coding job: its steps show live, and stop stops it.
+                            Ok(()) if env.member && c.manager.get(name).is_some_and(|x| matches!(x.source.as_str(), "coding" | "system")) => {
+                                json!({ "error": "machines, system tools and coding agents are for admins" }).to_string()
+                            }
                             Ok(()) if c.manager.get(name).is_some_and(|x| x.source == "coding") => {
                                 let progress = |event: Value| emit(&env.tx, AgentEvent::ToolProgress { agent: profile.title.clone(), id: shown_id.clone(), event });
                                 crate::coding::run(c, &serde_json::from_str(args).unwrap_or(json!({})), &env.cancel, &progress, Some((&env.url, &env.model))).to_string()
@@ -511,6 +519,9 @@ fn nested(env: &Env, from: &AgentProfile, args: &str, depth: u32, run: Option<Uu
     let Some(to) = a["agent"].as_str().and_then(|n| env.agents.registry.find(n).ok()).filter(|p| p.enabled && p.name != from.name) else {
         return json!({ "error": "no such agent" }).to_string();
     };
+    if env.member && admin_only(&to.name) {
+        return json!({ "error": format!("{} works on machines and code: that's for admins", to.title) }).to_string();
+    }
     let r = delegate(env, &to, &from.name, a["task"].as_str().unwrap_or(""), a["input"].as_str(), a["expected_output"].as_str(), depth + 1, "agent", None, run);
     result_json(&to, &r).to_string()
 }
@@ -772,7 +783,8 @@ impl crate::App {
             fleet: None,
             cancel: self.cancel.clone(),
             member: !self.admin,
-            viewer: (!self.admin).then(|| self.owner.clone()),
+            viewer: self.personal(),
+            owner: self.owner.clone(),
         })
     }
 
@@ -797,7 +809,10 @@ impl crate::App {
 
     /// The wizard takes plain input as answers while it's open.
     pub(crate) fn wizard_active(&self) -> bool {
-        self.agents.as_ref().is_some_and(|a| a.wizard.lock().unwrap_or_else(|e| e.into_inner()).is_some())
+        // Only in the conversation that opened it.
+        self.agents.as_ref().is_some_and(|a| {
+            a.wizard.lock().unwrap_or_else(|e| e.into_inner()).is_some() && a.wizard_session.lock().unwrap_or_else(|e| e.into_inner()).as_deref() == Some(self.session_id.as_str())
+        })
     }
 
     fn set_wizard(&self, draft: Option<AgentCreationDraft>) {
@@ -808,6 +823,7 @@ impl crate::App {
             }
             None => agents.registry.clear_draft(),
         }
+        *agents.wizard_session.lock().unwrap_or_else(|e| e.into_inner()) = draft.is_some().then(|| self.session_id.clone());
         *agents.wizard.lock().unwrap_or_else(|e| e.into_inner()) = draft;
     }
 
@@ -1443,7 +1459,7 @@ mod tests {
         caps.set_agents(agents.clone());
         caps.refresh();
         let (tx, events) = mpsc::channel();
-        let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx, machine: None, fleet: None, cancel: Default::default(), member: false, viewer: None };
+        let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx, machine: None, fleet: None, cancel: Default::default(), member: false, viewer: None, owner: "owner".into() };
         Fixture { _rt: rt, env, events }
     }
 

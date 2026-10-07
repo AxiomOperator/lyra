@@ -126,13 +126,19 @@ fn truncate(text: &str, max: usize) -> String {
 
 /// Keep the connection up (reconnecting), feeding the screen and sending its messages.
 async fn connection(config: RemoteConfig, to_screen: mpsc::Sender<Incoming>, mut from_screen: tokio::sync::mpsc::UnboundedReceiver<String>) {
-    let base = lyra_node::socket_url(&config.url, "ws", &config.token);
     // The conversation this terminal shows (kept across reconnects).
     let session = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let mut pause = 1;
     loop {
-        let url = format!("{base}&session={}", session.lock().map(|s| s.clone()).unwrap_or_default());
-        match tokio_tungstenite::connect_async(url.as_str()).await {
+        let query = format!("session={}", session.lock().map(|s| s.clone()).unwrap_or_default());
+        let request = match lyra_node::socket_request(&config.url, "ws", &config.token, &query) {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = to_screen.send(Incoming::Lost(e));
+                return;
+            }
+        };
+        match tokio_tungstenite::connect_async(request).await {
             Ok((ws, _)) => {
                 pause = 1;
                 let _ = to_screen.send(Incoming::Connected);
