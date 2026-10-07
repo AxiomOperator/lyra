@@ -233,7 +233,9 @@ pub fn events(from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<Value>, Stri
         lyra_web::oidc::encode(&from.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
         lyra_web::oidc::encode(&to.format("%Y-%m-%dT%H:%M:%SZ").to_string())
     );
-    Ok(get(&path)?["value"].as_array().cloned().unwrap_or_default())
+    // Outlook also returns events that end exactly when the span starts.
+    let list = get(&path)?["value"].as_array().cloned().unwrap_or_default();
+    Ok(list.into_iter().filter(|e| utc(&e["end"]).is_none_or(|end| end > from)).collect())
 }
 
 /// Free stretches of at least `minutes` between `from` and `to` (local hours), on a day.
