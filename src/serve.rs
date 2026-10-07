@@ -895,6 +895,7 @@ fn machines_detail(hub: &Hub, node_build: Option<&str>) -> Vec<Value> {
                 "update_available": update,
                 "last_seen": d.last_seen,
                 "health": m.and_then(|m| m.health.as_ref()).map(crate::health::view),
+                "harnesses": m.map(|m| m.harnesses.clone()),
             })
         })
         .collect()
