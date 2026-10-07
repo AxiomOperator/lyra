@@ -915,7 +915,7 @@ invites waiting for an answer. The Tasks page shows today's calendar. `/calendar
 **Mail** comes with the same connection.
 - **Reading:** "What needs a reply?", "Summarize the thread with Dana about the budget", "Find
   the October invoice".
-- **Drafts:** lyra writes them into your Drafts folder at once, since only you see them.
+- **Drafts:** lyra writes them into your Drafts folder at once, since only you see them. They're HTML emails in Outlook's usual font: the model writes Markdown (paragraphs, bold, lists, links, tables), and a reply goes above the quoted original.
 - **Your own mailbox:** marking read, flagging, archiving or deleting happens at once.
 - **Sending** waits for your **Allow**, which shows who it goes to and what it says.
 

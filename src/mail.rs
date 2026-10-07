@@ -132,7 +132,7 @@ pub fn capabilities() -> Vec<Capability> {
                 "to": { "type": "array", "items": { "type": "string" }, "description": "Email addresses (a new message, or extra for a reply)." },
                 "cc": { "type": "array", "items": { "type": "string" } },
                 "subject": { "type": "string" },
-                "body": { "type": "string", "description": "The text, written as the user would." },
+                "body": { "type": "string", "description": "The text, written as the user would, in Markdown (paragraphs, **bold**, lists, links): it's sent as an HTML email." },
             }),
             &["body"],
         ),
@@ -163,6 +163,31 @@ pub fn approval(name: &str, args: &Value) -> Option<Ask> {
         },
     );
     Some(Ask { what: format!("send an email to {to}: {subject}"), detail: text, why: "it goes out from your mailbox".into(), dangerous: false })
+}
+
+/// A draft's text as the HTML email it becomes: Markdown (paragraphs, lists,
+/// bold, links, tables) rendered, in Outlook's usual font; HTML left as it is.
+pub fn html(body: &str) -> String {
+    let t = body.trim();
+    let looks_html = t.starts_with('<') && t.contains("</");
+    let inner = if looks_html {
+        t.to_string()
+    } else {
+        use pulldown_cmark::{Options, Parser, html::push_html};
+        let mut out = String::new();
+        push_html(&mut out, Parser::new_ext(t, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH));
+        out
+    };
+    format!("<div style=\"font-family: Aptos, Calibri, Arial, sans-serif; font-size: 11pt; color: #000000;\">{inner}</div>")
+}
+
+/// Put the answer above the quoted message in Outlook's own reply (inside its `<body>`).
+fn above_quote(reply_html: &str, answer: &str) -> String {
+    let lower = reply_html.to_lowercase();
+    match lower.find("<body").and_then(|i| lower[i..].find('>').map(|j| i + j + 1)) {
+        Some(at) => format!("{}{answer}<br>{}", &reply_html[..at], &reply_html[at..]),
+        None => format!("{answer}<br>{reply_html}"),
+    }
 }
 
 fn recipients(v: &Value) -> Result<Vec<Value>, String> {
@@ -218,10 +243,11 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
                     let verb = if args["reply_all"] == true { "createReplyAll" } else { "createReply" };
                     let d = graph(reqwest::Method::POST, &format!("/me/messages/{}/{verb}", enc(original)), Some(&json!({})))?;
                     let id = d["id"].as_str().ok_or("Outlook made no draft")?.to_string();
-                    // The answer above the quoted message Outlook put in.
-                    let full = graph_with(reqwest::Method::GET, &format!("/me/messages/{}?$select=body,toRecipients,ccRecipients", enc(&id)), None, TEXT)?;
+                    // The answer (HTML) above the quoted message Outlook put in.
+                    let full = graph(reqwest::Method::GET, &format!("/me/messages/{}?$select=body,toRecipients,ccRecipients", enc(&id)), None)?;
                     let quoted = full["body"]["content"].as_str().unwrap_or("");
-                    let mut patch = json!({ "body": { "contentType": "text", "content": format!("{body_text}\n\n{quoted}") } });
+                    let content = if full["body"]["contentType"] == "html" { above_quote(quoted, &html(body_text)) } else { format!("{}<br><pre>{}</pre>", html(body_text), quoted.replace('<', "&lt;")) };
+                    let mut patch = json!({ "body": { "contentType": "html", "content": content } });
                     if !to.is_empty() {
                         let mut all = full["toRecipients"].as_array().cloned().unwrap_or_default();
                         all.extend(to);
@@ -240,7 +266,7 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
                     }
                     let msg = json!({
                         "subject": args["subject"].as_str().unwrap_or(""),
-                        "body": { "contentType": "text", "content": body_text },
+                        "body": { "contentType": "html", "content": html(body_text) },
                         "toRecipients": to,
                         "ccRecipients": cc,
                     });
@@ -329,6 +355,15 @@ mod tests {
         assert!(b["unread"] == true && b["important"] == true && b["attachments"] == true && b["flagged"] == true);
         assert!(b.get("other").is_none());
         assert_eq!(who(&json!({ "emailAddress": { "address": "x@y.z" } })), "x@y.z");
+    }
+
+    #[test]
+    fn drafts_are_html() {
+        let h = html("Hi Dana,\n\nThe numbers:\n\n- **Q3**: up 4%\n- Q4: flat\n\nThanks,\nGarrett");
+        assert!(h.starts_with("<div style=") && h.contains("<p>Hi Dana,</p>") && h.contains("<li><strong>Q3</strong>: up 4%</li>"), "{h}");
+        assert!(html("<p>already <b>html</b></p>").contains("<p>already <b>html</b></p>"), "HTML stays");
+        let reply = above_quote("<html><head><style></style></head><body dir=\"ltr\"><div>original</div></body></html>", "<p>yes</p>");
+        assert_eq!(reply, "<html><head><style></style></head><body dir=\"ltr\"><p>yes</p><br><div>original</div></body></html>");
     }
 
     #[test]
