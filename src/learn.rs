@@ -454,12 +454,15 @@ pub(crate) fn complete(
     if !s.thinking {
         body["chat_template_kwargs"] = json!({ "enable_thinking": false });
     }
+    let started = std::time::Instant::now();
     let resp = client.post(url).json(&body).send().map_err(|e| e.to_string())?;
     let status = resp.status();
     if !status.is_success() {
         return Err(format!("{status}: {}", resp.text().unwrap_or_default()));
     }
     let reply: Value = resp.json().map_err(|e| e.to_string())?;
+    // lyra's own work for whoever this thread works for (capture, triage, briefings, reviews…).
+    crate::usage::record_usage("background", model, &reply["usage"], started.elapsed().as_millis() as u64);
     let text = reply["choices"][0]["message"]["content"]
         .as_str()
         .ok_or("model returned no content")?

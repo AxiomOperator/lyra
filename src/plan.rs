@@ -339,12 +339,15 @@ pub(crate) fn chat_with(url: &str, model: &str, messages: &[Value], tools: &[Val
     if let Some(t) = o.temperature {
         body["temperature"] = json!(t);
     }
+    let started = std::time::Instant::now();
     let resp = client.post(url).json(&body).send().map_err(|e| e.to_string())?;
     let status = resp.status();
     if !status.is_success() {
         return Err(format!("{status}: {}", resp.text().unwrap_or_default()));
     }
     let reply: Value = resp.json().map_err(|e| e.to_string())?;
+    // Agents' and plans' steps, for whoever this thread works for.
+    crate::usage::record_usage("agent", model, &reply["usage"], started.elapsed().as_millis() as u64);
     let tokens = reply["usage"]["total_tokens"].as_u64().unwrap_or(0);
     Ok((reply["choices"][0]["message"].clone(), tokens))
 }

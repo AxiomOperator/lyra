@@ -606,7 +606,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -1186,7 +1186,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         }
                         let mut b = crate::briefing::gather(&inputs);
                         if s.summary {
-                            b.takeaway = crate::briefing::takeaway(&url, &model, &b);
+                            b.takeaway = crate::acting::run(&user, || crate::briefing::takeaway(&url, &model, &b));
                         }
                         let _ = tx.send((user, b));
                     }
@@ -1541,6 +1541,19 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         }
         "routines" => crate::acting::run(&app.owner, || crate::routines::view(&[], 10)),
         "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
+        // AI usage: everyone's and each person's for admins, their own for members.
+        "usage" => {
+            let days = arg["days"].as_i64().unwrap_or(7);
+            let mut v = crate::usage::summary(days, (!app.admin).then_some(app.owner.as_str()));
+            let users = hub.users().list();
+            if let Some(list) = v["users"].as_array_mut() {
+                for u in list {
+                    let id = u["user"].as_str().unwrap_or("").to_string();
+                    u["name"] = json!(users.iter().find(|x| x.id == id).map_or(id, |x| x.name.clone()));
+                }
+            }
+            v
+        }
         // Their notes and lists.
         "notes" => crate::acting::run(&app.owner, crate::notes::page),
         // Their inbox at a glance (the last day).
@@ -1851,6 +1864,15 @@ impl App {
             "member" => change(Some(Role::Member), None, "is a member"),
             _ => Err("usage: /users [approve|decline|admin|member|disable|enable <name or email>]".into()),
         }
+    }
+
+    /// `/usage [days]`: everyone's and each person's for admins, one's own for members.
+    pub(crate) fn usage_command(&mut self, arg: &str) -> Result<String, String> {
+        let days = arg.trim().parse::<i64>().unwrap_or(7);
+        let users = self.hub.as_ref().map(|h| h.users().list()).unwrap_or_default();
+        let name = |id: &str| users.iter().find(|u| u.id == id).map_or_else(|| id.to_string(), |u| u.name.clone());
+        let only = (!self.admin).then(|| self.owner.clone());
+        Ok(crate::usage::describe(days, only.as_deref(), &name))
     }
 
     /// `/whoami`: who this conversation belongs to.

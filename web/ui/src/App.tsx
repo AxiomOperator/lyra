@@ -33,6 +33,7 @@ import {
   ListTodo,
   NotebookPen,
   Users,
+  Gauge,
   Bell,
   Brain,
   Cpu,
@@ -55,6 +56,7 @@ import { GoalsPage, MemoryPage, ModelsPage, RoutinesPage, SkillsPage } from "./l
 import { TasksPage } from "./lyra/tasks";
 import { NotesPage } from "./lyra/notes";
 import { UsersPage } from "./lyra/users";
+import { UsagePage } from "./lyra/usage";
 import { StatusPage } from "./lyra/status";
 import { CodingPage } from "./lyra/coding";
 import { ActivityPage, DevicesPage, MachinesPage, MorePage } from "./lyra/pages";
@@ -67,10 +69,10 @@ import { loadToken, saveToken, takeShared } from "./lyra/token";
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "tasks" | "notes" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "users";
-const manage: Manage[] = ["tasks", "notes", "routines", "coding", "memory", "skills", "goals", "model", "users"];
+type Manage = "tasks" | "notes" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users";
+const manage: Manage[] = ["tasks", "notes", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users"];
 /** What a member (not an admin) has: their chats, tasks, status, activity, skills. */
-const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "tasks", "notes", "routines", "goals", "memory"];
+const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "tasks", "notes", "routines", "goals", "memory", "usage"];
 
 type TabItem = {
   id: Tab;
@@ -289,6 +291,7 @@ function Shell() {
     { id: "skills", label: "Skills", icon: GraduationCap },
     { id: "goals", label: "Goals", icon: Target },
     { id: "model", label: "Model", icon: Cpu },
+    { id: "usage", label: "Usage", icon: Gauge },
     { id: "users", label: "Users", icon: Users, badge: status.users_waiting ?? 0 },
   ] as TabItem[]).filter((t) => admin || forMembers.includes(t.id));
   const toMore = () => setTab("more");
@@ -370,6 +373,7 @@ function Shell() {
           {tab === "skills" && <SkillsPage onBack={toMore} />}
           {tab === "goals" && <GoalsPage onBack={toMore} />}
           {tab === "model" && <ModelsPage onBack={toMore} />}
+          {tab === "usage" && <UsagePage onBack={toMore} />}
           {tab === "users" && <UsersPage onBack={toMore} />}
         </div>
 

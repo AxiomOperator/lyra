@@ -38,6 +38,7 @@ mod style;
 mod status;
 mod teams;
 mod tools;
+mod usage;
 mod websearch;
 mod when;
 mod ui;
@@ -732,7 +733,11 @@ impl App {
                 }
             }
             let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref(), &content, max_rounds, run, &tx, &cancel, viewer.as_deref(), member) {
-                Ok(stats) => StreamEvent::Done(stats),
+                Ok(stats) => {
+                    // The turn's own model calls (agents' and lyra's count separately).
+                    usage::record("chat", &model, stats.input, stats.cached, stats.output, stats.elapsed.as_millis() as u64);
+                    StreamEvent::Done(stats)
+                }
                 Err(e) => StreamEvent::Error(e),
             };
             let _ = tx.send(event);
@@ -1464,6 +1469,7 @@ impl App {
             "/devices" => self.devices_command(arg),
             "/users" => self.users_command(arg),
             "/whoami" => Ok(self.whoami()),
+            "/usage" => self.usage_command(arg),
             "/memory" => {
                 let mem = self.mem().ok_or_else(|| match &self.memory_status {
                     Err(why) => why.clone(),
@@ -1845,7 +1851,10 @@ impl App {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let (model, tx, run) = (self.model.clone(), self.tx.clone(), self.last_run.as_ref().map(|r| r.id));
         let started = self.session_started;
+        let owner = self.owner.clone();
         thread::spawn(move || {
+            // Counted (and kept) for the conversation's person.
+            crate::acting::set(&owner);
             let reason = match reason {
                 Some(r) => r,
                 None => match decide::yes("worth remembering?", &transcript, MEMORY_GATE) {
@@ -2718,8 +2727,10 @@ impl App {
                 coding::configure(config.coding.clone());
                 briefing::configure(config.briefing.clone());
     planner::configure(config.planner.clone());
+    usage::configure(prices(&config));
     proactive::configure(config.proactive.clone());
                 planner::configure(config.planner.clone());
+                usage::configure(prices(&config));
                 proactive::configure(config.proactive.clone());
     pmi::configure(config.pmi.clone());
                 pmi::configure(config.pmi.clone());
@@ -2932,7 +2943,7 @@ const LESSON_GATE: &str = "Does this conversation teach the assistant a reusable
 /// Commands the app's pages and buttons may run (each still checked by role).
 const PAGE_COMMANDS: &[&str] = &[
     "/memory", "/approve", "/reject", "/deprecate", "/goal", "/goals", "/model", "/backup", "/routine", "/routines", "/status", "/diagnose", "/coding",
-    "/briefing", "/tasks", "/task", "/pmi", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami",
+    "/briefing", "/tasks", "/task", "/pmi", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami", "/usage",
 ];
 
 /// Commands a member (not an admin) may use. Their own memories, goals,
@@ -2940,7 +2951,7 @@ const PAGE_COMMANDS: &[&str] = &[
 /// tools, coding, devices, backups, agents and skills' approval stay admins'.
 fn member_may(name: &str, arg: &str) -> bool {
     match name {
-        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" => true,
+        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" | "/usage" => true,
         // Their own PMI account, routines and goals.
         "/pmi" | "/tasks" | "/task" | "/routine" | "/routines" | "/calendar" | "/mail" | "/today" | "/style" | "/notes" | "/note" | "/list" => true,
         // Looking after their own memories (held to their scope there).
@@ -3037,6 +3048,7 @@ pub(crate) const COMMANDS: &str = "\
 /task add <what> [when] · /task done <n> [comment] · /task snooze <n> [1h|tomorrow]
 /users [approve|admin|member|disable <who>]   the people who use lyra serve (admins)
 /whoami                      who this conversation belongs to
+/usage [days]                AI usage: everyone's and each person's (admins), your own (members)
 /pmi [token <token>]         the PMI connection (your project-management app)
 /calendar [today|tomorrow|week|<day>|disconnect]   your Outlook calendar (connect it from More in the app)
 /today [plan]                plan my day: meetings, focus blocks for tasks due soon, mail to answer first (plan: re-plan now)
@@ -3187,6 +3199,15 @@ fn system_prompt(context: &Context, memory: bool) -> Option<String> {
         .chain(memory.then(|| tools::MEMORY_PROMPT.to_string()))
         .collect();
     (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
+fn prices(config: &Config) -> usage::Prices {
+    usage::Prices {
+        input: config.input_cost_per_mtok,
+        cached: config.cached_input_cost_per_mtok.unwrap_or(config.input_cost_per_mtok),
+        output: config.output_cost_per_mtok,
+        currency: config.currency.clone(),
+    }
 }
 
 fn pricing(config: &Config) -> Pricing {
