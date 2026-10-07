@@ -137,6 +137,8 @@ pub struct Env {
     pub cancel: crate::Cancel,
     /// Working for a member, not an admin: no Operator or Coder, no system tools.
     pub member: bool,
+    /// That member (their own memories, `user:<id>`, are all the agent sees).
+    pub viewer: Option<String>,
 }
 
 /// The machine a message names with `@name` (one of `known`, or `server`).
@@ -329,14 +331,15 @@ pub fn delegate(
     let task_id = Uuid::new_v4();
     emit(&env.tx, AgentEvent::Started { agent: profile.title.clone(), task: task.chars().take(160).collect(), depth });
     env.agents.set_active(&profile.title, true);
-    // A10: only the memories this agent may read.
-    let read = profile.memory_policy.read_scopes(&profile.name);
-    let write = profile.memory_policy.write_scopes(&profile.name);
+    // A10: only the memories this agent may read; for a member, only theirs.
+    let mine = env.viewer.as_ref().map(|v| vec![format!("user:{v}")]);
+    let read = mine.clone().or_else(|| profile.memory_policy.read_scopes(&profile.name));
+    let write = mine.clone().or_else(|| profile.memory_policy.write_scopes(&profile.name));
     let readable = |scope: &str| read.as_ref().is_none_or(|r| r.iter().any(|p| p.strip_suffix('*').map_or(p == scope, |x| scope.starts_with(x))));
     let memories: Vec<String> = match (&env.tools, profile.memory_policy.reads()) {
         (Some(t), true) => t
             .mem
-            .recall(None, task, 6, false)
+            .recall(mine.as_ref().map(|m| m[0].as_str()), task, 6, false)
             .unwrap_or_default()
             .into_iter()
             .filter(|r| readable(&r.memory.scope))
@@ -769,6 +772,7 @@ impl crate::App {
             fleet: None,
             cancel: self.cancel.clone(),
             member: !self.admin,
+            viewer: (!self.admin).then(|| self.owner.clone()),
         })
     }
 
@@ -1439,7 +1443,7 @@ mod tests {
         caps.set_agents(agents.clone());
         caps.refresh();
         let (tx, events) = mpsc::channel();
-        let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx, machine: None, fleet: None, cancel: Default::default(), member: false };
+        let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx, machine: None, fleet: None, cancel: Default::default(), member: false, viewer: None };
         Fixture { _rt: rt, env, events }
     }
 

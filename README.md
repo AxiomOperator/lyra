@@ -930,8 +930,13 @@ There are two roles:
   agents. They never get the Operator or the Coder, and the tools themselves refuse them,
   in Rust.
 
-Until each person has their own memories, goals, routines, briefing and PMI token, those stay
-the owner's, and a member's turns don't see them.
+Each person has their own memories, kept in the scope `user:<id>`. A member's conversations
+only recall and save theirs, and neither the owner's nor anyone else's turns ever see them.
+Each person also has their own `USER.md` (`~/.lyra/users/<id>/USER.md`); without one, lyra
+just knows their name.
+
+Goals, routines, the briefing and the PMI token are still the owner's until they're per user,
+and a member's turns don't see them.
 
 The first user is the **owner**, an admin. Devices paired before users existed are theirs.
 `/users` lists everyone, and `/users approve|admin|member|disable <who>` changes someone.

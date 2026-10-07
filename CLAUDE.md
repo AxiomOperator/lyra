@@ -45,7 +45,7 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
   goal loop runs from `App::goals_tick`.
 - `docs/` — design guides and examples (not binding; see rule 3). Fully implemented ones move to
   `docs/done/`.
-- Runtime files live in `~/.lyra` (`$LYRA_HOME`): `config/config.toml`, `config/secrets.toml` (tokens, 0600, not backed up), `context/`
+- Runtime files live in `~/.lyra` (`$LYRA_HOME`): `config/config.toml`, `config/secrets.toml` (tokens, 0600, not backed up), `users/<id>/` (a member's own files, e.g. USER.md; the owner's stay where they are), `context/`
   (SOUL/USER/AGENT.md), `memory/lance/` (LanceDB), `plans/plans.db`, `skills/<name>.md` (one Markdown file per skill) + `skills/ledger.db`,
   `evolution/evolution.db`, `config/behavior.toml`, `workflows/<name>.toml`, `tools/<name>.toml` (evolved state),
   `sessions/<id>.json` (saved conversations, `lyra -c` / `-r`), `briefing/last.json` (the last daily briefing), `web/` (paired devices, users, VAPID key),

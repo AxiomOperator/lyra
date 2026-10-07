@@ -113,6 +113,11 @@ impl Mem {
         self.run(self.manager.compile(message, run, self.project().as_deref()))
     }
 
+    /// The same, from one person's own memories (`user:<id>`).
+    pub fn compile_for(&self, message: &str, run: Uuid, scope: &str) -> Result<Compiled, String> {
+        self.run(self.manager.compile_for(message, run, None, Some(scope)))
+    }
+
     /// Recall in one scope, or (`None`) in everything visible from the
     /// current project.
     pub fn recall(&self, scope: Option<&str>, query: &str, limit: usize, archived: bool) -> Result<Vec<Recalled>, String> {

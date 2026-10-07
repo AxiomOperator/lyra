@@ -201,12 +201,21 @@ pub struct MemoryManager {
 }
 
 /// Whether a memory in `scope` is visible while working on `project`:
-/// other projects' memories stay out unless asked for by scope.
+/// other projects' memories stay out unless asked for by scope, and so do
+/// other people's own (`user:<id>`).
 pub fn visible(project: Option<&str>, scope: &str) -> bool {
+    if personal(scope) {
+        return false;
+    }
     match scope.strip_prefix("project:") {
         Some(p) => project == Some(p),
         None => true,
     }
+}
+
+/// A person's own memories (`user:<id>`): only ever recalled by naming the scope.
+pub fn personal(scope: &str) -> bool {
+    scope.starts_with("user:")
 }
 
 impl MemoryManager {
@@ -397,7 +406,8 @@ impl MemoryManager {
     /// memories in allowed scopes, ranked by every signal.
     pub async fn recall(&self, scope: Option<&str>, query: &str, limit: usize, include_archived: bool) -> Result<Vec<Recalled>> {
         let vector = self.embed_query(query).await;
-        self.recall_where(scope, &|_| true, query, Embedded::qv(&vector), limit, include_archived).await
+        // Without a scope: everything but people's own memories.
+        self.recall_where(scope, &|s| scope.is_some() || !personal(s), query, Embedded::qv(&vector), limit, include_archived).await
     }
 
     /// Recall what's visible while working on `project` (see [`visible`]):
@@ -488,11 +498,20 @@ impl MemoryManager {
     /// The context compiler (M12): pick the few memories worth the prompt
     /// space for this message, within the token budget, and record their use.
     pub async fn compile(&self, query: &str, run: Uuid, project: Option<&str>) -> Result<Compiled> {
+        self.compile_for(query, run, project, None).await
+    }
+
+    /// The context compiler for one person's own memories (`scope`, e.g.
+    /// `user:<id>`), or (`None`) everything visible from `project`.
+    pub async fn compile_for(&self, query: &str, run: Uuid, project: Option<&str>, scope: Option<&str>) -> Result<Compiled> {
         if !self.settings().inject {
             return Ok(Compiled::default());
         }
         let b = self.settings().context;
-        let candidates = self.recall_visible(project, query, 20, false).await?;
+        let candidates = match scope {
+            Some(s) => self.recall(Some(s), query, 20, false).await?,
+            None => self.recall_visible(project, query, 20, false).await?,
+        };
         let mut used: Vec<Recalled> = Vec::new();
         let mut passed_over: Vec<Uuid> = Vec::new();
         let mut tokens = 0;
@@ -1191,6 +1210,15 @@ mod tests {
         assert_eq!(visible[0].memory.scope, "project:arcella");
         assert!(m.recall_visible(None, "agent runtime", 5, false).await.unwrap().is_empty());
         assert!(crate::visible(None, "user") && !crate::visible(Some("a"), "project:b"));
+        assert!(!crate::visible(None, "user:dana"), "someone's own memories aren't anyone else's");
+        // A person's own memories: only by naming their scope.
+        m.remember(fact("user:dana", "Dana's agent runtime notes are private.")).await.unwrap();
+        assert_eq!(m.recall(None, "agent runtime", 5, false).await.unwrap().len(), 2, "not in everything");
+        assert!(m.recall_visible(None, "Dana agent runtime notes", 5, false).await.unwrap().is_empty());
+        let mine = m.recall(Some("user:dana"), "agent runtime notes", 5, false).await.unwrap();
+        assert_eq!((mine.len(), mine[0].memory.scope.as_str()), (1, "user:dana"));
+        let compiled = m.compile_for("agent runtime notes", Uuid::new_v4(), None, Some("user:dana")).await.unwrap();
+        assert!(compiled.used.iter().all(|r| r.memory.scope == "user:dana") && !compiled.used.is_empty(), "and in their prompts only theirs");
     }
 
     #[tokio::test]

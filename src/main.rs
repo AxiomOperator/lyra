@@ -670,8 +670,9 @@ impl App {
         self.cancel = Cancel::default();
         let cancel = self.cancel.clone();
         let (learning, evolution, caps) = (self.learning.clone(), self.evolution.clone(), self.caps.clone());
-        // A member's turn doesn't see the owner's goals or memories (theirs come later).
+        // A member's turn sees only their own memories, and not the owner's goals.
         let member = !self.admin;
+        let viewer = member.then(|| self.owner.clone());
         let goals_section = self.goals.as_ref().filter(|_| !member).and_then(|g| g.prompt_section());
         let mut agent_env = self.agent_env();
         // `@desktop`: that machine is where system work goes.
@@ -694,8 +695,9 @@ impl App {
             if let Some(section) = &goals_section {
                 add_to_system(&mut history, section);
             }
-            if let Some(tools) = tools.as_ref().filter(|_| !member) {
-                apply_memories(&tools.mem, &content, run, &mut history, &tx);
+            if let Some(tools) = &tools {
+                let mine = viewer.as_ref().map(|v| format!("user:{v}"));
+                apply_memories(&tools.mem, &content, run, &mut history, &tx, mine.as_deref());
             }
             if let Some(learning) = learning {
                 apply_skills(&learning, &content, run, &mut history, &tx);
@@ -710,7 +712,7 @@ impl App {
                     add_to_system(&mut history, agents::MAIN_NOTE);
                 }
             }
-            let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref(), &content, max_rounds, run, &tx, &cancel, member) {
+            let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref(), &content, max_rounds, run, &tx, &cancel, viewer.as_deref()) {
                 Ok(stats) => StreamEvent::Done(stats),
                 Err(e) => StreamEvent::Error(e),
             };
@@ -1760,6 +1762,10 @@ impl App {
     /// Review the turn just finished for things worth remembering (M2, M8):
     /// after every turn when the capture trigger fires, or on `/memory episode`.
     fn capture(&mut self, episode: bool) {
+        // Not from a member's conversation (what's learned there isn't the owner's).
+        if !self.admin {
+            return;
+        }
         let Some(mem) = self.mem() else { return };
         if self.capturing || (!episode && mem.manager.settings().capture == CaptureMode::Off) {
             return;
@@ -2800,11 +2806,15 @@ impl App {
         app
     }
 
-    /// A new conversation for a user (theirs, with their rights).
+    /// A new conversation for a user: theirs, with their rights and their USER.md.
     fn fork_for(&self, who: &lyra_web::Who) -> App {
-        let mut app = self.fork();
+        let config = Config::load().unwrap_or_default();
+        let mut app = App::new(config, Context::load_for(&who.user, &who.name), self.shared.clone());
+        app.hub = self.hub.clone();
+        app.primary = false;
         app.owner = who.user.clone();
         app.admin = who.admin;
+        app.refresh_agents();
         app
     }
 
@@ -3008,7 +3018,26 @@ fn add_to_system(history: &mut Vec<Value>, section: &str) {
 
 /// Add the memories worth this message's prompt space (the context compiler)
 /// and the working memory to the system prompt.
-fn apply_memories(mem: &Mem, message: &str, run: Uuid, history: &mut Vec<Value>, tx: &Sender<StreamEvent>) {
+/// `mine`: a member's own scope (`user:<id>`): only their memories, and none
+/// of the owner's working memory or project.
+fn apply_memories(mem: &Mem, message: &str, run: Uuid, history: &mut Vec<Value>, tx: &Sender<StreamEvent>, mine: Option<&str>) {
+    if let Some(scope) = mine {
+        match mem.compile_for(message, run, scope) {
+            Ok(compiled) => {
+                let mut section = compiled.section.unwrap_or_default();
+                if !compiled.used.is_empty() {
+                    let ids = compiled.used.iter().map(|r| r.memory.short_id()).collect();
+                    let _ = tx.send(StreamEvent::MemoriesApplied { ids, tokens: compiled.tokens as u64 });
+                }
+                section.push_str(&format!("\n\nThis person's memories are theirs alone: save and recall them in scope \"{scope}\"."));
+                add_to_system(history, section.trim());
+            }
+            Err(e) => {
+                let _ = tx.send(StreamEvent::Log(format!("memory recall failed: {e}")));
+            }
+        }
+        return;
+    }
     mem.working().note_entities(message);
     let mut sections = Vec::new();
     match mem.compile(message, run) {
@@ -3067,9 +3096,13 @@ fn converse(
     run: Uuid,
     tx: &Sender<StreamEvent>,
     cancel: &Cancel,
-    member: bool,
+    viewer: Option<&str>,
 ) -> Result<Stats, String> {
     let start = Instant::now();
+    // A member's calls: their own memory scope only, and no admin tools.
+    let mine = viewer.map(|v| format!("user:{v}"));
+    let mine_scopes: Vec<&str> = mine.iter().map(String::as_str).collect();
+    let scopes = mine.is_some().then_some(mine_scopes.as_slice());
     let mut total: Option<Stats> = None;
     let finish = |total: Option<Stats>| {
         let mut stats = total.unwrap_or(Stats { ttft: None, elapsed: Duration::ZERO, input: 0, cached: 0, output: 0, estimated: true });
@@ -3125,7 +3158,7 @@ fn converse(
                 history.push(json!({ "role": "tool", "tool_call_id": call.id, "content": "{\"error\":\"stopped by the user\"}" }));
                 continue;
             }
-            let ctx = CallContext { member, ..CallContext::new(Some(run), &call.id) };
+            let ctx = CallContext { member: viewer.is_some(), read_scopes: scopes, write_scopes: scopes, ..CallContext::new(Some(run), &call.id) };
             // Policy, usage tracking and verification happen in there.
             let content = if let (Some(env), "delegate") = (agents, call.function.name.as_str()) {
                 agents::delegate_call(env, &call.function.arguments, run)

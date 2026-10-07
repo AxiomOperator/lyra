@@ -770,7 +770,7 @@ impl Caps {
             if matches!(c.source.as_str(), "system" | "coding") || c.name == "fleet_run" {
                 return json!({ "error": "machines, system tools and coding agents are for admins" }).to_string();
             }
-            if matches!(c.source.as_str(), "goals" | "routines" | "pmi" | "memory") || c.name.starts_with("memory_") {
+            if matches!(c.source.as_str(), "goals" | "routines" | "pmi") || c.name == "working_memory" {
                 return json!({ "error": format!("{} isn't set up for your account yet", c.name) }).to_string();
             }
         }

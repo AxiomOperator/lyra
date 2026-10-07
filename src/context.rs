@@ -36,6 +36,18 @@ impl Context {
         Self::load_from(&dirs)
     }
 
+    /// The same for one person: anyone but the owner has their own USER.md
+    /// (`~/.lyra/users/<id>/USER.md`), and never the owner's; without one, just
+    /// their name.
+    pub fn load_for(user: &str, name: &str) -> Self {
+        let mut c = Self::load();
+        if user != lyra_web::users::OWNER {
+            let dir = user_dir(user);
+            c.user = dir.as_deref().and_then(|d| read(d, "USER.md")).or_else(|| Some(Source { path: PathBuf::new(), text: format!("Their name is {name}.") }));
+        }
+        c
+    }
+
     /// Load from `dirs`, ordered least to most specific.
     fn load_from(dirs: &[PathBuf]) -> Self {
         let mut context = Context::default();
@@ -99,6 +111,12 @@ impl Context {
 }
 
 /// Read `dir/name`, skipping missing, unreadable or blank files.
+/// A person's own folder (`~/.lyra/users/<id>`); the owner's things stay where they are.
+pub fn user_dir(user: &str) -> Option<PathBuf> {
+    let safe: String = user.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    (!safe.is_empty()).then(|| crate::config::home().map(|h| h.join("users").join(safe))).flatten()
+}
+
 fn read(dir: &Path, name: &str) -> Option<Source> {
     let path = dir.join(name);
     let text = std::fs::read_to_string(&path).ok()?;

@@ -74,6 +74,14 @@ impl CallContext<'_> {
     fn can_read(&self, scope: &str) -> bool {
         self.read_scopes.is_none_or(|allowed| in_scopes(allowed, scope))
     }
+
+    /// The one scope the caller is kept to (a member's `user:<id>`), if any.
+    fn only_scope(scopes: Option<&[&str]>) -> Option<String> {
+        match scopes {
+            Some([one]) if !one.contains('*') => Some(one.to_string()),
+            _ => None,
+        }
+    }
 }
 
 pub struct Tools {
@@ -297,7 +305,7 @@ impl Tools {
         let a: Args = parse(arguments)?;
         let source = a.source.as_deref().unwrap_or("conversation").parse().unwrap_or(MemorySource::Conversation);
         let new = NewMemory {
-            scope: a.scope.unwrap_or_else(|| self.mem.manager.settings().default_scope.clone()),
+            scope: a.scope.or_else(|| CallContext::only_scope(ctx.write_scopes)).unwrap_or_else(|| self.mem.manager.settings().default_scope.clone()),
             kind: parse_kind(a.kind.as_deref())?,
             tags: a.tags,
             provenance: provenance(ctx),
@@ -324,7 +332,7 @@ impl Tools {
             include_archived: bool,
         }
         let a: Args = parse(arguments)?;
-        let scope = a.scope.filter(|s| s != "*" && !s.is_empty());
+        let scope = a.scope.filter(|s| s != "*" && !s.is_empty()).or_else(|| CallContext::only_scope(ctx.read_scopes));
         if let Some(s) = &scope
             && !ctx.can_read(s)
         {
@@ -531,6 +539,25 @@ mod tests {
         let id = ok["id"].as_str().unwrap();
         let inspected = call(&t, "memory_inspect", &format!(r#"{{"id":"{id}"}}"#));
         assert!(inspected["memory"].as_str().unwrap().contains("Builds use cargo."));
+    }
+
+    #[test]
+    fn a_members_memories_are_theirs_alone() {
+        let (_rt, t) = tools();
+        call(&t, "memory_remember", r#"{"content":"The owner's alarm code is 4711.","scope":"user"}"#);
+        let mine: &[&str] = &["user:dana"];
+        let dana = CallContext { member: true, read_scopes: Some(mine), write_scopes: Some(mine), ..CallContext::new(None, "") };
+        let saved: Value = serde_json::from_str(&t.run("memory_remember", r#"{"content":"Dana prefers morning meetings."}"#, dana)).unwrap();
+        assert_eq!(saved["scope"], "user:dana", "saved in their own scope by default");
+        let theirs: Value = serde_json::from_str(&t.run("memory_recall", r#"{"query":"alarm code meetings"}"#, dana)).unwrap();
+        assert!(theirs.as_array().unwrap().iter().all(|m| m["scope"] == "user:dana") && !theirs.as_array().unwrap().is_empty(), "{theirs}");
+        let asked: Value = serde_json::from_str(&t.run("memory_recall", r#"{"query":"alarm code","scope":"user"}"#, dana)).unwrap();
+        assert!(asked["error"].is_string(), "naming the owner's scope doesn't help");
+        let wrote: Value = serde_json::from_str(&t.run("memory_remember", r#"{"content":"x","scope":"user"}"#, dana)).unwrap();
+        assert!(wrote["error"].is_string());
+        // And the owner's recall doesn't bring up Dana's.
+        let owner = call(&t, "memory_recall", r#"{"query":"morning meetings"}"#);
+        assert!(owner.as_array().unwrap().iter().all(|m| m["scope"] != "user:dana"), "{owner}");
     }
 
     fn call(t: &Tools, name: &str, args: &str) -> Value {
