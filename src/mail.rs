@@ -82,14 +82,15 @@ fn list(path: &str) -> Result<Vec<Value>, String> {
 /// The newest messages in the inbox (`unread`: only those; `focused`: not newsletters).
 pub fn inbox(unread: bool, focused: bool, count: usize) -> Result<Vec<Value>, String> {
     ready()?;
-    let mut filters = Vec::new();
+    // Outlook wants the sort field first in the filter when there is one.
+    let mut filters = vec!["receivedDateTime ge 2000-01-01T00:00:00Z"];
     if unread {
         filters.push("isRead eq false");
     }
     if focused {
         filters.push("inferenceClassification eq 'focused'");
     }
-    let filter = if filters.is_empty() { String::new() } else { format!("&$filter={}", enc(&filters.join(" and "))) };
+    let filter = format!("&$filter={}", enc(&filters.join(" and ")));
     list(&format!("/me/mailFolders/inbox/messages?$top={}&$select={SELECT}&$orderby=receivedDateTime desc{filter}", count.clamp(1, 50)))
 }
 
