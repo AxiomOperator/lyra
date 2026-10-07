@@ -1131,11 +1131,12 @@ The first user is the **owner**, an admin. Devices paired before users existed a
 Every model call lyra makes is kept in `~/.lyra/usage/<YYYY-MM>.jsonl`, credited to
 the person it was for: their chat turns (`chat`), their agents' and plans' steps
 (`agent`), and lyra's own work on their behalf such as memory capture, mail triage,
-briefings and reviews (`background`). `/usage [days]` (default 7) and the app's
+briefings and reviews (`background`), plus the small models: the decision model
+(`decision`), embeddings (`embedding`) and the reranker (`reranker`). `/usage [days]` (default 7) and the app's
 **Usage** page show admins the total across everyone plus each person's share by
 kind and model. Members see only their own. With `input_cost_per_mtok`,
 `cached_input_cost_per_mtok` and `output_cost_per_mtok` set, each line also shows an
-estimated cost.
+estimated cost for the chat model's calls (the small models count tokens only).
 
 **Signing in with Microsoft (Entra ID).** Coworkers sign in with their organization account,
 and anyone new waits until an admin lets them in. You get a push, then run `/users approve

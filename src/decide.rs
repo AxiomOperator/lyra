@@ -244,6 +244,7 @@ fn call(s: &Settings, state: &str, questions: &[(String, Question)]) -> Result<H
     let qs: Map<String, Value> = questions.iter().map(|(id, q)| (id.clone(), q.to_json())).collect();
     let body = json!({ "model": s.model, "state": state, "questions": qs });
     let url = format!("{}/systemone", s.url.trim_end_matches('/'));
+    let started = Instant::now();
     let resp = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(15))
@@ -257,7 +258,9 @@ fn call(s: &Settings, state: &str, questions: &[(String, Question)]) -> Result<H
     if !status.is_success() {
         return Err(format!("{status}: {}", resp.text().unwrap_or_default().chars().take(200).collect::<String>()));
     }
-    let answers = parse(&resp.json().map_err(|e| e.to_string())?)?;
+    let reply: Value = resp.json().map_err(|e| e.to_string())?;
+    crate::usage::record("decision", &s.model, reply["usage"]["input_tokens"].as_u64().unwrap_or(0), 0, reply["usage"]["output_tokens"].as_u64().unwrap_or(0), started.elapsed().as_millis() as u64);
+    let answers = parse(&reply)?;
     match questions.iter().find(|(id, _)| !answers.contains_key(id)) {
         Some((id, _)) => Err(format!("no answer for {id}")),
         None => Ok(answers),

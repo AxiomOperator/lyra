@@ -25,12 +25,17 @@ impl Endpoint {
             .timeout(Duration::from_secs(120))
             .build()
             .map_err(|e| e.to_string())?;
+        let started = std::time::Instant::now();
         let resp = client.post(&url).json(&body).send().map_err(|e| e.to_string())?;
         let status = resp.status();
         if !status.is_success() {
             return Err(format!("{url}: {status}: {}", resp.text().unwrap_or_default()));
         }
-        resp.json().map_err(|e| format!("{url}: {e}"))
+        let reply: serde_json::Value = resp.json().map_err(|e| format!("{url}: {e}"))?;
+        // Counted for whoever this thread works for, like the chat model's calls.
+        let kind = if path == "rerank" { "reranker" } else { "embedding" };
+        crate::usage::record_usage(kind, &self.model, &reply["usage"], started.elapsed().as_millis() as u64);
+        serde_json::from_value(reply).map_err(|e| format!("{url}: {e}"))
     }
 }
 
@@ -137,16 +142,19 @@ impl lyra_memory::EmbeddingProvider for EndpointEmbedder {
 
     async fn embed(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
         let (endpoint, texts) = (self.endpoint.clone(), texts.to_vec());
+        // The blocking pool's threads don't know whose memory this is.
+        let user = crate::acting::current();
         tokio::task::spawn_blocking(move || {
             let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-            embed(&endpoint, &refs).map(|e| e.vectors).map_err(anyhow::Error::msg)
+            crate::acting::run(&user, || embed(&endpoint, &refs)).map(|e| e.vectors).map_err(anyhow::Error::msg)
         })
         .await?
     }
 
     async fn embed_query(&self, text: &str) -> anyhow::Result<Vec<f32>> {
         let (endpoint, text, instruction) = (self.endpoint.clone(), text.to_string(), self.instruction);
-        tokio::task::spawn_blocking(move || embed_query_with(&endpoint, instruction, &text).map_err(anyhow::Error::msg)).await?
+        let user = crate::acting::current();
+        tokio::task::spawn_blocking(move || crate::acting::run(&user, || embed_query_with(&endpoint, instruction, &text)).map_err(anyhow::Error::msg)).await?
     }
 }
 

@@ -18,7 +18,8 @@ use serde_json::{Value, json};
 pub struct Call {
     pub at: DateTime<Utc>,
     pub user: String,
-    /// "chat", "agent" (agents and plans), "background" (capture, triage, briefings, reviews…).
+    /// "chat", "agent" (agents and plans), "background" (capture, triage, briefings, reviews…),
+    /// "decision" (the `[decide]` model), "embedding", "reranker".
     pub kind: String,
     pub model: String,
     pub input: u64,
@@ -55,7 +56,7 @@ fn dir() -> Option<PathBuf> {
 
 /// Keep a call, for the person this thread works for.
 pub fn record(kind: &str, model: &str, input: u64, cached: u64, output: u64, ms: u64) {
-    if input == 0 && output == 0 {
+    if input == 0 && output == 0 || cfg!(test) {
         return;
     }
     let c = Call { at: Utc::now(), user: crate::acting::current(), kind: kind.into(), model: model.into(), input, cached, output, ms };
@@ -69,9 +70,9 @@ pub fn record(kind: &str, model: &str, input: u64, cached: u64, output: u64, ms:
 
 /// From an OpenAI-style `usage` object.
 pub fn record_usage(kind: &str, model: &str, usage: &Value, ms: u64) {
-    let input = usage["prompt_tokens"].as_u64().unwrap_or(0);
+    let input = usage["prompt_tokens"].as_u64().or_else(|| usage["input_tokens"].as_u64()).unwrap_or(0);
     let cached = usage["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0);
-    let output = usage["completion_tokens"].as_u64().unwrap_or(0);
+    let output = usage["completion_tokens"].as_u64().or_else(|| usage["output_tokens"].as_u64()).unwrap_or(0);
     record(kind, model, input, cached, output, ms);
 }
 
@@ -112,6 +113,10 @@ impl Total {
         self.cached += c.cached;
         self.output += c.output;
         self.ms += c.ms;
+        // The prices are the chat model's; the small models' calls count tokens only.
+        if !matches!(c.kind.as_str(), "chat" | "agent" | "background") {
+            return;
+        }
         let fresh = c.input.saturating_sub(c.cached) as f64;
         self.cost += (fresh * p.input + c.cached as f64 * if p.cached > 0.0 { p.cached } else { p.input } + c.output as f64 * p.output) / 1_000_000.0;
     }
