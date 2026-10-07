@@ -370,7 +370,7 @@ fn for_viewer(extra: &Value, app: &App) -> Value {
         return v;
     }
     if let Some(map) = v.as_object_mut() {
-        for key in ["machines_detail", "pairing", "online", "server_health", "server_harnesses", "routines", "diagnoses", "users_waiting"] {
+        for key in ["machines_detail", "pairing", "online", "server_health", "server_harnesses", "diagnoses", "users_waiting"] {
             map.remove(key);
         }
     }
@@ -444,8 +444,9 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut last_checkup: Option<Instant> = None;
     // Routines: when they were last looked at, and finished runs coming back.
     let mut last_routines = Instant::now() - Duration::from_secs(60);
-    let (routine_tx, routine_rx) = std::sync::mpsc::channel::<(crate::routines::Routine, crate::routines::Run)>();
-    let mut routines_view = Value::Null;
+    let (routine_tx, routine_rx) = std::sync::mpsc::channel::<(String, crate::routines::Routine, crate::routines::Run)>();
+    // Each person's routines, for their devices.
+    let mut routines_views: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
     // Diagnoses: when they were last looked at, and what the panels show.
     crate::diagnose::requeue_running();
     let mut last_diag = Instant::now() - Duration::from_secs(60);
@@ -583,7 +584,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -694,14 +695,15 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     all["conversations"] = last_open.clone();
                     all["server_health"] = server_health.clone();
                     all["server_harnesses"] = server_harnesses.clone();
-                    all["routines"] = routines_view.clone();
                     all["status"] = status_view.clone();
                     all["diagnoses"] = diag_view.clone();
                     c.mirror.machines = if c.app.admin { machines.clone() } else { Vec::new() };
                     c.mirror.extra = for_viewer(&all, &c.app);
                     c.mirror.extra["pmi"] = pmi.get(&c.app.owner).map_or(Value::Null, |p| p.view.clone());
                 c.mirror.extra["briefing"] = brief_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
+                c.mirror.extra["routines"] = routines_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
                     c.mirror.extra["briefing"] = brief_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
+                    c.mirror.extra["routines"] = routines_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
                     for u in c.mirror.updates(&mut c.app) {
                         hub.publish(Some(&c.app.session_id), u);
                     }
@@ -758,11 +760,12 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         };
                         let text = reply.map(|m| m.1).unwrap_or_default();
                         let (url, model, session, tx) = (format!("{}/chat/completions", c.app.base_url.trim_end_matches('/')), c.app.model.clone(), c.app.session_id.clone(), routine_tx.clone());
+                        let whose = c.app.owner.clone();
                         std::thread::spawn(move || {
                             let (needs_user, decided_by) = if outcome == "ok" { crate::routines::needs_user(&url, &model, &r, &text) } else { (true, "it didn't finish".into()) };
                             let summary: String = text.trim().chars().take(400).collect();
                             let run = crate::routines::Run { at: chrono::Utc::now(), seconds: started.elapsed().as_secs(), needs_user, outcome: outcome.into(), summary, session, decided_by };
-                            let _ = tx.send((r, run));
+                            let _ = tx.send((whose, r, run));
                         });
                     }
                     // Only a routine allowed to change things asks the user.
@@ -818,31 +821,44 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         // Routines: due ones and ones asked for, each in its own conversation.
         if last_routines.elapsed() >= Duration::from_secs(20) || routines_wanted() {
             last_routines = Instant::now();
-            let mut start: Vec<crate::routines::Routine> = crate::routines::due(chrono::Local::now());
-            for name in crate::routines::take_requests() {
-                if let Ok(r) = crate::routines::find(&name)
-                    && !start.iter().any(|x| x.name == r.name)
+            // Everyone's: each runs in its person's own conversation, with their rights.
+            let mut start: Vec<(String, crate::routines::Routine)> = crate::routines::due_all(chrono::Local::now());
+            for (user, name) in crate::routines::take_requests() {
+                if let Ok(r) = crate::acting::run(&user, || crate::routines::find(&name))
+                    && !start.iter().any(|(u, x)| *u == user && x.name == r.name)
                 {
-                    start.push(r);
+                    start.push((user, r));
                 }
             }
-            for r in start {
-                if convs.iter().any(|c| c.routine.as_ref().is_some_and(|(x, _)| x.name == r.name)) {
+            for (user, r) in start {
+                if convs.iter().any(|c| c.app.owner == user && c.routine.as_ref().is_some_and(|(x, _)| x.name == r.name)) {
                     continue;
                 }
-                let mut app = convs[0].app.fork();
+                let mine = user == convs[0].app.owner;
+                let mut app = if mine {
+                    convs[0].app.fork()
+                } else {
+                    // Someone else's: only while they may use lyra.
+                    let Some(who) = hub.users().who(Some(&user)) else { continue };
+                    convs[0].app.fork_for(&who)
+                };
                 app.input = crate::routines::message(&r);
                 app.send();
-                convs[0].app.log(Level::Plan, format!("routine {} started", r.name));
+                if mine {
+                    convs[0].app.log(Level::Plan, format!("routine {} started", r.name));
+                }
                 let mut c = Conv::new(app);
                 c.routine = Some((r, Instant::now()));
                 convs.push(c);
             }
         }
-        while let Ok((r, run)) = routine_rx.try_recv() {
+        while let Ok((user, r, run)) = routine_rx.try_recv() {
             let verdict = if run.outcome != "ok" { format!("{} ({})", run.outcome, run.decided_by) } else if run.needs_user { "needs you".into() } else { "all clear".into() };
             let first = run.summary.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(140).collect::<String>();
-            convs[0].app.log(if run.needs_user { Level::Error } else { Level::Plan }, format!("routine {}: {verdict} ({}s, by {}) — {first}", r.name, run.seconds, run.decided_by));
+            // The owner's Activity tells the owner's routines only.
+            if user == convs[0].app.owner {
+                convs[0].app.log(if run.needs_user { Level::Error } else { Level::Plan }, format!("routine {}: {verdict} ({}s, by {}) — {first}", r.name, run.seconds, run.decided_by));
+            }
             let tell = match r.notify {
                 crate::routines::Notify::Always => true,
                 crate::routines::Notify::Problems => run.needs_user,
@@ -855,10 +871,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     tag: format!("routine-{}", r.name),
                     approval: None,
                     url: None, actions: vec![], reference: None,
-                to: To::Admins,
+                    to: To::User(user.clone()),
                 });
             }
-            crate::routines::record(&r.name, run);
+            crate::acting::run(&user, || crate::routines::record(&r.name, run));
             everyone = true;
         }
         // PMI, per person with a token: follow their live events (a thread each,
@@ -1018,7 +1034,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     .filter(|(u, p)| **u != owner && p.state.at.is_some())
                     .map(|(u, p)| {
                         let since = crate::briefing::window_start(crate::briefing::last_for(u).map(|b| b.at), at);
-                        (u.clone(), crate::briefing::Inputs { now: at, since, pmi: Some(p.state.clone()), ..Default::default() })
+                        // Their tasks, routines and goals.
+                        let (goals, goal_events) = crate::goals::for_user(u).map_or_else(Default::default, |g| (g.manager.all().unwrap_or_default(), g.manager.events(None, 300).unwrap_or_default()));
+                        let runs = crate::acting::run(u, crate::routines::runs);
+                        (u.clone(), crate::briefing::Inputs { now: at, since, pmi: Some(p.state.clone()), runs, goals, goal_events, ..Default::default() })
                     })
                     .collect();
                 std::thread::spawn(move || {
@@ -1081,11 +1100,13 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         }
         // What the panels show: each routine's next run, last result, running now.
         if last_routines.elapsed() < Duration::from_millis(50) || everyone {
-            let running: Vec<String> = convs.iter().filter_map(|c| c.routine.as_ref().map(|(r, _)| r.name.clone())).collect();
-            let now = crate::routines::view(&running, 1);
-            if now != routines_view {
-                routines_view = now;
-                everyone = true;
+            for user in crate::routines::people() {
+                let running: Vec<String> = convs.iter().filter(|c| c.app.owner == user).filter_map(|c| c.routine.as_ref().map(|(r, _)| r.name.clone())).collect();
+                let now = crate::acting::run(&user, || crate::routines::view(&running, 1));
+                if routines_views.get(&user) != Some(&now) {
+                    routines_views.insert(user, now);
+                    everyone = true;
+                }
             }
         }
         let ss = convs[0].app.status.clone();
@@ -1183,7 +1204,6 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         extra_now["conversations"] = open;
         extra_now["server_health"] = server_health.clone();
         extra_now["server_harnesses"] = server_harnesses.clone();
-        extra_now["routines"] = routines_view.clone();
         extra_now["status"] = status_view.clone();
         extra_now["diagnoses"] = diag_view.clone();
         let attached = hub.attached_sessions();
@@ -1377,7 +1397,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
                 "current": h.id == app.session_id,
             })).collect::<Vec<_>>())
         }
-        "routines" => crate::routines::view(&[], 10),
+        "routines" => crate::acting::run(&app.owner, || crate::routines::view(&[], 10)),
         "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
         "pmi" => crate::pmi::as_user(&app.owner, crate::pmi::snapshot).map_or_else(|e| json!({ "error": e }), |s| json!(s)),
         "coding" => json!(crate::coding::jobs()),

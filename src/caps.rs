@@ -773,7 +773,7 @@ impl Caps {
             if matches!(c.kind, CapabilityKind::OpenApi | CapabilityKind::Mcp) {
                 return json!({ "error": format!("{} uses lyra's own credentials: that's for admins", c.name) }).to_string();
             }
-            if matches!(c.source.as_str(), "goals" | "routines") || c.name == "working_memory" {
+            if c.name == "working_memory" {
                 return json!({ "error": format!("{} isn't set up for your account yet", c.name) }).to_string();
             }
         }
@@ -857,8 +857,9 @@ impl Caps {
                 (None, Some(system)) => system.call(&c.name, &args),
                 (None, None) => Err("system access is off".into()),
             },
-            _ if c.source == "goals" => match self.goals.get() {
-                Some(goals) => goal_tool(goals, &c.name, &args),
+            // The goals of whoever this turn is for.
+            _ if c.source == "goals" => match crate::goals::for_user(&crate::acting::current()) {
+                Some(goals) => goal_tool(&goals, &c.name, &args),
                 None => Err("goals are off".into()),
             },
             _ => match &self.tools {

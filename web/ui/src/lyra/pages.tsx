@@ -445,9 +445,6 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
               <Button variant="secondary" className="md:hidden" onClick={() => open("users")}>
                 <UsersIcon /> Users
               </Button>
-              <Button variant="secondary" onClick={() => open("routines")}>
-                <AlarmClock /> Routines
-              </Button>
               <Button variant="secondary" onClick={() => open("coding")}>
                 <Code2 /> Coding
               </Button>
@@ -456,14 +453,17 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
               </Button>
             </>
           )}
+          <Button variant="secondary" onClick={() => open("routines")}>
+            <AlarmClock /> Routines
+          </Button>
           <Button variant="secondary" onClick={() => open("skills")}>
             <GraduationCap /> Skills
           </Button>
+          <Button variant="secondary" onClick={() => open("goals")}>
+            <Target /> Goals
+          </Button>
           {admin && (
             <>
-              <Button variant="secondary" onClick={() => open("goals")}>
-                <Target /> Goals
-              </Button>
               <Button variant="secondary" onClick={() => open("model")}>
                 <Cpu /> Model
               </Button>

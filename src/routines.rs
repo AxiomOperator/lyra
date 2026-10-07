@@ -202,8 +202,26 @@ pub fn next_run(r: &Routine, last: Option<DateTime<Utc>>) -> Option<DateTime<Loc
 
 // ---- storage
 
+/// Whose routines: the person this thread works for (the owner's are in
+/// `~/.lyra/routines`, anyone else's in `~/.lyra/users/<id>/routines`).
 pub fn dir() -> Option<PathBuf> {
-    Some(crate::config::home()?.join("routines"))
+    dir_for(&crate::acting::current())
+}
+
+pub fn dir_for(user: &str) -> Option<PathBuf> {
+    if crate::acting::is_owner(user) { Some(crate::config::home()?.join("routines")) } else { Some(crate::context::user_dir(user)?.join("routines")) }
+}
+
+/// Everyone who has routines: the owner and anyone with a routines folder.
+pub fn people() -> Vec<String> {
+    let mut out = vec![lyra_web::users::OWNER.to_string()];
+    let users = crate::config::home().map(|h| h.join("users"));
+    for e in users.and_then(|d| std::fs::read_dir(d).ok()).into_iter().flatten().flatten() {
+        if e.path().join("routines").is_dir() {
+            out.push(e.file_name().to_string_lossy().to_string());
+        }
+    }
+    out
 }
 
 /// A routine's file name: lowercase letters, digits and dashes.
@@ -311,19 +329,24 @@ pub fn view(running: &[String], recent: usize) -> serde_json::Value {
 
 // ---- running (lyra serve)
 
-/// Routines asked to run now (`/routine run`), for `lyra serve` to pick up.
-static WANTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Routines asked to run now (`/routine run`), whose and which, for `lyra serve` to pick up.
+static WANTED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
 pub fn request_run(name: &str) {
-    WANTED.lock().unwrap_or_else(|e| e.into_inner()).push(name.to_string());
+    WANTED.lock().unwrap_or_else(|e| e.into_inner()).push((crate::acting::current(), name.to_string()));
 }
 
 pub fn has_requests() -> bool {
     !WANTED.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
 }
 
-pub fn take_requests() -> Vec<String> {
+pub fn take_requests() -> Vec<(String, String)> {
     std::mem::take(&mut *WANTED.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Everyone's routines due now: (whose, which).
+pub fn due_all(now: DateTime<Local>) -> Vec<(String, Routine)> {
+    people().into_iter().flat_map(|p| crate::acting::run(&p, || due(now)).into_iter().map(move |r| (p.clone(), r))).collect()
 }
 
 /// Routines due now (enabled, schedule passed since their last run).
@@ -462,6 +485,17 @@ pub fn show(name: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_persons_routines_are_their_own() {
+        let owner = dir().unwrap();
+        assert!(owner.ends_with("routines") && !owner.to_string_lossy().contains("/users/"));
+        let dana = crate::acting::run("oid-dana", || dir()).unwrap();
+        assert!(dana.ends_with("users/oid-dana/routines"), "{}", dana.display());
+        assert_eq!(dir().unwrap(), owner, "back to the owner afterwards");
+        crate::acting::run("oid-dana", || request_run("standup"));
+        assert!(take_requests().contains(&("oid-dana".to_string(), "standup".to_string())), "a request remembers whose");
+    }
 
     #[test]
     fn schedules_read_like_people_write_them() {

@@ -1,3 +1,4 @@
+mod acting;
 mod agents;
 mod backup;
 mod briefing;
@@ -674,7 +675,7 @@ impl App {
         // goals; a member (not an admin) also gets no admin tools.
         let member = !self.admin;
         let viewer = self.personal();
-        let goals_section = self.goals.as_ref().filter(|_| viewer.is_none()).and_then(|g| g.prompt_section());
+        let goals_section = self.goals.as_ref().and_then(|g| g.prompt_section());
         let mut agent_env = self.agent_env();
         // `@desktop`: that machine is where system work goes.
         if let (Some(env), Some(caps)) = (agent_env.as_mut(), &self.caps) {
@@ -1479,7 +1480,7 @@ impl App {
             }
             "/model" => self.model_command(arg),
             "/backup" => self.backup_command(arg),
-            "/routine" | "/routines" => self.routine_command(arg),
+            "/routine" | "/routines" => crate::acting::run(&self.owner.clone(), || self.routine_command(arg)),
             "/status" => self.status_command(arg),
             "/diagnose" => self.diagnose_command(arg),
             "/coding" => Ok(coding::describe()),
@@ -2843,6 +2844,9 @@ impl App {
         app.primary = false;
         app.owner = who.user.clone();
         app.admin = who.admin;
+        if !crate::acting::is_owner(&who.user) {
+            app.goals = goals::for_user(&who.user);
+        }
         app.refresh_agents();
         app
     }
@@ -2903,8 +2907,11 @@ const LESSON_GATE: &str = "Does this conversation teach the assistant a reusable
 fn member_may(name: &str, arg: &str) -> bool {
     match name {
         "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" => true,
-        // Their own PMI account.
-        "/pmi" | "/tasks" | "/task" => true,
+        // Their own PMI account, routines and goals.
+        "/pmi" | "/tasks" | "/task" | "/routine" | "/routines" => true,
+        // Goals are tracked and planned, never worked on unattended: no plans,
+        // triggers or autonomy for anyone but the owner's admins.
+        "/goal" | "/goals" => !matches!(arg.split_whitespace().next().unwrap_or(""), "work" | "when" | "autonomy"),
         // Which model is in use; changing it is the server's.
         "/model" => arg.trim().is_empty(),
         _ => false,
@@ -2919,8 +2926,13 @@ mod member_tests {
             assert!(super::member_may(ok, ""), "{ok}");
         }
         assert!(super::member_may("/model", "") && !super::member_may("/model", "other-model"), "look, not change");
-        for no in ["/outcome", "/machines", "/devices", "/users", "/backup", "/caps", "/approve", "/evolve", "/plan", "/agent", "/memory", "/goal", "/routine", "/coding", "/diagnose"] {
+        for no in ["/outcome", "/machines", "/devices", "/users", "/backup", "/caps", "/approve", "/evolve", "/plan", "/agent", "/memory", "/coding", "/diagnose"] {
             assert!(!super::member_may(no, "x"), "{no}");
+        }
+        // Their own routines and goals, but no plans or autonomy.
+        assert!(super::member_may("/routine", "new x | every day at 8 | y") && super::member_may("/goals", "") && super::member_may("/goal", "new Learn Rust"));
+        for no in ["work 1a2b", "when 1a2b every 1d", "autonomy autonomous"] {
+            assert!(!super::member_may("/goal", no) && !super::member_may("/goals", no), "{no}");
         }
     }
 }
@@ -3504,6 +3516,10 @@ fn main() {
     let goals = open_goals(&config, runtime.handle());
     if let (Some(caps), Some(goals)) = (&caps, &goals) {
         caps.set_goals(goals.clone());
+    }
+    // Everyone else's goals open from here when first needed.
+    if let Some(g) = &goals {
+        goals::register(g.clone(), runtime.handle().clone(), config.goals.settings.clone());
     }
     let (agents, agents_status) = open_agents(&config, runtime.handle());
     if let (Some(caps), Some(agents)) = (&caps, &agents) {

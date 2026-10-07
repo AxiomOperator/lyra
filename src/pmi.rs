@@ -65,27 +65,19 @@ pub fn anyone() -> bool {
             || crate::config::home().and_then(|h| std::fs::read_dir(h.join("users")).ok()).into_iter().flatten().flatten().any(|e| configured_for(&e.file_name().to_string_lossy())))
 }
 
-thread_local! {
-    /// Whose PMI account this thread works in (a conversation's owner).
-    static USER: std::cell::RefCell<String> = std::cell::RefCell::new(lyra_web::users::OWNER.to_string());
-}
-
 /// Work in this person's PMI account from now on, on this thread (a turn's
 /// thread, a follower's).
 pub fn set_user(user: &str) {
-    USER.with(|u| *u.borrow_mut() = user.to_string());
+    crate::acting::set(user);
 }
 
 /// Run `f` in this person's PMI account.
 pub fn as_user<T>(user: &str, f: impl FnOnce() -> T) -> T {
-    let before = USER.with(|u| std::mem::replace(&mut *u.borrow_mut(), user.to_string()));
-    let out = f();
-    USER.with(|u| *u.borrow_mut() = before);
-    out
+    crate::acting::run(user, f)
 }
 
 fn current() -> String {
-    USER.with(|u| u.borrow().clone())
+    crate::acting::current()
 }
 
 // ---- the client

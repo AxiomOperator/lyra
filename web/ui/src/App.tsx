@@ -68,7 +68,7 @@ type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Ma
 type Manage = "tasks" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "users";
 const manage: Manage[] = ["tasks", "routines", "coding", "memory", "skills", "goals", "model", "users"];
 /** What a member (not an admin) has: their chats, tasks, status, activity, skills. */
-const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "tasks"];
+const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "tasks", "routines", "goals"];
 
 type TabItem = {
   id: Tab;

@@ -942,8 +942,16 @@ With a token they get:
 - reminder follow-ups pushed to their devices
 - a morning briefing of their own, holding just their tasks
 
-lyra serve follows each person's PMI separately. Goals and routines are still the owner's
-until they're per person, and a member's turns don't use them.
+lyra serve follows each person's PMI separately.
+
+Goals and routines are per person too (`~/.lyra/users/<id>/goals/` and `…/routines/`; the
+owner's stay where they are):
+- **Routines** run in their person's own conversation, with that person's rights and memories,
+  and only that person is notified.
+- **Goals** are tracked, broken down and noted with the goal tools, `/goal` and the Goals page.
+  Only the owner's goals are ever worked on unattended. For anyone else, `/goal work`,
+  `/goal when` and `/goals autonomy` are refused, because plans run tools with full rights.
+- **Briefings:** a coworker's morning briefing also covers their own routine runs and goals.
 
 What stays shared, and what each person keeps:
 - **Learning:** skills, evolution and automatic memory capture learn only from the owner's

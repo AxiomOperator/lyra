@@ -3,7 +3,7 @@
 //! outcome back into progress, the conditions event triggers watch, and the
 //! autonomy session: what may run without the user, and when it must stop.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use chrono::Utc;
@@ -542,6 +542,44 @@ pub fn describe_review(goals: &Goals, r: &prompts::Review) -> String {
     out.extend(r.complete.iter().map(|c| format!("complete {} — {}", name(&c.goal), c.reason)));
     out.extend(r.priority.iter().map(|p| format!("priority {} for {} — {}", p.priority, name(&p.goal), p.reason)));
     if out.is_empty() { "the goals look fine".into() } else { out.join("\n") }
+}
+
+// ---- one person's goals each
+
+/// Everyone's goals: the owner's (`~/.lyra/goals`) and anyone else's
+/// (`~/.lyra/users/<id>/goals`, opened when first needed). Anyone else's are
+/// tracked and planned on request, never worked on by themselves.
+struct Registry {
+    owner: Arc<Goals>,
+    runtime: tokio::runtime::Handle,
+    settings: lyra_goals::Settings,
+    others: std::collections::HashMap<String, Arc<Goals>>,
+}
+
+static REGISTRY: Mutex<Option<Registry>> = Mutex::new(None);
+
+pub fn register(owner: Arc<Goals>, runtime: tokio::runtime::Handle, settings: lyra_goals::Settings) {
+    *REGISTRY.lock().unwrap_or_else(|e| e.into_inner()) = Some(Registry { owner, runtime, settings, others: Default::default() });
+}
+
+/// This person's goals (none when goals are off).
+pub fn for_user(user: &str) -> Option<Arc<Goals>> {
+    let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+    let r = reg.as_mut()?;
+    if crate::acting::is_owner(user) {
+        return Some(r.owner.clone());
+    }
+    if let Some(g) = r.others.get(user) {
+        return Some(g.clone());
+    }
+    let path = crate::context::user_dir(user)?.join("goals").join("goals.db");
+    let _ = std::fs::create_dir_all(path.parent()?);
+    let mut settings = r.settings.clone();
+    // Never on their own: no autonomy for anyone but the owner.
+    settings.autonomy.mode = lyra_goals::AutonomyMode::Reactive;
+    let g = Arc::new(Goals::new(GoalManager::open(&path, r.runtime.clone(), settings).ok()?));
+    r.others.insert(user.to_string(), g.clone());
+    Some(g)
 }
 
 #[cfg(test)]
