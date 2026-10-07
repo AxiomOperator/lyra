@@ -136,7 +136,7 @@ fn alert(app: &mut App, hub: &Hub, machine: &str, text: &str, problem: bool) {
             body: text.to_string(),
             tag: format!("health-{}", machine.to_lowercase()),
             approval: None,
-            url: None,
+            url: None, actions: vec![], reference: None,
         });
     }
 }
@@ -392,6 +392,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut pmi_busy = false;
     let mut pmi_due: Option<Instant> = Some(Instant::now());
     let mut last_pmi = Instant::now();
+    // Reminders still open after they went off: pushed again (kept across restarts).
+    let mut nags = crate::pmi::Nags::load();
+    let mut last_nag = Instant::now();
+    let (action_tx, action_rx) = std::sync::mpsc::channel::<(String, String, Result<String, String>)>();
     let started = Instant::now();
     let mut convs = vec![Conv::new(primary)];
     loop {
@@ -448,6 +452,14 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         c.changed = true;
                     }
                 }
+                Inbound::Action { action, reference, device } => {
+                    convs[0].app.log(Level::Info, format!("{device} pressed {action} on a reminder"));
+                    let tx = action_tx.clone();
+                    std::thread::spawn(move || {
+                        let r = crate::pmi::push_action(&action, &reference);
+                        let _ = tx.send((action, reference, r));
+                    });
+                }
                 Inbound::Note(text) => {
                     convs[0].app.log(Level::Info, text);
                     extra = hub_status(hub, node_build.as_deref());
@@ -468,7 +480,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                             body: format!("A {what} ({}) asks to pair. Check its code is {} and approve it in lyra.", p.hostname, p.code),
                             tag: format!("pair-{}", p.code),
                             approval: None,
-                            url: None,
+                            url: None, actions: vec![], reference: None,
                         });
                     }
                 }
@@ -664,7 +676,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 };
                 if done {
                     let body = c.app.messages.iter().rev().find(|m| m.role == "assistant").map(|m| preview(&m.content)).unwrap_or_default();
-                    hub.notify(Notification { title: about("lyra replied".into()), body, tag: format!("reply-{}", c.app.session_id), approval: None, url: None });
+                    hub.notify(Notification { title: about("lyra replied".into()), body, tag: format!("reply-{}", c.app.session_id), approval: None, url: None, actions: vec![], reference: None });
                 }
                 if let Some(mut n) = note {
                     n.title = about(n.title);
@@ -678,7 +690,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 let head = crate::diagnose::headline(&d.summary);
                 convs[0].app.log(if d.state == "done" { Level::Agent } else { Level::Error }, format!("🔎 {}: {} — {head}", d.machine, d.problem));
                 if crate::health::settings().notify && d.state == "done" {
-                    hub.notify(Notification { title: format!("🔎 {}: {}", d.machine, d.problem), body: head, tag: format!("diag-{}", d.key), approval: None, url: None });
+                    hub.notify(Notification { title: format!("🔎 {}: {}", d.machine, d.problem), body: head, tag: format!("diag-{}", d.key), approval: None, url: None, actions: vec![], reference: None });
                 }
             }
             last_diag = Instant::now() - Duration::from_secs(60);
@@ -734,7 +746,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     body: preview(&run.summary),
                     tag: format!("routine-{}", r.name),
                     approval: None,
-                    url: None,
+                    url: None, actions: vec![], reference: None,
                 });
             }
             crate::routines::record(&r.name, run);
@@ -797,6 +809,39 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 everyone = true;
             }
         }
+        // Nags: checked with each new view and every minute.
+        if (pmi_state.at.is_some() && pmi_state.error.is_none()) && (last_nag.elapsed() >= Duration::from_secs(60) || everyone) {
+            last_nag = Instant::now();
+            let (due, changed) = nags.due(&pmi_state, &crate::pmi::settings(), chrono::Utc::now());
+            for n in due {
+                convs[0].app.log(Level::Plan, format!("⏰ still to do: {} (reminder {} of {})", n.title, n.sent, crate::pmi::settings().nag_max));
+                hub.notify(Notification {
+                    title: format!("⏰ Still to do: {}", n.title),
+                    body: format!("The reminder went off {}. Done, or later?", n.fired.with_timezone(&chrono::Local).format("%a %H:%M")),
+                    tag: format!("nag-{}", n.task),
+                    approval: None,
+                    url: Some("/?page=tasks".into()),
+                    actions: vec![("done".into(), "Done".into()), ("snooze1h".into(), "In 1 hour".into()), ("tomorrow".into(), "Tomorrow".into())],
+                    reference: Some(n.task.clone()),
+                });
+            }
+            if changed {
+                nags.save();
+            }
+        }
+        while let Ok((action, task, r)) = action_rx.try_recv() {
+            match r {
+                Ok(what) => {
+                    convs[0].app.log(Level::Plan, format!("reminder: {what}"));
+                    nags.items.retain(|_, n| n.task != task);
+                    nags.save();
+                }
+                Err(e) => {
+                    convs[0].app.log(Level::Error, format!("reminder {action} failed: {e}"));
+                    hub.notify(Notification { title: "Couldn't update the task".into(), body: e, tag: format!("nag-{task}"), approval: None, url: Some("/?page=tasks".into()), actions: vec![], reference: None });
+                }
+            }
+        }
         // The daily briefing: on schedule or asked for, gathered and written off the loop.
         let wanted = crate::briefing::take_request();
         if !brief_busy && (wanted || last_brief_check.elapsed() >= Duration::from_secs(20)) {
@@ -833,6 +878,8 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     tag: "briefing".into(),
                     approval: None,
                     url: Some("/?page=status".into()),
+                    actions: vec![],
+                    reference: None,
                 });
             }
             brief_view = json!(b);
@@ -911,7 +958,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                                 body: text,
                                 tag: "status".into(),
                                 approval: None,
-                                url: None,
+                                url: None, actions: vec![], reference: None,
                             });
                         }
                     }
@@ -1420,9 +1467,9 @@ fn notification(event: &StreamEvent) -> Option<Notification> {
             body: format!("{}: {}{}", r.what, r.detail.lines().next().unwrap_or(""), if r.dangerous { format!(" — {}", r.why) } else { String::new() }),
             tag: format!("approval-{}", r.id),
             approval: Some(r.id),
-            url: None,
+            url: None, actions: vec![], reference: None,
         }),
-        StreamEvent::Error(e) => Some(Notification { title: "lyra hit an error".into(), body: preview(e), tag: "error".into(), approval: None, url: None }),
+        StreamEvent::Error(e) => Some(Notification { title: "lyra hit an error".into(), body: preview(e), tag: "error".into(), approval: None, url: None, actions: vec![], reference: None }),
         StreamEvent::PlanFinished(result) => Some(Notification {
             title: "Plan update".into(),
             body: match result {
@@ -1431,7 +1478,7 @@ fn notification(event: &StreamEvent) -> Option<Notification> {
             },
             tag: "plan".into(),
             approval: None,
-            url: None,
+            url: None, actions: vec![], reference: None,
         }),
         _ => None,
     }

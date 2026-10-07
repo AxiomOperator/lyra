@@ -324,4 +324,7 @@ currency = "$"
 # [pmi]
 # url = "https://pmi.fbcad.org/api"
 # org = ""            # an organization's slug; empty: the first one
+# nag = true          # push again when a reminder went off and the task is still open
+# nag_minutes = 30
+# nag_max = 3
 # enabled = true

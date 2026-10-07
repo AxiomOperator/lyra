@@ -876,10 +876,19 @@ changing there. That view shows up in several places:
 - **`lyra connect`'s panel:** a Tasks line and today's tasks.
 - **The Status page:** a PMI row (signed in, or "token rejected").
 
+PMI sends your reminders itself, and lyra doesn't repeat them. It only follows up: if a
+reminder went off and its task is still open after 30 minutes, lyra pushes "⏰ Still to do:
+…" with **Done**, **In 1 hour** and **Tomorrow** buttons. It does this at most 3 times, and
+stops when the task is done or the reminder is read. Pressing a button counts as your answer,
+even for a project task. Only reminders from the last day are followed.
+
 ```toml
 [pmi]
 url = "https://pmi.fbcad.org/api"
 org = ""          # an organization's slug; empty: the first one
+nag = true        # follow up on reminders still open
+nag_minutes = 30
+nag_max = 3
 # enabled = true
 ```
 

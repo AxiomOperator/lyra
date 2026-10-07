@@ -873,6 +873,109 @@ pub fn follow(tx: std::sync::mpsc::Sender<Event>) {
     }
 }
 
+// ---- nags: a reminder that went off and is still open, pushed again
+
+/// One reminder being nagged about.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Nag {
+    pub task: String,
+    pub title: String,
+    /// When the reminder went off.
+    pub fired: DateTime<Utc>,
+    pub sent: u32,
+    pub last: Option<DateTime<Utc>>,
+}
+
+/// Reminders being nagged about, by inbox item (kept across restarts).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Nags {
+    pub items: std::collections::HashMap<String, Nag>,
+}
+
+fn nags_path() -> Option<std::path::PathBuf> {
+    Some(crate::config::home()?.join("pmi").join("nags.json"))
+}
+
+impl Nags {
+    pub fn load() -> Self {
+        nags_path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    }
+
+    pub fn save(&self) {
+        if let Some(p) = nags_path() {
+            if let Some(dir) = p.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(p, serde_json::to_string_pretty(self).unwrap_or_default());
+        }
+    }
+
+    /// The reminders to nag about now. Reminders that went off (unread inbox
+    /// items) whose task is still open are followed; each is pushed again
+    /// every `nag_minutes`, at most `nag_max` times. Read items and finished
+    /// tasks drop out. The bool says whether anything changed (to save).
+    pub fn due(&mut self, state: &State, s: &Settings, now: DateTime<Utc>) -> (Vec<Nag>, bool) {
+        let mut changed = false;
+        let open: Vec<&str> = state.tasks.iter().filter_map(|t| t["id"].as_str()).collect();
+        let fired: Vec<(&str, &Value)> = state.inbox.iter().filter(|i| i["reason"] == "reminder" && i["read"] != true).filter_map(|i| Some((i["id"].as_str()?, i))).collect();
+        let before = self.items.len();
+        self.items.retain(|id, n| fired.iter().any(|(f, _)| f == id) && open.contains(&n.task.as_str()));
+        changed |= self.items.len() != before;
+        for (id, item) in &fired {
+            let task = item["task"]["id"].as_str().unwrap_or("");
+            if !open.contains(&task) || self.items.contains_key(*id) {
+                continue;
+            }
+            let at = item["at"].as_str().and_then(|a| DateTime::parse_from_rfc3339(a).ok()).map_or(now, |a| a.with_timezone(&Utc));
+            // Old ones (from before lyra was looking) aren't brought up again.
+            if now - at > chrono::Duration::hours(24) {
+                continue;
+            }
+            self.items.insert(id.to_string(), Nag { task: task.into(), title: str_of(&item["task"]["title"]), fired: at, sent: 0, last: None });
+            changed = true;
+        }
+        if !s.nag {
+            return (vec![], changed);
+        }
+        let every = chrono::Duration::minutes(s.nag_minutes.max(5) as i64);
+        let mut out = Vec::new();
+        for n in self.items.values_mut() {
+            if n.sent < s.nag_max && now - n.last.unwrap_or(n.fired) >= every {
+                n.sent += 1;
+                n.last = Some(now);
+                out.push(n.clone());
+                changed = true;
+            }
+        }
+        (out, changed)
+    }
+}
+
+/// A button on a nag's push: done, remind in an hour, or tomorrow morning.
+/// Pressing it is the user's own answer, so it acts even on a shared task.
+pub fn push_action(action: &str, task: &str) -> Result<String, String> {
+    let t = match action {
+        "done" => {
+            run("pmi_complete", &json!({ "id": task, "comment": "Done (from the reminder)" }))?;
+            "done".to_string()
+        }
+        "snooze1h" | "tomorrow" => {
+            let when = if action == "tomorrow" { "tomorrow 9am" } else { "in 1h" };
+            let r = run("pmi_remind", &json!({ "id": task, "when": when }))?;
+            format!("reminder moved to {}", str_of(&r["reminder"]))
+        }
+        other => return Err(format!("unknown action {other}")),
+    };
+    // The reminder that went off has been answered.
+    if let Ok(inbox) = get(&format!("{}?filter=unread", org("/inbox")?)) {
+        for i in inbox["items"].as_array().into_iter().flatten().filter(|i| i["reason"] == "reminder" && i["reminder"]["task"]["id"].as_str() == Some(task)) {
+            let _ = request(reqwest::Method::POST, &org(&format!("/inbox/{}/read", str_of(&i["id"])))?, None);
+        }
+    }
+    mark_stale();
+    Ok(t)
+}
+
 // ---- for the terminal and the status page
 
 /// `/pmi`.
@@ -1124,6 +1227,31 @@ mod tests {
         assert_eq!(s.counts(today), (1, 2, 1));
         assert_eq!(s.line(today), "1 overdue · 2 today · 1 waiting");
         assert_eq!(State { tasks: vec![json!({ "due": null })], ..Default::default() }.line(today), "1 open · nothing due");
+    }
+
+    #[test]
+    fn nags_come_every_so_often_then_stop() {
+        let s = Settings { nag_minutes: 30, nag_max: 2, ..Default::default() };
+        let fired = Utc::now() - chrono::Duration::minutes(40);
+        let state = |read: bool, open: bool| State {
+            tasks: if open { vec![json!({ "id": "t1", "title": "Call the vendor" })] } else { vec![] },
+            inbox: vec![json!({ "id": "i1", "reason": "reminder", "read": read, "at": fired.to_rfc3339(), "task": { "id": "t1", "title": "Call the vendor" } })],
+            ..Default::default()
+        };
+        let mut nags = Nags::default();
+        let now = Utc::now();
+        let (due, changed) = nags.due(&state(false, true), &s, now);
+        assert!(changed && due.len() == 1 && due[0].title == "Call the vendor", "40 min after it went off");
+        assert!(nags.due(&state(false, true), &s, now + chrono::Duration::minutes(10)).0.is_empty(), "not again so soon");
+        assert_eq!(nags.due(&state(false, true), &s, now + chrono::Duration::minutes(31)).0.len(), 1);
+        assert!(nags.due(&state(false, true), &s, now + chrono::Duration::minutes(90)).0.is_empty(), "at most nag_max");
+        // Done (no longer open) or read: forgotten.
+        let (due, changed) = nags.due(&state(false, false), &s, now + chrono::Duration::minutes(200));
+        assert!(due.is_empty() && changed && nags.items.is_empty());
+        let mut nags = Nags::default();
+        assert!(nags.due(&state(true, true), &s, now).0.is_empty(), "a read reminder isn't nagged");
+        assert!(nags.due(&state(false, true), &s, now + chrono::Duration::days(2)).0.is_empty(), "nor one from days ago");
+        assert!(nags.due(&state(false, true), &Settings { nag: false, ..s.clone() }, now).0.is_empty());
     }
 
     #[test]

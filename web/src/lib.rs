@@ -58,6 +58,8 @@ pub enum Inbound {
     Stop { device: String, session: String },
     /// An answer to an approval (`y`, `n`, `a`).
     Approve { id: u64, answer: String, device: String },
+    /// A notification's button (`action`) about `reference` (a PMI task).
+    Action { action: String, reference: String, device: String },
     /// The whole current state of a conversation ("" = the device's usual
     /// one), for a device that just connected or switched.
     Snapshot { session: String, reply: oneshot::Sender<Value> },
@@ -144,6 +146,9 @@ pub struct Notification {
     pub tag: String,
     /// An approval it asks about (Android shows Allow / Deny buttons).
     pub approval: Option<u64>,
+    /// Other buttons (id, label), sent back with `reference` to `/api/action`.
+    pub actions: Vec<(String, String)>,
+    pub reference: Option<String>,
     /// The app page a tap opens ("/?page=status"); the chat when none.
     pub url: Option<String>,
 }
@@ -456,7 +461,8 @@ impl Hub {
     pub fn notify(&self, n: Notification) {
         let shared = self.shared.clone();
         std::thread::spawn(move || {
-            let payload = json!({ "title": n.title, "body": n.body, "tag": n.tag, "approval": n.approval, "url": n.url }).to_string();
+            let payload = json!({ "title": n.title, "body": n.body, "tag": n.tag, "approval": n.approval, "url": n.url,
+                "actions": n.actions.iter().map(|(a, t)| json!({ "action": a, "title": t })).collect::<Vec<_>>(), "ref": n.reference }).to_string();
             for d in shared.devices.list() {
                 let Some(sub) = &d.push else { continue };
                 match push::send(&shared.vapid, &shared.subject, sub, payload.as_bytes()) {
@@ -493,6 +499,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/api/push", post(set_push))
         .route("/api/test-push", post(test_push))
         .route("/api/approve", post(approve))
+        .route("/api/action", post(action))
         .route("/api/files", post(upload).layer(axum::extract::DefaultBodyLimit::max(uploads::MAX_BYTES + 1024)))
         .route("/api/files/{id}", get(download))
         .route("/api/backups/latest", get(latest_backup))
@@ -728,6 +735,23 @@ async fn approve(State(s): State<Arc<Shared>>, headers: HeaderMap, Json(b): Json
         Err(r) => return *r,
     };
     let _ = s.inbound.send(Inbound::Approve { id: b.id, answer: b.answer, device: d.name });
+    Json(json!({ "ok": true })).into_response()
+}
+
+#[derive(Deserialize)]
+struct ActionBody {
+    action: String,
+    #[serde(rename = "ref")]
+    reference: String,
+}
+
+/// From a notification's other buttons (Done, Snooze).
+async fn action(State(s): State<Arc<Shared>>, headers: HeaderMap, Json(b): Json<ActionBody>) -> Response {
+    let d = match device(&s, &headers) {
+        Ok(d) => d,
+        Err(r) => return *r,
+    };
+    let _ = s.inbound.send(Inbound::Action { action: b.action, reference: b.reference, device: d.name });
     Json(json!({ "ok": true })).into_response()
 }
 

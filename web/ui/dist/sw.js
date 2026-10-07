@@ -72,14 +72,19 @@ self.addEventListener("push", (e) => {
   let data = {};
   try { data = e.data ? e.data.json() : {}; } catch (err) { data = { body: e.data && e.data.text() }; }
   const approval = data.approval || null;
+  const ref = data.ref || null;
   const options = {
     body: data.body || "",
     tag: data.tag || "lyra",
     renotify: true,
     icon: "/icon-192.png",
     badge: "/icon-192.png",
-    data: { approval, url: approval ? "/?approval=" + approval : data.url || "/" },
+    data: { approval, ref, url: approval ? "/?approval=" + approval : data.url || "/" },
   };
+  // Other buttons (a reminder's Done / In 1 hour / Tomorrow).
+  if (!approval && Array.isArray(data.actions) && data.actions.length) {
+    options.actions = data.actions.slice(0, 3).map((a) => ({ action: a.action, title: a.title }));
+  }
   if (approval) {
     options.requireInteraction = true;
     options.actions = [
@@ -119,7 +124,21 @@ async function openApp(url) {
 
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
-  const { approval, url } = e.notification.data || {};
+  const { approval, ref, url } = e.notification.data || {};
+  if (ref && e.action && e.action !== "allow" && e.action !== "deny") {
+    e.waitUntil(
+      token().then((t) =>
+        t
+          ? fetch("/api/action", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: "Bearer " + t },
+              body: JSON.stringify({ action: e.action, ref }),
+            }).then((r) => (r.ok ? null : openApp(url || "/")))
+          : openApp(url || "/"),
+      ),
+    );
+    return;
+  }
   if (approval && (e.action === "allow" || e.action === "deny")) {
     e.waitUntil(
       token().then((t) =>
