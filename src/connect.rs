@@ -544,6 +544,10 @@ fn draw_panel(f: &mut Frame, s: &Screen, area: Rect) {
         if on && let Some(h) = m["hostname"].as_str().filter(|h| !h.is_empty()) {
             lines.push(Line::styled(format!("  {}", truncate(h, width.saturating_sub(2))), dim));
         }
+        if on && let Some(h) = m["harnesses"].as_object().filter(|h| !h.is_empty()) {
+            let names: Vec<&str> = h.keys().map(|k| if k == "claude" { "Claude Code" } else if k == "opencode" { "OpenCode" } else { k.as_str() }).collect();
+            lines.push(Line::styled(format!("  ⌨ {}", truncate(&names.join(", "), width.saturating_sub(4))), Style::default().fg(Color::Magenta)));
+        }
         if on {
             health_lines(&m["health"], width, &mut lines);
             diagnosis_lines(&st["diagnoses"], &str_of(&m["name"]), width, &mut lines);

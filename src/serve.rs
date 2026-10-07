@@ -140,6 +140,20 @@ fn routines_wanted() -> bool {
     crate::routines::has_requests()
 }
 
+/// " · coding: Claude Code 2.1.291, OpenCode 1.18.29" for a machine that has them.
+fn coding_agents(m: &Value) -> String {
+    let list: Vec<String> = m["harnesses"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(h, v)| {
+            let name = if h == "claude" { "Claude Code" } else if h == "opencode" { "OpenCode" } else { h.as_str() };
+            format!("{name} {}", v.as_str().unwrap_or("").split_whitespace().next().unwrap_or(""))
+        })
+        .collect();
+    if list.is_empty() { String::new() } else { format!(" · coding: {}", list.join(", ")) }
+}
+
 /// A conversation's title: its first message's first line.
 fn title(app: &App) -> Option<String> {
     app.messages.iter().find(|m| m.role == "user").map(|m| m.content.lines().next().unwrap_or("").chars().take(60).collect::<String>())
@@ -1076,7 +1090,7 @@ impl App {
                             m["hostname"].as_str().map_or(String::new(), |h| format!(" · {h}")),
                             m["version"].as_str().map_or(String::new(), |v| if m["self_update"] == true { format!(" · lyra-node {v} ({})", m["build"].as_str().unwrap_or("")) } else { format!(" · built into lyra {v}") }),
                             if m["update_available"] == true { " · update available (/machines update)" } else { "" },
-                        ) + &match m["health"].as_object() {
+                        ) + &coding_agents(m) + &match m["health"].as_object() {
                             Some(h) => {
                                 let problems: Vec<&str> = h.get("problems").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
                                 format!("\n    {}{}", h.get("summary").and_then(Value::as_str).unwrap_or(""), if problems.is_empty() { String::new() } else { format!(" · ⚠ {}", problems.join("; ")) })
