@@ -118,7 +118,10 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 
 /// One machine's lines: problems, pending updates, a newer lyra-node.
 fn machine_items(name: &str, health: Option<&Value>, out: &mut Vec<Item>) {
-    let Some(h) = health else { return };
+    let Some(h) = health else {
+        out.push(item(Level::Ok, "machines", format!("{name}: online, no health report yet")));
+        return;
+    };
     let problems = crate::health::problems(h, &crate::health::settings());
     for p in &problems {
         out.push(item(Level::Attention, "machines", format!("{name}: {}", p.text)));
@@ -133,7 +136,9 @@ fn machine_items(name: &str, health: Option<&Value>, out: &mut Vec<Item>) {
 
 fn machines(i: &Inputs) -> Vec<Item> {
     let mut out = Vec::new();
-    machine_items("server", i.server_health.as_ref(), &mut out);
+    if i.server_health.is_some() {
+        machine_items("server", i.server_health.as_ref(), &mut out);
+    }
     for m in &i.machines {
         let name = m["name"].as_str().unwrap_or("?");
         if m["online"].as_bool() != Some(true) {
@@ -459,7 +464,7 @@ mod tests {
             now,
             since: now - Duration::days(1),
             server_health: Some(healthy()),
-            machines: vec![json!({ "name": "desktop", "online": true, "health": healthy() })],
+            machines: vec![json!({ "name": "desktop", "online": true, "health": healthy() }), json!({ "name": "win", "online": true, "health": null })],
             board: Some(Board { at: now, overall: State::Up, rows: vec![row("chat", "Chat model", State::Up, Some(1.0)), row("machine:desktop", "desktop", State::Up, None)] }),
             runs,
             ..Default::default()
@@ -469,6 +474,7 @@ mod tests {
         assert!(b.sections.iter().flat_map(|s| &s.items).all(|it| it.level == Level::Ok), "{b:#?}");
         assert!(push_body(&b).starts_with("Nothing needs you"));
         assert!(describe(&b).contains("disk check: 1 run fine"), "the old failure is outside the window");
+        assert!(describe(&b).contains("win: online, no health report yet"), "a machine isn't left out before its first report");
     }
 
     #[test]
