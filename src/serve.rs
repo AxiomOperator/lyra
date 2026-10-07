@@ -476,6 +476,11 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut held: std::collections::HashMap<String, Vec<String>> = Default::default();
     let mut quiet_seen: std::collections::HashMap<String, (bool, Instant)> = Default::default();
     let mut last_held = Instant::now();
+    // Proactive help: a pass every 5 minutes in the working day (mail every other one).
+    let (pro_tx, pro_rx) = std::sync::mpsc::channel::<(String, crate::proactive::Pass)>();
+    let mut last_pro = Instant::now() - Duration::from_secs(3600);
+    let mut pro_round: u64 = 0;
+    let mut pro_busy: std::collections::HashSet<String> = Default::default();
     let (action_tx, action_rx) = std::sync::mpsc::channel::<(String, String, String, Result<String, String>)>();
     let started = Instant::now();
     let mut convs = vec![Conv::new(primary)];
@@ -1072,6 +1077,43 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Err(_) => {}
             }
         }
+        // Proactive help, for everyone with Outlook connected.
+        if last_pro.elapsed() >= Duration::from_secs(5 * 60) && crate::proactive::settings().enabled && crate::planner::settings().working_now(chrono::Local::now()) {
+            last_pro = Instant::now();
+            pro_round += 1;
+            let mail_due = pro_round % 2 == 1;
+            let (url, model) = (format!("{}/chat/completions", convs[0].app.base_url.trim_end_matches('/')), convs[0].app.model.clone());
+            for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id) {
+                if pro_busy.contains(&u) || !crate::calendar::connected_for(&u) {
+                    continue;
+                }
+                pro_busy.insert(u.clone());
+                let (tx, url, model) = (pro_tx.clone(), url.clone(), model.clone());
+                std::thread::spawn(move || {
+                    let p = crate::acting::run(&u, || crate::proactive::pass(&url, &model, mail_due));
+                    let _ = tx.send((u, p));
+                });
+            }
+        }
+        while let Ok((user, p)) = pro_rx.try_recv() {
+            pro_busy.remove(&user);
+            let mine = user == convs[0].app.owner;
+            // Meeting prep can't wait: it goes now.
+            for (title, body) in p.prep {
+                if mine {
+                    convs[0].app.log(Level::Plan, format!("{title} — {}", body.replace('\n', " · ")));
+                }
+                hub.notify(Notification { title, body, tag: "prep".into(), approval: None, url: Some("/?page=tasks".into()), actions: vec![], reference: None, to: To::User(user.clone()) });
+            }
+            if !p.done.is_empty() {
+                if mine {
+                    for d in &p.done {
+                        convs[0].app.log(Level::Plan, format!("✨ {d}"));
+                    }
+                }
+                held.entry(user).or_default().extend(p.done);
+            }
+        }
         // What the planner did, told once they're out of quiet time.
         if !held.is_empty() && last_held.elapsed() >= Duration::from_secs(60) {
             last_held = Instant::now();
@@ -1083,7 +1125,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 }
                 let did = held.remove(&user).unwrap_or_default();
                 hub.notify(Notification {
-                    title: "🗓 Your day".into(),
+                    title: "✨ lyra took care of".into(),
                     body: did.join("\n").chars().take(400).collect(),
                     tag: "plan".into(),
                     approval: None,

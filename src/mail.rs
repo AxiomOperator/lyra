@@ -94,6 +94,19 @@ pub fn inbox(unread: bool, focused: bool, count: usize) -> Result<Vec<Value>, St
     list(&format!("/me/mailFolders/inbox/messages?$top={}&$select={SELECT}&$orderby=receivedDateTime desc{filter}", count.clamp(1, 50)))
 }
 
+/// Mail sent between two times (for follow-ups).
+pub fn sent_between(from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<Value>, String> {
+    ready()?;
+    let f = format!("sentDateTime ge {} and sentDateTime le {}", from.format("%Y-%m-%dT%H:%M:%SZ"), to.format("%Y-%m-%dT%H:%M:%SZ"));
+    list(&format!("/me/mailFolders/sentitems/messages?$filter={}&$top=40&$orderby=sentDateTime desc&$select=subject,from,toRecipients,sentDateTime,bodyPreview,conversationId", enc(&f)))
+}
+
+/// Every message in a conversation (who answered, when).
+pub fn conversation(id: &str) -> Result<Vec<Value>, String> {
+    ready()?;
+    list(&format!("/me/messages?$filter={}&$select=from,receivedDateTime,isDraft&$top=50", enc(&format!("conversationId eq '{}'", id.replace('\'', "''")))))
+}
+
 // ---- tools
 
 pub fn capabilities() -> Vec<Capability> {

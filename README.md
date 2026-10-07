@@ -964,6 +964,37 @@ max_share = 0.5
 # enabled = true
 ```
 
+## Proactive help
+
+For anyone with Outlook connected, during the working day (`[planner]` hours):
+- **Meeting prep:** 15 minutes before a meeting with other people, a "📋 14:30 Budget review"
+  push. It says who's in it, the latest email from the first few of them, and open PMI tasks
+  that share a word with the meeting. It arrives even if you're in another meeting.
+- **Mail triage:** every 10 minutes, your model reads new mail from people (Focused inbox; mail
+  from before lyra started looking is left alone). If an email asks you to do or answer
+  something, lyra:
+  - adds a **personal PMI task**, with the due date if the email gives one
+  - **flags** the email
+  - **drafts a reply** into Drafts, never sent
+
+  These are your own and private, so lyra does them itself. It logs them and tells you in a
+  "✨ lyra took care of" push outside quiet time.
+- **Follow-ups:** once a day, mail you sent that asked a question and got no answer in 3 days or
+  more gets one nudge: "Dana hasn't answered "Budget numbers?" (4 days)".
+
+Each person's record of what's been done (`proactive.json`, theirs) means nothing happens
+twice.
+
+```toml
+[proactive]
+prep_minutes = 15
+mail_tasks = true
+flag = true
+drafts = true
+followup_days = 3
+# enabled = true
+```
+
 ## Backups
 
 lyra backs itself up every night: memory, skills, goals, plans, agents, saved conversations,

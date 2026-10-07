@@ -23,6 +23,7 @@ mod mem;
 mod plan;
 mod planner;
 mod pmi;
+mod proactive;
 mod migrate;
 mod retrieval;
 mod routines;
@@ -2702,7 +2703,9 @@ impl App {
                 coding::configure(config.coding.clone());
                 briefing::configure(config.briefing.clone());
     planner::configure(config.planner.clone());
+    proactive::configure(config.proactive.clone());
                 planner::configure(config.planner.clone());
+                proactive::configure(config.proactive.clone());
     pmi::configure(config.pmi.clone());
                 pmi::configure(config.pmi.clone());
                 self.pricing = pricing(&config);
