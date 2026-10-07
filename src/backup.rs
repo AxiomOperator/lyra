@@ -197,6 +197,8 @@ fn make(home: &Path, settings: &Settings, memory: Memory) -> Made {
     if let Some((path, _)) = memory {
         skip.push(path.to_path_buf());
     }
+    // Tokens for outside services stay out: set them again after a restore.
+    skip.push(home.join("config").join("secrets.toml"));
     let staged = (|| {
         let files = stage_dir(home, Path::new(""), &stage, &skip, &mut notes)?;
         if let Some((path, backup)) = memory {

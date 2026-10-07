@@ -311,3 +311,17 @@ currency = "$"
 # fallback = "claude"
 # timeout_minutes = 30
 # allow_push = false
+
+# The daily briefing (see README): what happened and what needs a look, pushed
+# each morning by lyra serve.
+# [briefing]
+# schedule = "every day at 07:30"
+# notify = true
+# summary = true
+
+# PMI, the project-management app (see README): tasks, reminders, projects.
+# Its access token goes in config/secrets.toml with `lyra pmi token` or /pmi token.
+# [pmi]
+# url = "https://pmi.fbcad.org/api"
+# org = ""            # an organization's slug; empty: the first one
+# enabled = true

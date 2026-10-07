@@ -34,6 +34,20 @@ pub const ROUTINE_NOTE: &str = "Work on the server (machine \"server\") unless t
     create it with routine_create (its prompt names the machines with @name or @all) instead of cron jobs or timers, \
     and don't run it now unless asked.";
 
+/// The Project Manager's tools: PMI, plus memory and lyra's goals.
+pub const PM_TOOLS: &[&str] = &[
+    "pmi_tasks", "pmi_task", "pmi_search", "pmi_add_task", "pmi_update_task", "pmi_complete", "pmi_remind", "pmi_comment", "pmi_inbox",
+    "pmi_waiting", "pmi_projects", "pmi_project", "pmi_draft_update", "pmi_post_update", "pmi_add_risk",
+    "memory_recall", "memory_remember", "goal_list", "goal_get", "goal_note",
+];
+
+/// How the Project Manager works with PMI.
+pub const PM_NOTE: &str = "Projects and tasks live in PMI, the user's project-management app: use the pmi_ tools, never \
+    invent tasks or projects. Look things up (pmi_projects, pmi_project, pmi_tasks) before answering about them. Anything \
+    others can see (a task in a project or team, a comment, a status update, a risk) is asked of the user first: say \
+    exactly what you'll add or change. For a status update, draft it with pmi_draft_update, adjust it with what you know, \
+    then post it. Call out risks, overdue work and blockers plainly.";
+
 pub fn template(name: &str) -> Option<AgentProfile> {
     let t = |title: &str, description: &str| {
         let mut p = AgentProfile::new(&AgentProfile::slug(title), title, description);
@@ -227,21 +241,25 @@ pub fn template(name: &str) -> Option<AgentProfile> {
             p
         }
         "project-manager" => {
-            let mut p = t("Project Manager", "Turns goals into tasks, tracks progress and coordinates other agents.");
+            let mut p = t("Project Manager", "Works in PMI, the user's project-management app: tasks, reminders, projects, status updates and risks; turns goals into tasks and tracks progress.");
             p.role = "Project manager.".into();
-            p.instructions = "Break work into concrete tasks with owners and order, keep track of status, call out risks \
-                and blockers early. Hand specialist work to the right agent."
-                .into();
+            p.instructions = PM_NOTE.into();
             p.delegation = DelegationProfile {
-                auto_delegate: false,
-                intents: strs(&["plan_project", "track_tasks", "status_report"]),
-                keywords: strs(&["project", "milestone", "status update", "roadmap", "tasks", "deadline"]),
-                examples: strs(&["Make a project plan for this", "Give me a status update on the project"]),
-                priority: 4,
+                auto_delegate: true,
+                intents: strs(&["plan_project", "track_tasks", "status_report", "project_update", "add_project_task"]),
+                keywords: strs(&["project", "milestone", "status update", "roadmap", "deadline", "pmi", "portfolio", "risk", "team task", "assign"]),
+                examples: strs(&[
+                    "Give me a status update on the project",
+                    "Post a status update on the Website project",
+                    "Add a task to the Phones project for Dana",
+                    "Which projects are at risk?",
+                    "Add a risk to the migration project",
+                ]),
+                priority: 6,
                 exclusions: Vec::new(),
             };
             p.memory_policy = MemoryPolicy { mode: MemoryMode::Scoped, read: strs(&["project:*", "user"]), write: strs(&["project:*"]) };
-            p.tools = strs(&["memory_recall", "memory_remember", "goal_list", "goal_get", "goal_note"]);
+            p.tools = PM_TOOLS.iter().map(|t| t.to_string()).collect();
             p.permission_policy = PermissionPolicy { max_risk: "write".into(), deny: Vec::new(), can_delegate: true };
             p
         }

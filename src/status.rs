@@ -327,6 +327,24 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
         );
     }
 
+    // PMI, the project-management app: is it there, and does it take the token?
+    let pmi = crate::pmi::settings();
+    if !pmi.enabled {
+        out.push(probe("pmi", "Tools & APIs", "PMI", "", State::Off, None, "off ([pmi] enabled)"));
+    } else if crate::secrets::token("pmi").is_none() {
+        out.push(probe("pmi", "Tools & APIs", "PMI", &host(&pmi.url), State::Off, None, "no token yet (/pmi token <token>)"));
+    } else {
+        spawn(
+            &mut jobs,
+            Box::new(move || {
+                vec![check("pmi", "Tools & APIs", "PMI", &host(&pmi.url), || {
+                    let me = crate::pmi::request(reqwest::Method::GET, "/v1/auth/me", None)?;
+                    Ok((State::Up, format!("signed in as {}", me["user"]["name"].as_str().unwrap_or("?"))))
+                })]
+            }),
+        );
+    }
+
     // lyra
     if let Some(detail) = &i.serving {
         out.push(probe("lyra", "lyra", "lyra serve", "", State::Up, None, detail.clone()));

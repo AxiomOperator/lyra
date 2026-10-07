@@ -113,7 +113,7 @@ fn day(word: &str) -> Option<Weekday> {
     })
 }
 
-fn time_of_day(s: &str) -> Option<NaiveTime> {
+pub(crate) fn time_of_day(s: &str) -> Option<NaiveTime> {
     let s = s.trim().to_lowercase();
     let (s, pm, am) = if let Some(x) = s.strip_suffix("pm") {
         (x.trim().to_string(), true, false)

@@ -534,6 +534,9 @@ impl Caps {
         if crate::coding::settings().enabled {
             caps.push(crate::coding::capability());
         }
+        if crate::pmi::configured() {
+            caps.extend(crate::pmi::capabilities());
+        }
         if self.system.as_ref().is_some_and(|s| s.settings().enabled) {
             let machines = self.machines();
             if !machines.is_empty() {
@@ -622,6 +625,9 @@ impl Caps {
         }
         if c.source == "coding" {
             return Some(crate::coding::approval(&args));
+        }
+        if c.source == "pmi" {
+            return crate::pmi::approval(&c.name, &args);
         }
         // Another machine decides for itself (its own rules), and says what it would do.
         if c.source == "system"
@@ -772,6 +778,12 @@ impl Caps {
                     Ok(crate::coding::run(self, &args, &std::sync::atomic::AtomicBool::new(false), &|_| {}, None))
                 }
             }
+            // PMI: what others would see waits for the user's yes (asked in an agent's delegation).
+            _ if c.source == "pmi" => match crate::pmi::approval(&c.name, &args) {
+                Some(ask) if !approved && ctx.agent.is_none() => Err(format!("{} changes something others see ({}): delegate it to the Project Manager, which asks the user", c.name, ask.what)),
+                Some(_) if !approved => Err("needs the user's approval".into()),
+                _ => crate::pmi::call(&c.name, &args),
+            },
             _ if c.source == "routines" => crate::routines::call(&c.name, &args),
             _ if c.source == "web" => match &self.search {
                 Some(s) => crate::websearch::call(s, &c.name, &args),

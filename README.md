@@ -11,7 +11,8 @@ Everything lyra keeps lives in one folder, `~/.lyra` (set `LYRA_HOME` to use ano
 ```text
 ~/.lyra/
 ├── agents/    <name>.toml, one file per subagent; agents.db (versions, delegations), index/ (routing, LanceDB)
-├── config/    config.toml, behavior.toml (evolved behavior)
+├── briefing/  last.json (the last daily briefing)
+├── config/    config.toml, behavior.toml (evolved behavior), secrets.toml (tokens: root-only, not backed up)
 ├── context/   SOUL.md, USER.md, AGENT.md
 ├── capabilities/ capabilities.db (usage), index/ (discovery, LanceDB)
 ├── evolution/ evolution.db (runs, candidates, generations)
@@ -829,6 +830,46 @@ briefing time, the briefing is made when lyra starts, unless that's more than 3 
 schedule = "every day at 07:30"   # same words as routines: "weekdays at 8", …
 notify = true
 summary = true                    # the chat model's one-line takeaway
+# enabled = true
+```
+
+## PMI: tasks, reminders and projects
+
+PMI is the project-management app at `https://pmi.fbcad.org`, and lyra uses it as its task
+system. To connect it, make an access token in PMI (Your account → Security) and give it to
+lyra on the server, either with `lyra pmi token` (read from stdin, not echoed) or `/pmi token
+<token>`. The token is kept in `~/.lyra/config/secrets.toml`, readable by its owner only and
+left out of backups; the token line is never shown in the chat or logs. `/pmi` shows who
+you're signed in as.
+
+In chat:
+- **Personal tasks and reminders:** "Remind me Friday at 3 to call the vendor" adds a personal
+  task due Friday with a reminder at 15:00, and PMI sends the reminder. "What's on my plate
+  today?" lists your personal and assigned tasks. "Done with the vendor call, left a
+  voicemail" completes it, with what you said as PMI's closing comment (otherwise "Done (via
+  lyra)").
+- **Projects:** "Which projects are at risk?", "How's the Website project?", "Draft a status
+  update for Phones". These are answered from PMI's portfolio, updates and risks.
+- **What waits on you:** transfers to accept and tasks to approve.
+
+Changes to your personal space and your own reminders happen at once. Anything others can see
+waits for your **Allow**: a task in a project or team, a comment, a status update, or a risk.
+Those go through the **Project Manager** agent, which is installed once a token is set and
+asks before each change.
+
+In the terminal and the app:
+- `/tasks [today|overdue|week|project <name>|team <name>]` lists open tasks, numbered.
+- `/task add <what> [when]` adds a personal task. Dates and times are read in plain words:
+  "tomorrow", "friday 3pm", "in 2h", "next monday", "oct 14".
+- `/task done <n> [comment]` completes one.
+- `/task snooze <n> [1h|tomorrow|<when>]` moves its reminder.
+
+The Status page shows a PMI row (signed in, or "token rejected").
+
+```toml
+[pmi]
+url = "https://pmi.fbcad.org/api"
+org = ""          # an organization's slug; empty: the first one
 # enabled = true
 ```
 

@@ -18,15 +18,18 @@ mod learn;
 mod lock;
 mod mem;
 mod plan;
+mod pmi;
 mod migrate;
 mod retrieval;
 mod routines;
 mod serve;
+mod secrets;
 mod sessions;
 mod stats;
 mod status;
 mod tools;
 mod websearch;
+mod when;
 mod ui;
 
 use std::io::{BufRead, BufReader};
@@ -1325,7 +1328,7 @@ impl App {
         };
         // A resumed conversation already says so.
         if !(ok && matches!(name, "/resume" | "/new") && text.is_empty()) {
-            self.messages.push(Message::new(role, format!("> {line}\n{text}")));
+            self.messages.push(Message::new(role, format!("> {}\n{text}", shown(line))));
         }
         self.after_command(line, ok);
     }
@@ -1334,13 +1337,13 @@ impl App {
     /// the answer goes back to the page instead of into the conversation.
     pub fn quiet_command(&mut self, line: &str) -> Result<String, String> {
         let name = line.split_whitespace().next().unwrap_or("");
-        if !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate" | "/goal" | "/goals" | "/model" | "/backup" | "/routine" | "/routines" | "/status" | "/diagnose" | "/coding" | "/briefing") {
+        if !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate" | "/goal" | "/goals" | "/model" | "/backup" | "/routine" | "/routines" | "/status" | "/diagnose" | "/coding" | "/briefing" | "/tasks" | "/task" | "/pmi") {
             return Err(format!("{name} can't be run from a page"));
         }
         let result = self.command_result(line);
         self.after_command(line, result.is_ok());
         if result.is_ok() && !matches!(name, "/memory" | "/approve" | "/reject" | "/deprecate") {
-            self.log(Level::Info, format!("from the app: {line}"));
+            self.log(Level::Info, format!("from the app: {}", shown(line)));
         }
         result
     }
@@ -1455,6 +1458,9 @@ impl App {
             "/diagnose" => self.diagnose_command(arg),
             "/coding" => Ok(coding::describe()),
             "/briefing" => self.briefing_command(arg),
+            "/pmi" => pmi::command(arg),
+            "/tasks" => pmi::tasks_text(arg),
+            "/task" => pmi::task_command(arg),
             _ => Err(format!("unknown command {name} — try /help")),
         }
     }
@@ -2645,6 +2651,8 @@ impl App {
                 health::configure(config.health.clone());
                 coding::configure(config.coding.clone());
                 briefing::configure(config.briefing.clone());
+    pmi::configure(config.pmi.clone());
+                pmi::configure(config.pmi.clone());
                 self.pricing = pricing(&config);
                 if let Some(mem) = self.mem() {
                     for note in mem.reconfigure(config.memory.settings.clone(), config.embedding.clone()) {
@@ -2827,6 +2835,14 @@ const MEMORY_GATE: &str = "Did the user share something worth remembering in fut
 const LESSON_GATE: &str = "Does this conversation teach the assistant a reusable procedure or rule: the user corrected it, \
      showed a better way, or a multi-step task worked after a failed attempt?";
 
+/// A command line as it may be shown or logged: tokens hidden.
+pub(crate) fn shown(line: &str) -> String {
+    match line.trim_start().strip_prefix("/pmi token") {
+        Some(rest) if !rest.trim().is_empty() => "/pmi token ••••".into(),
+        _ => line.to_string(),
+    }
+}
+
 pub(crate) const COMMANDS: &str = "\
 /skills                      skills and changes waiting for review
 /approve <id>                apply a proposal, or (re)activate a skill
@@ -2847,6 +2863,9 @@ pub(crate) const COMMANDS: &str = "\
 /routine run|pause|resume|delete|show <name> · /routine edit <name> schedule|prompt|notify|changes <value>
 /coding                      coding jobs handed to Claude Code / OpenCode (ask: 'fix … in ~/Projects/x on @desktop')
 /diagnose [<machine> <problem>]  problems researched (read-only); look into one now
+/tasks [today|overdue|week|project <name>]   your PMI tasks (personal and assigned), numbered
+/task add <what> [when] · /task done <n> [comment] · /task snooze <n> [1h|tomorrow]
+/pmi [token <token>]         the PMI connection (your project-management app)
 /briefing [now]              the daily briefing: what happened and what needs a look ([briefing] schedule)
 /status [now]                everything lyra depends on: models, search, APIs, address, storage, backups, machines
 /backup [now|list]           back up lyra (memory, skills, goals, sessions, config); nightly by itself
@@ -3177,6 +3196,7 @@ usage: lyra [command] [options]
   devices [remove <name>] paired devices
   service                 install a systemd user service that runs `lyra serve`
   node [pair|service]     let a lyra server work on this machine (see lyra node --help)
+  pmi [token]             the PMI connection; `lyra pmi token` saves its access token (read from stdin)
   connect [--pair <code>] the terminal UI for a lyra server (see lyra connect --help);
                           plain `lyra` opens it on a machine that has no lyra of its own
 
@@ -3187,6 +3207,42 @@ usage: lyra [command] [options]
   -h, --help              this help
 
 Conversations are saved in ~/.lyra/sessions/ ($LYRA_HOME/sessions).";
+
+/// `lyra pmi [token]`: the token is read from stdin, so it's never in the shell history.
+fn pmi_cli(args: &[String]) {
+    if let Ok(config) = Config::load() {
+        pmi::configure(config.pmi);
+    }
+    let result = match args.first().map(String::as_str) {
+        None | Some("status") => Ok(pmi::describe()),
+        Some("token") => {
+            use std::io::{BufRead, IsTerminal};
+            let tty = std::io::stdin().is_terminal();
+            let echo = |on: bool| {
+                let _ = std::process::Command::new("stty").arg(if on { "echo" } else { "-echo" }).stdin(std::process::Stdio::inherit()).status();
+            };
+            if tty {
+                eprint!("PMI access token (Your account → Security in PMI), then Enter: ");
+                echo(false);
+            }
+            let mut line = String::new();
+            let _ = std::io::stdin().lock().read_line(&mut line);
+            if tty {
+                echo(true);
+                eprintln!();
+            }
+            pmi::command(&format!("token {}", line.trim()))
+        }
+        Some(other) => Err(format!("unknown: lyra pmi {other} (try lyra pmi or lyra pmi token)")),
+    };
+    match result {
+        Ok(text) => println!("{text}"),
+        Err(e) => {
+            eprintln!("lyra pmi: {e}");
+            std::process::exit(1);
+        }
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -3204,6 +3260,7 @@ fn main() {
         Some("node") => return lyra_node::main(&args[2..]),
         Some("connect") => return connect::main(&args[2..]),
         Some("mcp") => return mcp_server::main(&args[2..]),
+        Some("pmi") => return pmi_cli(&args[2..]),
         // No lyra of its own here, but a paired terminal: open that.
         None if connect::configured() && !config::home().is_some_and(|h| h.join("config").join("config.toml").exists()) => return connect::main(&[]),
         _ => {}
@@ -3333,6 +3390,7 @@ fn main() {
     decide::configure(config.decide.clone());
     coding::configure(config.coding.clone());
     briefing::configure(config.briefing.clone());
+    pmi::configure(config.pmi.clone());
     let web = config.web.clone();
     let mut app = App::new(config, Context::load(), services);
     for note in migrated {
@@ -3699,6 +3757,24 @@ fn open_agents(config: &Config, runtime: &tokio::runtime::Handle) -> (Option<Arc
                 && let Some(p) = lyra_agents::templates::template("coder")
             {
                 let _ = a.registry.create(p, "installed with coding agents (Claude Code, OpenCode)");
+            }
+            // PMI comes with a Project Manager to work in it (once: deleting it sticks).
+            if pmi::configured() && a.registry.get("project-manager").is_none() && a.registry.versions("project-manager").is_ok_and(|v| v.is_empty())
+                && let Some(p) = lyra_agents::templates::template("project-manager")
+            {
+                let _ = a.registry.create(p, "installed with PMI");
+            }
+            // A Project Manager from before PMI: its tools and instructions.
+            if let Some(mut pm) = a.registry.get("project-manager").filter(|p| p.template.as_deref() == Some("project-manager"))
+                && !pm.tools.iter().any(|t| t == "pmi_tasks")
+            {
+                for t in lyra_agents::templates::PM_TOOLS {
+                    if !pm.tools.iter().any(|x| x == t) {
+                        pm.tools.push(t.to_string());
+                    }
+                }
+                pm.instructions = lyra_agents::templates::PM_NOTE.into();
+                let _ = a.registry.update(pm, "PMI tools");
             }
             // The Coder's instructions as its template has them now (work stays on the server).
             if let Some(mut coder) = a.registry.get("coder").filter(|p| p.template.as_deref() == Some("coder"))

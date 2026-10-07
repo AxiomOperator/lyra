@@ -419,7 +419,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         if c.app.waiting && !text.starts_with('/') && c.app.approvals.is_empty() {
                             c.app.messages.push(Message::new("info", "lyra is still answering here — send it again when the reply is done (or start a new conversation)".into()));
                         } else {
-                            c.app.log(Level::Info, format!("from {device}: {}", text.chars().take(80).collect::<String>()));
+                            c.app.log(Level::Info, format!("from {device}: {}", crate::shown(&text).chars().take(80).collect::<String>()));
                             c.app.input = text;
                             c.app.send();
                         }
