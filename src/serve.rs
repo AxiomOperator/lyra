@@ -351,11 +351,11 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut last_extra = Instant::now();
     let mut last_open = Value::Null;
     // Machine health: what's been reported, and the server's own checkups.
-    let mut alerts = crate::health::Alerts::default();
+    let mut alerts = crate::health::Alerts::load();
     // Status: everything lyra depends on, checked off this loop every minute.
     let serving_since = Instant::now();
     let (status_tx, status_rx) = crate::status::worker(crate::config::home().unwrap_or_default().join("status"));
-    let mut status_alerts = crate::status::Alerts::default();
+    let mut status_alerts = crate::status::Alerts::load();
     let mut status_view = Value::Null;
     let mut status_busy = false;
     let mut last_status: Option<Instant> = None;

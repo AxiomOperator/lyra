@@ -157,6 +157,34 @@ pub struct Alerts {
     active: HashMap<String, HashMap<String, String>>,
     offline: HashMap<String, Instant>,
     offline_told: HashSet<String>,
+    /// Where what's been told is kept, so a restart doesn't tell it again.
+    path: Option<std::path::PathBuf>,
+}
+
+#[derive(serde::Serialize, Deserialize, Default)]
+struct Told {
+    active: HashMap<String, HashMap<String, String>>,
+    offline_told: HashSet<String>,
+}
+
+impl Alerts {
+    /// What was told before a restart (`~/.lyra/alerts/health.json`).
+    pub fn load() -> Alerts {
+        let path = crate::config::home().map(|h| h.join("alerts").join("health.json"));
+        let told: Told = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        Alerts { active: told.active, offline_told: told.offline_told, offline: HashMap::new(), path }
+    }
+
+    fn save(&self) {
+        let Some(path) = &self.path else { return };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let told = Told { active: self.active.clone(), offline_told: self.offline_told.clone() };
+        if let Ok(text) = serde_json::to_string_pretty(&told) {
+            let _ = std::fs::write(path, text);
+        }
+    }
 }
 
 /// What changed for a machine: new problems and ones that cleared.
@@ -176,9 +204,12 @@ impl Alerts {
         let now: HashMap<String, String> = found.into_iter().map(|p| (p.key, p.text)).collect();
         let new_keys: Vec<(String, String)> = now.iter().filter(|(k, _)| !known.contains_key(*k)).map(|(k, t)| (k.clone(), t.clone())).collect();
         let cleared_keys: Vec<String> = known.keys().filter(|k| !now.contains_key(*k)).cloned().collect();
-        let new = new_keys.iter().map(|(_, t)| t.clone()).collect();
-        let cleared = known.iter().filter(|(k, _)| !now.contains_key(*k)).map(|(_, t)| t.clone()).collect();
+        let new: Vec<String> = new_keys.iter().map(|(_, t)| t.clone()).collect();
+        let cleared: Vec<String> = known.iter().filter(|(k, _)| !now.contains_key(*k)).map(|(_, t)| t.clone()).collect();
         *known = now;
+        if !new.is_empty() || !cleared.is_empty() {
+            self.save();
+        }
         Change { new, cleared, new_keys, cleared_keys }
     }
 
@@ -206,6 +237,9 @@ impl Alerts {
                     gone.push(m.clone());
                 }
             }
+        }
+        if !gone.is_empty() || !back.is_empty() {
+            self.save();
         }
         (gone, back)
     }
@@ -248,5 +282,21 @@ mod tests {
         assert_eq!(a.connected(&paired, &["web1".into()], Duration::from_millis(30)), (vec![], vec![]), "once");
         assert_eq!(a.connected(&paired, &["web1".into(), "NAS".into()], Duration::from_millis(30)), (vec![], vec!["nas".to_string()]));
         assert_eq!(a.connected(&paired, &["web1".into()], Duration::ZERO), (vec![], vec![]), "0 turns it off");
+    }
+
+    #[test]
+    fn what_was_told_survives_a_restart() {
+        let dir = std::env::temp_dir().join(format!("lyra-alerts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("health.json");
+        let s = Settings::default();
+        let mut a = Alerts { path: Some(path.clone()), ..Alerts::default() };
+        assert_eq!(a.report("desktop", problems(&report(50, &["x.mount"]), &s)).new.len(), 2, "the failed unit and the high load");
+        // lyra restarts: the same problem isn't news.
+        let told: Told = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let mut again = Alerts { active: told.active, offline_told: told.offline_told, path: Some(path.clone()), ..Alerts::default() };
+        assert!(again.report("desktop", problems(&report(50, &["x.mount"]), &s)).new.is_empty());
+        assert_eq!(again.report("desktop", problems(&report(50, &[]), &s)).cleared.len(), 1, "and it's still told when it clears");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

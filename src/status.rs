@@ -702,6 +702,27 @@ pub fn worker(dir: PathBuf) -> (mpsc::Sender<Inputs>, mpsc::Receiver<Result<Boar
 pub struct Alerts {
     streak: HashMap<String, u32>,
     told: HashMap<String, DateTime<Utc>>,
+    /// Where what's been told is kept, so a restart doesn't tell it again.
+    path: Option<PathBuf>,
+}
+
+impl Alerts {
+    /// What was told before a restart (`~/.lyra/alerts/status.json`).
+    pub fn load() -> Alerts {
+        let path = crate::config::home().map(|h| h.join("alerts").join("status.json"));
+        let told = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        Alerts { streak: HashMap::new(), told, path }
+    }
+
+    fn save(&self) {
+        let Some(path) = &self.path else { return };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(text) = serde_json::to_string_pretty(&self.told) {
+            let _ = std::fs::write(path, text);
+        }
+    }
 }
 
 /// What to tell: (check id, problem?, text).
@@ -727,6 +748,9 @@ pub fn alerts(a: &mut Alerts, board: &Board, s: &Settings) -> Vec<(String, bool,
                 out.push((p.id.clone(), false, format!("{} is back after {mins} min", p.name)));
             }
         }
+    }
+    if !out.is_empty() {
+        a.save();
     }
     out
 }
