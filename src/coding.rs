@@ -63,7 +63,7 @@ pub fn capability() -> Capability {
     c.input_schema = json!({ "type": "object", "properties": {
         "dir": { "type": "string", "description": "The project folder on that machine, e.g. ~/Projects/lyra." },
         "task": { "type": "string", "description": "What to do, self-contained: the goal, what done looks like, constraints." },
-        "machine": { "type": "string", "description": "Where the project is (\"desktop\", \"server\"); default: a machine that has the harness." },
+        "machine": { "type": "string", "description": "Only when the user named a machine (\"desktop\"); otherwise leave it empty: work runs on the server." },
         "harness": { "type": "string", "enum": ["", "claude", "opencode"], "description": "Only when the user named one." },
         "mode": { "type": "string", "enum": ["edit", "plan"], "description": "edit (default) changes the code; plan only reads and proposes." },
         "continue": { "type": "boolean", "description": "Continue the last coding job in this folder (same session)." },
@@ -79,7 +79,7 @@ pub fn capability() -> Capability {
 pub fn approval(args: &Value) -> Ask {
     let plan = args["mode"] == "plan";
     let who = Harness::parse(args["harness"].as_str().unwrap_or("")).map_or("a coding agent (OpenCode for simple work, Claude Code for complex)".to_string(), |h| h.title().to_string());
-    let machine = args["machine"].as_str().filter(|m| !m.is_empty()).unwrap_or("a machine with it");
+    let machine = args["machine"].as_str().filter(|m| !m.is_empty()).unwrap_or(HERE);
     // Shown as "<agent> asked to <what>".
     Ask {
         what: format!("have {who} {} {} on {machine}", if plan { "read and plan in" } else { "work unattended in" }, args["dir"].as_str().unwrap_or("?")),
@@ -241,13 +241,17 @@ fn place(caps: &Caps, asked: Option<&str>, harness: Harness) -> Result<String, S
             Some((n, _)) => Err(format!("{} isn't installed on {n}", harness.title())),
             None => Err(format!("{m} isn't connected, or has no coding agents")),
         },
+        // Nothing runs anywhere but the server unless the user names the machine.
         None => {
-            if let Some((n, _)) = have.iter().find(|(_, h)| !h[harness.id()].is_null()) {
-                Ok(n.clone())
-            } else if here {
+            if here {
                 Ok(HERE.into())
             } else {
-                Err(format!("no connected machine has {}", harness.title()))
+                let elsewhere: Vec<&str> = have.iter().filter(|(_, h)| !h[harness.id()].is_null()).map(|(n, _)| n.as_str()).collect();
+                Err(format!(
+                    "{} isn't installed on the server{}",
+                    harness.title(),
+                    if elsewhere.is_empty() { String::new() } else { format!("; it is on {} — say \"on @{}\" to run it there", elsewhere.join(", "), elsewhere[0]) }
+                ))
             }
         }
     }

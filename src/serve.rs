@@ -113,7 +113,8 @@ fn health_report(app: &mut App, hub: &Hub, alerts: &mut crate::health::Alerts, n
     // New problems are researched by themselves; cleared ones are marked so.
     let d = app.diagnose.clone();
     for (key, text) in &change.new_keys {
-        if d.enabled && d.auto {
+        // Nothing runs on another machine unless the user asks: theirs wait for "look into it".
+        if d.enabled && d.auto && name.eq_ignore_ascii_case(crate::caps::HERE) {
             crate::diagnose::queue(&format!("{}:{key}", name.to_lowercase()), name, text, false);
         }
     }

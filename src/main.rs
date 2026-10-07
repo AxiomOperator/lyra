@@ -3672,6 +3672,14 @@ fn open_agents(config: &Config, runtime: &tokio::runtime::Handle) -> (Option<Arc
             {
                 let _ = a.registry.create(p, "installed with coding agents (Claude Code, OpenCode)");
             }
+            // The Coder's instructions as its template has them now (work stays on the server).
+            if let Some(mut coder) = a.registry.get("coder").filter(|p| p.template.as_deref() == Some("coder"))
+                && let Some(t) = lyra_agents::templates::template("coder")
+                && coder.instructions != t.instructions
+            {
+                coder.instructions = t.instructions;
+                let _ = a.registry.update(coder, "instructions: work stays on the server unless a machine is named");
+            }
             // System tools added since the Operator was installed from its template.
             if let Some(mut op) = a.registry.get("operator").filter(|p| p.template.as_deref() == Some("operator")) {
                 let missing: Vec<String> = ["upload_place", "fleet_run", "routine_create", "routine_list"].iter().filter(|t| !op.tools.iter().any(|x| x == *t)).map(|t| t.to_string()).collect();
@@ -3679,7 +3687,7 @@ fn open_agents(config: &Config, runtime: &tokio::runtime::Handle) -> (Option<Arc
                 let note = !op.instructions.contains(lyra_agents::templates::ROUTINE_NOTE);
                 if note {
                     // An earlier version of the note is replaced, not repeated.
-                    let base = ["For @all or a group", "Something to do on a schedule"]
+                    let base = ["Work on the server (machine", "For @all or a group", "Something to do on a schedule"]
                         .iter()
                         .filter_map(|start| op.instructions.find(start))
                         .min()

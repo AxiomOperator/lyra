@@ -697,8 +697,9 @@ is. Ask in chat:
   asks.
 - **Plan only:** "just plan …" gives `mode=plan`, which reads and proposes without changing
   anything.
-- **Where:** it runs on the machine, through lyra-node (the Machines page shows which coding
-  agents each has), or on the server if one is installed there.
+- **Where:** on the server, unless you name a machine ("on @desktop"), in which case it runs
+  there through its lyra-node. The Machines page shows which coding agents each machine, and the
+  server, has. lyra never picks another machine by itself.
 - **Models and logins:** the agents keep their own (here, Opus 5.5 in Claude Code and GPT-5.6
   Terra Pro in OpenCode).
 
@@ -736,10 +737,13 @@ allow_push = false
 
 ## Problems researched by themselves
 
-When something goes wrong, lyra looks into it before you ask:
-- a machine reports a new problem (a failed systemd unit, a disk nearly full, memory or load
+When something goes wrong on the server, lyra looks into it before you ask:
+- the server reports a new problem (a failed systemd unit, a disk nearly full, memory or load
   too high)
 - one of lyra's status checks goes down
+
+Problems on other machines wait for you: nothing runs on another machine unless you ask. Use
+"look into it" next to the problem, or `/diagnose <machine> <problem>`.
 
 The Operator investigates on that machine with read-only checks (`systemctl status`,
 `journalctl -u …`, the unit or config file, whether a host or port answers). It then writes up

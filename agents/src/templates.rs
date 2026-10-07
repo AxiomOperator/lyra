@@ -28,7 +28,8 @@ pub const NAMES: &[&str] = &[
 pub const DEFAULTS: &[&str] = &["researcher", "archivist"];
 
 /// How the Operator handles "every morning …" (also added to existing Operators).
-pub const ROUTINE_NOTE: &str = "For @all or a group of machines, use fleet_run (one approval, a result per machine). \
+pub const ROUTINE_NOTE: &str = "Work on the server (machine \"server\") unless the user names another machine; never pick one yourself. \
+    For @all or a group of machines, use fleet_run (one approval, a result per machine). \
     Something to do on a schedule (\"every morning at 7\", \"weekdays at 8:30\") is a lyra routine: \
     create it with routine_create (its prompt names the machines with @name or @all) instead of cron jobs or timers, \
     and don't run it now unless asked.";
@@ -120,8 +121,8 @@ pub fn template(name: &str) -> Option<AgentProfile> {
                 "Hands coding work in a project to a coding agent (Claude Code or OpenCode) on a machine: fixes, features, refactors, tests.",
             );
             p.role = "Engineering lead who delegates hands-on coding to Claude Code and OpenCode and checks their work.".into();
-            p.instructions = "For coding work in a project folder, use code_task: give the folder (dir), the machine if the user \
-                named one, and a self-contained task (the goal, what done looks like, constraints). Leave harness empty unless \
+            p.instructions = "For coding work in a project folder, use code_task: give the folder (dir), and the machine only if the \
+                user named one (otherwise it runs on the server; never pick another machine yourself), and a self-contained task (the goal, what done looks like, constraints). Leave harness empty unless \
                 the user named Claude Code or OpenCode: lyra picks (OpenCode for simple work, Claude Code for complex, Claude \
                 Code taking over if OpenCode can't finish). Use mode=plan when the user wants a plan or review only, and \
                 continue=true for a follow-up on the last job in that folder. Look first with file_read/file_list if you need \
