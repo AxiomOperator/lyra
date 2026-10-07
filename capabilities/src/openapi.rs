@@ -2,7 +2,10 @@
 //! YAML) becomes one, with its parameters as the input schema, a risk level
 //! from its method (or `x-lyra-risk`), the identifiers it needs and how to
 //! find them (C7), and a read-back verification for writes (C9).
-//! Credentials are never stored: they're read from an environment variable.
+//! Credentials are never stored here: they're read from an environment
+//! variable, or handed over by the caller (lyra's secrets file). Operations can
+//! be filtered by tag, path and method, and fixed parameters (an organization's
+//! id) filled in so the model never has to supply them.
 
 use std::time::Duration;
 
@@ -27,6 +30,75 @@ pub struct OpenApiConfig {
     /// Prefix for the credential, e.g. `Bearer`; empty for none.
     #[serde(default = "bearer")]
     pub auth_scheme: String,
+    /// A token from lyra's secrets file (`[name] token`), read by the caller.
+    #[serde(default)]
+    pub auth_secret: Option<String>,
+    /// The credential itself, filled in by the caller from `auth_secret`; never in the config.
+    #[serde(skip)]
+    pub secret: Option<String>,
+    /// Only operations with one of these tags (empty: all).
+    #[serde(default)]
+    pub include_tags: Vec<String>,
+    #[serde(default)]
+    pub exclude_tags: Vec<String>,
+    /// Paths left out, `*` matching anything ("/v1/admin/*").
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Only these methods (empty: get, post, put, patch, delete).
+    #[serde(default)]
+    pub methods: Vec<String>,
+    /// Parameters always given these values (and not asked of the model), e.g. `orgId`.
+    #[serde(default)]
+    pub defaults: std::collections::HashMap<String, String>,
+    /// Operations that change things ask the user first (default true).
+    #[serde(default = "yes")]
+    pub approve_writes: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for OpenApiConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            spec: String::new(),
+            base_url: None,
+            auth_env: None,
+            auth_header: authorization(),
+            auth_scheme: bearer(),
+            auth_secret: None,
+            secret: None,
+            include_tags: Vec::new(),
+            exclude_tags: Vec::new(),
+            exclude: Vec::new(),
+            methods: Vec::new(),
+            defaults: Default::default(),
+            approve_writes: true,
+        }
+    }
+}
+
+/// `*` matches any run of characters.
+fn glob(pattern: &str, text: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return pattern == text;
+    }
+    let mut rest = text;
+    for (i, part) in parts.iter().enumerate() {
+        if i == 0 {
+            let Some(r) = rest.strip_prefix(part) else { return false };
+            rest = r;
+        } else if i == parts.len() - 1 {
+            return rest.ends_with(part);
+        } else {
+            let Some(at) = rest.find(part) else { return false };
+            rest = &rest[at + part.len()..];
+        }
+    }
+    true
 }
 
 fn authorization() -> String {
@@ -63,8 +135,25 @@ pub struct OpenApiClient {
 /// Follow a local `$ref` (`#/components/...`) once.
 fn resolve<'a>(spec: &'a Value, v: &'a Value) -> &'a Value {
     match v.get("$ref").and_then(Value::as_str).and_then(|r| r.strip_prefix("#/")) {
-        Some(path) => path.split('/').fold(spec, |node, key| &node[key]),
+        Some(path) => path.split('/').fold(spec, |node, key| &node[key.replace("~1", "/").replace("~0", "~")]),
         None => v,
+    }
+}
+
+/// A schema with every local `$ref` inside it replaced by what it points to
+/// (to a depth, so a recursive schema ends as a plain object).
+fn inline(spec: &Value, v: &Value, depth: usize) -> Value {
+    if depth > 8 {
+        return json!({ "type": "object" });
+    }
+    match v {
+        Value::Object(map) if map.contains_key("$ref") => {
+            let target = resolve(spec, v);
+            if target.is_null() { json!({}) } else { inline(spec, target, depth + 1) }
+        }
+        Value::Object(map) => Value::Object(map.iter().map(|(k, x)| (k.clone(), inline(spec, x, depth))).collect()),
+        Value::Array(items) => Value::Array(items.iter().map(|x| inline(spec, x, depth)).collect()),
+        other => other.clone(),
     }
 }
 
@@ -73,7 +162,13 @@ fn operation_id(op: &Value, method: &str, path: &str) -> String {
     let raw = match op.get("operationId").and_then(Value::as_str) {
         Some(id) => id.to_string(),
         None => {
-            let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty() && !s.starts_with('{')).collect();
+            // "/v1/orgs/{orgId}/tasks/{taskId}" → "orgs.tasks.item.get" (a version
+            // segment dropped, a trailing parameter kept apart from the list).
+            let all: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+            let mut segments: Vec<&str> = all.iter().copied().filter(|s| !s.starts_with('{')).filter(|s| !(s.len() >= 2 && s.starts_with('v') && s[1..].chars().all(|c| c.is_ascii_digit()))).collect();
+            if all.last().is_some_and(|s| s.starts_with('{')) {
+                segments.push("item");
+            }
             format!("{}.{method}", segments.join("."))
         }
     };
@@ -112,11 +207,26 @@ impl OpenApiClient {
             .or_else(|| spec["servers"][0]["url"].as_str().map(str::to_string))
             .ok_or_else(|| format!("{}: no servers in the spec; set base_url", config.name))?;
         let mut operations = Vec::new();
+        let methods: Vec<String> = if config.methods.is_empty() { ["get", "post", "put", "patch", "delete"].map(String::from).to_vec() } else { config.methods.iter().map(|m| m.to_lowercase()).collect() };
         for (path, item) in spec["paths"].as_object().into_iter().flatten() {
+            if config.exclude.iter().any(|g| glob(g, path)) {
+                continue;
+            }
             let shared: Vec<Value> = item["parameters"].as_array().cloned().unwrap_or_default();
             for method in ["get", "post", "put", "patch", "delete"] {
                 let Some(op) = item.get(method) else { continue };
-                let id = format!("{}.{}", config.name, operation_id(op, method, path));
+                if !methods.iter().any(|m| m == method) {
+                    continue;
+                }
+                let tags: Vec<String> = op["tags"].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(str::to_string)).collect();
+                if (!config.include_tags.is_empty() && !tags.iter().any(|t| config.include_tags.contains(t))) || tags.iter().any(|t| config.exclude_tags.contains(t)) {
+                    continue;
+                }
+                let mut id = format!("{}.{}", config.name, operation_id(op, method, path));
+                // Two operations named alike: the later one says where it goes.
+                if operations.iter().any(|o: &Operation| o.id == id) {
+                    id = format!("{id}_{}", operations.len());
+                }
                 let mut properties = Map::new();
                 let mut required = Vec::new();
                 let mut params = Vec::new();
@@ -126,21 +236,25 @@ impl OpenApiClient {
                     if location == "cookie" {
                         continue;
                     }
-                    let mut schema = resolve(&spec, &p["schema"]).clone();
+                    let is_required = p["required"].as_bool().unwrap_or(location == "path");
+                    params.push(Param { name: name.into(), location: location.into(), required: is_required });
+                    // Filled in by lyra: not the model's to give.
+                    if config.defaults.contains_key(name) {
+                        continue;
+                    }
+                    let mut schema = inline(&spec, &p["schema"], 0);
                     if let (Some(d), Some(obj)) = (p["description"].as_str(), schema.as_object_mut()) {
                         obj.insert("description".into(), json!(d));
                     }
-                    let is_required = p["required"].as_bool().unwrap_or(location == "path");
                     if is_required {
                         required.push(json!(name));
                     }
                     properties.insert(name.to_string(), if schema.is_null() { json!({ "type": "string" }) } else { schema });
-                    params.push(Param { name: name.into(), location: location.into(), required: is_required });
                 }
                 let body = resolve(&spec, &op["requestBody"]);
                 let has_body = !body.is_null();
                 if has_body {
-                    let schema = resolve(&spec, &body["content"]["application/json"]["schema"]).clone();
+                    let schema = inline(&spec, &body["content"]["application/json"]["schema"], 0);
                     properties.insert("body".into(), if schema.is_null() { json!({ "type": "object" }) } else { schema });
                     if body["required"].as_bool().unwrap_or(false) {
                         required.push(json!("body"));
@@ -149,11 +263,11 @@ impl OpenApiClient {
                 let description = op["summary"].as_str().or(op["description"].as_str()).unwrap_or(path).trim().to_string();
                 let mut cap = Capability::new(&id, CapabilityKind::OpenApi, &format!("{description} ({} {path})", method.to_uppercase()), risk(op, method));
                 cap.input_schema = json!({ "type": "object", "properties": properties, "required": required });
-                cap.output_schema = op["responses"]["200"]["content"]["application/json"]["schema"].as_object().map(|_| {
-                    resolve(&spec, &op["responses"]["200"]["content"]["application/json"]["schema"]).clone()
-                });
+                let ok = ["200", "201"].into_iter().map(|code| &op["responses"][code]["content"]["application/json"]["schema"]).find(|s| s.is_object());
+                cap.output_schema = ok.map(|schema| inline(&spec, schema, 0));
                 cap.source = config.name.clone();
-                cap.tags = op["tags"].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(str::to_string)).collect();
+                cap.tags = tags;
+                cap.metadata.requires_approval = config.approve_writes && cap.risk != RiskLevel::ReadOnly;
                 cap.permissions = vec![format!("{}.{}", config.name, if cap.risk == RiskLevel::ReadOnly { "read" } else { "write" })];
                 cap.metadata.idempotent = matches!(method, "get" | "put" | "delete" | "head");
                 operations.push(Operation { id, method: method.into(), path: path.clone(), params, has_body, capability: cap });
@@ -220,7 +334,8 @@ impl OpenApiClient {
         let mut headers: Vec<(String, String)> = Vec::new();
         let text = |v: &Value| v.as_str().map_or_else(|| v.to_string(), str::to_string);
         for p in &op.params {
-            match args.get(&p.name) {
+            let given = self.config.defaults.get(&p.name).map(|v| json!(v));
+            match given.as_ref().or(args.get(&p.name)) {
                 Some(v) if !v.is_null() => match p.location.as_str() {
                     "path" => path = path.replace(&format!("{{{}}}", p.name), &encode(&text(v))),
                     "query" => query.push((p.name.clone(), text(v))),
@@ -243,9 +358,7 @@ impl OpenApiClient {
         for (k, v) in headers {
             req = req.header(k, v);
         }
-        if let Some(var) = &self.config.auth_env {
-            let secret = std::env::var(var).map_err(|_| format!("environment variable {var} isn't set"))?;
-            let value = if self.config.auth_scheme.is_empty() { secret } else { format!("{} {secret}", self.config.auth_scheme) };
+        if let Some(value) = self.credential()? {
             req = req.header(&self.config.auth_header, value);
         }
         if op.has_body {
@@ -267,12 +380,30 @@ impl OpenApiClient {
         &self.base_url
     }
 
-    /// Reachable at all? Any HTTP answer counts.
+    /// The auth header's value: the handed-over secret, else the environment variable.
+    fn credential(&self) -> Result<Option<String>, String> {
+        let secret = match (&self.config.secret, &self.config.auth_env, &self.config.auth_secret) {
+            (Some(s), _, _) => s.clone(),
+            (None, Some(var), _) => std::env::var(var).map_err(|_| format!("environment variable {var} isn't set"))?,
+            (None, None, Some(name)) => return Err(format!("no token for {name} yet (secrets.toml)")),
+            (None, None, None) => return Ok(None),
+        };
+        Ok(Some(if self.config.auth_scheme.is_empty() { secret } else { format!("{} {secret}", self.config.auth_scheme) }))
+    }
+
+    /// Reachable, and taking the credential? Any answer but 401/403 counts.
     pub fn health(&self) -> CapabilityHealth {
-        let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(5)).build();
-        match client.map(|c| c.get(&self.base_url).send()) {
-            Ok(Ok(_)) => CapabilityHealth::Healthy,
-            _ => CapabilityHealth::Unavailable,
+        let Ok(client) = reqwest::blocking::Client::builder().timeout(Duration::from_secs(5)).build() else { return CapabilityHealth::Unavailable };
+        let mut req = client.get(&self.base_url);
+        match self.credential() {
+            Ok(Some(value)) => req = req.header(&self.config.auth_header, value),
+            Ok(None) => {}
+            Err(_) => return CapabilityHealth::Unavailable,
+        }
+        match req.send() {
+            Ok(r) if matches!(r.status().as_u16(), 401 | 403) => CapabilityHealth::Unavailable,
+            Ok(_) => CapabilityHealth::Healthy,
+            Err(_) => CapabilityHealth::Unavailable,
         }
     }
 }

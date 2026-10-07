@@ -1437,12 +1437,38 @@ following `docs/done/capabilities.md` in the `capabilities/` crate
   evolution problems with the runs as evidence. Composite tools and workflows
   that evolution deploys become capabilities automatically.
 
-**OpenAPI.** Each operation in a spec (JSON or YAML) becomes a capability
-named `<name>.<operationId>`. Its risk comes from the method (GET read-only,
-DELETE destructive, the rest write) or `x-lyra-risk`. Path identifiers become
-requirements resolved by a listing operation, and creates and updates are
-verified by fetching the result. Credentials are never stored: `auth_env`
-names the environment variable that holds one.
+**OpenAPI.** Each operation in a spec becomes a capability. The spec can be JSON or YAML, a
+file, or a URL; a URL is fetched once a day and cached in `~/.lyra/capabilities/specs/`.
+
+- **Naming:** `<name>.<operationId>`. Without an operationId, the name comes from the path:
+  `/v1/orgs/{orgId}/tasks/{taskId}` GET becomes `<name>.orgs.tasks.item.get`.
+- **Risk:** from the method (GET read-only, DELETE destructive, the rest write) or
+  `x-lyra-risk`. Operations that change things ask first (`approve_writes`, on by default):
+  in a plan, through an agent, or after `/caps allow <name>`.
+- **Requirements and checks:** path identifiers become requirements resolved by a listing
+  operation, and creates and updates are verified by fetching the result.
+- **Schemas:** nested `$ref`s are inlined, and OpenAPI 3.1 is handled.
+- **Filters:** `include_tags`, `exclude_tags`, `exclude` (path patterns with `*`) and
+  `methods` keep a large API down to what's useful.
+- **Fixed values:** `defaults` fills in parameters such as an organization id, so the model
+  never supplies them.
+- **Credentials** are never in the config. `auth_env` names an environment variable, or
+  `auth_secret` names a token in `~/.lyra/config/secrets.toml`.
+- **Health:** a 401 or 403 counts as unavailable.
+
+For example, the rest of PMI, next to the curated `pmi_*` tools (its org id is the one
+`/pmi` shows):
+
+```toml
+[[capabilities.openapi]]
+name = "pmi_api"
+spec = "https://pmi.fbcad.org/api/docs/json"
+base_url = "https://pmi.fbcad.org/api"
+auth_secret = "pmi"
+include_tags = ["projects", "tasks", "teams", "labels", "search", "dashboard", "inbox", "calendar"]
+exclude = ["/v1/admin/*"]
+defaults = { orgId = "<your org id>" }
+```
 
 **MCP.** Each server is started over stdio. Its tools become capabilities
 named `<name>.<tool>`, with risk from their `readOnlyHint` and

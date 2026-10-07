@@ -184,8 +184,12 @@ currency = "$"
 #
 # [[capabilities.openapi]]
 # name = "pm"
-# spec = "~/.lyra/capabilities/pm.yaml"
+# spec = "~/.lyra/capabilities/pm.yaml"   # or a URL (fetched daily, cached)
 # auth_env = "PM_TOKEN"     # the environment variable holding the credential
+# # auth_secret = "pmi"     # or a token in config/secrets.toml
+# # include_tags = ["tasks", "projects"]   exclude_tags = []   exclude = ["/v1/admin/*"]
+# # defaults = { orgId = "…" }             # filled in, never asked of the model
+# # approve_writes = true                  # changes ask first
 #
 # [[capabilities.mcp]]
 # name = "fs"

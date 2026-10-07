@@ -305,6 +305,34 @@ pub fn plan_risk(r: RiskLevel) -> Risk {
     }
 }
 
+/// A spec served by the API itself: fetched once a day into
+/// `~/.lyra/capabilities/specs/<name>.json`, the copy used when it can't be.
+fn spec_from_url(name: &str, url: &str) -> Result<String, String> {
+    let cache = crate::config::home().map(|h| h.join("capabilities").join("specs").join(format!("{name}.json")));
+    let fresh = cache.as_ref().and_then(|p| p.metadata().ok()).and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).is_some_and(|age| age < std::time::Duration::from_secs(86_400));
+    let cached = || cache.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+    if fresh && let Some(text) = cached() {
+        return Ok(text);
+    }
+    let fetched = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .and_then(|c| c.get(url).send())
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.text())
+        .map_err(|e| format!("{url}: {e}"));
+    match fetched {
+        Ok(text) => {
+            if let Some(p) = &cache {
+                let _ = p.parent().map(std::fs::create_dir_all);
+                let _ = std::fs::write(p, &text);
+            }
+            Ok(text)
+        }
+        Err(e) => cached().ok_or(e),
+    }
+}
+
 impl Caps {
     /// Start the configured MCP servers and load the OpenAPI specs. Returns
     /// the providers and notes about the ones that failed.
@@ -312,8 +340,16 @@ impl Caps {
         let mut notes = Vec::new();
         let mut specs = Vec::new();
         for c in openapi {
-            let path = expand(&c.spec);
-            match std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display())).and_then(|t| OpenApiClient::load(c.clone(), &t)) {
+            let mut c = c.clone();
+            // A token from secrets.toml, handed over (never in the config).
+            if let Some(name) = &c.auth_secret {
+                c.secret = crate::secrets::token(name);
+            }
+            let text = if c.spec.starts_with("http://") || c.spec.starts_with("https://") { spec_from_url(&c.name, &c.spec) } else {
+                let path = expand(&c.spec);
+                std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))
+            };
+            match text.and_then(|t| OpenApiClient::load(c.clone(), &t)) {
                 Ok(client) => {
                     notes.push(format!("openapi {}: {} operations", c.name, client.capabilities().len()));
                     specs.push(client);

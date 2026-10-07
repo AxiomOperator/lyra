@@ -985,7 +985,7 @@ pub fn describe() -> String {
         return format!("PMI ({}): no token yet. Make one in PMI (Your account → Security) and set it with /pmi token <token>.", s.url);
     }
     match who() {
-        Ok(w) => format!("PMI ({}): signed in as {} · organization {}{}", s.url, w.user, w.org, if s.enabled { "" } else { " · off ([pmi] enabled)" }),
+        Ok(w) => format!("PMI ({}): signed in as {} · organization {} (id {}){}", s.url, w.user, w.org, w.org_id, if s.enabled { "" } else { " · off ([pmi] enabled)" }),
         Err(e) => format!("PMI ({}): {e}", s.url),
     }
 }

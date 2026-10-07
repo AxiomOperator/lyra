@@ -150,7 +150,81 @@ fn config(base_url: Option<String>) -> OpenApiConfig {
         auth_env: Some("LYRA_TEST_PM_TOKEN".into()),
         auth_header: "Authorization".into(),
         auth_scheme: "Bearer".into(),
+        ..Default::default()
     }
+}
+
+/// OpenAPI 3.1 the way PMI writes it: no operationIds, no servers, nested
+/// `$ref`s, nullable as `anyOf`, 201 answers, an org in every path.
+const SPEC_31: &str = r##"{
+  "openapi": "3.1.0",
+  "components": { "schemas": {
+    "Due": { "anyOf": [{ "type": "string", "format": "date" }, { "type": "null" }] },
+    "Task": { "type": "object", "properties": { "id": { "type": "string" }, "dueDate": { "$ref": "#/components/schemas/Due" }, "parent": { "$ref": "#/components/schemas/Task" } } }
+  } },
+  "paths": {
+    "/v1/orgs/{orgId}/tasks": {
+      "get": { "tags": ["tasks"], "summary": "List tasks", "parameters": [{ "name": "orgId", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Task" } } } } } } },
+      "post": { "tags": ["tasks"], "summary": "Create a task", "parameters": [{ "name": "orgId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "title": { "type": "string" }, "dueDate": { "$ref": "#/components/schemas/Due" } } } } } },
+        "responses": { "201": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Task" } } } } } }
+    },
+    "/v1/orgs/{orgId}/tasks/{taskId}": {
+      "get": { "tags": ["tasks"], "summary": "Get a task", "parameters": [{ "name": "orgId", "in": "path", "required": true, "schema": { "type": "string" } }, { "name": "taskId", "in": "path", "required": true, "schema": { "type": "string" } }] }
+    },
+    "/v1/admin/settings": { "get": { "tags": ["admin"], "summary": "Global settings" } },
+    "/v1/orgs/{orgId}/points/me": { "get": { "tags": ["points"], "summary": "Your points" } },
+    "/v1/orgs/{orgId}/audit": { "get": { "tags": ["tasks"], "summary": "Audit" } }
+  }
+}"##;
+
+#[test]
+fn openapi_31_filtered_with_defaults_and_nested_refs() {
+    let cfg = OpenApiConfig {
+        name: "pmi_api".into(),
+        spec: "pmi.json".into(),
+        base_url: Some("http://127.0.0.1:1/api".into()),
+        include_tags: vec!["tasks".into(), "admin".into()],
+        exclude_tags: vec!["admin".into()],
+        exclude: vec!["/v1/orgs/*/audit".into()],
+        defaults: [("orgId".to_string(), "o1".to_string())].into(),
+        ..Default::default()
+    };
+    let client = OpenApiClient::load(cfg, SPEC_31).unwrap();
+    let mut ids: Vec<String> = client.capabilities().iter().map(|c| c.id.clone()).collect();
+    ids.sort();
+    assert_eq!(ids, ["pmi_api.orgs.tasks.get", "pmi_api.orgs.tasks.item.get", "pmi_api.orgs.tasks.post"], "admin, points and the audit path are left out; a task and the list are apart");
+    let caps = client.capabilities();
+    let by = |id: &str| caps.iter().find(|c| c.id == id).unwrap().clone();
+    let create = by("pmi_api.orgs.tasks.post");
+    assert!(create.input_schema["properties"].get("orgId").is_none(), "filled in, not asked");
+    assert_eq!(create.input_schema["required"], json!(["body"]));
+    assert_eq!(create.input_schema["properties"]["body"]["properties"]["dueDate"]["anyOf"][1], json!({ "type": "null" }), "nested $ref inlined");
+    assert_eq!(create.output_schema.as_ref().unwrap()["properties"]["dueDate"]["anyOf"][0]["format"], "date", "the 201 answer");
+    assert!(!create.input_schema.to_string().contains("$ref") && !create.output_schema.unwrap().to_string().contains("$ref"), "recursion ends");
+    assert!(create.metadata.requires_approval, "writes ask");
+    assert!(!by("pmi_api.orgs.tasks.get").metadata.requires_approval);
+}
+
+#[test]
+fn openapi_health_counts_a_rejected_token_as_unavailable() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+        }
+        write!(stream, "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n").unwrap();
+    });
+    let cfg = OpenApiConfig { name: "x".into(), base_url: Some(format!("http://127.0.0.1:{port}")), secret: Some("bad".into()), ..Default::default() };
+    let client = OpenApiClient::load(cfg, SPEC_31).unwrap();
+    assert_eq!(client.health(), lyra_capabilities::CapabilityHealth::Unavailable);
 }
 
 #[test]
