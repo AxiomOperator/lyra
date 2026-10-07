@@ -468,6 +468,14 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut pmi: std::collections::HashMap<String, PmiUser> = std::collections::HashMap::new();
     let mut last_pmi_scan = Instant::now() - Duration::from_secs(120);
     let mut last_nag = Instant::now();
+    // Plan my day: re-planned every 15 minutes in each person's working day;
+    // what changed is told when they aren't in quiet time (held until then).
+    let (plan_tx, plan_rx) = std::sync::mpsc::channel::<(String, Result<Vec<String>, String>)>();
+    let mut last_plan = Instant::now() - Duration::from_secs(3600);
+    let mut planning: std::collections::HashSet<String> = Default::default();
+    let mut held: std::collections::HashMap<String, Vec<String>> = Default::default();
+    let mut quiet_seen: std::collections::HashMap<String, (bool, Instant)> = Default::default();
+    let mut last_held = Instant::now();
     let (action_tx, action_rx) = std::sync::mpsc::channel::<(String, String, String, Result<String, String>)>();
     let started = Instant::now();
     let mut convs = vec![Conv::new(primary)];
@@ -979,6 +987,18 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             let s = crate::pmi::settings();
             let owner = convs[0].app.owner.clone();
             for (user, p) in pmi.iter_mut().filter(|(_, p)| p.state.at.is_some() && p.state.error.is_none()) {
+                // Not in their quiet time (outside work hours, in a meeting): nags wait.
+                let quiet = match quiet_seen.get(user) {
+                    Some((q, at)) if at.elapsed() < Duration::from_secs(300) => *q,
+                    _ => {
+                        let q = crate::planner::quiet(user);
+                        quiet_seen.insert(user.clone(), (q, Instant::now()));
+                        q
+                    }
+                };
+                if quiet {
+                    continue;
+                }
                 let (due, changed) = p.nags.due(&p.state, &s, chrono::Utc::now());
                 for n in due {
                     // Only the owner's own reminders in the owner's Activity.
@@ -1018,6 +1038,60 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     }
                     hub.notify(Notification { title: "Couldn't update the task".into(), body: e, tag: format!("nag-{task}"), approval: None, url: Some("/?page=tasks".into()), actions: vec![], reference: None, to: To::User(user) });
                 }
+            }
+        }
+        // Plan my day, for everyone with Outlook and PMI, in their working day.
+        if last_plan.elapsed() >= Duration::from_secs(15 * 60) && crate::planner::settings().enabled && crate::planner::settings().working_now(chrono::Local::now()) {
+            last_plan = Instant::now();
+            for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id) {
+                if planning.contains(&u) || !crate::calendar::connected_for(&u) || !crate::pmi::configured_for(&u) {
+                    continue;
+                }
+                planning.insert(u.clone());
+                let tx = plan_tx.clone();
+                std::thread::spawn(move || {
+                    let r = crate::acting::run(&u, crate::planner::run);
+                    let _ = tx.send((u, r));
+                });
+            }
+        }
+        while let Ok((user, r)) = plan_rx.try_recv() {
+            planning.remove(&user);
+            let mine = user == convs[0].app.owner;
+            match r {
+                Ok(did) if !did.is_empty() => {
+                    if mine {
+                        for d in &did {
+                            convs[0].app.log(Level::Plan, format!("🗓 {d}"));
+                        }
+                    }
+                    held.entry(user).or_default().extend(did);
+                }
+                Ok(_) => {}
+                Err(e) if mine => convs[0].app.log(Level::Error, format!("plan my day: {e}")),
+                Err(_) => {}
+            }
+        }
+        // What the planner did, told once they're out of quiet time.
+        if !held.is_empty() && last_held.elapsed() >= Duration::from_secs(60) {
+            last_held = Instant::now();
+            let ready: Vec<String> = held.keys().filter(|u| !quiet_seen.get(*u).is_some_and(|(q, at)| *q && at.elapsed() < Duration::from_secs(300))).cloned().collect();
+            for user in ready {
+                if crate::planner::quiet(&user) {
+                    quiet_seen.insert(user.clone(), (true, Instant::now()));
+                    continue;
+                }
+                let did = held.remove(&user).unwrap_or_default();
+                hub.notify(Notification {
+                    title: "🗓 Your day".into(),
+                    body: did.join("\n").chars().take(400).collect(),
+                    tag: "plan".into(),
+                    approval: None,
+                    url: Some("/?page=tasks".into()),
+                    actions: vec![],
+                    reference: None,
+                    to: To::User(user),
+                });
             }
         }
         // The daily briefing: on schedule or asked for, gathered and written off the loop.

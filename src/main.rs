@@ -21,6 +21,7 @@ mod mail;
 mod lock;
 mod mem;
 mod plan;
+mod planner;
 mod pmi;
 mod migrate;
 mod retrieval;
@@ -1493,6 +1494,7 @@ impl App {
             "/briefing" => self.briefing_command(arg),
             "/calendar" => calendar::command(arg, &self.owner.clone()),
             "/mail" => crate::acting::run(&self.owner.clone(), || mail::command(arg)),
+            "/today" => crate::acting::run(&self.owner.clone(), || planner::command(arg)),
             // In the person's own PMI account.
             "/pmi" => pmi::as_user(&self.owner.clone(), || pmi::command(arg)),
             "/tasks" => pmi::as_user(&self.owner.clone(), || pmi::tasks_text(arg)),
@@ -2699,6 +2701,8 @@ impl App {
                 health::configure(config.health.clone());
                 coding::configure(config.coding.clone());
                 briefing::configure(config.briefing.clone());
+    planner::configure(config.planner.clone());
+                planner::configure(config.planner.clone());
     pmi::configure(config.pmi.clone());
                 pmi::configure(config.pmi.clone());
                 self.pricing = pricing(&config);
@@ -2914,7 +2918,7 @@ fn member_may(name: &str, arg: &str) -> bool {
     match name {
         "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" => true,
         // Their own PMI account, routines and goals.
-        "/pmi" | "/tasks" | "/task" | "/routine" | "/routines" | "/calendar" | "/mail" => true,
+        "/pmi" | "/tasks" | "/task" | "/routine" | "/routines" | "/calendar" | "/mail" | "/today" => true,
         // Looking after their own memories (held to their scope there).
         "/memory" => matches!(arg.split_whitespace().next().unwrap_or(""), "inspect" | "forget" | "archive" | "restore" | "correct"),
         // Goals are tracked and planned, never worked on unattended: no plans,
@@ -2980,6 +2984,7 @@ pub(crate) const COMMANDS: &str = "\
 /whoami                      who this conversation belongs to
 /pmi [token <token>]         the PMI connection (your project-management app)
 /calendar [today|tomorrow|week|<day>|disconnect]   your Outlook calendar (connect it from More in the app)
+/today [plan]                plan my day: meetings, focus blocks for tasks due soon, mail to answer first (plan: re-plan now)
 /mail [all|search <words>]   your Outlook inbox: new mail from people (all: newsletters too)
 /briefing [now]              the daily briefing: what happened and what needs a look ([briefing] schedule)
 /status [now]                everything lyra depends on: models, search, APIs, address, storage, backups, machines

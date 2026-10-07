@@ -928,6 +928,42 @@ Add → Microsoft Graph → Delegated. Add **Calendars.ReadWrite**, **Mail.ReadW
 **Mail.Send** and **offline_access**, then choose **Grant admin consent**. Anyone who
 connected before mail existed reconnects once (More → Outlook → **Add mail**).
 
+## Plan my day
+
+For anyone with Outlook and PMI connected, lyra plans the working day. It puts private
+**focus blocks** on their own calendar for PMI tasks due in the next 3 days.
+- **What gets a block first:** overdue tasks, then by due date and priority.
+- **How long:** 90 minutes for urgent or high priority, 60 for medium, 30 for low. Each block
+  goes where it fits whole; otherwise it's shortened to at least 30 minutes.
+- **Limits:** at most 3 blocks a day, never more than half the day's free time, and lunch is
+  kept free.
+- **The blocks:** private events called "Focus: <task>", marked busy and tagged so lyra knows
+  which are its own.
+
+It re-plans every 15 minutes in the working day. A block a meeting lands on moves to the next
+free slot, or goes if there's none. A block whose task is done goes. lyra makes these changes
+itself, logs them, and tells you in a quiet "🗓 Your day" push.
+
+**Quiet time** is outside working hours, or whenever you're in a meeting. During it, plan
+pushes and reminder follow-ups wait and are delivered afterwards. Server alerts still come
+through.
+
+"Plan my day" in chat or on the Tasks page (the Today card) re-plans at once. `/today [plan]`
+shows the day: focus blocks, what's due soon, and mail to answer first.
+
+```toml
+[planner]
+day_start = "07:30"
+day_end = "16:30"
+lunch_start = "11:30"
+lunch_end = "12:30"
+days = "weekdays"
+max_blocks = 3
+horizon_days = 3
+max_share = 0.5
+# enabled = true
+```
+
 ## Backups
 
 lyra backs itself up every night: memory, skills, goals, plans, agents, saved conversations,

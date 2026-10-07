@@ -44,6 +44,8 @@ pub struct Config {
     pub health: crate::health::Settings,
     /// `[briefing]` table: the daily briefing (lyra serve).
     pub briefing: crate::briefing::Settings,
+    /// `[planner]` table: plan my day (focus blocks, working hours, quiet times).
+    pub planner: crate::planner::Settings,
     /// `[pmi]` table: PMI, the project-management app (its token is in secrets.toml).
     pub pmi: crate::pmi::Settings,
     /// `[groups]` table: named sets of machines (web = ["web1", "web2"]) for @group and fleet_run.
@@ -324,6 +326,7 @@ impl Default for Config {
             groups: Default::default(),
             health: Default::default(),
             briefing: Default::default(),
+            planner: Default::default(),
             pmi: Default::default(),
             status: Default::default(),
             diagnose: Default::default(),

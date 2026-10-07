@@ -4,7 +4,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { CalendarDays, Flag, Link2, Mail, Paperclip, Unlink, Video } from "lucide-react";
+import { CalendarDays, Flag, Link2, Mail, Paperclip, Sparkles, Unlink, Video } from "lucide-react";
 import { useState } from "react";
 import { useData, useLyra } from "./store";
 import type { CalendarToday, CalEvent, MailGlance } from "./types";
@@ -80,20 +80,35 @@ export function CalendarCard() {
   );
 }
 
-/** Tasks: today's meetings, clashes and invites waiting. */
+/** Tasks: today's meetings and focus blocks, clashes and invites waiting, and "Plan my day". */
 export function TodayCard() {
-  const [cal] = useData<CalendarToday>("calendar");
+  const { run } = useLyra();
+  const [cal, reload] = useData<CalendarToday>("calendar");
+  const [planning, setPlanning] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
   if (!cal?.available || !cal.connected) return null;
   const events = cal.events ?? [];
+  const plan = async () => {
+    setPlanning(true);
+    const r = await run("/today plan");
+    setPlanning(false);
+    setSaid(r.text);
+    reload();
+  };
   return (
     <Card className="gap-0 py-3">
       <CardHeader className="px-4">
         <CardTitle className="flex items-center gap-2 text-sm">
           <CalendarDays className="size-4" /> Today
         </CardTitle>
-        <CardAction className="text-muted-foreground text-xs">{events.length ? `${events.length} on the calendar` : ""}</CardAction>
+        <CardAction>
+          <Button size="sm" variant="outline" disabled={planning} onClick={() => void plan()}>
+            <Sparkles className={planning ? "animate-pulse" : ""} /> Plan my day
+          </Button>
+        </CardAction>
       </CardHeader>
       <CardContent className="space-y-1 px-4 text-sm">
+        {said && <p className="whitespace-pre-wrap pb-1 text-muted-foreground text-xs">{said}</p>}
         {cal.error && <p className="text-red-300">{cal.error}</p>}
         {(cal.clashes ?? []).map((c) => (
           <p key={c} className="text-amber-300">
@@ -103,7 +118,7 @@ export function TodayCard() {
         {events.map((e) => (
           <div key={e.id} className="flex items-baseline gap-3">
             <span className="w-14 shrink-0 text-muted-foreground tabular-nums">{time(e)}</span>
-            <span className="min-w-0 flex-1 truncate">
+            <span className={`min-w-0 flex-1 truncate ${e.title.startsWith("Focus: ") ? "text-teal-300" : ""}`}>
               {e.title}
               {e.where && <span className="text-muted-foreground"> · {e.where}</span>}
               {e.your_answer === "notResponded" && <span className="text-amber-300"> · not answered</span>}

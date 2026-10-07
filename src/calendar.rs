@@ -160,13 +160,13 @@ fn get(path: &str) -> Result<Value, String> {
 
 // ---- times
 
-fn utc(v: &Value) -> Option<DateTime<Utc>> {
+pub(crate) fn utc(v: &Value) -> Option<DateTime<Utc>> {
     let s = v["dateTime"].as_str()?;
     let s = s.split('.').next().unwrap_or(s);
     chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok().map(|n| Utc.from_utc_datetime(&n))
 }
 
-fn graph_time(t: DateTime<Utc>) -> Value {
+pub(crate) fn graph_time(t: DateTime<Utc>) -> Value {
     json!({ "dateTime": t.format("%Y-%m-%dT%H:%M:%S").to_string(), "timeZone": "UTC" })
 }
 
@@ -224,7 +224,7 @@ fn brief(e: &Value) -> Value {
     v
 }
 
-const SELECT: &str = "subject,start,end,location,attendees,organizer,isOrganizer,isAllDay,isCancelled,responseStatus,showAs,onlineMeeting";
+const SELECT: &str = "subject,start,end,location,attendees,organizer,isOrganizer,isAllDay,isCancelled,responseStatus,showAs,onlineMeeting,categories,bodyPreview";
 
 /// The person's events between two times, soonest first.
 pub fn events(from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<Value>, String> {
@@ -327,6 +327,13 @@ pub fn capabilities() -> Vec<Capability> {
             &["id"],
         ),
         tool(
+            "plan_my_day",
+            "Plan the user's day now: private focus blocks on their calendar for PMI tasks due soon (overdue first), around meetings, within working hours, lunch kept free; blocks a meeting landed on move, ones whose task is done go. Returns what changed and the day.",
+            RiskLevel::LowWrite,
+            json!({}),
+            &[],
+        ),
+        tool(
             "cal_respond",
             "Answer a meeting invite: accept, tentative or decline, with an optional note to the organizer (the user approves first).",
             RiskLevel::LowWrite,
@@ -367,6 +374,10 @@ pub fn approval(name: &str, args: &Value) -> Option<Ask> {
 /// Run a calendar tool as the person this thread works for (approval asked first by the caller).
 pub fn call(name: &str, args: &Value) -> Result<Value, String> {
     match name {
+        "plan_my_day" => {
+            let did = crate::planner::run()?;
+            Ok(json!({ "changed": did, "day": crate::planner::today()? }))
+        }
         "cal_agenda" => {
             let when = args["when"].as_str().unwrap_or("today");
             let (from, to) = span(when)?;
