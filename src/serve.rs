@@ -301,6 +301,22 @@ pub fn attachments(hub: &Hub, files: &[String], vision: bool) -> (String, Vec<St
     (text, images)
 }
 
+/// One person's PMI, as lyra serve follows it.
+struct PmiUser {
+    state: crate::pmi::State,
+    view: Value,
+    busy: bool,
+    due: Option<Instant>,
+    last: Instant,
+    nags: crate::pmi::Nags,
+}
+
+impl Default for PmiUser {
+    fn default() -> Self {
+        Self { state: Default::default(), view: Value::Null, busy: false, due: None, last: Instant::now(), nags: Default::default() }
+    }
+}
+
 /// One open conversation: its lyra and what its devices were last sent.
 struct Conv {
     app: App,
@@ -338,7 +354,7 @@ fn for_viewer(extra: &Value, app: &App) -> Value {
         return v;
     }
     if let Some(map) = v.as_object_mut() {
-        for key in ["machines_detail", "pairing", "online", "server_health", "server_harnesses", "routines", "diagnoses", "briefing", "pmi", "users_waiting"] {
+        for key in ["machines_detail", "pairing", "online", "server_health", "server_harnesses", "routines", "diagnoses", "users_waiting"] {
             map.remove(key);
         }
     }
@@ -419,24 +435,23 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut last_diag = Instant::now() - Duration::from_secs(60);
     let mut diag_view = Value::Null;
     // The daily briefing: the last one (it survives restarts), when the next is due.
-    let (brief_tx, brief_rx) = std::sync::mpsc::channel::<crate::briefing::Briefing>();
+    let (brief_tx, brief_rx) = std::sync::mpsc::channel::<(String, crate::briefing::Briefing)>();
     let mut last_brief = crate::briefing::last();
-    let mut brief_view = last_brief.as_ref().map_or(Value::Null, |b| json!(b));
+    // Each person's latest briefing, for their devices (members get theirs: their tasks).
+    let mut brief_views: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    if let Some(b) = &last_brief {
+        brief_views.insert(lyra_web::users::OWNER.to_string(), json!(b));
+    }
     let mut brief_busy = false;
     let mut last_brief_check = Instant::now() - Duration::from_secs(60);
     // PMI: its live events (a thread), and the view read after each change.
-    let (pmi_events_tx, pmi_events) = std::sync::mpsc::channel::<crate::pmi::Event>();
-    std::thread::spawn(move || crate::pmi::follow(pmi_events_tx));
-    let (pmi_tx, pmi_rx) = std::sync::mpsc::channel::<Result<crate::pmi::State, String>>();
-    let mut pmi_state = crate::pmi::State::default();
-    let mut pmi_view = Value::Null;
-    let mut pmi_busy = false;
-    let mut pmi_due: Option<Instant> = Some(Instant::now());
-    let mut last_pmi = Instant::now();
-    // Reminders still open after they went off: pushed again (kept across restarts).
-    let mut nags = crate::pmi::Nags::load();
+    let (pmi_events_tx, pmi_events) = std::sync::mpsc::channel::<(String, crate::pmi::Event)>();
+    let (pmi_tx, pmi_rx) = std::sync::mpsc::channel::<(String, Result<crate::pmi::State, String>)>();
+    // Each person with a PMI token: their live view, followed while lyra runs.
+    let mut pmi: std::collections::HashMap<String, PmiUser> = std::collections::HashMap::new();
+    let mut last_pmi_scan = Instant::now() - Duration::from_secs(120);
     let mut last_nag = Instant::now();
-    let (action_tx, action_rx) = std::sync::mpsc::channel::<(String, String, Result<String, String>)>();
+    let (action_tx, action_rx) = std::sync::mpsc::channel::<(String, String, String, Result<String, String>)>();
     let started = Instant::now();
     let mut convs = vec![Conv::new(primary)];
     loop {
@@ -497,15 +512,12 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     }
                 }
                 Inbound::Action { action, reference, device, who } => {
-                    // PMI is the owner's for now.
-                    if who.user != convs[0].app.owner {
-                        continue;
-                    }
-                    convs[0].app.log(Level::Info, format!("{device} pressed {action} on a reminder"));
+                    convs[0].app.log(Level::Info, format!("{device} ({}) pressed {action} on a reminder", who.name));
                     let tx = action_tx.clone();
                     std::thread::spawn(move || {
-                        let r = crate::pmi::push_action(&action, &reference);
-                        let _ = tx.send((action, reference, r));
+                        // In their own PMI account.
+                        let r = crate::pmi::as_user(&who.user, || crate::pmi::push_action(&action, &reference));
+                        let _ = tx.send((who.user, action, reference, r));
                     });
                 }
                 Inbound::Note(text) => {
@@ -549,7 +561,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 }
                 Inbound::Get { what, arg, session, who, reply } => {
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -662,10 +674,11 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     all["routines"] = routines_view.clone();
                     all["status"] = status_view.clone();
                     all["diagnoses"] = diag_view.clone();
-                    all["briefing"] = brief_view.clone();
-                    all["pmi"] = pmi_view.clone();
                     c.mirror.machines = if c.app.admin { machines.clone() } else { Vec::new() };
                     c.mirror.extra = for_viewer(&all, &c.app);
+                    c.mirror.extra["pmi"] = pmi.get(&c.app.owner).map_or(Value::Null, |p| p.view.clone());
+                c.mirror.extra["briefing"] = brief_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
+                    c.mirror.extra["briefing"] = brief_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
                     for u in c.mirror.updates(&mut c.app) {
                         hub.publish(Some(&c.app.session_id), u);
                     }
@@ -825,95 +838,131 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             crate::routines::record(&r.name, run);
             everyone = true;
         }
-        // PMI: read again shortly after a change (its events, or lyra's own), and every 5 minutes.
-        while let Ok(e) = pmi_events.try_recv() {
+        // PMI, per person with a token: follow their live events (a thread each,
+        // started as tokens appear), read again shortly after a change and every 5 minutes.
+        if last_pmi_scan.elapsed() >= Duration::from_secs(60) {
+            last_pmi_scan = Instant::now();
+            let people: Vec<String> = hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active && !pmi.contains_key(&u.id) && crate::pmi::configured_for(&u.id)).map(|u| u.id).collect();
+            for user in people {
+                let tx = pmi_events_tx.clone();
+                let who = user.clone();
+                std::thread::spawn(move || crate::pmi::follow(who, tx));
+                pmi.insert(user.clone(), PmiUser { due: Some(Instant::now()), last: Instant::now(), nags: crate::pmi::Nags::load_for(&user), ..Default::default() });
+            }
+        }
+        while let Ok((user, e)) = pmi_events.try_recv() {
+            let Some(p) = pmi.get_mut(&user) else { continue };
             match e {
                 crate::pmi::Event::Live(live) => {
-                    if live != pmi_state.live {
-                        pmi_state.live = live;
-                        convs[0].app.log(Level::Info, if live { "PMI: following its live updates".to_string() } else { "PMI: can't follow its live updates, retrying".to_string() });
-                        pmi_view = json!(pmi_state);
+                    if live != p.state.live {
+                        p.state.live = live;
+                        if user == convs[0].app.owner {
+                            convs[0].app.log(Level::Info, if live { "PMI: following its live updates".to_string() } else { "PMI: can't follow its live updates, retrying".to_string() });
+                        }
+                        p.view = json!(p.state);
                         everyone = true;
                         // Back after an outage: what changed meanwhile.
                         if live {
-                            pmi_due = Some(Instant::now());
+                            p.due = Some(Instant::now());
                         }
+                    }
+                    // Their token is gone: forget them until one is set again.
+                    if !live && !crate::pmi::configured_for(&user) {
+                        pmi.remove(&user);
+                        everyone = true;
                     }
                 }
                 crate::pmi::Event::Changed(areas) => {
                     if areas.iter().any(|a| matches!(a.as_str(), "tasks" | "projects" | "resync" | "structure")) {
-                        pmi_due = Some(pmi_due.map_or(Instant::now() + Duration::from_secs(5), |d| d.min(Instant::now() + Duration::from_secs(5))));
+                        let soon = Instant::now() + Duration::from_secs(5);
+                        p.due = Some(p.due.map_or(soon, |d| d.min(soon)));
                     }
                 }
             }
         }
-        if crate::pmi::take_stale() {
-            pmi_due = Some(Instant::now() + Duration::from_secs(2));
+        for user in crate::pmi::take_stale() {
+            if let Some(p) = pmi.get_mut(&user) {
+                p.due = Some(Instant::now() + Duration::from_secs(2));
+            } else {
+                // A token was just set: start following them now.
+                last_pmi_scan = Instant::now() - Duration::from_secs(120);
+            }
         }
-        if !pmi_busy && crate::pmi::configured() && (pmi_due.is_some_and(|d| Instant::now() >= d) || last_pmi.elapsed() >= Duration::from_secs(300)) {
-            pmi_busy = true;
-            pmi_due = None;
-            last_pmi = Instant::now();
-            let tx = pmi_tx.clone();
-            std::thread::spawn(move || {
-                let _ = tx.send(crate::pmi::snapshot());
-            });
+        for (user, p) in pmi.iter_mut() {
+            if !p.busy && (p.due.is_some_and(|d| Instant::now() >= d) || p.last.elapsed() >= Duration::from_secs(300)) {
+                p.busy = true;
+                p.due = None;
+                p.last = Instant::now();
+                let (tx, user) = (pmi_tx.clone(), user.clone());
+                std::thread::spawn(move || {
+                    let r = crate::pmi::as_user(&user, crate::pmi::snapshot);
+                    let _ = tx.send((user, r));
+                });
+            }
         }
-        while let Ok(r) = pmi_rx.try_recv() {
-            pmi_busy = false;
-            let live = pmi_state.live;
+        while let Ok((user, r)) = pmi_rx.try_recv() {
+            let Some(p) = pmi.get_mut(&user) else { continue };
+            p.busy = false;
+            let mine = user == convs[0].app.owner;
             match r {
                 Ok(mut s) => {
-                    s.live = live;
-                    if pmi_state.error.is_some() {
+                    s.live = p.state.live;
+                    if mine && p.state.error.is_some() {
                         convs[0].app.log(Level::Info, format!("PMI: back ({})", s.line(chrono::Local::now().date_naive())));
                     }
-                    pmi_state = s;
+                    p.state = s;
                 }
                 Err(e) => {
-                    if pmi_state.error.as_deref() != Some(e.as_str()) {
+                    if mine && p.state.error.as_deref() != Some(e.as_str()) {
                         convs[0].app.log(Level::Error, format!("PMI: {e}"));
                     }
-                    pmi_state.error = Some(e);
+                    p.state.error = Some(e);
                 }
             }
-            let view = json!(pmi_state);
-            if view != pmi_view {
-                pmi_view = view;
+            let view = json!(p.state);
+            if view != p.view {
+                p.view = view;
                 everyone = true;
             }
         }
-        // Nags: checked with each new view and every minute.
-        if (pmi_state.at.is_some() && pmi_state.error.is_none()) && (last_nag.elapsed() >= Duration::from_secs(60) || everyone) {
+        // Nags: each person's, checked with each new view and every minute.
+        if last_nag.elapsed() >= Duration::from_secs(60) || everyone {
             last_nag = Instant::now();
-            let (due, changed) = nags.due(&pmi_state, &crate::pmi::settings(), chrono::Utc::now());
-            for n in due {
-                convs[0].app.log(Level::Plan, format!("⏰ still to do: {} (reminder {} of {})", n.title, n.sent, crate::pmi::settings().nag_max));
-                hub.notify(Notification {
-                    title: format!("⏰ Still to do: {}", n.title),
-                    body: format!("The reminder went off {}. Done, or later?", n.fired.with_timezone(&chrono::Local).format("%a %H:%M")),
-                    tag: format!("nag-{}", n.task),
-                    approval: None,
-                    url: Some("/?page=tasks".into()),
-                    actions: vec![("done".into(), "Done".into()), ("snooze1h".into(), "In 1 hour".into()), ("tomorrow".into(), "Tomorrow".into())],
-                    reference: Some(n.task.clone()),
-                    to: To::User(convs[0].app.owner.clone()),
-                });
-            }
-            if changed {
-                nags.save();
+            let s = crate::pmi::settings();
+            let owner = convs[0].app.owner.clone();
+            for (user, p) in pmi.iter_mut().filter(|(_, p)| p.state.at.is_some() && p.state.error.is_none()) {
+                let (due, changed) = p.nags.due(&p.state, &s, chrono::Utc::now());
+                for n in due {
+                    let whose = if *user == owner { String::new() } else { format!(" ({})", hub.users().get(user).map_or(user.clone(), |u| u.name)) };
+                    convs[0].app.log(Level::Plan, format!("⏰ still to do{whose}: {} (reminder {} of {})", n.title, n.sent, s.nag_max));
+                    hub.notify(Notification {
+                        title: format!("⏰ Still to do: {}", n.title),
+                        body: format!("The reminder went off {}. Done, or later?", n.fired.with_timezone(&chrono::Local).format("%a %H:%M")),
+                        tag: format!("nag-{}", n.task),
+                        approval: None,
+                        url: Some("/?page=tasks".into()),
+                        actions: vec![("done".into(), "Done".into()), ("snooze1h".into(), "In 1 hour".into()), ("tomorrow".into(), "Tomorrow".into())],
+                        reference: Some(n.task.clone()),
+                        to: To::User(user.clone()),
+                    });
+                }
+                if changed {
+                    p.nags.save_for(user);
+                }
             }
         }
-        while let Ok((action, task, r)) = action_rx.try_recv() {
+        while let Ok((user, action, task, r)) = action_rx.try_recv() {
             match r {
                 Ok(what) => {
                     convs[0].app.log(Level::Plan, format!("reminder: {what}"));
-                    nags.items.retain(|_, n| n.task != task);
-                    nags.save();
+                    if let Some(p) = pmi.get_mut(&user) {
+                        p.nags.items.retain(|_, n| n.task != task);
+                        p.nags.save_for(&user);
+                    }
                 }
                 Err(e) => {
                     convs[0].app.log(Level::Error, format!("reminder {action} failed: {e}"));
-                    hub.notify(Notification { title: "Couldn't update the task".into(), body: e, tag: format!("nag-{task}"), approval: None, url: Some("/?page=tasks".into()), actions: vec![], reference: None, to: To::User(convs[0].app.owner.clone()) });
+                    hub.notify(Notification { title: "Couldn't update the task".into(), body: e, tag: format!("nag-{task}"), approval: None, url: Some("/?page=tasks".into()), actions: vec![], reference: None, to: To::User(user) });
                 }
             }
         }
@@ -931,21 +980,36 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 let mut inputs = crate::briefing::local_inputs(convs[0].app.goals.as_deref(), at, since);
                 inputs.machines = machines_detail(hub, node_build.as_deref());
                 inputs.server_health = (!server_health.is_null()).then(|| server_health.clone());
-                inputs.pmi = (crate::pmi::configured() && pmi_state.at.is_some()).then(|| pmi_state.clone());
+                inputs.pmi = pmi.get(&convs[0].app.owner).filter(|p| p.state.at.is_some()).map(|p| p.state.clone());
                 let (url, model, tx) = (format!("{}/chat/completions", convs[0].app.base_url.trim_end_matches('/')), convs[0].app.model.clone(), brief_tx.clone());
+                let owner = convs[0].app.owner.clone();
+                // Everyone else with PMI: their own, with just their tasks.
+                let others: Vec<(String, crate::briefing::Inputs)> = pmi
+                    .iter()
+                    .filter(|(u, p)| **u != owner && p.state.at.is_some())
+                    .map(|(u, p)| {
+                        let since = crate::briefing::window_start(crate::briefing::last_for(u).map(|b| b.at), at);
+                        (u.clone(), crate::briefing::Inputs { now: at, since, pmi: Some(p.state.clone()), ..Default::default() })
+                    })
+                    .collect();
                 std::thread::spawn(move || {
-                    let mut b = crate::briefing::gather(&inputs);
-                    if s.summary {
-                        b.takeaway = crate::briefing::takeaway(&url, &model, &b);
+                    for (user, inputs) in std::iter::once((owner, inputs)).chain(others) {
+                        let mut b = crate::briefing::gather(&inputs);
+                        if s.summary {
+                            b.takeaway = crate::briefing::takeaway(&url, &model, &b);
+                        }
+                        let _ = tx.send((user, b));
                     }
-                    let _ = tx.send(b);
                 });
             }
         }
-        while let Ok(b) = brief_rx.try_recv() {
-            brief_busy = false;
-            crate::briefing::save(&b);
-            convs[0].app.log(if b.attention > 0 { Level::Error } else { Level::Plan }, format!("briefing: {}{}", b.headline, b.takeaway.as_ref().map(|t| format!(" — {t}")).unwrap_or_default()));
+        while let Ok((user, b)) = brief_rx.try_recv() {
+            let owner = user == convs[0].app.owner;
+            crate::briefing::save_for(&user, &b);
+            if owner {
+                brief_busy = false;
+                convs[0].app.log(if b.attention > 0 { Level::Error } else { Level::Plan }, format!("briefing: {}{}", b.headline, b.takeaway.as_ref().map(|t| format!(" — {t}")).unwrap_or_default()));
+            }
             if crate::briefing::settings().notify {
                 hub.notify(Notification {
                     title: format!("☀ Briefing: {}", b.headline),
@@ -955,11 +1019,13 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     url: Some("/?page=status".into()),
                     actions: vec![],
                     reference: None,
-                    to: To::User(convs[0].app.owner.clone()),
+                    to: To::User(user.clone()),
                 });
             }
-            brief_view = json!(b);
-            last_brief = Some(b);
+            brief_views.insert(user, json!(b));
+            if owner {
+                last_brief = Some(b);
+            }
             everyone = true;
         }
         // Diagnoses: one at a time, each in its own conversation; their write-ups for the panels.
@@ -1091,8 +1157,6 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         extra_now["routines"] = routines_view.clone();
         extra_now["status"] = status_view.clone();
         extra_now["diagnoses"] = diag_view.clone();
-        extra_now["briefing"] = brief_view.clone();
-        extra_now["pmi"] = pmi_view.clone();
         let attached = hub.attached_sessions();
         for c in convs.iter_mut() {
             // The phase timer ("thinking 4s") ticks while something is happening.
@@ -1101,6 +1165,8 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 c.changed = false;
                 c.mirror.machines = if c.app.admin { machines.clone() } else { Vec::new() };
                 c.mirror.extra = for_viewer(&extra_now, &c.app);
+                c.mirror.extra["pmi"] = pmi.get(&c.app.owner).map_or(Value::Null, |p| p.view.clone());
+                c.mirror.extra["briefing"] = brief_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
                 for u in c.mirror.updates(&mut c.app) {
                     hub.publish(Some(&c.app.session_id), u);
                 }
@@ -1284,7 +1350,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         }
         "routines" => crate::routines::view(&[], 10),
         "briefing" => crate::briefing::last().map_or(Value::Null, |b| json!(b)),
-        "pmi" => crate::pmi::snapshot().map_or_else(|e| json!({ "error": e }), |s| json!(s)),
+        "pmi" => crate::pmi::as_user(&app.owner, crate::pmi::snapshot).map_or_else(|e| json!({ "error": e }), |s| json!(s)),
         "coding" => json!(crate::coding::jobs()),
         // The people who use lyra (admins: the gate is in the loop).
         "users" => {

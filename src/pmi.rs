@@ -13,7 +13,6 @@ use lyra_capabilities::{Capability, CapabilityKind, RiskLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::caps::Ask;
 
@@ -42,16 +41,51 @@ static SETTINGS: RwLock<Option<Settings>> = RwLock::new(None);
 
 pub fn configure(s: Settings) {
     *SETTINGS.write().unwrap_or_else(|e| e.into_inner()) = Some(s);
-    *WHO.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    forget_who(None);
 }
 
 pub fn settings() -> Settings {
     SETTINGS.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default()
 }
 
-/// PMI is on and has a token.
+/// PMI is on and the owner has a token.
 pub fn configured() -> bool {
-    settings().enabled && crate::secrets::token("pmi").is_some()
+    configured_for(lyra_web::users::OWNER)
+}
+
+/// PMI is on and this person has a token.
+pub fn configured_for(user: &str) -> bool {
+    settings().enabled && crate::secrets::token_for("pmi", user).is_some()
+}
+
+/// Anyone has a token (then the PMI tools are offered).
+pub fn anyone() -> bool {
+    settings().enabled
+        && (configured()
+            || crate::config::home().and_then(|h| std::fs::read_dir(h.join("users")).ok()).into_iter().flatten().flatten().any(|e| configured_for(&e.file_name().to_string_lossy())))
+}
+
+thread_local! {
+    /// Whose PMI account this thread works in (a conversation's owner).
+    static USER: std::cell::RefCell<String> = std::cell::RefCell::new(lyra_web::users::OWNER.to_string());
+}
+
+/// Work in this person's PMI account from now on, on this thread (a turn's
+/// thread, a follower's).
+pub fn set_user(user: &str) {
+    USER.with(|u| *u.borrow_mut() = user.to_string());
+}
+
+/// Run `f` in this person's PMI account.
+pub fn as_user<T>(user: &str, f: impl FnOnce() -> T) -> T {
+    let before = USER.with(|u| std::mem::replace(&mut *u.borrow_mut(), user.to_string()));
+    let out = f();
+    USER.with(|u| *u.borrow_mut() = before);
+    out
+}
+
+fn current() -> String {
+    USER.with(|u| u.borrow().clone())
 }
 
 // ---- the client
@@ -72,7 +106,7 @@ pub fn request(method: reqwest::Method, path: &str, body: Option<&Value>) -> Res
     let test: Option<(String, String)> = None;
     let (base, token) = match test {
         Some(t) => t,
-        None => (s.url.clone(), crate::secrets::token("pmi").ok_or("no PMI token yet: /pmi token <token> (Your account → Security in PMI)")?),
+        None => (s.url.clone(), crate::secrets::token_for("pmi", &current()).ok_or("no PMI token yet: /pmi token <token> (Your account → Security in PMI)")?),
     };
     let url = format!("{}{path}", base.trim_end_matches('/'));
     let mut req = http()?.request(method, &url).bearer_auth(token).header("Accept", "application/json");
@@ -106,14 +140,26 @@ pub struct Who {
     pub org: String,
 }
 
-static WHO: Mutex<Option<Who>> = Mutex::new(None);
+/// Each person's PMI identity, once looked up.
+static WHO: Mutex<Option<std::collections::HashMap<String, Who>>> = Mutex::new(None);
+
+fn forget_who(user: Option<&str>) {
+    let mut w = WHO.lock().unwrap_or_else(|e| e.into_inner());
+    match (user, w.as_mut()) {
+        (Some(u), Some(map)) => {
+            map.remove(u);
+        }
+        _ => *w = None,
+    }
+}
 
 /// Tests: a fake PMI's address and token instead of the settings and secrets.
 #[cfg(test)]
 static TEST: Mutex<Option<(String, String)>> = Mutex::new(None);
 
 pub fn who() -> Result<Who, String> {
-    if let Some(w) = WHO.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+    let user = current();
+    if let Some(w) = WHO.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(&user)).cloned() {
         return Ok(w);
     }
     let me = get("/v1/auth/me")?;
@@ -128,7 +174,7 @@ pub fn who() -> Result<Who, String> {
         org_id: str_of(&org["id"]),
         org: str_of(&org["name"]),
     };
-    *WHO.lock().unwrap_or_else(|e| e.into_inner()) = Some(w.clone());
+    WHO.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(user, w.clone());
     Ok(w)
 }
 
@@ -779,15 +825,19 @@ pub fn snapshot() -> Result<State, String> {
     })
 }
 
-/// A change was made through lyra: read again soon.
-static STALE: AtomicBool = AtomicBool::new(false);
+/// Changes made through lyra, by whose account: read again soon.
+static STALE: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 pub fn mark_stale() {
-    STALE.store(true, Ordering::SeqCst);
+    let user = current();
+    let mut s = STALE.lock().unwrap_or_else(|e| e.into_inner());
+    if !s.contains(&user) {
+        s.push(user);
+    }
 }
 
-pub fn take_stale() -> bool {
-    STALE.swap(false, Ordering::SeqCst)
+pub fn take_stale() -> Vec<String> {
+    std::mem::take(&mut *STALE.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// What PMI's event stream says.
@@ -836,17 +886,20 @@ impl Sse {
 /// stream after a minute: that's reconnected at once, quietly. A connection
 /// that fails is reported and retried with a growing pause; one is renewed
 /// after 10 minutes at most, so a silent one can't hang on.
-pub fn follow(tx: std::sync::mpsc::Sender<Event>) {
+pub fn follow(user: String, tx: std::sync::mpsc::Sender<(String, Event)>) {
     use std::io::BufRead;
+    set_user(&user);
+    let send = |e: Event| tx.send((user.clone(), e)).is_ok();
     let mut pause = 5;
     loop {
-        if !configured() {
-            std::thread::sleep(Duration::from_secs(60));
-            continue;
+        // Their token is gone: stop following them.
+        if !configured_for(&user) {
+            let _ = send(Event::Live(false));
+            return;
         }
         let connected = (|| -> Result<(), String> {
             let path = org("/events")?;
-            let token = crate::secrets::token("pmi").ok_or("no token")?;
+            let token = crate::secrets::token_for("pmi", &user).ok_or("no token")?;
             let client = reqwest::blocking::Client::builder().connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(600)).build().map_err(|e| e.to_string())?;
             let resp = client
                 .get(format!("{}{path}", settings().url.trim_end_matches('/')))
@@ -861,7 +914,7 @@ pub fn follow(tx: std::sync::mpsc::Sender<Event>) {
             for line in std::io::BufReader::new(resp).lines() {
                 let Ok(line) = line else { break };
                 if let Some(e) = sse.line(&line)
-                    && tx.send(e).is_err()
+                    && !send(e)
                 {
                     return Ok(());
                 }
@@ -874,7 +927,7 @@ pub fn follow(tx: std::sync::mpsc::Sender<Event>) {
                 std::thread::sleep(Duration::from_secs(1));
             }
             Err(_) => {
-                let _ = tx.send(Event::Live(false));
+                let _ = send(Event::Live(false));
                 std::thread::sleep(Duration::from_secs(pause));
                 pause = (pause * 2).min(300);
             }
@@ -901,17 +954,18 @@ pub struct Nags {
     pub items: std::collections::HashMap<String, Nag>,
 }
 
-fn nags_path() -> Option<std::path::PathBuf> {
-    Some(crate::config::home()?.join("pmi").join("nags.json"))
+fn nags_path(user: &str) -> Option<std::path::PathBuf> {
+    if user == lyra_web::users::OWNER { Some(crate::config::home()?.join("pmi").join("nags.json")) } else { Some(crate::context::user_dir(user)?.join("pmi").join("nags.json")) }
 }
 
 impl Nags {
-    pub fn load() -> Self {
-        nags_path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    /// One person's (kept across restarts).
+    pub fn load_for(user: &str) -> Self {
+        nags_path(user).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
     }
 
-    pub fn save(&self) {
-        if let Some(p) = nags_path() {
+    pub fn save_for(&self, user: &str) {
+        if let Some(p) = nags_path(user) {
             if let Some(dir) = p.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
@@ -990,7 +1044,7 @@ pub fn push_action(action: &str, task: &str) -> Result<String, String> {
 /// `/pmi`.
 pub fn describe() -> String {
     let s = settings();
-    if crate::secrets::token("pmi").is_none() {
+    if crate::secrets::token_for("pmi", &current()).is_none() {
         return format!("PMI ({}): no token yet. Make one in PMI (Your account → Security) and set it with /pmi token <token>.", s.url);
     }
     match who() {
@@ -1000,10 +1054,14 @@ pub fn describe() -> String {
 }
 
 /// The last `/tasks` list, so `/task done 2` works.
-static LISTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static LISTED: Mutex<Option<std::collections::HashMap<String, Vec<String>>>> = Mutex::new(None);
 
 fn listed(n: &str) -> String {
-    n.parse::<usize>().ok().and_then(|i| LISTED.lock().unwrap_or_else(|e| e.into_inner()).get(i.wrapping_sub(1)).cloned()).unwrap_or_else(|| n.to_string())
+    let user = current();
+    n.parse::<usize>()
+        .ok()
+        .and_then(|i| LISTED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(&user)).and_then(|l| l.get(i.wrapping_sub(1)).cloned()))
+        .unwrap_or_else(|| n.to_string())
 }
 
 /// `/tasks [today|overdue|week|all|project <name>|team <name>]` as text.
@@ -1018,7 +1076,7 @@ pub fn tasks_text(arg: &str) -> Result<String, String> {
     let v = call("pmi_tasks", &json!({ "scope": scope, "due": due }))?;
     let tasks = v["tasks"].as_array().cloned().unwrap_or_default();
     let today = Local::now().date_naive().to_string();
-    *LISTED.lock().unwrap_or_else(|e| e.into_inner()) = tasks.iter().map(|t| str_of(&t["id"])).collect();
+    LISTED.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(current(), tasks.iter().map(|t| str_of(&t["id"])).collect());
     if tasks.is_empty() {
         return Ok("nothing open. /task add <what> [when] adds one".into());
     }
@@ -1081,8 +1139,9 @@ pub fn command(arg: &str) -> Result<String, String> {
     match arg.split_once(' ').map_or((arg, ""), |(a, b)| (a, b.trim())) {
         ("" | "status", _) => Ok(describe()),
         ("token", t) => {
-            crate::secrets::set_token("pmi", t)?;
-            *WHO.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            let user = current();
+            crate::secrets::set_token_for("pmi", t, &user)?;
+            forget_who(Some(&user));
             if t.is_empty() {
                 return Ok("PMI token removed".into());
             }
@@ -1197,7 +1256,7 @@ mod tests {
     fn personal_tasks_with_reminders_and_closing_comments() {
         let (url, seen) = fake_pmi();
         *TEST.lock().unwrap() = Some((url, "t0k".into()));
-        *WHO.lock().unwrap() = None;
+        forget_who(None);
         let t = call("pmi_add_task", &json!({ "title": "Call the vendor", "remind": "tomorrow 3pm" })).unwrap();
         assert_eq!((t["title"].as_str(), t["where"].as_str(), t["added_to"].as_str()), (Some("Call the vendor"), Some("personal"), Some("personal")));
         assert!(t["reminder"].as_str().is_some_and(|r| r.ends_with("15:00")), "{t}");
@@ -1213,6 +1272,23 @@ mod tests {
         assert!(log.iter().any(|(m, p, b)| m == "PUT" && p == "/v1/orgs/o1/tasks/t1/reminder" && b["at"].is_string()));
         assert!(log.iter().any(|(m, _, b)| m == "PATCH" && b == &json!({ "status": "done", "closingComment": "Done (via lyra)" })));
         *TEST.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn each_thread_works_in_one_persons_account() {
+        assert_eq!(current(), lyra_web::users::OWNER);
+        let inside = as_user("oid-dana", || (current(), as_user("oid-eve", current)));
+        assert_eq!(inside, ("oid-dana".to_string(), "oid-eve".to_string()), "nested and restored");
+        assert_eq!(current(), lyra_web::users::OWNER);
+        let other = std::thread::spawn(|| {
+            set_user("oid-dana");
+            mark_stale();
+            current()
+        })
+        .join()
+        .unwrap();
+        assert_eq!((other.as_str(), current().as_str()), ("oid-dana", lyra_web::users::OWNER), "per thread");
+        assert!(take_stale().contains(&"oid-dana".to_string()));
     }
 
     #[test]

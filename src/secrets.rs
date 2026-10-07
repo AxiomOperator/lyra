@@ -10,19 +10,34 @@ pub fn path() -> Option<PathBuf> {
     Some(crate::config::home()?.join("config").join("secrets.toml"))
 }
 
-fn table() -> Table {
-    path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| t.parse::<Table>().ok()).unwrap_or_default()
+/// A person's own secrets (`~/.lyra/users/<id>/secrets.toml`); the owner's are the main file.
+fn path_for(user: &str) -> Option<PathBuf> {
+    if user == lyra_web::users::OWNER { path() } else { Some(crate::context::user_dir(user)?.join("secrets.toml")) }
+}
+
+fn table_at(path: Option<PathBuf>) -> Table {
+    path.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| t.parse::<Table>().ok()).unwrap_or_default()
 }
 
 /// A service's token (`[service] token`), if one is set.
 pub fn token(service: &str) -> Option<String> {
-    table().get(service)?.get("token")?.as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
+    token_for(service, lyra_web::users::OWNER)
+}
+
+/// One person's token for a service (their PMI account).
+pub fn token_for(service: &str, user: &str) -> Option<String> {
+    table_at(path_for(user)).get(service)?.get("token")?.as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
 }
 
 /// Set (or with an empty one, remove) a service's token.
 pub fn set_token(service: &str, token: &str) -> Result<(), String> {
-    let path = path().ok_or("no lyra home")?;
-    let mut t = table();
+    set_token_for(service, token, lyra_web::users::OWNER)
+}
+
+/// Set (or remove) one person's token for a service.
+pub fn set_token_for(service: &str, token: &str, user: &str) -> Result<(), String> {
+    let path = path_for(user).ok_or("no lyra home")?;
+    let mut t = table_at(Some(path.clone()));
     let token = token.trim();
     if token.is_empty() {
         t.remove(service);

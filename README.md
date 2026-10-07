@@ -935,8 +935,15 @@ only recall and save theirs, and neither the owner's nor anyone else's turns eve
 Each person also has their own `USER.md` (`~/.lyra/users/<id>/USER.md`); without one, lyra
 just knows their name.
 
-Goals, routines, the briefing and the PMI token are still the owner's until they're per user,
-and a member's turns don't see them.
+Each person can also connect their own PMI account (`/pmi token <token>` in their own chat).
+It's kept in `~/.lyra/users/<id>/secrets.toml`, which is left out of backups like the owner's.
+With a token they get:
+- their tasks and reminders in chat and on their Tasks page
+- reminder follow-ups pushed to their devices
+- a morning briefing of their own, holding just their tasks
+
+lyra serve follows each person's PMI separately. Goals and routines are still the owner's
+until they're per person, and a member's turns don't use them.
 
 The first user is the **owner**, an admin. Devices paired before users existed are theirs.
 `/users` lists everyone, and `/users approve|admin|member|disable <who>` changes someone.

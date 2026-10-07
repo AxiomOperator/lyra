@@ -197,8 +197,11 @@ fn make(home: &Path, settings: &Settings, memory: Memory) -> Made {
     if let Some((path, _)) = memory {
         skip.push(path.to_path_buf());
     }
-    // Tokens for outside services stay out: set them again after a restore.
+    // Tokens for outside services stay out (everyone's): set them again after a restore.
     skip.push(home.join("config").join("secrets.toml"));
+    for person in std::fs::read_dir(home.join("users")).into_iter().flatten().flatten() {
+        skip.push(person.path().join("secrets.toml"));
+    }
     let staged = (|| {
         let files = stage_dir(home, Path::new(""), &stage, &skip, &mut notes)?;
         if let Some((path, backup)) = memory {

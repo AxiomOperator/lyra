@@ -436,17 +436,22 @@ pub fn take_request() -> bool {
 
 // ---- storage and timing
 
-fn path() -> Option<PathBuf> {
-    Some(crate::config::home()?.join("briefing").join("last.json"))
+fn path(user: &str) -> Option<PathBuf> {
+    if user == lyra_web::users::OWNER { Some(crate::config::home()?.join("briefing").join("last.json")) } else { Some(crate::context::user_dir(user)?.join("briefing").join("last.json")) }
 }
 
 /// The last briefing made (it survives restarts, so one isn't sent twice).
 pub fn last() -> Option<Briefing> {
-    serde_json::from_str(&std::fs::read_to_string(path()?).ok()?).ok()
+    last_for(lyra_web::users::OWNER)
 }
 
-pub fn save(b: &Briefing) {
-    if let Some(p) = path() {
+/// One person's last briefing.
+pub fn last_for(user: &str) -> Option<Briefing> {
+    serde_json::from_str(&std::fs::read_to_string(path(user)?).ok()?).ok()
+}
+
+pub fn save_for(user: &str, b: &Briefing) {
+    if let Some(p) = path(user) {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }

@@ -570,7 +570,7 @@ impl Caps {
         if crate::coding::settings().enabled {
             caps.push(crate::coding::capability());
         }
-        if crate::pmi::configured() {
+        if crate::pmi::anyone() {
             caps.extend(crate::pmi::capabilities());
         }
         if self.system.as_ref().is_some_and(|s| s.settings().enabled) {
@@ -770,7 +770,7 @@ impl Caps {
             if matches!(c.source.as_str(), "system" | "coding") || c.name == "fleet_run" {
                 return json!({ "error": "machines, system tools and coding agents are for admins" }).to_string();
             }
-            if matches!(c.source.as_str(), "goals" | "routines" | "pmi") || c.name == "working_memory" {
+            if matches!(c.source.as_str(), "goals" | "routines") || c.name == "working_memory" {
                 return json!({ "error": format!("{} isn't set up for your account yet", c.name) }).to_string();
             }
         }

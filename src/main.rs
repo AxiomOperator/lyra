@@ -682,7 +682,10 @@ impl App {
             let groups: Vec<String> = caps.groups.keys().cloned().collect();
             env.fleet = agents::fleet_mention(&content, &groups);
         }
+        let owner = self.owner.clone();
         thread::spawn(move || {
+            // This turn works in its person's PMI account.
+            pmi::set_user(&owner);
             let mut history = history;
             // Evolved behavior: guidelines, the matching workflow, the round limit.
             let mut max_rounds = 8;
@@ -1472,9 +1475,10 @@ impl App {
             "/diagnose" => self.diagnose_command(arg),
             "/coding" => Ok(coding::describe()),
             "/briefing" => self.briefing_command(arg),
-            "/pmi" => pmi::command(arg),
-            "/tasks" => pmi::tasks_text(arg),
-            "/task" => pmi::task_command(arg),
+            // In the person's own PMI account.
+            "/pmi" => pmi::as_user(&self.owner.clone(), || pmi::command(arg)),
+            "/tasks" => pmi::as_user(&self.owner.clone(), || pmi::tasks_text(arg)),
+            "/task" => pmi::as_user(&self.owner.clone(), || pmi::task_command(arg)),
             _ => Err(format!("unknown command {name} — try /help")),
         }
     }
@@ -2874,6 +2878,8 @@ const LESSON_GATE: &str = "Does this conversation teach the assistant a reusable
 fn member_may(name: &str, arg: &str) -> bool {
     match name {
         "/help" | "/skills" | "/history" | "/outcome" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" => true,
+        // Their own PMI account.
+        "/pmi" | "/tasks" | "/task" => true,
         // Which model is in use; changing it is the server's.
         "/model" => arg.trim().is_empty(),
         _ => false,
@@ -2888,7 +2894,7 @@ mod member_tests {
             assert!(super::member_may(ok, ""), "{ok}");
         }
         assert!(super::member_may("/model", "") && !super::member_may("/model", "other-model"), "look, not change");
-        for no in ["/machines", "/devices", "/users", "/backup", "/caps", "/approve", "/evolve", "/plan", "/agent", "/memory", "/goal", "/routine", "/pmi", "/tasks", "/coding", "/diagnose"] {
+        for no in ["/machines", "/devices", "/users", "/backup", "/caps", "/approve", "/evolve", "/plan", "/agent", "/memory", "/goal", "/routine", "/coding", "/diagnose"] {
             assert!(!super::member_may(no, "x"), "{no}");
         }
     }
@@ -3871,7 +3877,7 @@ fn open_agents(config: &Config, runtime: &tokio::runtime::Handle) -> (Option<Arc
                 let _ = a.registry.create(p, "installed with coding agents (Claude Code, OpenCode)");
             }
             // PMI comes with a Project Manager to work in it (once: deleting it sticks).
-            if pmi::configured() && a.registry.get("project-manager").is_none() && a.registry.versions("project-manager").is_ok_and(|v| v.is_empty())
+            if pmi::anyone() && a.registry.get("project-manager").is_none() && a.registry.versions("project-manager").is_ok_and(|v| v.is_empty())
                 && let Some(p) = lyra_agents::templates::template("project-manager")
             {
                 let _ = a.registry.create(p, "installed with PMI");
