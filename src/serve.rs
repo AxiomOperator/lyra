@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use lyra_web::{Hub, Inbound, Notification, Who};
+use lyra_web::{Hub, Inbound, Notification, To, Who};
 use serde_json::{Value, json};
 
 use crate::{App, Level, Message, StreamEvent};
@@ -137,6 +137,7 @@ fn alert(app: &mut App, hub: &Hub, machine: &str, text: &str, problem: bool) {
             tag: format!("health-{}", machine.to_lowercase()),
             approval: None,
             url: None, actions: vec![], reference: None,
+        to: To::Admins,
         });
     }
 }
@@ -521,6 +522,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                             tag: format!("signin-{email}"),
                             approval: None,
                             url: None, actions: vec![], reference: None,
+                        to: To::Admins,
                         });
                     }
                     everyone = true;
@@ -541,6 +543,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                             tag: format!("pair-{}", p.code),
                             approval: None,
                             url: None, actions: vec![], reference: None,
+                        to: To::Admins,
                         });
                     }
                 }
@@ -727,12 +730,14 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         });
                     }
                     // Only a routine allowed to change things asks the user.
-                    if let Some(n) = note.filter(|_| may_change) {
+                    if let Some(mut n) = note.filter(|_| may_change) {
+                        n.to = To::User(c.app.owner.clone());
                         hub.notify(n);
                     }
                     continue;
                 }
-                if !notify || hub.someone_watching() {
+                // Their own conversation, and only when they aren't looking at lyra.
+                if !notify || hub.watching(&c.app.owner) {
                     continue;
                 }
                 // With several conversations, say which one.
@@ -742,10 +747,11 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 };
                 if done {
                     let body = c.app.messages.iter().rev().find(|m| m.role == "assistant").map(|m| preview(&m.content)).unwrap_or_default();
-                    hub.notify(Notification { title: about("lyra replied".into()), body, tag: format!("reply-{}", c.app.session_id), approval: None, url: None, actions: vec![], reference: None });
+                    hub.notify(Notification { title: about("lyra replied".into()), body, tag: format!("reply-{}", c.app.session_id), approval: None, url: None, actions: vec![], reference: None, to: To::User(c.app.owner.clone()) });
                 }
                 if let Some(mut n) = note {
                     n.title = about(n.title);
+                    n.to = To::User(c.app.owner.clone());
                     hub.notify(n);
                 }
             }
@@ -756,7 +762,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 let head = crate::diagnose::headline(&d.summary);
                 convs[0].app.log(if d.state == "done" { Level::Agent } else { Level::Error }, format!("🔎 {}: {} — {head}", d.machine, d.problem));
                 if crate::health::settings().notify && d.state == "done" {
-                    hub.notify(Notification { title: format!("🔎 {}: {}", d.machine, d.problem), body: head, tag: format!("diag-{}", d.key), approval: None, url: None, actions: vec![], reference: None });
+                    hub.notify(Notification { title: format!("🔎 {}: {}", d.machine, d.problem), body: head, tag: format!("diag-{}", d.key), approval: None, url: None, actions: vec![], reference: None, to: To::Admins });
                 }
             }
             last_diag = Instant::now() - Duration::from_secs(60);
@@ -813,6 +819,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     tag: format!("routine-{}", r.name),
                     approval: None,
                     url: None, actions: vec![], reference: None,
+                to: To::Admins,
                 });
             }
             crate::routines::record(&r.name, run);
@@ -890,6 +897,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     url: Some("/?page=tasks".into()),
                     actions: vec![("done".into(), "Done".into()), ("snooze1h".into(), "In 1 hour".into()), ("tomorrow".into(), "Tomorrow".into())],
                     reference: Some(n.task.clone()),
+                    to: To::User(convs[0].app.owner.clone()),
                 });
             }
             if changed {
@@ -905,7 +913,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 }
                 Err(e) => {
                     convs[0].app.log(Level::Error, format!("reminder {action} failed: {e}"));
-                    hub.notify(Notification { title: "Couldn't update the task".into(), body: e, tag: format!("nag-{task}"), approval: None, url: Some("/?page=tasks".into()), actions: vec![], reference: None });
+                    hub.notify(Notification { title: "Couldn't update the task".into(), body: e, tag: format!("nag-{task}"), approval: None, url: Some("/?page=tasks".into()), actions: vec![], reference: None, to: To::User(convs[0].app.owner.clone()) });
                 }
             }
         }
@@ -947,6 +955,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     url: Some("/?page=status".into()),
                     actions: vec![],
                     reference: None,
+                    to: To::User(convs[0].app.owner.clone()),
                 });
             }
             brief_view = json!(b);
@@ -1026,6 +1035,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                                 tag: "status".into(),
                                 approval: None,
                                 url: None, actions: vec![], reference: None,
+                            to: To::Admins,
                             });
                         }
                     }
@@ -1605,8 +1615,9 @@ fn notification(event: &StreamEvent) -> Option<Notification> {
             tag: format!("approval-{}", r.id),
             approval: Some(r.id),
             url: None, actions: vec![], reference: None,
+        to: To::Admins,
         }),
-        StreamEvent::Error(e) => Some(Notification { title: "lyra hit an error".into(), body: preview(e), tag: "error".into(), approval: None, url: None, actions: vec![], reference: None }),
+        StreamEvent::Error(e) => Some(Notification { title: "lyra hit an error".into(), body: preview(e), tag: "error".into(), approval: None, url: None, actions: vec![], reference: None, to: To::Admins }),
         StreamEvent::PlanFinished(result) => Some(Notification {
             title: "Plan update".into(),
             body: match result {
@@ -1616,6 +1627,7 @@ fn notification(event: &StreamEvent) -> Option<Notification> {
             tag: "plan".into(),
             approval: None,
             url: None, actions: vec![], reference: None,
+        to: To::Admins,
         }),
         _ => None,
     }

@@ -144,7 +144,17 @@ struct MachineConn {
     pending: Pending,
 }
 
-/// A notification for every device with push turned on.
+/// Who a notification is for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum To {
+    Everyone,
+    /// Admins' devices (the server's health, machines, pairing, sign-ins).
+    Admins,
+    /// One user's devices (their replies, approvals, reminders).
+    User(String),
+}
+
+/// A notification for the devices (of `to`) with push turned on.
 #[derive(Debug, Clone)]
 pub struct Notification {
     pub title: String,
@@ -156,6 +166,7 @@ pub struct Notification {
     /// Other buttons (id, label), sent back with `reference` to `/api/action`.
     pub actions: Vec<(String, String)>,
     pub reference: Option<String>,
+    pub to: To,
     /// The app page a tap opens ("/?page=status"); the chat when none.
     pub url: Option<String>,
 }
@@ -174,8 +185,8 @@ struct Shared {
     conns: Mutex<HashMap<u64, ConnState>>,
     seq: AtomicU64,
     inbound: std::sync::mpsc::Sender<Inbound>,
-    /// Connections and when each last said it was visible on screen.
-    visible: Mutex<HashMap<u64, Option<Instant>>>,
+    /// Connections: whose, and when each last said it was visible on screen.
+    visible: Mutex<HashMap<u64, (String, Option<Instant>)>>,
     next_conn: AtomicU64,
     /// Pushes sent and failed since the last look (lyra's Status), and the last error.
     push_sent: AtomicU64,
@@ -476,7 +487,12 @@ impl Hub {
     /// Whether someone is looking at lyra right now (a device has it open
     /// and on screen): then there's no need to notify.
     pub fn someone_watching(&self) -> bool {
-        self.shared.visible.lock().unwrap_or_else(|e| e.into_inner()).values().any(|v| v.is_some_and(|t| t.elapsed().as_secs() < 90))
+        self.shared.visible.lock().unwrap_or_else(|e| e.into_inner()).values().any(|v| v.1.is_some_and(|t| t.elapsed().as_secs() < 90))
+    }
+
+    /// Whether this user has lyra open and on screen somewhere.
+    pub fn watching(&self, user: &str) -> bool {
+        self.shared.visible.lock().unwrap_or_else(|e| e.into_inner()).values().any(|v| v.0 == user && v.1.is_some_and(|t| t.elapsed().as_secs() < 90))
     }
 
     /// Push a notification to every device that allowed them (in the
@@ -488,6 +504,14 @@ impl Hub {
                 "actions": n.actions.iter().map(|(a, t)| json!({ "action": a, "title": t })).collect::<Vec<_>>(), "ref": n.reference }).to_string();
             for d in shared.devices.list() {
                 let Some(sub) = &d.push else { continue };
+                let mine = match &n.to {
+                    To::Everyone => true,
+                    To::Admins => shared.users.who(d.user.as_deref()).is_some_and(|w| w.admin),
+                    To::User(u) => d.user.as_deref() == Some(u.as_str()) && shared.users.who(Some(u)).is_some(),
+                };
+                if !mine {
+                    continue;
+                }
                 match push::send(&shared.vapid, &shared.subject, sub, payload.as_bytes()) {
                     push::Sent::Ok => {
                         shared.push_sent.fetch_add(1, Ordering::Relaxed);
@@ -928,7 +952,7 @@ async fn snapshot(s: &Shared, d: &Device, who: &Who, session: &str) -> Option<Va
 async fn connection(s: Arc<Shared>, d: Device, who: Who, session: String, mut socket: WebSocket) {
     let conn = s.next_conn.fetch_add(1, Ordering::SeqCst);
     let (moved_tx, mut moved) = tokio::sync::mpsc::unbounded_channel::<String>();
-    s.visible.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, Some(Instant::now()));
+    s.visible.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, (who.user.clone(), Some(Instant::now())));
     s.online.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, (d.id.clone(), d.name.clone()));
     // Subscribe before asking for the snapshot, so nothing falls in between.
     let mut updates = s.out.subscribe();
@@ -1001,7 +1025,7 @@ async fn connection(s: Arc<Shared>, d: Device, who: Who, session: String, mut so
                     }
                     "visible" => {
                         let at = (v["visible"] == true).then(Instant::now);
-                        s.visible.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, at);
+                        s.visible.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, (who.user.clone(), at));
                     }
                     "ping" => {
                         let _ = socket.send(Message::Text(json!({ "type": "pong" }).to_string().into())).await;
