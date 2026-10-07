@@ -832,9 +832,10 @@ impl Sse {
     }
 }
 
-/// Follow PMI's live events for as long as lyra runs (a thread): reconnects
-/// with a growing pause, and a connection is renewed every 10 minutes so a
-/// silent one can't hang on.
+/// Follow PMI's live events for as long as lyra runs (a thread). PMI ends a
+/// stream after a minute: that's reconnected at once, quietly. A connection
+/// that fails is reported and retried with a growing pause; one is renewed
+/// after 10 minutes at most, so a silent one can't hang on.
 pub fn follow(tx: std::sync::mpsc::Sender<Event>) {
     use std::io::BufRead;
     let mut pause = 5;
@@ -867,9 +868,17 @@ pub fn follow(tx: std::sync::mpsc::Sender<Event>) {
             }
             Ok(())
         })();
-        let _ = tx.send(Event::Live(false));
-        pause = if connected.is_ok() { 5 } else { (pause * 2).min(300) };
-        std::thread::sleep(Duration::from_secs(pause));
+        match connected {
+            Ok(()) => {
+                pause = 5;
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            Err(_) => {
+                let _ = tx.send(Event::Live(false));
+                std::thread::sleep(Duration::from_secs(pause));
+                pause = (pause * 2).min(300);
+            }
+        }
     }
 }
 

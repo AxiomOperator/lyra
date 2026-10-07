@@ -758,12 +758,13 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 crate::pmi::Event::Live(live) => {
                     if live != pmi_state.live {
                         pmi_state.live = live;
-                        convs[0].app.log(Level::Info, if live { "PMI: following its live updates".to_string() } else { "PMI: live updates dropped, reconnecting".to_string() });
+                        convs[0].app.log(Level::Info, if live { "PMI: following its live updates".to_string() } else { "PMI: can't follow its live updates, retrying".to_string() });
                         pmi_view = json!(pmi_state);
                         everyone = true;
-                    }
-                    if live {
-                        pmi_due = Some(Instant::now());
+                        // Back after an outage: what changed meanwhile.
+                        if live {
+                            pmi_due = Some(Instant::now());
+                        }
                     }
                 }
                 crate::pmi::Event::Changed(areas) => {
