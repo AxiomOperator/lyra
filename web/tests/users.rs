@@ -17,7 +17,7 @@ fn devices_act_as_their_user() {
     let (tx, inbound) = std::sync::mpsc::channel();
     let settings = Settings { listen: "127.0.0.1:0".into(), ..Settings::default() };
     let hub = Hub::start(rt.handle(), &settings, &dir, tx).unwrap();
-    let dana = User { id: "oid-dana".into(), name: "Dana".into(), email: "dana@fbcad.org".into(), tenant: "t".into(), role: Role::Member, status: Status::Active, created: chrono::Utc::now(), last_seen: None };
+    let dana = User { id: "oid-dana".into(), name: "Dana".into(), email: "dana@fbcad.org".into(), tenant: "t".into(), oid: "oid-dana".into(), role: Role::Member, status: Status::Active, created: chrono::Utc::now(), last_seen: None };
     Users::open(&dir).upsert(dana).unwrap();
     let member = devices.pair(&devices.new_code_for(5, Some("oid-dana")).unwrap(), "Dana's phone", "device").unwrap().1;
     // A pretend app loop: says who each snapshot was for.

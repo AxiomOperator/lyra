@@ -512,6 +512,19 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     extra = hub_status(hub, node_build.as_deref());
                     everyone = true;
                 }
+                Inbound::SignIn { name, email } => {
+                    convs[0].app.log(Level::Agent, format!("👤 {name} <{email}> signed in with Microsoft and waits to be let in: /users approve {email}"));
+                    if notify {
+                        hub.notify(Notification {
+                            title: format!("{name} wants to use lyra"),
+                            body: format!("{email} signed in with Microsoft. Let them in on the Users page, or /users approve {email}."),
+                            tag: format!("signin-{email}"),
+                            approval: None,
+                            url: None, actions: vec![], reference: None,
+                        });
+                    }
+                    everyone = true;
+                }
                 Inbound::DevicesChanged => {
                     extra = hub_status(hub, node_build.as_deref());
                     everyone = true;

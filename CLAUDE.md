@@ -48,7 +48,7 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
 - Runtime files live in `~/.lyra` (`$LYRA_HOME`): `config/config.toml`, `config/secrets.toml` (tokens, 0600, not backed up), `context/`
   (SOUL/USER/AGENT.md), `memory/lance/` (LanceDB), `plans/plans.db`, `skills/<name>.md` (one Markdown file per skill) + `skills/ledger.db`,
   `evolution/evolution.db`, `config/behavior.toml`, `workflows/<name>.toml`, `tools/<name>.toml` (evolved state),
-  `sessions/<id>.json` (saved conversations, `lyra -c` / `-r`), `briefing/last.json` (the last daily briefing), `web/` (paired devices, VAPID key),
+  `sessions/<id>.json` (saved conversations, `lyra -c` / `-r`), `briefing/last.json` (the last daily briefing), `web/` (paired devices, users, VAPID key),
   `agents/<name>.toml` (one file per subagent) + `agents/agents.db` + `agents/index/` (routing, LanceDB).
   `src/migrate.rs` brings older layouts up to date on startup.
 

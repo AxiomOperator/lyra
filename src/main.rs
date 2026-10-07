@@ -3249,6 +3249,7 @@ usage: lyra [command] [options]
   service                 install a systemd user service that runs `lyra serve`
   node [pair|service]     let a lyra server work on this machine (see lyra node --help)
   pmi [token]             the PMI connection; `lyra pmi token` saves its access token (read from stdin)
+  secret <service>        save a secret (read from stdin, not echoed): `lyra secret entra` for Microsoft sign-in
   connect [--pair <code>] the terminal UI for a lyra server (see lyra connect --help);
                           plain `lyra` opens it on a machine that has no lyra of its own
 
@@ -3260,6 +3261,42 @@ usage: lyra [command] [options]
 
 Conversations are saved in ~/.lyra/sessions/ ($LYRA_HOME/sessions).";
 
+/// A secret typed (not shown) or piped in.
+fn read_secret(prompt: &str) -> String {
+    use std::io::{BufRead, IsTerminal};
+    let tty = std::io::stdin().is_terminal();
+    let echo = |on: bool| {
+        let _ = std::process::Command::new("stty").arg(if on { "echo" } else { "-echo" }).stdin(std::process::Stdio::inherit()).status();
+    };
+    if tty {
+        eprint!("{prompt}, then Enter: ");
+        echo(false);
+    }
+    let mut line = String::new();
+    let _ = std::io::stdin().lock().read_line(&mut line);
+    if tty {
+        echo(true);
+        eprintln!();
+    }
+    line.trim().to_string()
+}
+
+/// `lyra secret <service>`: a token or client secret into secrets.toml.
+fn secret_cli(args: &[String]) {
+    let Some(service) = args.first().filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')) else {
+        eprintln!("usage: lyra secret <service>   (e.g. entra: the Microsoft sign-in app's client secret)");
+        std::process::exit(2);
+    };
+    let value = read_secret(&format!("The secret for {service}"));
+    match secrets::set_token(service, &value) {
+        Ok(()) => println!("{} for {service} (readable by this user only, not backed up){}", if value.is_empty() { "removed the secret" } else { "saved the secret" }, if service == "entra" { "; restart lyra serve to use it" } else { "" }),
+        Err(e) => {
+            eprintln!("lyra secret: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// `lyra pmi [token]`: the token is read from stdin, so it's never in the shell history.
 fn pmi_cli(args: &[String]) {
     if let Ok(config) = Config::load() {
@@ -3268,21 +3305,7 @@ fn pmi_cli(args: &[String]) {
     let result = match args.first().map(String::as_str) {
         None | Some("status") => Ok(pmi::describe()),
         Some("token") => {
-            use std::io::{BufRead, IsTerminal};
-            let tty = std::io::stdin().is_terminal();
-            let echo = |on: bool| {
-                let _ = std::process::Command::new("stty").arg(if on { "echo" } else { "-echo" }).stdin(std::process::Stdio::inherit()).status();
-            };
-            if tty {
-                eprint!("PMI access token (Your account → Security in PMI), then Enter: ");
-                echo(false);
-            }
-            let mut line = String::new();
-            let _ = std::io::stdin().lock().read_line(&mut line);
-            if tty {
-                echo(true);
-                eprintln!();
-            }
+            let line = read_secret("PMI access token (Your account → Security in PMI)");
             pmi::command(&format!("token {}", line.trim()))
         }
         Some(other) => Err(format!("unknown: lyra pmi {other} (try lyra pmi or lyra pmi token)")),
@@ -3313,6 +3336,7 @@ fn main() {
         Some("connect") => return connect::main(&args[2..]),
         Some("mcp") => return mcp_server::main(&args[2..]),
         Some("pmi") => return pmi_cli(&args[2..]),
+        Some("secret") => return secret_cli(&args[2..]),
         // No lyra of its own here, but a paired terminal: open that.
         None if connect::configured() && !config::home().is_some_and(|h| h.join("config").join("config.toml").exists()) => return connect::main(&[]),
         _ => {}
@@ -3474,7 +3498,10 @@ fn serve_main(mut app: App, web: &lyra_web::Settings, rt: &tokio::runtime::Handl
         std::process::exit(1);
     };
     let (tx, rx) = mpsc::channel();
-    let hub = match lyra_web::Hub::start(rt, web, &dir, tx) {
+    // Microsoft sign-in's client secret, from the secrets file.
+    let mut web = web.clone();
+    web.entra.secret = secrets::token("entra");
+    let hub = match lyra_web::Hub::start(rt, &web, &dir, tx) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("lyra: {e}");

@@ -919,6 +919,48 @@ keep = 7
 The TUI's Session panel, `lyra connect`'s side panel and the app all show when the last
 backup was made.
 
+## Users: coworkers, each with their own lyra
+
+`lyra serve` can be shared. Each person has their own conversations, and only sees and
+resumes their own. They can't answer anyone else's approvals, and their files are theirs.
+There are two roles:
+- **Admins** can do everything, including machines, system tools, coding agents, devices,
+  backups, users, machine rules, agents and approving skills.
+- **Members** chat, search their own conversations, and use the shared models, skills and
+  agents. They never get the Operator or the Coder, and the tools themselves refuse them,
+  in Rust.
+
+Until each person has their own memories, goals, routines, briefing and PMI token, those stay
+the owner's, and a member's turns don't see them.
+
+The first user is the **owner**, an admin. Devices paired before users existed are theirs.
+`/users` lists everyone, and `/users approve|admin|member|disable <who>` changes someone.
+`/whoami` says who a conversation belongs to.
+
+**Signing in with Microsoft (Entra ID).** Coworkers sign in with their organization account,
+and anyone new waits until an admin lets them in. You get a push, then run `/users approve
+<email>`. Setting it up takes four steps:
+
+1. **Register the app.** In the Entra admin center, go to App registrations → New
+   registration. Name it "lyra", choose "Accounts in this organizational directory only", and
+   set the redirect URI to **Web** `https://<your lyra address>/auth/callback`.
+2. **Make a client secret.** Under Certificates & secrets → New client secret, then on the
+   server run `lyra secret entra` and paste the secret's **Value**.
+3. **Configure lyra.** Copy the Directory (tenant) ID and Application (client) ID into
+   `config.toml`:
+   ```toml
+   [web.entra]
+   tenant = "<directory (tenant) id>"
+   client_id = "<application (client) id>"
+   owner_email = "you@example.org"   # your first sign-in claims the owner account
+   ```
+4. **Restart `lyra serve`.** The app's sign-in screen then shows **Sign in with Microsoft**.
+   Pairing codes still work for terminals and machines.
+
+lyra asks only for `openid profile email`. It trades the code for an id_token directly with
+Microsoft over TLS, using PKCE and the client secret, and checks the token's tenant, audience,
+issuer, expiry and nonce. The device then gets its own token, as with pairing.
+
 ## Phones and browsers (`lyra serve`)
 
 `lyra serve` runs the same lyra (memory, skills, agents, plans, goals) without

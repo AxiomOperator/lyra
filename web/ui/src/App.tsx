@@ -395,6 +395,18 @@ function Pair({ onPaired, message }: { onPaired: (token: string) => void; messag
   const [name, setName] = useState(/iphone/i.test(ua) ? "iPhone" : /ipad/i.test(ua) ? "iPad" : /android/i.test(ua) ? "Android" : "Browser");
   const [error, setError] = useState(message ?? "");
   const [busy, setBusy] = useState(false);
+  // Microsoft sign-in, when the server has it: then pairing codes are the other way in.
+  const [entra, setEntra] = useState(false);
+  const [withCode, setWithCode] = useState(() => new URLSearchParams(location.search).has("pair"));
+  useEffect(() => {
+    void fetch("/api/auth")
+      .then((r) => r.json())
+      .then((b) => setEntra(!!b.entra))
+      .catch(() => {});
+  }, []);
+  const microsoft = () => {
+    location.href = `/auth/login?device=${encodeURIComponent(name)}`;
+  };
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -418,14 +430,31 @@ function Pair({ onPaired, message }: { onPaired: (token: string) => void; messag
       <Card className="w-full max-w-sm">
         <CardHeader className="items-center text-center">
           <img src="/icon-192.png" alt="" className="mx-auto mb-2 size-16 rounded-2xl" />
-          <CardTitle className="text-xl">Pair this device</CardTitle>
+          <CardTitle className="text-xl">{entra && !withCode ? "Sign in to lyra" : "Pair this device"}</CardTitle>
           <CardDescription>
-            On the computer running lyra, run <code className="rounded bg-muted px-1">lyra pair</code> (or <code className="rounded bg-muted px-1">lyra-pair</code> on the server) and enter the code it
-            shows, or scan its QR code.
+            {entra && !withCode ? (
+              "Use your organization's Microsoft account."
+            ) : (
+              <>
+                On the computer running lyra, run <code className="rounded bg-muted px-1">lyra pair</code> (or <code className="rounded bg-muted px-1">lyra-pair</code> on the server) and enter the code it
+                shows, or scan its QR code.
+              </>
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={submit} className="space-y-3">
+          {entra && !withCode && (
+            <div className="space-y-3">
+              <Button onClick={microsoft} className="h-11 w-full">
+                Sign in with Microsoft
+              </Button>
+              <button type="button" onClick={() => setWithCode(true)} className="w-full text-center text-muted-foreground text-sm hover:text-foreground">
+                Pair with a code instead
+              </button>
+              {error && <p className="text-center text-red-400 text-sm">{error}</p>}
+            </div>
+          )}
+          <form onSubmit={submit} className={cn("space-y-3", entra && !withCode && "hidden")}>
             <Input
               value={code}
               onChange={(e) => setCode(e.target.value)}
@@ -448,13 +477,73 @@ function Pair({ onPaired, message }: { onPaired: (token: string) => void; messag
   );
 }
 
+/** Signed in, but an admin hasn't let this account in yet: wait and look again. */
+function Waiting({ onIn, onOther }: { onIn: () => void; onOther: () => void }) {
+  useEffect(() => {
+    const look = () =>
+      void fetch("/api/me", { headers: { Authorization: "Bearer " + (loadToken() ?? "") } }).then((r) => {
+        if (r.ok) onIn();
+      });
+    const t = window.setInterval(look, 15000);
+    return () => window.clearInterval(t);
+  }, [onIn]);
+  return (
+    <div className="flex min-h-dvh items-center justify-center bg-background p-5 text-foreground">
+      <Card className="w-full max-w-sm text-center">
+        <CardHeader className="items-center">
+          <img src="/icon-192.png" alt="" className="mx-auto mb-2 size-16 rounded-2xl" />
+          <CardTitle className="text-xl">Almost there</CardTitle>
+          <CardDescription>You're signed in. An admin has to let you into lyra; this page opens by itself when they do.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <button type="button" onClick={onOther} className="text-muted-foreground text-sm hover:text-foreground">
+            Use another account
+          </button>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+/** Back from Microsoft: the device's token (or what went wrong) is in the fragment. */
+function fromSignIn(): { token?: string; error?: string } {
+  const h = new URLSearchParams(location.hash.slice(1));
+  const token = h.get("signed-in") ?? undefined;
+  const error = h.get("signin-error") ?? undefined;
+  if (token || error) history.replaceState(null, "", "/");
+  if (token) saveToken(token);
+  return { token, error };
+}
+
+const signIn = fromSignIn();
+
 export default function App() {
   const [token, setToken] = useState<string | null>(() => loadToken());
-  const [why, setWhy] = useState<string | undefined>();
+  const [why, setWhy] = useState<string | undefined>(signIn.error);
+  const [waiting, setWaiting] = useState(false);
   const unpaired = useCallback((message?: string) => {
+    // An account waiting for an admin keeps its token and waits.
+    if (message === "waiting") {
+      setWaiting(true);
+      setToken(null);
+      return;
+    }
     setWhy(message);
     setToken(null);
   }, []);
+  if (waiting)
+    return (
+      <Waiting
+        onIn={() => {
+          setWaiting(false);
+          setToken(loadToken());
+        }}
+        onOther={() => {
+          saveToken(null);
+          setWaiting(false);
+        }}
+      />
+    );
   if (!token) return <Pair onPaired={setToken} message={why} />;
   return (
     <LyraProvider token={token} onUnpaired={unpaired}>

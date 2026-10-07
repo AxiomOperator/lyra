@@ -162,6 +162,11 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
               onUnpaired("This device isn't paired any more. Pair it again.");
               return;
             }
+            // Signed in, not let in yet (or turned off): wait for an admin.
+            if (r.status === 403) {
+              onUnpaired("waiting");
+              return;
+            }
             setBanner(`Can't reach lyra — retrying in ${Math.round(wait / 1000)}s`);
             timer = window.setTimeout(connect, wait);
           })

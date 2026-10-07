@@ -39,6 +39,9 @@ pub struct User {
     /// Their Microsoft tenant.
     #[serde(default)]
     pub tenant: String,
+    /// Their Microsoft (Entra) object id, once they've signed in with it.
+    #[serde(default)]
+    pub oid: String,
     pub role: Role,
     pub status: Status,
     pub created: DateTime<Utc>,
@@ -100,7 +103,7 @@ impl Users {
         if !all.is_empty() {
             return Ok(false);
         }
-        all.push(User { id: OWNER.into(), name: name.into(), email: String::new(), tenant: String::new(), role: Role::Admin, status: Status::Active, created: Utc::now(), last_seen: None });
+        all.push(User { id: OWNER.into(), name: name.into(), email: String::new(), tenant: String::new(), oid: String::new(), role: Role::Admin, status: Status::Active, created: Utc::now(), last_seen: None });
         self.save(&all).map(|_| true)
     }
 
@@ -154,15 +157,35 @@ impl Users {
         (u.status == Status::Active).then(|| Who::from(&u))
     }
 
-    /// A user's id changes when their Microsoft sign-in claims the owner placeholder.
-    pub fn rename_id(&self, from: &str, to: &str) -> Result<(), String> {
+    /// Someone who signed in with Microsoft: the user they are (their details
+    /// refreshed), the owner if it's the owner's email and the owner hasn't
+    /// signed in yet, or a new member waiting for an admin.
+    pub fn signed_in(&self, oid: &str, tenant: &str, name: &str, email: &str, owner_email: &str) -> Result<User, String> {
         let mut all = self.list();
-        if all.iter().any(|u| u.id == to) {
-            return Err(format!("a user {to} exists already"));
+        let is_owner_email = !owner_email.trim().is_empty() && email.eq_ignore_ascii_case(owner_email.trim());
+        let i = match all.iter().position(|u| u.oid == oid) {
+            Some(i) => i,
+            None => match all.iter().position(|u| u.id == OWNER && u.oid.is_empty()).filter(|_| is_owner_email) {
+                Some(i) => i,
+                None => {
+                    all.push(User { id: oid.into(), name: name.into(), email: email.into(), tenant: tenant.into(), oid: oid.into(), role: Role::Member, status: Status::Pending, created: Utc::now(), last_seen: None });
+                    all.len() - 1
+                }
+            },
+        };
+        let u = &mut all[i];
+        u.oid = oid.into();
+        u.tenant = tenant.into();
+        if !name.is_empty() {
+            u.name = name.into();
         }
-        let u = all.iter_mut().find(|u| u.id == from).ok_or_else(|| format!("no user {from}"))?;
-        u.id = to.into();
-        self.save(&all)
+        if !email.is_empty() {
+            u.email = email.into();
+        }
+        u.last_seen = Some(Utc::now());
+        let found = u.clone();
+        self.save(&all)?;
+        Ok(found)
     }
 }
 
@@ -179,7 +202,7 @@ mod tests {
         assert!(users.ensure_owner("Garrett").unwrap());
         assert!(!users.ensure_owner("again").unwrap());
         assert_eq!(users.who(None).unwrap(), Who { user: OWNER.into(), name: "Garrett".into(), admin: true });
-        let dana = User { id: "oid-d".into(), name: "Dana".into(), email: "dana@fbcad.org".into(), tenant: "t".into(), role: Role::Member, status: Status::Pending, created: Utc::now(), last_seen: None };
+        let dana = User { id: "oid-d".into(), name: "Dana".into(), email: "dana@fbcad.org".into(), tenant: "t".into(), oid: "oid-d".into(), role: Role::Member, status: Status::Pending, created: Utc::now(), last_seen: None };
         users.upsert(dana).unwrap();
         assert!(users.who(Some("oid-d")).is_none(), "pending can't sign in");
         users.update("DANA@fbcad.org", None, Some(Status::Active)).unwrap();
@@ -188,7 +211,14 @@ mod tests {
         users.update("dana", Some(Role::Admin), None).unwrap();
         users.update("owner", None, Some(Status::Disabled)).unwrap();
         assert!(users.who(None).is_none(), "disabled can't");
-        users.rename_id("owner", "oid-g").unwrap();
-        assert_eq!(users.get("oid-g").unwrap().name, "Garrett");
+        users.update("owner", None, Some(Status::Active)).unwrap();
+        // The owner's Microsoft sign-in claims the owner; anyone else waits.
+        let stranger = users.signed_in("oid-x", "t", "Mallory", "mallory@fbcad.org", "garrett@fbcad.org").unwrap();
+        assert_eq!((stranger.id.as_str(), stranger.status, stranger.role), ("oid-x", Status::Pending, Role::Member));
+        let me = users.signed_in("oid-g", "t", "Garrett Post", "Garrett@fbcad.org", "garrett@fbcad.org").unwrap();
+        assert_eq!((me.id.as_str(), me.oid.as_str(), me.role, me.name.as_str()), (OWNER, "oid-g", Role::Admin, "Garrett Post"), "the owner keeps their id");
+        assert_eq!(users.signed_in("oid-g", "t", "Garrett Post", "garrett@fbcad.org", "garrett@fbcad.org").unwrap().id, OWNER, "and is found again");
+        let again = users.signed_in("oid-y", "t", "Eve", "garrett@fbcad.org", "garrett@fbcad.org").unwrap();
+        assert_eq!(again.status, Status::Pending, "the owner can only be claimed once");
     }
 }

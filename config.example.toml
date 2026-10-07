@@ -262,6 +262,13 @@ currency = "$"
 # listen = "127.0.0.1:8484"     # the proxy's upstream; use the LAN IP if the proxy runs elsewhere
 # public_url = ""               # e.g. "https://lyra.example.com" (needed to install the app and for notifications)
 # notify = true                 # push notifications when no device has lyra open
+#
+# Signing in with Microsoft (see README, "Users"); the client secret goes in
+# config/secrets.toml with `lyra secret entra`.
+# [web.entra]
+# tenant = "<directory (tenant) id>"
+# client_id = "<application (client) id>"
+# owner_email = "you@example.org"   # this account's first sign-in is the owner (admin)
 
 # Web search (see README): web_search asks a SearXNG instance (JSON format on),
 # web_fetch reads a page as text. Both only read; replies cite their sources.

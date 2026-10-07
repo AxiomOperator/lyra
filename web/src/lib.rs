@@ -5,6 +5,7 @@
 //! comes from the reverse proxy in front (Zoraxy, Caddy, nginx).
 
 pub mod devices;
+pub mod oidc;
 pub mod users;
 pub mod uploads;
 pub mod push;
@@ -43,11 +44,13 @@ pub struct Settings {
     /// The `lyra-node` program handed out at /download/lyra-node (default:
     /// `lyra-node` next to the running lyra).
     pub node_binary: String,
+    /// `[web.entra]`: signing in with Microsoft.
+    pub entra: oidc::Entra,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { listen: "127.0.0.1:8484".into(), public_url: String::new(), notify: true, node_binary: String::new() }
+        Self { listen: "127.0.0.1:8484".into(), public_url: String::new(), notify: true, node_binary: String::new(), entra: oidc::Entra::default() }
     }
 }
 
@@ -77,6 +80,8 @@ pub enum Inbound {
     PairRequested(PairRequest),
     /// Something to say in the conversation (who approved a pairing, …).
     Note(String),
+    /// Someone new signed in with Microsoft and waits for an admin.
+    SignIn { name: String, email: String },
     /// A device asks for a list (sessions, devices, activity…) for a page.
     Get { what: String, arg: Value, session: String, who: Who, reply: oneshot::Sender<Value> },
 }
@@ -183,6 +188,9 @@ struct Shared {
     requests: Mutex<Vec<PairRequest>>,
     node_binary: std::path::PathBuf,
     public_url: String,
+    entra: oidc::Entra,
+    /// Microsoft sign-ins on their way, by state.
+    logins: Mutex<HashMap<String, oidc::Pending>>,
 }
 
 /// The running server, as the app sees it.
@@ -247,6 +255,8 @@ impl Hub {
                 std::path::PathBuf::from(settings.node_binary.trim())
             },
             public_url: settings.public_url.trim_end_matches('/').to_string(),
+            entra: settings.entra.clone(),
+            logins: Mutex::new(HashMap::new()),
         });
         let addr: SocketAddr = settings.listen.parse().map_err(|e| format!("[web] listen {:?}: {e}", settings.listen))?;
         let listener = rt.block_on(tokio::net::TcpListener::bind(addr)).map_err(|e| format!("can't listen on {addr}: {e}"))?;
@@ -508,6 +518,9 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/download/lyra-node.exe.sha256", get(download_node_exe_sha))
         .route("/install.ps1", get(install_ps1))
         .route("/api/me", get(me))
+        .route("/api/auth", get(auth_info))
+        .route("/auth/login", get(auth_login))
+        .route("/auth/callback", get(auth_callback))
         .route("/api/vapid", get(vapid_key))
         .route("/api/push", post(set_push))
         .route("/api/test-push", post(test_push))
@@ -615,6 +628,105 @@ async fn me(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Response {
     match device(&s, &headers) {
         Ok((d, who)) => Json(json!({ "id": d.id, "name": d.name, "push": d.push.is_some(), "user": who })).into_response(),
         Err(r) => *r,
+    }
+}
+
+/// How this server lets people in: Microsoft sign-in when it's set up.
+async fn auth_info(State(s): State<Arc<Shared>>) -> Response {
+    Json(json!({ "entra": s.entra.ready() })).into_response()
+}
+
+#[derive(Deserialize)]
+struct LoginQuery {
+    #[serde(default)]
+    device: String,
+}
+
+fn redirect(to: &str) -> Response {
+    (StatusCode::FOUND, [(header::LOCATION, to.to_string()), (header::CACHE_CONTROL, "no-store".to_string())]).into_response()
+}
+
+/// Back to the app with a message for the sign-in screen.
+fn signin_error(text: &str) -> Response {
+    redirect(&format!("/#signin-error={}", oidc::encode(text)))
+}
+
+/// Off to Microsoft.
+async fn auth_login(State(s): State<Arc<Shared>>, Query(q): Query<LoginQuery>) -> Response {
+    if !s.entra.ready() || s.public_url.is_empty() {
+        return signin_error("Microsoft sign-in isn't set up on this server ([web.entra] and public_url)");
+    }
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let (state, verifier, nonce) = (devices::random(32, alphabet), devices::random(64, alphabet), devices::random(32, alphabet));
+    let device: String = q.device.trim().chars().take(60).collect();
+    {
+        let mut logins = s.logins.lock().unwrap_or_else(|e| e.into_inner());
+        logins.retain(|_, p| p.created.elapsed() < std::time::Duration::from_secs(600));
+        if logins.len() > 200 {
+            return signin_error("too many sign-ins at once: try again in a few minutes");
+        }
+        logins.insert(state.clone(), oidc::Pending { verifier: verifier.clone(), nonce: nonce.clone(), device: if device.is_empty() { "browser".into() } else { device }, created: Instant::now() });
+    }
+    let callback = format!("{}/auth/callback", s.public_url);
+    redirect(&oidc::authorize_url(&s.entra, &callback, &state, &nonce, &verifier))
+}
+
+#[derive(Deserialize)]
+struct CallbackQuery {
+    #[serde(default)]
+    code: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    error_description: String,
+}
+
+/// Back from Microsoft: who it is, then a device token for this browser.
+async fn auth_callback(State(s): State<Arc<Shared>>, Query(q): Query<CallbackQuery>) -> Response {
+    let Some(pending) = s.logins.lock().unwrap_or_else(|e| e.into_inner()).remove(&q.state) else {
+        return signin_error("that sign-in has expired: try again");
+    };
+    if pending.created.elapsed() > std::time::Duration::from_secs(600) {
+        return signin_error("that sign-in has expired: try again");
+    }
+    if q.code.is_empty() {
+        return signin_error(if q.error_description.is_empty() { "Microsoft didn't sign you in" } else { &q.error_description });
+    }
+    let callback = format!("{}/auth/callback", s.public_url);
+    let form = oidc::token_form(&s.entra, &q.code, &callback, &pending.verifier);
+    let answer = async {
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build().map_err(|e| e.to_string())?;
+        let resp = client.post(oidc::token_url(&s.entra)).header(header::CONTENT_TYPE, "application/x-www-form-urlencoded").body(form).send().await.map_err(|e| format!("Microsoft isn't answering: {e}"))?;
+        let ok = resp.status().is_success();
+        let body: Value = serde_json::from_str(&resp.text().await.map_err(|e| e.to_string())?).unwrap_or(json!({}));
+        if !ok {
+            return Err(body["error_description"].as_str().unwrap_or("Microsoft refused the sign-in").lines().next().unwrap_or("").to_string());
+        }
+        body["id_token"].as_str().map(str::to_string).ok_or_else(|| "Microsoft sent no id_token".to_string())
+    }
+    .await;
+    let id_token = match answer {
+        Ok(t) => t,
+        Err(e) => return signin_error(&e),
+    };
+    let person = match oidc::check(&s.entra, &id_token, &pending.nonce, chrono::Utc::now().timestamp()) {
+        Ok(p) => p,
+        Err(e) => return signin_error(&e),
+    };
+    let user = match s.users.signed_in(&person.oid, &person.tenant, &person.name, &person.email, &s.entra.owner_email) {
+        Ok(u) => u,
+        Err(e) => return signin_error(&e),
+    };
+    if user.status == users::Status::Disabled {
+        return signin_error("your lyra account is turned off: ask an admin");
+    }
+    if user.status == users::Status::Pending {
+        let _ = s.inbound.send(Inbound::SignIn { name: user.name.clone(), email: user.email.clone() });
+    }
+    match s.devices.add(&format!("{} · {}", user.name, pending.device), "device", Some(&user.id)) {
+        // The token rides in the fragment: it never reaches a server log.
+        Ok((_, token)) => redirect(&format!("/#signed-in={token}")),
+        Err(e) => signin_error(&e),
     }
 }
 
