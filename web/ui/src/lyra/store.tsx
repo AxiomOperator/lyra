@@ -4,7 +4,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { saveToken } from "./token";
-import type { ChatMessage, Command, Status, ThisDevice } from "./types";
+import type { ChatMessage, Command, Me, Status, ThisDevice } from "./types";
 
 /** The app's own version, stamped into index.html by the server. */
 export const APP_VERSION = document.querySelector<HTMLMetaElement>('meta[name="lyra-version"]')?.content ?? "dev";
@@ -16,12 +16,14 @@ interface State {
   status: Status;
   commands: Command[];
   device: ThisDevice | null;
+  /** Whose device this is, and whether they're an admin. */
+  user: Me | null;
   serverVersion: string;
 }
 
 type Update = { type: string; seq?: number; [k: string]: unknown };
 
-const empty: State = { ready: false, seq: 0, messages: [], status: {}, commands: [], device: null, serverVersion: "" };
+const empty: State = { ready: false, seq: 0, messages: [], status: {}, commands: [], device: null, user: null, serverVersion: "" };
 
 function reduce(state: State, msg: Update): State {
   if (msg.type === "snapshot") {
@@ -32,6 +34,7 @@ function reduce(state: State, msg: Update): State {
       status: (msg.status as Status) ?? {},
       commands: (msg.commands as Command[]) ?? [],
       device: (msg.device as ThisDevice) ?? null,
+      user: (msg.user as Me) ?? null,
       serverVersion: (msg.app_version as string) ?? "",
     };
   }

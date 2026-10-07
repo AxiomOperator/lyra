@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { Activity as ActivityIcon, AlarmClock, Code2, Archive, Bell, BellOff, Bot, Brain, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, Unplug } from "lucide-react";
+import { Activity as ActivityIcon, AlarmClock, Code2, Archive, Bell, BellOff, Bot, Brain, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, Unplug, Users as UsersIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PairCard } from "./chat";
 import { DiagnosisNote } from "./diagnosis";
@@ -361,8 +361,9 @@ function Notifications() {
   );
 }
 
-export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "devices") => void; update: () => void }) {
-  const { say, unpaired, token, serverVersion, status } = useLyra();
+export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "devices" | "users") => void; update: () => void }) {
+  const { say, unpaired, token, serverVersion, status, user } = useLyra();
+  const admin = user?.admin ?? true;
   const [sessions] = useData<Session[]>("sessions");
   // Asked again when a backup starts or finishes.
   const [about] = useData<About>("about", [status.backup?.name, status.backing_up]);
@@ -436,27 +437,38 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
           <CardDescription>What lyra knows and can do.</CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-2 gap-2 px-4 sm:grid-cols-3">
-          <Button variant="secondary" className="md:hidden" onClick={() => open("devices")}>
-            <Smartphone /> Devices
-          </Button>
-          <Button variant="secondary" onClick={() => open("routines")}>
-            <AlarmClock /> Routines
-          </Button>
-          <Button variant="secondary" onClick={() => open("coding")}>
-            <Code2 /> Coding
-          </Button>
-          <Button variant="secondary" onClick={() => open("memory")}>
-            <Brain /> Memory
-          </Button>
+          {admin && (
+            <>
+              <Button variant="secondary" className="md:hidden" onClick={() => open("devices")}>
+                <Smartphone /> Devices
+              </Button>
+              <Button variant="secondary" className="md:hidden" onClick={() => open("users")}>
+                <UsersIcon /> Users
+              </Button>
+              <Button variant="secondary" onClick={() => open("routines")}>
+                <AlarmClock /> Routines
+              </Button>
+              <Button variant="secondary" onClick={() => open("coding")}>
+                <Code2 /> Coding
+              </Button>
+              <Button variant="secondary" onClick={() => open("memory")}>
+                <Brain /> Memory
+              </Button>
+            </>
+          )}
           <Button variant="secondary" onClick={() => open("skills")}>
             <GraduationCap /> Skills
           </Button>
-          <Button variant="secondary" onClick={() => open("goals")}>
-            <Target /> Goals
-          </Button>
-          <Button variant="secondary" onClick={() => open("model")}>
-            <Cpu /> Model
-          </Button>
+          {admin && (
+            <>
+              <Button variant="secondary" onClick={() => open("goals")}>
+                <Target /> Goals
+              </Button>
+              <Button variant="secondary" onClick={() => open("model")}>
+                <Cpu /> Model
+              </Button>
+            </>
+          )}
           <Button variant="secondary" onClick={() => ask("agents")}>
             <Bot /> Agents
           </Button>
@@ -474,7 +486,7 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
             lyra-node on offer: {about?.node_build ?? "none"} · {about?.devices ?? 0} paired devices
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-1 px-4 text-muted-foreground text-sm">
+        <CardContent className={cn("space-y-1 px-4 text-muted-foreground text-sm", !admin && "hidden")}>
           <div>
             <span className="text-foreground">Backups:</span>{" "}
             {status.backing_up
@@ -489,6 +501,7 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
         <CardContent className="flex flex-wrap gap-2 px-4">
           <Button
             variant="secondary"
+            className={cn(!admin && "hidden")}
             disabled={status.backing_up}
             onClick={async () => {
               const r = await run("/backup now");
@@ -497,7 +510,7 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
           >
             <Archive /> Back up now
           </Button>
-          {about?.backups?.last && (
+          {admin && about?.backups?.last && (
             <Button
               variant="secondary"
               onClick={async () => {
@@ -528,9 +541,9 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
             className="text-red-400 hover:text-red-300"
             onClick={() =>
               confirm({
-                title: "Unpair this device?",
-                text: "You'll need a new code from `lyra pair` to use lyra here again.",
-                action: "Unpair",
+                title: "Sign this device out?",
+                text: "You'll sign in again (or pair with a new code) to use lyra here.",
+                action: "Sign out",
                 run: async () => {
                   await disable(token).catch(() => {});
                   unpaired();
@@ -538,7 +551,7 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
               })
             }
           >
-            <Unplug /> Unpair this device
+            <Unplug /> Sign out of this device
           </Button>
         </CardContent>
       </Card>

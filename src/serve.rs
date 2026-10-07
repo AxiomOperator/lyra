@@ -338,7 +338,7 @@ fn for_viewer(extra: &Value, app: &App) -> Value {
         return v;
     }
     if let Some(map) = v.as_object_mut() {
-        for key in ["machines_detail", "pairing", "online", "server_health", "server_harnesses", "routines", "diagnoses", "briefing", "pmi"] {
+        for key in ["machines_detail", "pairing", "online", "server_health", "server_harnesses", "routines", "diagnoses", "briefing", "pmi", "users_waiting"] {
             map.remove(key);
         }
     }
@@ -1138,6 +1138,7 @@ fn hub_status(hub: &Hub, node_build: Option<&str>) -> Value {
         "online": hub.online_devices().into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
         "pairing": hub.pair_requests().iter().map(|p| json!({ "id": p.id, "code": p.code, "name": p.name, "kind": p.kind, "hostname": p.hostname, "os": p.os })).collect::<Vec<_>>(),
         "machines_detail": machines_detail(hub, node_build),
+        "users_waiting": hub.users().list().iter().filter(|u| u.status == lyra_web::Status::Pending).count(),
     })
 }
 
@@ -1285,6 +1286,15 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         "briefing" => crate::briefing::last().map_or(Value::Null, |b| json!(b)),
         "pmi" => crate::pmi::snapshot().map_or_else(|e| json!({ "error": e }), |s| json!(s)),
         "coding" => json!(crate::coding::jobs()),
+        // The people who use lyra (admins: the gate is in the loop).
+        "users" => {
+            let devices = hub.devices().list();
+            json!(hub.users().list().iter().map(|u| json!({
+                "id": u.id, "name": u.name, "email": u.email, "role": u.role, "status": u.status,
+                "created": u.created, "last_seen": u.last_seen, "microsoft": !u.oid.is_empty(),
+                "devices": devices.iter().filter(|d| d.user.as_deref() == Some(u.id.as_str())).map(|d| json!({ "name": d.name, "last_seen": d.last_seen })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>())
+        }
         "status" => {
             let mut v = crate::status::latest().map_or(Value::Null, |b| json!(b));
             // A member's view leaves the machines out.

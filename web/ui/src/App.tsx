@@ -31,6 +31,7 @@ import {
   Code2,
   AlarmClock,
   ListTodo,
+  Users,
   Bell,
   Brain,
   Cpu,
@@ -51,6 +52,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
 import { GoalsPage, MemoryPage, ModelsPage, RoutinesPage, SkillsPage } from "./lyra/manage";
 import { TasksPage } from "./lyra/tasks";
+import { UsersPage } from "./lyra/users";
 import { StatusPage } from "./lyra/status";
 import { CodingPage } from "./lyra/coding";
 import { ActivityPage, DevicesPage, MachinesPage, MorePage } from "./lyra/pages";
@@ -63,8 +65,10 @@ import { loadToken, saveToken, takeShared } from "./lyra/token";
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "tasks" | "routines" | "coding" | "memory" | "skills" | "goals" | "model";
-const manage: Manage[] = ["tasks", "routines", "coding", "memory", "skills", "goals", "model"];
+type Manage = "tasks" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "users";
+const manage: Manage[] = ["tasks", "routines", "coding", "memory", "skills", "goals", "model", "users"];
+/** What a member (not an admin) has: their chats, status, activity, skills. */
+const forMembers: string[] = ["chat", "status", "activity", "more", "skills"];
 
 type TabItem = {
   id: Tab;
@@ -76,7 +80,7 @@ type TabItem = {
 /** The sidebar (dashboard-01's inset style): navigation, lyra's pages,
  *  conversations, and this device at the bottom. A sheet on a phone. */
 function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more: TabItem[]; tab: Tab; setTab: (t: Tab) => void; update: () => void }) {
-  const { connected, status, say, device } = useLyra();
+  const { connected, status, say, device, user } = useLyra();
   const { setOpenMobile } = useSidebar();
   // Refreshed as conversations start, finish or get a title, here or on another device.
   const live = status.conversations ?? [];
@@ -179,10 +183,10 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton size="lg" className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground">
-                  <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-accent font-semibold text-xs uppercase">{(device?.name ?? "?").slice(0, 2)}</span>
+                  <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-accent font-semibold text-xs uppercase">{(user?.name ?? device?.name ?? "?").slice(0, 2)}</span>
                   <span className="grid flex-1 text-left text-sm leading-tight">
-                    <span className="truncate font-medium">{device?.name ?? "this device"}</span>
-                    <span className="truncate text-muted-foreground text-xs">{status.model}</span>
+                    <span className="truncate font-medium">{user?.name ?? device?.name ?? "this device"}</span>
+                    <span className="truncate text-muted-foreground text-xs">{user ? `${user.admin ? "admin" : "member"} · ${device?.name ?? ""}` : status.model}</span>
                   </span>
                   <EllipsisVertical className="ml-auto size-4" />
                 </SidebarMenuButton>
@@ -201,9 +205,11 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
                   </div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => go("devices")}>
-                  <Smartphone /> Devices
-                </DropdownMenuItem>
+                {(user?.admin ?? true) && (
+                  <DropdownMenuItem onClick={() => go("devices")}>
+                    <Smartphone /> Devices
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem onClick={() => go("more")}>
                   <Bell /> Notifications & more
                 </DropdownMenuItem>
@@ -230,7 +236,8 @@ async function updateApp() {
 }
 
 function Shell() {
-  const { status, connected, banner, serverVersion, ready } = useLyra();
+  const { status, connected, banner, serverVersion, ready, user } = useLyra();
+  const admin = user?.admin ?? true;
   // Opened from Android's share sheet: hand what was shared to the composer.
   useEffect(() => {
     if (!ready || !new URLSearchParams(location.search).has("shared")) return;
@@ -271,7 +278,7 @@ function Shell() {
   const day = new Date();
   const todayKey = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
   const pmiWaiting = (status.pmi?.waiting.task_transfers?.length ?? 0) + (status.pmi?.waiting.project_transfers?.length ?? 0) + (status.pmi?.waiting.approvals?.length ?? 0);
-  const more: TabItem[] = [
+  const more: TabItem[] = ([
     { id: "tasks", label: "Tasks", icon: ListTodo, badge: (status.pmi?.tasks ?? []).filter((t) => t.due && t.due < todayKey).length + pmiWaiting },
     { id: "routines", label: "Routines", icon: AlarmClock, badge: (status.routines ?? []).filter((r) => r.runs[0]?.needs_user).length },
     { id: "coding", label: "Coding", icon: Code2 },
@@ -279,9 +286,10 @@ function Shell() {
     { id: "skills", label: "Skills", icon: GraduationCap },
     { id: "goals", label: "Goals", icon: Target },
     { id: "model", label: "Model", icon: Cpu },
-  ];
+    { id: "users", label: "Users", icon: Users, badge: status.users_waiting ?? 0 },
+  ] as TabItem[]).filter((t) => admin || forMembers.includes(t.id));
   const toMore = () => setTab("more");
-  const tabs: TabItem[] = [
+  const tabs: TabItem[] = ([
     { id: "chat", label: "Chat", icon: MessageSquare, badge: asking ? 1 : 0 },
     { id: "status", label: "Status", icon: Activity, badge: (status.status?.rows ?? []).filter((r) => r.state === "down" && r.group !== "Machines").length },
     {
@@ -293,7 +301,7 @@ function Shell() {
     { id: "devices", label: "Devices", icon: Smartphone, badge: pairing },
     { id: "activity", label: "Activity", icon: ScrollText },
     { id: "more", label: "More", icon: Ellipsis },
-  ];
+  ] as TabItem[]).filter((t) => admin || forMembers.includes(t.id));
 
   const title = [...tabs, ...more].find((t) => t.id === tab)?.label ?? "lyra";
   return (
@@ -358,9 +366,10 @@ function Shell() {
           {tab === "skills" && <SkillsPage onBack={toMore} />}
           {tab === "goals" && <GoalsPage onBack={toMore} />}
           {tab === "model" && <ModelsPage onBack={toMore} />}
+          {tab === "users" && <UsersPage onBack={toMore} />}
         </div>
 
-        <nav className="grid grid-cols-5 border-t bg-card/60 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
+        <nav className="grid border-t bg-card/60 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden" style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}>
           {/* Five fit: Devices lives under More on a phone. */}
           {tabs
             .filter((t) => t.id !== "devices")

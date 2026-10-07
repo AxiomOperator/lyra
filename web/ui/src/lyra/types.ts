@@ -86,6 +86,7 @@ export interface Status {
   diagnoses?: Diagnosis[] | null;
   briefing?: Briefing | null;
   pmi?: PmiState | null;
+  users_waiting?: number;
   /** Everything lyra depends on, checked every minute. */
   status?: StatusBoard | null;
   /** Named sets of machines (`[groups]`), for @group. */
@@ -375,4 +376,23 @@ export interface PmiState {
   inbox_unread: number;
   inbox: PmiInboxItem[];
   projects: PmiProject[];
+}
+
+/** Who this device's user is. */
+export interface Me {
+  user: string;
+  name: string;
+  admin: boolean;
+}
+
+export interface UserRow {
+  id: string;
+  name: string;
+  email: string;
+  role: "admin" | "member";
+  status: "active" | "pending" | "disabled";
+  created: string;
+  last_seen: string | null;
+  microsoft: boolean;
+  devices: { name: string; last_seen: string }[];
 }

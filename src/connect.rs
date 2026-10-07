@@ -52,6 +52,8 @@ struct View {
     ready: bool,
     connected: bool,
     banner: String,
+    /// Whose terminal this is (`{user, name, admin}`).
+    user: Value,
 }
 
 impl View {
@@ -61,6 +63,7 @@ impl View {
             self.messages = m["messages"].as_array().cloned().unwrap_or_default();
             self.rendered = vec![None; self.messages.len()];
             self.status = m["status"].clone();
+            self.user = m["user"].clone();
             self.commands = m["commands"]
                 .as_array()
                 .into_iter()
@@ -517,7 +520,18 @@ fn draw_panel(f: &mut Frame, s: &Screen, area: Rect) {
     let st = &s.view.status;
     let dim = Style::default().fg(Color::DarkGray);
     let width = area.width.saturating_sub(2) as usize;
-    let mut lines: Vec<Line> = vec![Line::from("Devices online".bold())];
+    let mut lines: Vec<Line> = Vec::new();
+    // Who this terminal is: a member's panel has no machines or devices.
+    let u = &s.view.user;
+    if u.is_object() {
+        let role = if u["admin"] == true { "admin" } else { "member" };
+        lines.push(Line::from(vec!["You ".bold(), Span::raw(truncate(&format!("{} · {role}", str_of(&u["name"])), width.saturating_sub(4)))]));
+        if let Some(n) = st["users_waiting"].as_u64().filter(|n| *n > 0) {
+            lines.push(Line::styled(truncate(&format!("⏳ {n} waiting to be let in · /users"), width), Style::default().fg(Color::Yellow)));
+        }
+        lines.push(Line::default());
+    }
+    lines.push(Line::from("Devices online".bold()));
     let online = st["online"].as_array().cloned().unwrap_or_default();
     if online.is_empty() {
         lines.push(Line::styled("  none", dim));
