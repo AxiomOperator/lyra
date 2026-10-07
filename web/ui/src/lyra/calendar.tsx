@@ -4,10 +4,10 @@
 
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { CalendarDays, Link2, Unlink, Video } from "lucide-react";
+import { CalendarDays, Flag, Link2, Mail, Paperclip, Unlink, Video } from "lucide-react";
 import { useState } from "react";
 import { useData, useLyra } from "./store";
-import type { CalendarToday, CalEvent } from "./types";
+import type { CalendarToday, CalEvent, MailGlance } from "./types";
 
 /** Back from connecting (read once, before the app clears the address). */
 const fromConnect = (() => {
@@ -15,7 +15,7 @@ const fromConnect = (() => {
   const ok = h.get("connected");
   const error = h.get("connect-error");
   if (ok || error) history.replaceState(null, "", location.pathname + location.search);
-  return ok ? { ok: true, text: "Your Outlook calendar is connected." } : error ? { ok: false, text: error } : null;
+  return ok ? { ok: true, text: "Your Outlook is connected." } : error ? { ok: false, text: error } : null;
 })();
 
 const time = (e: CalEvent) => (e.all_day ? "all day" : (e.start ?? "").split(" ").pop());
@@ -37,14 +37,21 @@ export function CalendarCard() {
     <Card className="py-4">
       <CardHeader className="px-4">
         <CardTitle className="flex items-center gap-2 text-base">
-          <CalendarDays className="size-4" /> Outlook calendar
+          <CalendarDays className="size-4" /> Outlook
         </CardTitle>
         <CardDescription>
           {cal.connected
-            ? "lyra sees your meetings, finds free time and drafts invites and answers (anything others see waits for your Approve)."
-            : "Connect your own calendar: today's meetings in your briefing, free time, and invites drafted for your approval."}
+            ? cal.mail
+              ? "Calendar and mail: lyra sees your meetings and inbox, finds free time and drafts invites and replies. Anything sent or seen by others waits for your Approve."
+              : "Calendar only. Connect again to let lyra read your mail and draft replies (sending always waits for your Approve)."
+            : "Connect your own Outlook: today's meetings and new mail in your briefing, free time, and invites and replies drafted for your approval."}
         </CardDescription>
-        <CardAction>
+        <CardAction className="flex gap-1">
+          {cal.connected && !cal.mail && (
+            <Button size="sm" onClick={() => void connect()}>
+              <Link2 /> Add mail
+            </Button>
+          )}
           {cal.connected ? (
             <Button
               size="sm"
@@ -110,6 +117,40 @@ export function TodayCard() {
             {cal.invites?.length} invite{cal.invites?.length === 1 ? "" : "s"} to answer: ask lyra ("accept the budget review").
           </p>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Tasks: new mail from people (not newsletters), and what's flagged. */
+export function InboxCard() {
+  const [mail] = useData<MailGlance>("mail");
+  if (!mail?.connected) return null;
+  const recent = mail.recent ?? [];
+  return (
+    <Card className="gap-0 py-3">
+      <CardHeader className="px-4">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Mail className="size-4" /> Inbox
+        </CardTitle>
+        <CardAction className="text-muted-foreground text-xs">{mail.unread ? `${mail.unread} unread from people` : ""}</CardAction>
+      </CardHeader>
+      <CardContent className="space-y-1.5 px-4 text-sm">
+        {mail.error && <p className="text-red-300">{mail.error}</p>}
+        {recent.map((m) => (
+          <div key={m.id} className="min-w-0">
+            <div className="flex items-baseline gap-2">
+              <span className={m.important ? "font-medium text-amber-300" : "font-medium"}>{m.from.split(" <")[0]}</span>
+              <span className="truncate">{m.subject}</span>
+              {m.attachments && <Paperclip className="size-3 shrink-0 text-muted-foreground" />}
+              {m.flagged && <Flag className="size-3 shrink-0 text-amber-300" />}
+              <span className="ml-auto shrink-0 text-muted-foreground text-xs">{m.received.split(" ").pop()}</span>
+            </div>
+            <div className="truncate text-muted-foreground text-xs">{m.preview}</div>
+          </div>
+        ))}
+        {!mail.error && recent.length === 0 && <p className="text-muted-foreground">No new mail from people.</p>}
+        {(mail.flagged ?? []).length > 0 && <p className="pt-1 text-muted-foreground text-xs">{mail.flagged?.length} flagged to follow up. Ask lyra to draft a reply; sending waits for your Approve.</p>}
       </CardContent>
     </Card>
   );

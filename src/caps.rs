@@ -575,6 +575,7 @@ impl Caps {
         }
         if crate::calendar::available() {
             caps.extend(crate::calendar::capabilities());
+            caps.extend(crate::mail::capabilities());
         }
         if self.system.as_ref().is_some_and(|s| s.settings().enabled) {
             let machines = self.machines();
@@ -670,6 +671,9 @@ impl Caps {
         }
         if c.source == "calendar" {
             return crate::calendar::approval(&c.name, &args);
+        }
+        if c.source == "mail" {
+            return crate::mail::approval(&c.name, &args);
         }
         // Another machine decides for itself (its own rules), and says what it would do.
         if c.source == "system"
@@ -842,6 +846,11 @@ impl Caps {
             _ if c.source == "calendar" => match crate::calendar::approval(&c.name, &args) {
                 Some(ask) if !approved => Err(format!("{} needs the user's approval ({})", c.name, ask.what)),
                 _ => crate::calendar::call(&c.name, &args),
+            },
+            // The mail of whoever this turn is for; sending needs their yes.
+            _ if c.source == "mail" => match crate::mail::approval(&c.name, &args) {
+                Some(ask) if !approved => Err(format!("{} needs the user's approval ({})", c.name, ask.what)),
+                _ => crate::mail::call(&c.name, &args),
             },
             _ if c.source == "routines" => crate::routines::call(&c.name, &args),
             _ if c.source == "web" => match &self.search {

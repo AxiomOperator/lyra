@@ -33,6 +33,35 @@ pub fn connected_for(user: &str) -> bool {
     crate::secrets::token_for("graph", user).is_some()
 }
 
+/// What a person let lyra do (Graph scopes, from their connection).
+pub fn granted(user: &str) -> Vec<String> {
+    crate::secrets::token_for("graph_scope", user).map(|s| s.split(',').map(str::to_string).collect()).unwrap_or_else(|| vec!["Calendars.ReadWrite".into()])
+}
+
+pub fn has(user: &str, scope: &str) -> bool {
+    granted(user).iter().any(|s| s.eq_ignore_ascii_case(scope) || s.to_lowercase().ends_with(&format!("/{}", scope.to_lowercase())))
+}
+
+/// "calendar and mail" / "calendar".
+pub fn granted_text(user: &str) -> String {
+    if has(user, "Mail.ReadWrite") { "calendar and mail".into() } else { "calendar".into() }
+}
+
+/// Keep what Microsoft granted (its answer lists scopes with spaces; kept with commas).
+pub fn keep_scope(user: &str, scope: &str) -> Result<(), String> {
+    let list: Vec<&str> = scope.split_whitespace().map(|s| s.rsplit('/').next().unwrap_or(s)).collect();
+    if list.is_empty() {
+        return Ok(());
+    }
+    crate::secrets::set_token_for("graph_scope", &list.join(","), user)
+}
+
+pub fn forget_access(user: &str) {
+    if let Some(m) = ACCESS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        m.remove(user);
+    }
+}
+
 /// Access tokens, by person, until they expire.
 static ACCESS: Mutex<Option<HashMap<String, (String, Instant)>>> = Mutex::new(None);
 
@@ -50,12 +79,14 @@ fn access(user: &str) -> Result<String, String> {
     }
     let refresh = crate::secrets::token_for("graph", user).ok_or("your Outlook calendar isn't connected: More → Connect Outlook calendar in the app")?;
     let entra = ENTRA.read().unwrap_or_else(|e| e.into_inner()).clone().filter(|e| e.ready()).ok_or("Microsoft sign-in isn't set up on this server")?;
+    // Ask for what they granted (a connection from before mail: the calendar only).
+    let scope = if has(user, "Mail.ReadWrite") { lyra_web::oidc::OUTLOOK } else { lyra_web::oidc::CALENDAR }.to_string();
     let form = [
         ("grant_type", "refresh_token"),
         ("client_id", entra.client_id.trim()),
         ("client_secret", entra.secret.as_deref().unwrap_or("")),
         ("refresh_token", refresh.as_str()),
-        ("scope", lyra_web::oidc::CALENDAR),
+        ("scope", scope.as_str()),
     ]
     .iter()
     .map(|(k, v)| format!("{k}={}", lyra_web::oidc::encode(v)))
@@ -79,6 +110,9 @@ fn access(user: &str) -> Result<String, String> {
     if let Some(next) = body["refresh_token"].as_str().filter(|t| !t.is_empty()) {
         crate::secrets::set_token_for("graph", next, user)?;
     }
+    if let Some(s) = body["scope"].as_str() {
+        let _ = keep_scope(user, s);
+    }
     let life = body["expires_in"].as_u64().unwrap_or(3600).saturating_sub(120);
     ACCESS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(user.to_string(), (token.clone(), Instant::now() + Duration::from_secs(life)));
     Ok(token)
@@ -86,18 +120,22 @@ fn access(user: &str) -> Result<String, String> {
 
 /// Forget a person's connection (`/calendar disconnect`).
 pub fn disconnect(user: &str) -> Result<(), String> {
-    if let Some(m) = ACCESS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-        m.remove(user);
-    }
+    forget_access(user);
+    crate::secrets::set_token_for("graph_scope", "", user)?;
     crate::secrets::set_token_for("graph", "", user)
 }
 
 /// One Graph request as the person this thread works for. Times come in UTC.
-fn graph(method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<Value, String> {
+pub(crate) fn graph(method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<Value, String> {
+    graph_with(method, path, body, "outlook.timezone=\"UTC\"")
+}
+
+/// The same with its own `Prefer` (mail bodies as text).
+pub(crate) fn graph_with(method: reqwest::Method, path: &str, body: Option<&Value>, prefer: &str) -> Result<Value, String> {
     let user = crate::acting::current();
     let token = access(&user)?;
     let url = if path.starts_with("http") { path.to_string() } else { format!("{GRAPH}{path}") };
-    let mut req = http()?.request(method, &url).bearer_auth(token).header("Prefer", "outlook.timezone=\"UTC\"");
+    let mut req = http()?.request(method, &url).bearer_auth(token).header("Prefer", prefer);
     if let Some(b) = body {
         req = req.json(b);
     }

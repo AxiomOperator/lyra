@@ -414,8 +414,31 @@ export interface CalEvent {
 export interface CalendarToday {
   available: boolean;
   connected?: boolean;
+  /** The connection includes mail. */
+  mail?: boolean;
   error?: string;
   events?: CalEvent[];
   clashes?: string[];
   invites?: CalEvent[];
+}
+
+/** A mail message as lyra shows it. */
+export interface MailMessage {
+  id: string;
+  from: string;
+  subject: string;
+  received: string;
+  preview: string;
+  unread?: boolean;
+  important?: boolean;
+  attachments?: boolean;
+  flagged?: boolean;
+}
+
+export interface MailGlance {
+  connected: boolean;
+  error?: string;
+  unread?: number;
+  recent?: MailMessage[];
+  flagged?: MailMessage[];
 }

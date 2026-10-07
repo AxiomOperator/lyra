@@ -892,7 +892,7 @@ nag_max = 3
 # enabled = true
 ```
 
-## Outlook calendar
+## Outlook: calendar and mail
 
 Each person can connect their own Outlook calendar from the app (More → Outlook calendar →
 **Connect**). It uses the same Microsoft app as signing in. The account connected must be the
@@ -912,9 +912,21 @@ Each person's morning briefing starts with **Today**: their meetings, double boo
 invites waiting for an answer. The Tasks page shows today's calendar. `/calendar
 [today|tomorrow|week|<day>]` lists events in the terminal.
 
+**Mail** comes with the same connection.
+- **Reading:** "What needs a reply?", "Summarize the thread with Dana about the budget", "Find
+  the October invoice".
+- **Drafts:** lyra writes them into your Drafts folder at once, since only you see them.
+- **Your own mailbox:** marking read, flagging, archiving or deleting happens at once.
+- **Sending** waits for your **Allow**, which shows who it goes to and what it says.
+
+Each person's briefing gets a **Mail** section: new mail from people since the last briefing
+(Outlook's Focused inbox, so not newsletters) and what's flagged. The Tasks page shows the
+inbox. In the terminal, `/mail [all|search <words>]`.
+
 Setup, once, in the Entra admin center: in the lyra app registration, go to API permissions →
-Add → Microsoft Graph → Delegated, and add **Calendars.ReadWrite** and **offline_access**.
-Then choose **Grant admin consent**.
+Add → Microsoft Graph → Delegated. Add **Calendars.ReadWrite**, **Mail.ReadWrite**,
+**Mail.Send** and **offline_access**, then choose **Grant admin consent**. Anyone who
+connected before mail existed reconnects once (More → Outlook → **Add mail**).
 
 ## Backups
 

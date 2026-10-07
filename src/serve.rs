@@ -561,9 +561,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     }
                     everyone = true;
                 }
-                Inbound::Connected { user, service, token } => {
-                    match crate::secrets::set_token_for(&service, &token, &user) {
-                        Ok(()) if user == convs[0].app.owner => convs[0].app.log(Level::Info, "your Outlook calendar is connected".to_string()),
+                Inbound::Connected { user, service, token, scope } => {
+                    crate::calendar::forget_access(&user);
+                    match crate::secrets::set_token_for(&service, &token, &user).and_then(|_| crate::calendar::keep_scope(&user, &scope)) {
+                        Ok(()) if user == convs[0].app.owner => convs[0].app.log(Level::Info, format!("your Outlook is connected ({})", crate::calendar::granted_text(&user))),
                         Ok(()) => {}
                         Err(e) => convs[0].app.log(Level::Error, format!("couldn't keep a calendar connection: {e}")),
                     }
@@ -592,7 +593,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -1060,6 +1061,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         if crate::calendar::connected_for(&user) {
                             inputs.calendar = crate::acting::run(&user, crate::calendar::today).ok();
                         }
+                        if crate::mail::connected_for(&user) {
+                            let since = inputs.since;
+                            inputs.mail = crate::acting::run(&user, || crate::mail::glance(since)).ok();
+                        }
                         let mut b = crate::briefing::gather(&inputs);
                         if s.summary {
                             b.takeaway = crate::briefing::takeaway(&url, &model, &b);
@@ -1417,6 +1422,14 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         }
         "routines" => crate::acting::run(&app.owner, || crate::routines::view(&[], 10)),
         "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
+        // Their inbox at a glance (the last day).
+        "mail" => match crate::mail::connected_for(&app.owner) {
+            false => json!({ "connected": false }),
+            true => crate::acting::run(&app.owner, || crate::mail::glance(chrono::Utc::now() - chrono::Duration::days(1))).map_or_else(|e| json!({ "connected": true, "error": e }), |mut v| {
+                v["connected"] = json!(true);
+                v
+            }),
+        },
         // Today's calendar (theirs), or how to connect it.
         "calendar" => {
             if !crate::calendar::available() {
@@ -1428,6 +1441,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
                     Ok(mut v) => {
                         v["available"] = json!(true);
                         v["connected"] = json!(true);
+                        v["mail"] = json!(crate::mail::connected_for(&app.owner));
                         v
                     }
                     Err(e) => json!({ "available": true, "connected": true, "error": e }),

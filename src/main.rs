@@ -17,6 +17,7 @@ mod health;
 mod markdown;
 mod mcp_server;
 mod learn;
+mod mail;
 mod lock;
 mod mem;
 mod plan;
@@ -1491,6 +1492,7 @@ impl App {
             "/coding" => Ok(coding::describe()),
             "/briefing" => self.briefing_command(arg),
             "/calendar" => calendar::command(arg, &self.owner.clone()),
+            "/mail" => crate::acting::run(&self.owner.clone(), || mail::command(arg)),
             // In the person's own PMI account.
             "/pmi" => pmi::as_user(&self.owner.clone(), || pmi::command(arg)),
             "/tasks" => pmi::as_user(&self.owner.clone(), || pmi::tasks_text(arg)),
@@ -2912,7 +2914,7 @@ fn member_may(name: &str, arg: &str) -> bool {
     match name {
         "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" => true,
         // Their own PMI account, routines and goals.
-        "/pmi" | "/tasks" | "/task" | "/routine" | "/routines" | "/calendar" => true,
+        "/pmi" | "/tasks" | "/task" | "/routine" | "/routines" | "/calendar" | "/mail" => true,
         // Looking after their own memories (held to their scope there).
         "/memory" => matches!(arg.split_whitespace().next().unwrap_or(""), "inspect" | "forget" | "archive" | "restore" | "correct"),
         // Goals are tracked and planned, never worked on unattended: no plans,
@@ -2978,6 +2980,7 @@ pub(crate) const COMMANDS: &str = "\
 /whoami                      who this conversation belongs to
 /pmi [token <token>]         the PMI connection (your project-management app)
 /calendar [today|tomorrow|week|<day>|disconnect]   your Outlook calendar (connect it from More in the app)
+/mail [all|search <words>]   your Outlook inbox: new mail from people (all: newsletters too)
 /briefing [now]              the daily briefing: what happened and what needs a look ([briefing] schedule)
 /status [now]                everything lyra depends on: models, search, APIs, address, storage, backups, machines
 /backup [now|list]           back up lyra (memory, skills, goals, sessions, config); nightly by itself
@@ -3218,7 +3221,7 @@ fn converse(
                 let (text, names) = caps.search(&call.function.arguments);
                 found.extend(names);
                 text
-            } else if let Some(ask) = caps.manager.get(&call.function.name).filter(|c| c.source == "calendar").and_then(|_| caps.approval(&call.function.name, &call.function.arguments)) {
+            } else if let Some(ask) = caps.manager.get(&call.function.name).filter(|c| matches!(c.source.as_str(), "calendar" | "mail")).and_then(|_| caps.approval(&call.function.name, &call.function.arguments)) {
                 // Changes others see: the person approves them right here.
                 match agents.map(|env| agents::approve(env, &agents::main_profile(), &call.function.name, ask)) {
                     Some(Ok(())) => caps.invoke(&call.function.name, &call.function.arguments, ctx, true, true),

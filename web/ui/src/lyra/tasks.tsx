@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { AlarmClock, Check, Circle, Plus, Radio } from "lucide-react";
 import { useState, type FormEvent } from "react";
-import { TodayCard } from "./calendar";
+import { InboxCard, TodayCard } from "./calendar";
 import { Back, Failed, useAction } from "./manage";
 import { Page } from "./parts";
 import { ago } from "./push";
@@ -136,6 +136,7 @@ export function TasksPage({ onBack }: { onBack: () => void }) {
         </p>
       )}
       <TodayCard />
+      <InboxCard />
       <Failed error={pmi?.error ?? undefined} />
       {note}
       <form onSubmit={add} className="flex gap-2">

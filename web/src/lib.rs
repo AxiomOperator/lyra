@@ -84,7 +84,7 @@ pub enum Inbound {
     SignIn { name: String, email: String },
     /// Someone connected their Microsoft account to a service (their
     /// calendar): its refresh token, to keep with their secrets.
-    Connected { user: String, service: String, token: String },
+    Connected { user: String, service: String, token: String, scope: String },
     /// A device asks for a list (sessions, devices, activity…) for a page.
     Get { what: String, arg: Value, session: String, who: Who, reply: oneshot::Sender<Value> },
 }
@@ -739,7 +739,7 @@ async fn connect_calendar(State(s): State<Arc<Shared>>, headers: HeaderMap) -> R
         logins.insert(state.clone(), oidc::Pending { verifier: verifier.clone(), nonce: nonce.clone(), device: String::new(), created: Instant::now(), connect: Some((who.user.clone(), oid)) });
     }
     let callback = format!("{}/auth/callback", s.public_url);
-    let url = oidc::authorize_url_for(&s.entra, &callback, &state, &nonce, &verifier, oidc::CALENDAR);
+    let url = oidc::authorize_url_for(&s.entra, &callback, &state, &nonce, &verifier, oidc::OUTLOOK);
     let mut r = Json(json!({ "url": url })).into_response();
     if let Ok(v) = HeaderValue::from_str(&format!("{LOGIN_COOKIE}={state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600")) {
         r.headers_mut().insert(header::SET_COOKIE, v);
@@ -803,7 +803,7 @@ async fn auth_callback(State(s): State<Arc<Shared>>, Query(q): Query<CallbackQue
         return signin_error(if q.error_description.is_empty() { "Microsoft didn't sign you in" } else { &q.error_description });
     }
     let callback = format!("{}/auth/callback", s.public_url);
-    let scope = if pending.connect.is_some() { oidc::CALENDAR } else { oidc::SIGN_IN };
+    let scope = if pending.connect.is_some() { oidc::OUTLOOK } else { oidc::SIGN_IN };
     let form = oidc::token_form_for(&s.entra, &q.code, &callback, &pending.verifier, scope);
     let answer = async {
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build().map_err(|e| e.to_string())?;
@@ -814,10 +814,10 @@ async fn auth_callback(State(s): State<Arc<Shared>>, Query(q): Query<CallbackQue
             return Err(body["error_description"].as_str().unwrap_or("Microsoft refused the sign-in").lines().next().unwrap_or("").to_string());
         }
         let id = body["id_token"].as_str().map(str::to_string).ok_or_else(|| "Microsoft sent no id_token".to_string())?;
-        Ok((id, body["refresh_token"].as_str().unwrap_or("").to_string()))
+        Ok((id, body["refresh_token"].as_str().unwrap_or("").to_string(), body["scope"].as_str().unwrap_or("").to_string()))
     }
     .await;
-    let (id_token, refresh) = match answer {
+    let (id_token, refresh, granted) = match answer {
         Ok(t) => t,
         Err(e) => return signin_error(&e),
     };
@@ -833,7 +833,7 @@ async fn auth_callback(State(s): State<Arc<Shared>>, Query(q): Query<CallbackQue
         if refresh.is_empty() {
             return redirect(&format!("/?page=more#connect-error={}", oidc::encode("Microsoft didn't allow lasting access (offline_access)")));
         }
-        let _ = s.inbound.send(Inbound::Connected { user, service: "graph".into(), token: refresh });
+        let _ = s.inbound.send(Inbound::Connected { user, service: "graph".into(), token: refresh, scope: granted });
         return redirect("/?page=more#connected=calendar");
     }
     // A guest from another organization never becomes the owner.

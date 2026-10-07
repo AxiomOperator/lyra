@@ -48,8 +48,10 @@ pub struct Pending {
 
 /// Signing in only.
 pub const SIGN_IN: &str = "openid profile email";
-/// Their calendar too, kept up with a refresh token.
+/// Their calendar only (connections made before mail).
 pub const CALENDAR: &str = "openid profile email offline_access Calendars.ReadWrite";
+/// Their Outlook: calendar and mail, kept up with a refresh token.
+pub const OUTLOOK: &str = "openid profile email offline_access Calendars.ReadWrite Mail.ReadWrite Mail.Send";
 
 /// PKCE: the code challenge for a verifier.
 pub fn challenge(verifier: &str) -> String {
