@@ -202,8 +202,10 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
         {/* The conversations. */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <SidebarHeader className="gap-2">
+            {/* Quiet: a teal outline, filled only on hover. */}
             <Button
-              className="w-full justify-start"
+              variant="outline"
+              className="w-full justify-start border-primary/40 bg-primary/10 text-primary hover:bg-primary/20 hover:text-primary"
               onClick={() => {
                 say("/new");
                 go("chat");
