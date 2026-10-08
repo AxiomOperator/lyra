@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.23.0.139",
+    "date": "2026-10-08",
+    "title": "lyra reads your feedback",
+    "new": [
+      "When you send a bug report or a feature request, lyra writes a short summary of how it understood it, shown with yours.",
+      "Admins also get lyra's read: the likely cause and possible fixes for a bug, a possible implementation and its size for a feature, and questions worth asking (tap one to ask it in the thread).",
+      "lyra uses its own documentation and what attached screenshots show; admins can have it read one again after replies add detail."
+    ]
+  },
+  {
     "version": "0.22.0.138",
     "date": "2026-10-08",
     "title": "Feedback: bug reports and feature requests",

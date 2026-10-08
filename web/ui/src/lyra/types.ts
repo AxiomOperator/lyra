@@ -79,6 +79,8 @@ export interface Health {
 export interface Status {
   /** Bug reports and feature requests with news for this person. */
   feedback_news?: number;
+  /** Moves whenever any feedback changes (the page looks again). */
+  feedback_rev?: number;
   /** This lyra's version (major.minor.fix.build). */
   version?: string;
   /** The chat model's context window in tokens (0: unknown). */

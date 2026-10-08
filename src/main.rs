@@ -2783,6 +2783,7 @@ impl App {
                 vision::configure(config.vision_model.clone());
                 proactive::configure(config.proactive.clone());
                 recap::configure(config.recap.clone());
+                feedback::configure(&config.url, &config.model);
                 pmi::configure(config.pmi.clone());
                 self.pricing = pricing(&config);
                 if let Some(mem) = self.mem() {
@@ -3725,6 +3726,7 @@ fn main() {
     vision::configure(config.vision_model.clone());
     proactive::configure(config.proactive.clone());
     recap::configure(config.recap.clone());
+    feedback::configure(&config.url, &config.model);
     stats::learn_context_window(&config.url);
     let web = config.web.clone();
     let mut app = App::new(config, Context::load(), services);

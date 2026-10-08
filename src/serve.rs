@@ -108,6 +108,7 @@ fn status(app: &App, machines: &[String]) -> Value {
         "context_window": crate::stats::CONTEXT_WINDOW.load(std::sync::atomic::Ordering::Relaxed),
         "version": crate::changelog::version(),
         // Bug reports and feature requests with news for this person.
+        "feedback_rev": crate::feedback::revision(),
         "feedback_news": crate::feedback::badge(&crate::feedback::Who { user: app.owner.clone(), name: String::new(), admin: app.admin }),
         // The plan this conversation is running (the app's plan card).
         "plan": app.current_plan.as_ref().map(|p| json!({
@@ -654,7 +655,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "watches" | "everything" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "watches" | "everything" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -1683,22 +1684,40 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         "recap" => crate::recap::last_for(&app.owner).map_or(Value::Null, |r| json!(r)),
         "changelog" => json!({ "version": crate::changelog::version(), "releases": crate::changelog::all() }),
         // Feedback: everyone sends and follows their own; admins see and move everyone's.
-        "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" => {
+        "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze" => {
             let who = crate::feedback::Who { user: app.owner.clone(), name: hub.users().get(&app.owner).map_or_else(|| "the owner".to_string(), |u| u.name), admin: app.admin };
             let id = arg["id"].as_u64().unwrap_or(0);
             let s = |k: &str| arg[k].as_str().map(str::to_string);
             let done = match what {
                 "feedback_submit" => {
                     // Their own uploads only.
-                    let files = arg["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str()).filter_map(|id| hub.upload(id)).filter(|(up, _)| up.user.as_deref().unwrap_or(lyra_web::users::OWNER) == who.user).map(|(up, _)| crate::feedback::File { id: up.id, name: up.name, mime: up.mime }).collect();
-                    crate::feedback::submit(&who, &s("kind").unwrap_or_default(), &s("title").unwrap_or_default(), &s("details").unwrap_or_default(), s("severity").as_deref(), files, &s("page").unwrap_or_default()).map(|i| json!({ "ok": true, "id": i.id }))
+                    let ups: Vec<_> = arg["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str()).filter_map(|id| hub.upload(id)).filter(|(up, _)| up.user.as_deref().unwrap_or(lyra_web::users::OWNER) == who.user).collect();
+                    let files = ups.iter().map(|(up, _)| crate::feedback::File { id: up.id.clone(), name: up.name.clone(), mime: up.mime.clone() }).collect();
+                    let paths = ups.into_iter().map(|(up, path)| (up.name, path)).collect();
+                    crate::feedback::submit(&who, &s("kind").unwrap_or_default(), &s("title").unwrap_or_default(), &s("details").unwrap_or_default(), s("severity").as_deref(), files, &s("page").unwrap_or_default()).map(|i| {
+                        // lyra's read of it, in the background.
+                        crate::feedback::analyze(i.id, &who.user, paths);
+                        json!({ "ok": true, "id": i.id })
+                    })
+                }
+                // Admins: read it again (after replies added detail).
+                "feedback_analyze" if who.admin => {
+                    let found = crate::feedback::list(&who).into_iter().find(|i| i.id == id);
+                    match found {
+                        Some(i) => {
+                            let paths = i.files.iter().filter_map(|f| hub.upload(&f.id).map(|(up, path)| (up.name, path))).collect();
+                            crate::feedback::analyze(id, &i.user, paths);
+                            Ok(json!({ "ok": true }))
+                        }
+                        None => Err(format!("no feedback #{id}")),
+                    }
                 }
                 "feedback_comment" => crate::feedback::comment(&who, id, &s("text").unwrap_or_default()).map(|_| json!({ "ok": true })),
                 "feedback_update" => crate::feedback::update(&who, id, s("status").as_deref(), s("priority").as_deref(), s("shipped_in").as_deref()).map(|_| json!({ "ok": true })),
                 "feedback_seen" => crate::feedback::seen(&who, id).map(|_| json!({ "ok": true })),
                 _ => Ok(json!({
                     "admin": who.admin, "me": who.user, "version": crate::changelog::version(),
-                    "items": crate::feedback::list(&who),
+                    "items": crate::feedback::list(&who).iter().map(|i| crate::feedback::view(i, &who)).collect::<Vec<_>>(),
                 })),
             };
             done.unwrap_or_else(|e| json!({ "error": e }))

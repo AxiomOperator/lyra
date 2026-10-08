@@ -73,6 +73,168 @@ pub struct Item {
     /// Something the admins haven't seen yet (new, or the sender's comment).
     #[serde(default)]
     pub news_for_admins: bool,
+    /// lyra's read of it (made in the background after it's sent).
+    #[serde(default)]
+    pub analysis: Option<Analysis>,
+    /// Being analyzed now.
+    #[serde(default)]
+    pub analyzing: bool,
+}
+
+/// What lyra makes of a submission: a summary for everyone; the likely cause
+/// and possible fixes (bugs) or a possible implementation (features), the
+/// size and questions to ask, for the admins.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Analysis {
+    pub summary: String,
+    /// Bugs: what's probably behind it.
+    #[serde(default)]
+    pub cause: Option<String>,
+    /// Possible fixes (bugs) or implementation steps (features).
+    #[serde(default)]
+    pub approach: Vec<String>,
+    /// small, medium or large.
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// The part of lyra it's about (chat, calendar, memory, the app …).
+    #[serde(default)]
+    pub area: Option<String>,
+    /// What to ask the sender.
+    #[serde(default)]
+    pub questions: Vec<String>,
+    pub at: DateTime<Utc>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// The chat model's address, for analyses (set when lyra starts).
+static MODEL: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+pub fn configure(url: &str, model: &str) {
+    *MODEL.lock().unwrap_or_else(|e| e.into_inner()) = Some((format!("{}/chat/completions", url.trim_end_matches('/')), model.to_string()));
+}
+
+const README: &str = include_str!("../README.md");
+
+/// The parts of lyra's README most about this (by shared words), for context.
+fn background(text: &str) -> String {
+    let words: Vec<String> = text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.len() > 3).map(str::to_string).collect();
+    let mut sections: Vec<(usize, &str)> = README
+        .split("\n### ")
+        .map(|s| {
+            let low = s.to_lowercase();
+            (words.iter().filter(|w| low.contains(w.as_str())).count(), s)
+        })
+        .collect();
+    sections.sort_by_key(|(n, _)| std::cmp::Reverse(*n));
+    sections.iter().filter(|(n, _)| *n > 0).take(3).map(|(_, s)| s.chars().take(3000).collect::<String>()).collect::<Vec<_>>().join("\n\n### ")
+}
+
+const ANALYST: &str = "You help the admins of lyra, a self-hosted AI assistant (a Rust server with a web app, \
+memory, skills, agents, plans, machines, Outlook and Teams, PMI tasks), triage what users send them. \
+Read the bug report or feature request and lyra's documentation excerpts, then answer with only a JSON object:
+{\"summary\": \"what they're reporting or asking for, in two or three plain sentences\",
+ \"cause\": \"bugs only: what's most likely behind it, or null\",
+ \"approach\": [\"bugs: possible fixes, most likely first; features: implementation steps, in order\"],
+ \"effort\": \"small | medium | large\",
+ \"area\": \"the part of lyra it's about, in a few words\",
+ \"questions\": [\"what to ask the sender if something's unclear (may be empty)\"]}
+Be concrete and brief: 2 to 5 approach items. Say what you'd check or change, not code. Don't invent features lyra doesn't have.";
+
+/// Ask the model about it (blocking): the item, what's attached, lyra's docs.
+fn analyze_now(item: &Item, seen: &[String]) -> Analysis {
+    let now = Utc::now();
+    let Some((url, model)) = MODEL.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        return Analysis { at: now, error: Some("no model".into()), ..Default::default() };
+    };
+    let mut prompt = format!(
+        "{}: {}\n\n{}\n\nFrom: {} · lyra {} · page: {}{}\n",
+        if item.kind == "bug" { "Bug report" } else { "Feature request" },
+        item.title,
+        if item.details.trim().is_empty() { "(no details)" } else { item.details.trim() },
+        item.name,
+        item.version,
+        if item.page.is_empty() { "?" } else { &item.page },
+        item.severity.as_deref().map(|s| format!(" · how bad: {s}")).unwrap_or_default(),
+    );
+    for s in seen {
+        prompt += &format!("\nWhat an attached screenshot shows: {s}\n");
+    }
+    let replies: Vec<String> = item.comments.iter().filter(|c| !c.system).map(|c| format!("{}: {}", c.name, c.text)).collect();
+    if !replies.is_empty() {
+        prompt += &format!("\nThe conversation since:\n{}\n", replies.join("\n"));
+    }
+    prompt += &format!("\nlyra's documentation (the most related parts):\n### {}", background(&format!("{} {}", item.title, item.details)));
+    let reply = crate::learn::complete(&url, &model, ANALYST, &prompt).map(|(r, _)| r);
+    let parsed = reply.and_then(|r| {
+        let start = r.find('{').ok_or("no answer")?;
+        let end = r.rfind('}').ok_or("no answer")?;
+        serde_json::from_str::<Value>(&r[start..=end]).map_err(|e| e.to_string())
+    });
+    match parsed {
+        Ok(v) => {
+            let list = |k: &str| v[k].as_array().into_iter().flatten().filter_map(|x| x.as_str()).map(str::to_string).filter(|x| !x.trim().is_empty()).take(6).collect::<Vec<_>>();
+            let text = |k: &str| v[k].as_str().map(str::trim).filter(|x| !x.is_empty() && *x != "null").map(str::to_string);
+            Analysis {
+                summary: text("summary").unwrap_or_default(),
+                cause: text("cause").filter(|_| item.kind == "bug"),
+                approach: list("approach"),
+                effort: text("effort").map(|e| e.to_lowercase()).filter(|e| ["small", "medium", "large"].contains(&e.as_str())),
+                area: text("area"),
+                questions: list("questions"),
+                at: now,
+                error: None,
+            }
+        }
+        Err(e) => Analysis { at: now, error: Some(e), ..Default::default() },
+    }
+}
+
+/// Analyze it in the background (for the sender: their usage), and keep the result.
+/// `seen`: what attached pictures show, if anything read them already.
+pub fn analyze(id: u64, user: &str, files: Vec<(String, std::path::PathBuf)>) {
+    {
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut all = load();
+        if let Some(i) = all.iter_mut().find(|i| i.id == id) {
+            i.analyzing = true;
+            let _ = save(&all);
+        }
+    }
+    let user = user.to_string();
+    std::thread::spawn(move || {
+        crate::acting::set(&user);
+        let Some(item) = load().into_iter().find(|i| i.id == id) else { return };
+        // Screenshots: what they show, when a vision model can look.
+        let seen: Vec<String> = if crate::vision::available() {
+            files.iter().filter(|(name, _)| crate::vision::image_type(name).is_some()).take(3).filter_map(|(name, path)| std::fs::read(path).ok().and_then(|b| crate::vision::read(name, &b, Some("Describe what this screenshot shows, any error text exactly, and which page or screen it is.")).ok())).collect()
+        } else {
+            vec![]
+        };
+        let a = analyze_now(&item, &seen);
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut all = load();
+        if let Some(i) = all.iter_mut().find(|i| i.id == id) {
+            i.analysis = Some(a);
+            i.analyzing = false;
+            let _ = save(&all);
+        }
+    });
+}
+
+/// What `who` gets of an item: everything for admins; the sender sees the
+/// summary of lyra's read, not the admins' notes (cause, fixes, questions).
+pub fn view(item: &Item, who: &Who) -> Value {
+    let mut v = serde_json::to_value(item).unwrap_or(Value::Null);
+    if !who.admin {
+        v["analysis"] = item.analysis.as_ref().filter(|a| !a.summary.is_empty()).map_or(Value::Null, |a| json!({ "summary": a.summary, "at": a.at }));
+    }
+    v
+}
+
+/// Changes so far (the app looks again when it moves).
+pub fn revision() -> u64 {
+    REVISION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Who's acting.
@@ -93,6 +255,7 @@ pub struct Notice {
 }
 
 static LOCK: Mutex<()> = Mutex::new(());
+static REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static NOTICES: Mutex<Vec<Notice>> = Mutex::new(Vec::new());
 
 fn notify(n: Notice) {
@@ -129,7 +292,9 @@ fn save(all: &[Item]) -> Result<(), String> {
     }
     let tmp = p.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_string_pretty(all).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())?;
+    REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
 }
 
 fn kind_word(k: &str) -> &'static str {
@@ -183,6 +348,8 @@ pub fn submit(who: &Who, kind: &str, title: &str, details: &str, severity: Optio
         comments: vec![],
         news_for_sender: false,
         news_for_admins: true,
+        analysis: None,
+        analyzing: false,
     };
     all.push(item.clone());
     save(&all)?;
@@ -350,6 +517,7 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "feedback_submit" => {
             let i = submit(&who, args["kind"].as_str().unwrap_or(""), args["title"].as_str().unwrap_or(""), args["details"].as_str().unwrap_or(""), args["severity"].as_str(), vec![], "chat")?;
+            analyze(i.id, &who.user, vec![]);
             Ok(json!({ "sent": format!("{} #{}", kind_word(&i.kind), i.id), "title": i.title, "note": "the admins were told; the user follows it on the Feedback page" }))
         }
         "feedback_list" => Ok(json!({ "items": list(&who).iter().take(30).map(|i| json!({ "id": i.id, "kind": i.kind, "title": i.title, "status": status_word(&i.status), "from": i.name, "shipped_in": i.shipped_in })).collect::<Vec<_>>() })),
@@ -403,5 +571,24 @@ mod tests {
         assert_eq!(i.shipped_in.as_deref(), Some(crate::changelog::version()), "done ships in this version");
         assert!(submit(&dana, "praise", "x", "", None, vec![], "").is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_sender_sees_the_summary_and_admins_the_rest() {
+        let now = Utc::now();
+        let mut i = Item {
+            id: 7, kind: "bug".into(), title: "Calendar".into(), details: String::new(), severity: None, status: "new".into(), priority: "normal".into(),
+            user: "dana".into(), name: "Dana".into(), created: now, updated: now, version: "0".into(), page: String::new(), files: vec![], shipped_in: None,
+            comments: vec![], news_for_sender: false, news_for_admins: false, analysis: None, analyzing: false,
+        };
+        i.analysis = Some(Analysis { summary: "Today lists yesterday.".into(), cause: Some("a stale day cache".into()), approach: vec!["refresh at midnight".into()], questions: vec!["which device?".into()], at: now, ..Default::default() });
+        let dana = Who { user: "dana".into(), name: "Dana".into(), admin: false };
+        let admin = Who { user: "owner".into(), name: "G".into(), admin: true };
+        let mine = view(&i, &dana);
+        assert_eq!(mine["analysis"]["summary"], "Today lists yesterday.");
+        assert!(mine["analysis"].get("cause").is_none() && mine["analysis"].get("approach").is_none() && mine["analysis"].get("questions").is_none());
+        assert_eq!(view(&i, &admin)["analysis"]["cause"], "a stale day cache");
+        // The docs it's given are the parts about it.
+        assert!(background("the calendar shows yesterday's meetings").to_lowercase().contains("calendar"));
     }
 }

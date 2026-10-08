@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { Bug, ChevronDown, Lightbulb, Paperclip, Send, X } from "lucide-react";
+import { Bug, ChevronDown, Lightbulb, Loader2, Paperclip, RefreshCw, Send, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { upload } from "./chat";
 import { SentAttachments } from "./chat-parts";
@@ -45,6 +45,9 @@ interface Item {
   comments: Comment[];
   news_for_sender: boolean;
   news_for_admins: boolean;
+  /** lyra's read: everyone gets the summary; admins the rest. */
+  analysis?: { summary: string; cause?: string | null; approach?: string[]; effort?: string | null; area?: string | null; questions?: string[]; at: string; error?: string | null } | null;
+  analyzing?: boolean;
 }
 interface Data {
   admin: boolean;
@@ -228,6 +231,64 @@ function ItemCard({ i, admin, me, version, reload }: { i: Item; admin: boolean; 
             {i.severity && ` · ${i.severity}`} · sent {new Date(i.created).toLocaleString()} · lyra {i.version}
             {i.page && ` · from ${i.page}`}
           </p>
+          {/* lyra's read of it. */}
+          {i.analyzing ? (
+            <div className="flex items-center gap-2 text-muted-foreground text-xs">
+              <Loader2 className="size-3.5 animate-spin" /> lyra is looking at it…
+            </div>
+          ) : (
+            i.analysis && (
+              <div className="space-y-2 rounded-lg border border-primary/25 bg-primary/5 p-3 text-sm">
+                <div className="flex items-center gap-1.5 font-medium text-primary text-xs uppercase tracking-wide">
+                  <Sparkles className="size-3.5" /> {admin ? "lyra's read" : "How lyra understood it"}
+                  {i.analysis.area && <span className="font-normal text-muted-foreground normal-case tracking-normal">· {i.analysis.area}</span>}
+                  {i.analysis.effort && <Badge variant="outline" className="ml-1 font-normal normal-case tracking-normal">{i.analysis.effort}</Badge>}
+                  {admin && (
+                    <button type="button" className="ml-auto text-muted-foreground hover:text-foreground" title="Read it again (after replies)" onClick={() => void act("feedback_analyze", {})}>
+                      <RefreshCw className="size-3.5" />
+                    </button>
+                  )}
+                </div>
+                {i.analysis.error ? (
+                  <p className="text-muted-foreground text-xs">Couldn't analyze it: {i.analysis.error}</p>
+                ) : (
+                  <>
+                    <p>{i.analysis.summary}</p>
+                    {i.analysis.cause && (
+                      <p>
+                        <span className="text-muted-foreground">Likely cause: </span>
+                        {i.analysis.cause}
+                      </p>
+                    )}
+                    {!!i.analysis.approach?.length && (
+                      <div>
+                        <div className="text-muted-foreground text-xs">{i.kind === "bug" ? "Possible fixes" : "Possible implementation"}</div>
+                        <ol className="list-decimal space-y-0.5 pl-5">
+                          {i.analysis.approach.map((a, k) => (
+                            <li key={k}>{a}</li>
+                          ))}
+                        </ol>
+                      </div>
+                    )}
+                    {!!i.analysis.questions?.length && (
+                      <div>
+                        <div className="text-muted-foreground text-xs">Worth asking</div>
+                        <ul className="list-disc space-y-0.5 pl-5">
+                          {i.analysis.questions.map((q, k) => (
+                            <li key={k}>
+                              <button type="button" className="text-left hover:text-primary" title="Ask this in the thread" onClick={() => setText(q)}>
+                                {q}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )
+          )}
           {/* Admins move it along. */}
           {admin && (
             <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
@@ -293,7 +354,7 @@ export function FeedbackPage({ onBack }: { onBack: () => void }) {
   // Again when something changes for them (a new one, a reply).
   useEffect(() => {
     if (ready) reload();
-  }, [ready, reload, status.feedback_news]);
+  }, [ready, reload, status.feedback_news, status.feedback_rev]);
   const items = (data?.items ?? []).filter((i) => (filter === "all" || (filter === "open" ? !["done", "wontdo"].includes(i.status) : ["done", "wontdo"].includes(i.status))) && (kind === "all" || i.kind === kind));
   return (
     <Page title="Feedback" description="Bug reports and feature requests: send one, and follow where yours stand." action={<Back onBack={onBack} />}>
