@@ -299,10 +299,12 @@ fn size_text(n: u64) -> String {
 /// What a message says about its attached files: a text file's content, or
 /// what the file is (the Operator can put it on a machine); images go to a
 /// model that can see.
-pub fn attachments(hub: &Hub, files: &[String], vision: bool, who: &Who) -> (String, Vec<String>) {
+pub fn attachments(hub: &Hub, files: &[String], vision: bool, who: &Who) -> (String, Vec<String>, Vec<(String, String, std::path::PathBuf)>) {
     use base64::Engine;
     let mut text = String::new();
     let mut images = Vec::new();
+    // For the vision model, in the turn (not here: it takes a while).
+    let mut looks = Vec::new();
     for id in files {
         // Someone else's upload isn't there, as far as this person knows.
         let Some((up, path)) = hub.upload(id).filter(|(up, _)| who.admin || up.user.as_deref().unwrap_or(lyra_web::users::OWNER) == who.user) else {
@@ -329,6 +331,10 @@ pub fn attachments(hub: &Hub, files: &[String], vision: bool, who: &Who) -> (Str
                 images.push(format!("data:{};base64,{}", up.mime, base64::engine::general_purpose::STANDARD.encode(bytes)));
             }
             text += &format!("\n\n{head} — the image is attached.");
+        } else if crate::vision::available() && (up.mime.starts_with("image/") && crate::vision::image_type(name).is_some() || ext == "pdf") && up.size <= 25 * 1024 * 1024 {
+            // A picture for a chat model that can't see, or a scanned PDF.
+            text += &format!("\n\n{head}");
+            looks.push((name.clone(), up.mime.clone(), path.clone()));
         } else {
             text += &format!(
                 "\n\n{head} — you can't see its contents{}; the Operator can put it on a machine (upload_place).",
@@ -336,7 +342,7 @@ pub fn attachments(hub: &Hub, files: &[String], vision: bool, who: &Who) -> (Str
             );
         }
     }
-    (text, images)
+    (text, images, looks)
 }
 
 /// One person's PMI, as lyra serve follows it.
@@ -524,9 +530,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     sync_role(&mut convs, &who);
                     let i = conv_for(&mut convs, &session, &who);
                     // Attached files: described (or read) in the message itself.
-                    let (about, images) = attachments(hub, &files, convs[i].app.vision, &who);
+                    let (about, images, looks) = attachments(hub, &files, convs[i].app.vision, &who);
                     let text = format!("{text}{about}").trim().to_string();
                     convs[i].app.attach_images = images;
+                    convs[i].app.attach_looks = looks;
                     // A new conversation, or another one, for this device only.
                     if text == "/new" {
                         let app = convs[0].app.fork_for(&who);

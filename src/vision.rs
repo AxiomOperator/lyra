@@ -35,6 +35,11 @@ pub fn configure(settings: Option<Settings>) {
     *SETTINGS.write().unwrap_or_else(|e| e.into_inner()) = settings;
 }
 
+/// A vision model is set up.
+pub fn available() -> bool {
+    SETTINGS.read().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
 fn settings() -> Option<Settings> {
     SETTINGS.read().unwrap_or_else(|e| e.into_inner()).clone()
 }

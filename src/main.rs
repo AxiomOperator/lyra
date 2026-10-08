@@ -220,6 +220,8 @@ enum StreamEvent {
     Error(String),
     /// Progress note from the worker for the activity log.
     Log(String),
+    /// What the vision model read off a file the user attached: kept with their message.
+    Seen(String),
     /// Something to say in the chat (a remote update finished, …).
     Notice(String),
     /// Health check results for the embedding/reranker models.
@@ -435,6 +437,9 @@ struct App {
     vision: bool,
     /// Images for the next message sent (from a device's attachments).
     attach_images: Vec<String>,
+    /// Attached files for the vision model to read in the turn (pictures for a
+    /// chat model that can't see, scanned PDFs): name, type, path.
+    attach_looks: Vec<(String, String, std::path::PathBuf)>,
     /// The web server, when this lyra is `lyra serve` (machines, devices).
     hub: Option<lyra_web::Hub>,
     /// Everything opened at startup, for starting another conversation.
@@ -579,6 +584,7 @@ impl App {
             hub: None,
             vision: config.vision,
             attach_images: Vec::new(),
+            attach_looks: Vec::new(),
             shared,
             primary: true,
             owner: lyra_web::users::OWNER.to_string(),
@@ -702,10 +708,29 @@ impl App {
             env.fleet = agents::fleet_mention(&content, &groups);
         }
         let owner = self.owner.clone();
+        let looks = std::mem::take(&mut self.attach_looks);
         thread::spawn(move || {
             // This turn works in its person's PMI account.
             pmi::set_user(&owner);
             let mut history = history;
+            // Pictures and scans the chat model can't see: the vision model reads
+            // them first, and what it saw goes with the message.
+            if !looks.is_empty() {
+                let mut seen = String::new();
+                for (name, _mime, path) in &looks {
+                    let _ = tx.send(StreamEvent::Log(format!("looking at {name}…")));
+                    let text = match std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| vision::read(name, &b, Some(&content))) {
+                        Ok(t) => t,
+                        Err(e) => format!("(couldn't read it: {e})"),
+                    };
+                    seen += &format!("\n\n**What {name} shows** (read by the vision model):\n{}", text.chars().take(12_000).collect::<String>());
+                }
+                if let Some(last) = history.iter_mut().rev().find(|m| m["role"] == "user") {
+                    let now = last["content"].as_str().unwrap_or("").to_string();
+                    last["content"] = json!(format!("{now}{seen}"));
+                }
+                let _ = tx.send(StreamEvent::Seen(seen));
+            }
             // Evolved behavior: guidelines, the matching workflow, the round limit.
             let mut max_rounds = 8;
             if let Some(evolution) = &evolution {
@@ -846,6 +871,12 @@ impl App {
                 self.save_session();
             }
             StreamEvent::Log(text) => self.log(Level::Info, text),
+            StreamEvent::Seen(text) => {
+                // With the message, so later turns know it too.
+                if let Some(m) = self.messages.iter_mut().rev().find(|m| m.role == "user") {
+                    m.content.push_str(&text);
+                }
+            }
             StreamEvent::Notice(text) => {
                 self.log(Level::Agent, text.clone());
                 self.messages.push(Message::new("info", text));

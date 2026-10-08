@@ -1158,6 +1158,8 @@ model = "Qwen3-VL-8B"                  # e.g. a Qwen-VL GGUF on llama-server wit
 max_pages = 6
 ```
 
+Pictures and scanned PDFs attached in chat go to it too: while lyra works on the reply, the vision model reads them, and what it saw is kept with your message so later turns know it. A chat model that can see (`vision = true`) gets pictures directly instead.
+
 Its calls count under `vision` in AI usage.
 
 ### Checking config.toml
