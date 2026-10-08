@@ -1178,6 +1178,22 @@ scripts/lyra-check-config --offline   # just the file
 
 It exits 0 when all is well and 1 on errors. It needs only Python 3.11+.
 
+### The chat
+
+The app's chat is built from Vercel AI Elements:
+- **Messages and tools:** each tool call is a card, with its arguments and result.
+  - Command output shows as a **terminal**.
+  - Folder listings show as a **file tree**.
+  - File contents are **syntax-highlighted**.
+- **Attachments:** picked files show as chips with picture previews, and stay on the message after it's sent.
+- **Approvals:** the Allow once / Deny / For session question appears at the tool call that asks. When there's no call to attach it to (another machine's step, a plan's), it waits above the composer.
+- **Agents' work:** each delegation is a task you can fold away, with its steps inside.
+- **Sources:** under an answer, the web pages it used and the memories lyra recalled for it.
+- **Context:** a small meter under each reply shows how much of the model's context it took. Hover it for the input, cached and output tokens, the time and the cost.
+- **Plans:** a running `/plan` shows above the composer, with its steps (to do and done), its budget, its recovery points (with Resume) and Run / Cancel.
+- **Model:** admins tap the model name in the composer to switch models.
+- **Starter prompts:** shown on an empty chat.
+
 ### The conversation list
 
 In the app's sidebar, conversations are grouped:

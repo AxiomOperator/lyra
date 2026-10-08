@@ -18,6 +18,7 @@ import { AtSign, Link2, Paperclip, ShieldAlert, ShieldCheck, ShieldX, Slash, Tri
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useLyra } from "./store";
 import type { Approval, ChatMessage, PairRequest } from "./types";
+import { ComposerModel, PlanCard, ToolFileContent, ToolFileTree, ToolTerminal, type PlanView } from "./chat-parts2";
 import { AgentTask, ApprovalAt, ComposerAttachments, ReplyContext, ReplySources, SentAttachments, StarterSuggestions, approvalCall, splitAttached, webSources } from "./chat-parts";
 
 /** The approval waiting, and the call it's shown at. */
@@ -84,6 +85,9 @@ function ToolCallView({ name, args, result }: { name: string; args: string; resu
   const fleet = obj && Array.isArray(obj.results) ? (obj.results as FleetResult[]) : null;
   const title = `${name}${where}${subject ? ` · ${subject.length > 70 ? subject.slice(0, 69) + "…" : subject}` : ""}`;
   const text = (v: unknown) => (typeof v === "string" ? v : "");
+  const listing = !!obj && Array.isArray(obj.entries) && (name === "file_list" || name === "project_list");
+  const fileText = obj && (name === "file_read" || name === "project_read") ? (typeof obj.content === "string" ? obj.content : typeof obj.text === "string" ? obj.text : null) : null;
+  const shown = !!obj && ("stdout" in obj || "stderr" in obj || listing || fileText !== null || typeof obj.content === "string");
   return (
     <Tool className="mb-0 bg-background/40">
       <ToolHeader type="dynamic-tool" toolName={name} title={title} state={state} className="text-left [&_span]:[overflow-wrap:anywhere]" />
@@ -100,21 +104,18 @@ function ToolCallView({ name, args, result }: { name: string; args: string; resu
             ))}
           </div>
         )}
+        {/* A command's output: a terminal. */}
         {obj && !error && !fleet && ("stdout" in obj || "stderr" in obj) && (
-          <div className="space-y-2">
-            <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-              Output · exit {String(obj.exit_code ?? "?")}
-              {obj.timed_out ? " · timed out" : ""}
-              {typeof obj.seconds === "number" ? ` · ${obj.seconds}s` : ""}
-            </h4>
-            {text(obj.stdout) && <pre className="max-h-80 overflow-auto rounded-md bg-black/40 p-3 font-mono text-xs whitespace-pre-wrap break-words">{text(obj.stdout)}</pre>}
-            {text(obj.stderr) && <pre className="max-h-48 overflow-auto rounded-md bg-red-950/30 p-3 font-mono text-red-300 text-xs whitespace-pre-wrap break-words">{text(obj.stderr)}</pre>}
-          </div>
+          <ToolTerminal title="Output" stdout={text(obj.stdout)} stderr={text(obj.stderr)} exit={obj.exit_code} seconds={typeof obj.seconds === "number" ? obj.seconds : undefined} timedOut={!!obj.timed_out} />
         )}
-        {obj && !error && !("stdout" in obj || "stderr" in obj) && typeof obj.content === "string" && (
+        {/* A folder listing: a tree. */}
+        {obj && !error && listing && <ToolFileTree entries={obj.entries as never} cut={!!(obj.truncated || obj.cut)} />}
+        {/* A file's words: highlighted when it's code. */}
+        {obj && !error && fileText !== null && <ToolFileContent path={String(input?.path ?? obj.path ?? "")} text={fileText} cut={!!(obj.truncated || obj.cut)} />}
+        {obj && !error && !fleet && fileText === null && !("stdout" in obj || "stderr" in obj) && typeof obj.content === "string" && (
           <pre className="max-h-80 overflow-auto rounded-md bg-black/40 p-3 font-mono text-xs whitespace-pre-wrap break-words">{obj.content}</pre>
         )}
-        {output !== undefined && !error && !fleet && !(obj && ("stdout" in obj || "stderr" in obj || typeof obj.content === "string")) && <ToolOutput output={output as never} errorText={undefined} />}
+        {output !== undefined && !error && !fleet && !shown && <ToolOutput output={output as never} errorText={undefined} />}
       </ToolContent>
     </Tool>
   );
@@ -340,7 +341,7 @@ async function upload(token: string, file: File): Promise<string> {
 }
 
 function Composer() {
-  const { say, send, status, token } = useLyra();
+  const { say, send, status, token, user } = useLyra();
   const [text, setText] = useState("");
   // The message as typed when dictation started; what's said goes after it.
   const typedBefore = useRef("");
@@ -486,7 +487,7 @@ function Composer() {
                 onTranscriptionChange={(said) => setText(withDictation(typedBefore.current, said))}
               />
             )}
-            <span className="truncate px-1 text-muted-foreground text-xs">{status.model}</span>
+            <ComposerModel admin={user?.admin ?? true} />
           </PromptInputTools>
           {/* While a reply is being written the button stops it. */}
           <PromptInputSubmit disabled={!status.waiting && !text.trim() && !files.length} status={status.waiting ? "streaming" : undefined} onStop={() => send({ type: "stop" })} />
@@ -564,6 +565,7 @@ export function ChatPage() {
         {pairing.map((p) => (
           <PairCard key={p.id} p={p} className="mx-3 mb-2" />
         ))}
+        {!!status.plan && (user?.admin ?? true) && <PlanCard plan={status.plan as PlanView} />}
         {approvals[0] && !asking && <ApprovalCard a={approvals[0]} more={approvals.length - 1} />}
         <Composer />
       </div>

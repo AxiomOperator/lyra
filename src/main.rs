@@ -2953,7 +2953,7 @@ const LESSON_GATE: &str = "Does this conversation teach the assistant a reusable
 /// Commands the app's pages and buttons may run (each still checked by role).
 const PAGE_COMMANDS: &[&str] = &[
     "/memory", "/approve", "/reject", "/deprecate", "/goal", "/goals", "/model", "/backup", "/routine", "/routines", "/status", "/diagnose", "/coding",
-    "/briefing", "/tasks", "/task", "/pmi", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami", "/usage", "/sessions",
+    "/briefing", "/tasks", "/task", "/pmi", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami", "/usage", "/sessions", "/plan",
 ];
 
 /// Commands a member (not an admin) may use. Their own memories, goals,

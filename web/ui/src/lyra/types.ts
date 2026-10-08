@@ -79,6 +79,8 @@ export interface Health {
 export interface Status {
   /** The chat model's context window in tokens (0: unknown). */
   context_window?: number;
+  /** The plan this conversation is running (see chat-parts2's PlanView). */
+  plan?: unknown;
   phase?: string;
   waiting?: boolean;
   model?: string;

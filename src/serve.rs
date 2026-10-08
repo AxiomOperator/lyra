@@ -106,6 +106,17 @@ fn status(app: &App, machines: &[String]) -> Value {
             json!({ "model": model, "decided": decided, "to_chat": to_chat, "ms": ms })
         }),
         "context_window": crate::stats::CONTEXT_WINDOW.load(std::sync::atomic::Ordering::Relaxed),
+        // The plan this conversation is running (the app's plan card).
+        "plan": app.current_plan.as_ref().map(|p| json!({
+            "id": lyra_execution::short(p.id), "version": p.version, "status": p.status, "busy": app.plan_busy,
+            "goal": app.current_goal.as_ref().map(|g| g.description.clone()),
+            "steps": p.steps.iter().map(|s| json!({
+                "key": s.key, "title": s.title, "description": s.description, "status": s.status,
+                "needs_approval": s.needs_approval(), "error": s.last_error, "attempts": s.attempts,
+            })).collect::<Vec<_>>(),
+            "budget": lyra_execution::budget::describe(&p.budget, &p.usage),
+            "note": p.note,
+        })),
         "approvals": app.approvals.iter().map(|r| json!({
             "id": r.id, "agent": r.agent, "what": r.what, "detail": r.detail, "why": r.why, "dangerous": r.dangerous, "tool": r.tool,
         })).collect::<Vec<_>>(),
@@ -1588,6 +1599,17 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         "routines" => crate::acting::run(&app.owner, || crate::routines::view(&[], 10)),
         "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
         // AI usage: everyone's and each person's for admins, their own for members.
+        // The current plan's recovery points (admins; members have no plans).
+        "plan_checkpoints" if app.admin => match (app.current_plan.as_ref(), app.engine.as_ref()) {
+            (Some(p), Some(engine)) => match engine.checkpoints(p.id) {
+                Ok(list) => json!(list.iter().rev().map(|c| json!({
+                    "at": c.created_at, "version": c.plan_version, "reason": c.reason,
+                    "done": c.completed_steps.iter().filter_map(|id| p.step(*id)).map(|s| s.key.clone()).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>()),
+                Err(e) => json!({ "error": e }),
+            },
+            _ => json!([]),
+        },
         "usage" => {
             let days = arg["days"].as_i64().unwrap_or(7);
             let mut v = crate::usage::summary(days, (!app.admin).then_some(app.owner.as_str()));
