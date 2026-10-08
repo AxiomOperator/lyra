@@ -210,6 +210,7 @@ fn parse(name: &str, text: &str, fallback_time: DateTime<Utc>) -> Result<Skill> 
         created_at,
         updated_at: time("updated")?.unwrap_or(created_at),
         agent: field("agent").filter(|a| !a.is_empty()),
+        owner: field("owner").filter(|a| !a.is_empty()),
         usage: Default::default(),
     })
 }
@@ -219,6 +220,7 @@ fn render(skill: &Skill) -> String {
     // Header values are single lines.
     let description = skill.description.split_whitespace().collect::<Vec<_>>().join(" ");
     let agent = skill.agent.as_ref().map_or(String::new(), |a| format!("agent: {a}\n"));
+    let agent = format!("{agent}{}", skill.owner.as_ref().map_or(String::new(), |o| format!("owner: {o}\n")));
     format!(
         "---\n\
          description: {description}\n\
@@ -325,6 +327,7 @@ pub(crate) mod tests {
             created_at: now,
             updated_at: now,
             agent: None,
+            owner: None,
             usage: Default::default(),
         }
     }

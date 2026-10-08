@@ -60,11 +60,13 @@ impl Learning {
         self.relevant_for(None, message)
     }
 
-    /// Skills for an agent: global ones and its own (A11, A15).
+    /// Skills for an agent: global ones and its own (A11, A15); and only the
+    /// shared ones and the own of whoever this turn is for.
     pub fn relevant_for(&self, agent: Option<&str>, message: &str) -> Result<Vec<Ranked>, String> {
         let limit = self.manager.settings().max_skills;
-        let found = self.run(self.manager.search(message, limit * 3))?;
-        Ok(found.into_iter().filter(|r| r.skill.agent.is_none() || r.skill.agent.as_deref() == agent).take(limit).collect())
+        let found = self.run(self.manager.search(message, limit * 6))?;
+        let viewer = viewer();
+        Ok(found.into_iter().filter(|r| (r.skill.agent.is_none() || r.skill.agent.as_deref() == agent) && r.skill.visible_to(viewer.as_deref())).take(limit).collect())
     }
 
     /// Make a skill an agent's own (or global again with `None`).
@@ -73,8 +75,10 @@ impl Learning {
         self.run(self.manager.set_agent(skill.id, agent))
     }
 
+    /// Active shared skills (the capability registry is everyone's: a
+    /// person's own skills stay out of it).
     pub fn active_skills(&self) -> Result<Vec<Skill>, String> {
-        self.run(self.manager.list(Some(SkillStatus::Active)))
+        Ok(self.run(self.manager.list(Some(SkillStatus::Active)))?.into_iter().filter(|s| s.owner.is_none()).collect())
     }
 
     /// A skill by name or id prefix.
@@ -112,10 +116,12 @@ impl Learning {
         trigger: &str,
         transcript: &str,
         run: Option<Uuid>,
+        owner: Option<&str>,
     ) -> Review<Applied> {
+        // The reviewer sees the shared skills and this person's own: nobody else's.
         let prepared = (|| -> Result<(String, Vec<String>), String> {
-            let all = self.run(self.manager.list(None))?;
-            let related = self.run(self.manager.related(transcript, 3))?;
+            let all: Vec<Skill> = self.run(self.manager.list(None))?.into_iter().filter(|s| s.visible_to(owner)).collect();
+            let related: Vec<Skill> = self.run(self.manager.related(transcript, 9))?.into_iter().filter(|s| s.visible_to(owner)).take(3).collect();
             let others: Vec<String> = all
                 .iter()
                 .filter(|s| !related.iter().any(|r| r.id == s.id))
@@ -134,7 +140,7 @@ impl Learning {
         };
         let outcome = evaluator::parse(&reply).and_then(|verdict| {
             let decision = verdict.decide(self.manager.settings().min_confidence, &names);
-            self.run(self.manager.apply(decision, run, trigger))
+            self.run(self.manager.apply_as(decision, run, trigger, owner))
         });
         Review { outcome, usage }
     }
@@ -144,7 +150,8 @@ impl Learning {
     pub fn curate(&self, url: &str, model: &str, run: Option<Uuid>) -> Review<Vec<String>> {
         let local = (|| -> Result<(lyra_learning::Report, Vec<Skill>), String> {
             let report = self.run(self.manager.review_collection())?;
-            let skills = self.run(self.manager.list(None))?;
+            // The shared collection only: a person's own skills are theirs to keep.
+            let skills: Vec<Skill> = self.run(self.manager.list(None))?.into_iter().filter(|s| s.owner.is_none()).collect();
             Ok((report, skills))
         })();
         let (report, skills) = match local {
@@ -180,7 +187,8 @@ impl Learning {
     }
 
     pub fn snapshot(&self) -> Result<SkillsSnapshot, String> {
-        let all = self.run(self.manager.list(None))?;
+        // The owner's TUI: the shared skills.
+        let all: Vec<Skill> = self.run(self.manager.list(None))?.into_iter().filter(|s| s.owner.is_none()).collect();
         let of = |status| all.iter().filter(|s| s.status == status).cloned().collect::<Vec<_>>();
         Ok(SkillsSnapshot {
             mode: self.mode(),
@@ -197,15 +205,17 @@ impl Learning {
     }
 
     /// The app's Skills page: every skill and the changes waiting for review.
-    pub fn page(&self) -> Result<Value, String> {
-        let all = self.run(self.manager.list(None))?;
-        let proposals = self.run(self.manager.proposals())?;
+    /// The Skills page for `viewer`: the shared skills and their own, and
+    /// which they may approve (`mine`: theirs alone; `can_decide`).
+    pub fn page_for(&self, viewer: Option<&str>, admin: bool) -> Result<Value, String> {
+        let all: Vec<Skill> = self.run(self.manager.list(None))?.into_iter().filter(|s| s.visible_to(viewer)).collect();
+        let proposals = self.visible_proposals(viewer, admin, &all)?;
         Ok(json!({
             "mode": self.mode().as_str(),
             "skills": all.iter().map(|s| json!({
                 "id": short_id(s.id), "name": s.name, "description": s.description, "instructions": s.instructions,
                 "status": s.status.as_str(), "confidence": s.confidence, "agent": s.agent, "record": track_record(s),
-                "updated": s.updated_at.to_rfc3339(),
+                "updated": s.updated_at.to_rfc3339(), "mine": s.owner.is_some(), "can_decide": s.editable_by(viewer, admin),
             })).collect::<Vec<_>>(),
             "proposals": proposals.iter().map(|p| json!({
                 "id": short_id(p.id), "change": self.describe_change(&p.change, &all), "reason": p.reason,
@@ -214,10 +224,23 @@ impl Learning {
         }))
     }
 
-    /// Text for `/skills`: what needs review in full, the rest briefly.
-    pub fn describe(&self) -> Result<String, String> {
-        let all = self.run(self.manager.list(None))?;
-        let proposals = self.run(self.manager.proposals())?;
+    /// Pending proposals `viewer` may decide: about their own skills, or (admins) shared ones.
+    fn visible_proposals(&self, viewer: Option<&str>, admin: bool, visible: &[Skill]) -> Result<Vec<lyra_learning::proposal::Proposal>, String> {
+        Ok(self
+            .run(self.manager.proposals())?
+            .into_iter()
+            .filter(|p| match p.change.subject() {
+                Some(id) => visible.iter().any(|s| s.id == id && s.editable_by(viewer, admin)),
+                None => admin && viewer.is_none(),
+            })
+            .collect())
+    }
+
+    /// Text for `/skills` for `viewer`: the shared skills and their own; what
+    /// needs review in full, the rest briefly.
+    pub fn describe_for(&self, viewer: Option<&str>, admin: bool) -> Result<String, String> {
+        let all: Vec<Skill> = self.run(self.manager.list(None))?.into_iter().filter(|s| s.visible_to(viewer)).collect();
+        let proposals = self.visible_proposals(viewer, admin, &all)?;
         let mut out = vec![format!(
             "Skill files: {} (one <name>.md per skill; edit them or add your own) · mode {}",
             self.dir,
@@ -325,25 +348,22 @@ impl Learning {
     /// A skill's procedure, for workflow steps in plans. Only active or
     /// proposed skills; rejected and deprecated ones aren't offered.
     pub fn instructions(&self, name: &str) -> Option<String> {
-        let skill = self.run(self.manager.find(name)).ok()?;
+        let skill = self.run(self.manager.find_as(name, viewer().as_deref())).ok()?;
         matches!(skill.status, SkillStatus::Active | SkillStatus::Proposed).then_some(skill.instructions)
     }
 
-    pub fn approve(&self, key: &str) -> Result<String, String> {
-        self.run(self.manager.approve(key))
+    /// Approve, reject, deprecate or forget as `viewer` (`None`: lyra's
+    /// owner): their own skills; shared ones only when `admin`.
+    pub fn decide(&self, what: &str, key: &str, viewer: Option<&str>, admin: bool) -> Result<String, String> {
+        self.run(self.manager.decide_as(what, key, viewer, admin))
     }
+}
 
-    pub fn reject(&self, key: &str) -> Result<String, String> {
-        self.run(self.manager.reject(key))
-    }
-
-    pub fn deprecate(&self, key: &str) -> Result<String, String> {
-        self.run(self.manager.deprecate(key, "deprecated by the user"))
-    }
-
-    pub fn forget(&self, key: &str) -> Result<String, String> {
-        self.run(self.manager.forget(key))
-    }
+/// Whose skills a thread may use: `None` for lyra's owner (the shared ones),
+/// else the person it works for (theirs too).
+fn viewer() -> Option<String> {
+    let u = crate::acting::current();
+    (!crate::acting::is_owner(&u)).then_some(u)
 }
 
 /// `5 uses · 80% success · reliability 0.71 · confidence 0.85`.

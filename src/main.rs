@@ -1352,10 +1352,8 @@ impl App {
     /// Review the conversation for a reusable lesson in the background: after
     /// every turn when a trigger fires, or on /learn (`forced`).
     fn review(&mut self, forced: bool) {
-        // Skills are shared: they learn only from the owner's conversations.
-        if self.personal().is_some() {
-            return;
-        }
+        // The owner's lessons become shared skills; anyone else's are theirs alone.
+        let owner = self.personal();
         let Some(learning) = self.learning.clone() else { return };
         if learning.mode() == Mode::Off || self.reviewing {
             return;
@@ -1397,7 +1395,7 @@ impl App {
                     }
                 },
             };
-            let review = learning.review(&url, &model, trigger, &transcript, run);
+            let review = learning.review(&url, &model, trigger, &transcript, run, owner.as_deref());
             let _ = tx.send(StreamEvent::Reviewed(review));
         });
     }
@@ -1448,11 +1446,12 @@ impl App {
         let last_run = self.last_run.clone();
         match name {
             "/help" => Ok(format!("{COMMANDS}\n{}\n{}\n{}\n{}\n{HELP_END}", goals::COMMANDS, agents::COMMANDS, evolve::COMMANDS, caps::COMMANDS)),
-            "/skills" => need().and_then(|l| l.describe()),
-            "/approve" => need().and_then(|l| l.approve(arg)),
-            "/reject" => need().and_then(|l| l.reject(arg)),
-            "/deprecate" => need().and_then(|l| l.deprecate(arg)),
-            "/forget-skill" => need().and_then(|l| l.forget(arg)),
+            // Each person's own skills are theirs to decide; shared ones an admin's.
+            "/skills" => need().and_then(|l| l.describe_for(self.personal().as_deref(), self.admin)),
+            "/approve" => need().and_then(|l| l.decide("approve", arg, self.personal().as_deref(), self.admin)),
+            "/reject" => need().and_then(|l| l.decide("reject", arg, self.personal().as_deref(), self.admin)),
+            "/deprecate" => need().and_then(|l| l.decide("deprecate", arg, self.personal().as_deref(), self.admin)),
+            "/forget-skill" => need().and_then(|l| l.decide("forget", arg, self.personal().as_deref(), self.admin)),
             "/history" => need().and_then(|l| l.history(arg)),
             "/rollback" => need().and_then(|l| l.rollback(arg)),
             "/outcome" => (|| {
@@ -2145,10 +2144,10 @@ impl App {
             self.reviewing = true;
             let transcript = format!("Goal: {goal_text}\n\n{}", plan::events(&engine, &plan).unwrap_or_default());
             let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-            let (model, tx) = (self.model.clone(), self.tx.clone());
+            let (model, tx, owner) = (self.model.clone(), self.tx.clone(), self.personal());
             self.log(Level::Learn, "reviewing the plan's recoveries for a lesson".into());
             thread::spawn(move || {
-                let review = learning.review(&url, &model, "a failed step was replaced by a working one (plan execution)", &transcript, None);
+                let review = learning.review(&url, &model, "a failed step was replaced by a working one (plan execution)", &transcript, None, owner.as_deref());
                 let _ = tx.send(StreamEvent::Reviewed(review));
             });
         }
@@ -3000,6 +2999,8 @@ const PAGE_COMMANDS: &[&str] = &[
 fn member_may(name: &str, arg: &str) -> bool {
     match name {
         "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" => true,
+        // Their own skills (the commands check whose each one is).
+        "/approve" | "/reject" | "/deprecate" => true,
         // Their own PMI account, routines and goals.
         "/pmi" | "/tasks" | "/task" | "/routine" | "/routines" | "/calendar" | "/mail" | "/today" | "/style" | "/notes" | "/note" | "/list" => true,
         // Looking after their own memories (held to their scope there).
@@ -3053,7 +3054,7 @@ mod member_tests {
         }
         assert!(super::member_may("/model", "") && !super::member_may("/model", "other-model"), "look, not change");
         assert!(super::member_may("/memory", "forget 1a2b") && !super::member_may("/memory", "curate") && !super::member_may("/memory", "approve 1a2b"));
-        for no in ["/outcome", "/machines", "/devices", "/users", "/backup", "/caps", "/approve", "/evolve", "/plan", "/agent", "/coding", "/diagnose"] {
+        for no in ["/outcome", "/machines", "/devices", "/users", "/backup", "/caps", "/evolve", "/plan", "/agent", "/coding", "/diagnose"] {
             assert!(!super::member_may(no, "x"), "{no}");
         }
         // Their own routines and goals, but no plans or autonomy.

@@ -229,6 +229,7 @@ function SkillCard({ s, busy, act }: { s: SkillRow; busy: boolean; act: (c: stri
         <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
           {s.name}
           {s.agent && <Badge variant="outline">{s.agent}</Badge>}
+          {s.mine && <Badge className="bg-primary/15 text-primary">yours</Badge>}
         </CardTitle>
         <CardDescription className="break-words">{s.description}</CardDescription>
         <CardAction>
@@ -240,6 +241,10 @@ function SkillCard({ s, busy, act }: { s: SkillRow; busy: boolean; act: (c: stri
       <CardContent className="space-y-2 px-4">
         {open && <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 p-2 font-mono text-xs">{s.instructions}</pre>}
         <p className="text-muted-foreground text-xs">{s.record}</p>
+        {/* Their own to decide; a shared one is an admin's. */}
+        {s.can_decide === false ? (
+          s.status === "proposed" && <p className="text-muted-foreground text-xs">Shared: an admin approves it.</p>
+        ) : (
         <div className="flex flex-wrap gap-2">
           {s.status !== "active" && (
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => act(`/approve ${s.id}`)}>
@@ -257,6 +262,7 @@ function SkillCard({ s, busy, act }: { s: SkillRow; busy: boolean; act: (c: stri
             </Button>
           )}
         </div>
+        )}
       </CardContent>
     </Card>
   );

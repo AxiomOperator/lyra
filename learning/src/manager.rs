@@ -143,6 +143,16 @@ impl<S: SkillStore> SkillManager<S> {
 
     /// A skill by exact name or id prefix.
     pub async fn find(&self, key: &str) -> Result<Skill> {
+        self.find_in(key, |_| true).await
+    }
+
+    /// A skill `viewer` may see (shared, or theirs), by name or id prefix.
+    pub async fn find_as(&self, key: &str, viewer: Option<&str>) -> Result<Skill> {
+        let viewer = viewer.map(str::to_string);
+        self.find_in(key, move |s| s.visible_to(viewer.as_deref())).await
+    }
+
+    async fn find_in(&self, key: &str, keep: impl Fn(&Skill) -> bool) -> Result<Skill> {
         let key = key.trim();
         if key.is_empty() {
             bail!("give a skill name or id");
@@ -151,7 +161,7 @@ impl<S: SkillStore> SkillManager<S> {
             .list(None)
             .await?
             .into_iter()
-            .filter(|s| s.name == key || s.id.to_string().starts_with(key))
+            .filter(|s| keep(s) && (s.name == key || s.id.to_string().starts_with(key)))
             .collect();
         match matches.len() {
             0 => bail!("no skill matches {key:?}"),
@@ -261,11 +271,20 @@ impl<S: SkillStore> SkillManager<S> {
     /// Act on a reviewer's decision: create a proposed skill, refine one (or
     /// propose the refinement), or record why nothing was learned.
     pub async fn apply(&self, decision: Decision, run: Option<Uuid>, evidence: &str) -> Result<Applied> {
+        self.apply_as(decision, run, evidence, None).await
+    }
+
+    /// Act on a review of `owner`'s conversation (`None`: lyra's owner, whose
+    /// skills are shared): new skills are theirs; only their own are refined.
+    pub async fn apply_as(&self, decision: Decision, run: Option<Uuid>, evidence: &str, owner: Option<&str>) -> Result<Applied> {
         match decision {
             Decision::Ignore(why) => Ok(Applied::Ignored(why)),
-            Decision::Create(c) => Ok(Applied::Created(self.learn(c, "conversation", run).await?)),
+            Decision::Create(c) => Ok(Applied::Created(self.learn_as(c, "conversation", run, owner).await?)),
             Decision::Update { skill, description, instructions, confidence, reason } => {
-                let target = self.find(&skill).await?;
+                let target = self.find_as(&skill, owner).await?;
+                if target.owner.as_deref() != owner {
+                    return Ok(Applied::Ignored(format!("{} is shared: only an admin changes it", target.name)));
+                }
                 if target.status == SkillStatus::Rejected {
                     return Ok(Applied::Ignored(format!("{} was rejected before", target.name)));
                 }
@@ -289,10 +308,25 @@ impl<S: SkillStore> SkillManager<S> {
 
     /// Save a new skill. It starts proposed; approval or evidence makes it active.
     pub async fn learn(&self, c: Candidate, source: &str, run: Option<Uuid>) -> Result<Skill> {
+        self.learn_as(c, source, run, None).await
+    }
+
+    /// The same, for one person: theirs alone (`owner`), or shared with `None`.
+    /// A name someone else already has gets a number.
+    pub async fn learn_as(&self, c: Candidate, source: &str, run: Option<Uuid>, owner: Option<&str>) -> Result<Skill> {
         let now = Utc::now();
+        let mut name = c.name.clone();
+        if owner.is_some() {
+            let taken: Vec<String> = self.list(None).await?.into_iter().map(|s| s.name).collect();
+            let mut n = 2;
+            while taken.contains(&name) {
+                name = format!("{}-{n}", c.name);
+                n += 1;
+            }
+        }
         let skill = Skill {
             id: Uuid::new_v4(),
-            name: c.name,
+            name,
             description: c.description,
             instructions: c.instructions,
             source: source.to_string(),
@@ -301,6 +335,7 @@ impl<S: SkillStore> SkillManager<S> {
             created_at: now,
             updated_at: now,
             agent: None,
+            owner: owner.map(str::to_string),
             usage: Default::default(),
         };
         let skill = self.store.create(skill).await?;
@@ -415,6 +450,38 @@ impl<S: SkillStore> SkillManager<S> {
         }
         self.set_status(&skill, SkillStatus::Active, "approved", "approved by the user", "", None).await?;
         Ok(format!("approved {} — it will be used from now on", skill.name))
+    }
+
+    /// Approve, reject or deprecate as `viewer`: their own skills (and
+    /// proposals about them); shared ones only when `admin`.
+    pub async fn decide_as(&self, what: &str, key: &str, viewer: Option<&str>, admin: bool) -> Result<String> {
+        let editable = |s: &Skill| s.editable_by(viewer, admin);
+        if let Some(p) = self.find_proposal(key).await? {
+            let subject = match p.change.subject() {
+                Some(id) => self.get(id).await?,
+                None => None,
+            };
+            let ok = match &subject {
+                Some(s) => editable(s),
+                // Merges and splits of the collection: admins.
+                None => admin,
+            };
+            if !ok {
+                bail!("no proposal or skill matches {key:?}");
+            }
+        } else {
+            let skill = self.find_as(key, viewer).await?;
+            if !editable(&skill) {
+                bail!("{} is shared: only an admin can {what} it", skill.name);
+            }
+        }
+        match what {
+            "approve" => self.approve(key).await,
+            "reject" => self.reject(key).await,
+            "deprecate" => self.deprecate(key, "deprecated by the user").await,
+            "forget" => self.forget(key).await,
+            other => bail!("can't {other} a skill"),
+        }
     }
 
     /// Reject a proposed skill (for good) or a pending proposal.
@@ -748,6 +815,26 @@ mod tests {
         let (versions, events) = m.history(skill.id).await.unwrap();
         assert_eq!(versions.len(), 1);
         assert_eq!(events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), ["approved", "created"]);
+    }
+
+    #[tokio::test]
+    async fn personal_skills_are_their_owners_alone() {
+        let m = manager(Mode::Propose).await;
+        let shared = m.learn(candidate("rust-commit", 0.9), "conversation", None).await.unwrap();
+        let mine = m.learn_as(candidate("rust-commit", 0.9), "conversation", None, Some("dana")).await.unwrap();
+        assert_eq!((mine.name.as_str(), mine.owner.as_deref()), ("rust-commit-2", Some("dana")), "a name already taken gets a number");
+        assert!(shared.visible_to(Some("dana")) && mine.visible_to(Some("dana")));
+        assert!(!mine.visible_to(None) && !mine.visible_to(Some("juan")), "nobody else sees it, not even the owner");
+        // Dana approves her own; not the shared one, and Juan can't touch hers.
+        assert!(m.decide_as("approve", "rust-commit", Some("dana"), false).await.unwrap_err().to_string().contains("only an admin"));
+        assert!(m.decide_as("approve", "rust-commit-2", Some("juan"), false).await.is_err());
+        assert!(m.decide_as("approve", "rust-commit-2", None, true).await.is_err(), "an admin can't approve someone's personal skill");
+        m.decide_as("approve", "rust-commit-2", Some("dana"), false).await.unwrap();
+        assert_eq!(m.get(mine.id).await.unwrap().unwrap().status, SkillStatus::Active);
+        m.decide_as("approve", "rust-commit", None, true).await.unwrap();
+        // Her conversations' reviews may refine hers, not the shared one.
+        let d = decision(r#"{"action":"update","skill":"rust-commit","description":"x","instructions":"Always run cargo test.","confidence":0.8,"reason":"r"}"#, &["rust-commit"]);
+        assert!(matches!(m.apply_as(d, None, "e", Some("dana")).await.unwrap(), Applied::Ignored(_)));
     }
 
     #[tokio::test]

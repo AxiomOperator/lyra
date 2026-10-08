@@ -212,6 +212,10 @@ export interface SkillRow {
   agent: string | null;
   record: string;
   updated: string;
+  /** Theirs alone (learned from and for them). */
+  mine?: boolean;
+  /** They may approve, reject or stop it (their own; shared ones: admins). */
+  can_decide?: boolean;
 }
 
 export interface SkillsPageData {

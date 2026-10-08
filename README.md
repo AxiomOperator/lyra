@@ -1109,7 +1109,11 @@ owner's stay where they are):
 - **Briefings:** a coworker's morning briefing also covers their own routine runs and goals.
 
 What stays shared, and what each person keeps:
-- **Learning:** skills and evolution learn only from the owner's conversations. Automatic
+- **Skills:** everyone's conversations teach lyra skills.
+  - Lessons from the owner's conversations become **shared** skills that everyone's conversations use.
+  - Lessons from anyone else's are **theirs alone**, marked `owner: <id>` in the skill file. Only their own conversations and agents use one; it isn't listed for anyone else, the owner included; the shared curator doesn't touch it; and it stays out of the shared tool registry.
+  - Each person approves, rejects or stops their own skills on the Skills page (**yours**) or with `/approve`, `/reject` and `/deprecate`. Shared skills are approved by an admin.
+- **Learning:** evolution learns only from the owner's conversations. Automatic
   memory capture works for everyone, but each person's capture compares against their own
   memories and saves only into their own scope, whatever the model suggests. The owner's
   capture can never write into anyone else's.

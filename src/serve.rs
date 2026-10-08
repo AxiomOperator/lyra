@@ -1762,7 +1762,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         "activity" => json!(app.activity.iter().rev().take(200).map(|a| json!({ "time": a.time, "level": level_name(a.level), "text": a.text })).collect::<Vec<_>>()),
         "agents" => text(app.agents.as_deref().map(crate::agents::list).ok_or("agents are off".into())),
         "goals" => page(app.goals.clone().ok_or("goals are off ([goals] enabled)".to_string()).and_then(|g| crate::goals::page(&g))),
-        "skills" => page(app.learning.clone().ok_or("learning is off".to_string()).and_then(|l| l.page())),
+        "skills" => page(app.learning.clone().ok_or("learning is off".to_string()).and_then(|l| l.page_for(app.personal().as_deref(), app.admin))),
         "memory" => {
             let mine = app.personal().map(|u| format!("user:{u}"));
             page(app.mem().ok_or("memory is off".to_string()).and_then(|m| m.page(arg["query"].as_str().unwrap_or(""), arg["scope"].as_str().unwrap_or(""), mine.as_deref())))

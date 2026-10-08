@@ -1102,6 +1102,8 @@ impl crate::App {
         };
         let (learning, tx, message) = (self.learning.clone(), self.tx.clone(), message.to_string());
         let (url, model) = (format!("{}/chat/completions", self.base_url.trim_end_matches('/')), self.model.clone());
+        // A lesson from someone's conversation is theirs.
+        let owner = self.personal();
         std::thread::spawn(move || {
             let Ok(records) = agents.registry.set_outcome(run, word) else { return };
             if records.is_empty() {
@@ -1111,7 +1113,7 @@ impl crate::App {
             let Some(learning) = learning.filter(|_| outcome == lyra_learning::SkillOutcome::Failure) else { return };
             for r in records {
                 let transcript = format!("Task given to the {} agent: {}\n\nIts result:\n{}\n\nThe user's reaction: {message}", r.agent, r.task, r.output);
-                let review = learning.review(&url, &model, "the user corrected a specialist agent's work", &transcript, Some(run));
+                let review = learning.review(&url, &model, "the user corrected a specialist agent's work", &transcript, Some(run), owner.as_deref());
                 if let Ok(lyra_learning::Applied::Created(skill)) = &review.outcome {
                     let note = match learning.assign(&skill.name, Some(&r.agent)) {
                         Ok(_) => format!("{} is now {}'s own skill", skill.name, r.agent),

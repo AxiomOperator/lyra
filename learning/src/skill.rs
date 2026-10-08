@@ -29,8 +29,29 @@ pub struct Skill {
     /// every agent may use.
     #[serde(default)]
     pub agent: Option<String>,
+    /// The person it's theirs alone (learned from and for them); `None`
+    /// means a shared skill everyone's conversations use.
+    #[serde(default)]
+    pub owner: Option<String>,
     #[serde(skip)]
     pub usage: Usage,
+}
+
+impl Skill {
+    /// `viewer` (a person, or `None` for lyra's owner) may see and use it:
+    /// shared skills, and their own.
+    pub fn visible_to(&self, viewer: Option<&str>) -> bool {
+        self.owner.is_none() || self.owner.as_deref() == viewer
+    }
+
+    /// `viewer` may approve, reject or change it: their own; a shared one
+    /// only an admin.
+    pub fn editable_by(&self, viewer: Option<&str>, admin: bool) -> bool {
+        match &self.owner {
+            Some(o) => Some(o.as_str()) == viewer,
+            None => admin,
+        }
+    }
 }
 
 /// How a skill has fared in the runs that used it.
