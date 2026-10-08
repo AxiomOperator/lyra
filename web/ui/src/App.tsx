@@ -310,11 +310,15 @@ function Shell() {
       style={{ "--sidebar-width": "calc(var(--spacing) * 84)", "--header-height": "calc(var(--spacing) * 12)" } as React.CSSProperties}
     >
       <AppSidebar tabs={tabs} more={more} tab={tab} setTab={setTab} update={updateApp} />
-      <SidebarInset className="min-h-0 min-w-0 overflow-hidden">
+      <SidebarInset className="min-h-0 min-w-0 overflow-hidden pb-[env(safe-area-inset-bottom)] md:pb-0">
         {/* dashboard-01's site header: the sidebar toggle, the page, what lyra is doing. */}
         <header className="flex shrink-0 items-center gap-2 border-b pt-[env(safe-area-inset-top)] md:h-(--header-height) md:pt-0">
           <div className="flex w-full items-center gap-1 px-4 py-2 md:py-0 lg:gap-2 lg:px-6">
-            <SidebarTrigger className="-ml-1" />
+            {/* On a phone the pages are in the sidebar: a dot here says something waits there. */}
+            <span className="relative -ml-1">
+              <SidebarTrigger />
+              {[...tabs, ...more].some((t) => (t.badge ?? 0) > 0) && <span className="pointer-events-none absolute top-1 right-1 size-2 rounded-full bg-amber-400 md:hidden" />}
+            </span>
             <Separator orientation="vertical" className="mx-2 data-[orientation=vertical]:h-4" />
             <span className={cn("size-2 shrink-0 rounded-full md:hidden", connected ? "bg-emerald-500" : "bg-red-500")} />
             <div className="min-w-0 flex-1">
@@ -372,26 +376,6 @@ function Shell() {
           {tab === "users" && <UsersPage onBack={toMore} />}
         </div>
 
-        <nav className="grid border-t bg-card/60 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden" style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}>
-          {/* Five fit: Devices lives under More on a phone. */}
-          {tabs
-            .filter((t) => t.id !== "devices")
-            .map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => setTab(t.id)}
-                className={cn(
-                  "relative flex flex-col items-center gap-0.5 pt-2 pb-2 text-[11px]",
-                  tab === t.id || (t.id === "more" && (manage.includes(tab as Manage) || tab === "devices")) ? "text-teal-400" : "text-muted-foreground",
-                )}
-              >
-                <t.icon className="size-5" />
-                {t.label}
-                {!!t.badge && <span className="absolute top-1 right-[calc(50%-1.4rem)] min-w-4 rounded-full bg-amber-400 px-1 font-semibold text-[10px] text-black">{t.badge}</span>}
-              </button>
-            ))}
-        </nav>
       </SidebarInset>
     </SidebarProvider>
   );
