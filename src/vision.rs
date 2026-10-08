@@ -1,6 +1,6 @@
 //! Reading what isn't text: PDFs (their text layer, else their scanned
 //! pages) and images, for the project folders, OneDrive files and attachments.
-//! Pictures go to the vision model (`[vision]`, any OpenAI-compatible model
+//! Pictures go to the vision model (`[vision_model]`, any OpenAI-compatible model
 //! that takes `image_url` parts, e.g. Qwen-VL on llama-server with --mmproj),
 //! which answers in text, so the chat model needn't see.
 
@@ -11,7 +11,7 @@ use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-/// `[vision]`.
+/// `[vision_model]`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Settings {
     /// Its base URL, e.g. `http://gpu:8090/v1` (`/chat/completions` is added).
@@ -54,7 +54,7 @@ Then describe briefly anything else that matters: photos, diagrams, stamps, sign
 
 /// Ask the vision model about images (`(mime, bytes)`).
 pub fn look(images: &[(&str, &[u8])], question: Option<&str>) -> Result<String, String> {
-    let s = settings().ok_or("lyra has no vision model to look at pictures and scans: add one under [vision] in config.toml")?;
+    let s = settings().ok_or("lyra has no vision model to look at pictures and scans: add one under [vision_model] in config.toml")?;
     let mut parts: Vec<Value> = vec![json!({ "type": "text", "text": question.filter(|q| !q.trim().is_empty()).map_or(LOOK.to_string(), |q| format!("{q}\n\n{LOOK}")) })];
     parts.extend(images.iter().map(|(mime, bytes)| json!({ "type": "image_url", "image_url": { "url": format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)) } })));
     let body = json!({ "model": s.model, "messages": [{ "role": "user", "content": parts }], "temperature": 0.1, "max_tokens": 4096 });
@@ -121,7 +121,7 @@ pub fn pdf(bytes: &[u8], question: Option<&str>) -> Result<String, String> {
         return Err("this PDF has no text and no scanned pages lyra can pick out".into());
     }
     if settings().is_none() {
-        return Err(format!("this PDF is a scan ({total} page{}): lyra needs a vision model to read it (add [vision] to config.toml)", if total == 1 { "" } else { "s" }));
+        return Err(format!("this PDF is a scan ({total} page{}): lyra needs a vision model to read it (add [vision_model] to config.toml)", if total == 1 { "" } else { "s" }));
     }
     let imgs: Vec<(&str, &[u8])> = scans.iter().map(|b| ("image/jpeg", b.as_slice())).collect();
     let text = look(&imgs, question)?;
@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn without_a_vision_model_pictures_say_what_to_add() {
         configure(None);
-        assert!(look(&[("image/png", b"x")], None).unwrap_err().contains("[vision]"));
+        assert!(look(&[("image/png", b"x")], None).unwrap_err().contains("[vision_model]"));
         assert!(pdf(b"not a pdf", None).is_err());
     }
 }

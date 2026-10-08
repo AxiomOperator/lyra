@@ -2728,15 +2728,10 @@ impl App {
                 health::configure(config.health.clone());
                 coding::configure(config.coding.clone());
                 briefing::configure(config.briefing.clone());
-    planner::configure(config.planner.clone());
-    usage::configure(prices(&config));
-    vision::configure(config.vision_model.clone());
-    proactive::configure(config.proactive.clone());
                 planner::configure(config.planner.clone());
                 usage::configure(prices(&config));
                 vision::configure(config.vision_model.clone());
                 proactive::configure(config.proactive.clone());
-    pmi::configure(config.pmi.clone());
                 pmi::configure(config.pmi.clone());
                 self.pricing = pricing(&config);
                 if let Some(mem) = self.mem() {
@@ -3653,6 +3648,10 @@ fn main() {
     coding::configure(config.coding.clone());
     briefing::configure(config.briefing.clone());
     pmi::configure(config.pmi.clone());
+    planner::configure(config.planner.clone());
+    usage::configure(prices(&config));
+    vision::configure(config.vision_model.clone());
+    proactive::configure(config.proactive.clone());
     let web = config.web.clone();
     let mut app = App::new(config, Context::load(), services);
     for note in migrated {
