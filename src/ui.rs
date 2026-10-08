@@ -317,7 +317,7 @@ fn draw_panels(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(Paragraph::new(plan).block(Block::bordered().title(plan_title)), plan_area);
     }
 
-    f.render_widget(Paragraph::new(session).block(Block::bordered().title(" Session ")), session_area);
+    f.render_widget(Paragraph::new(session).block(Block::bordered().title(format!(" Session · lyra {} ", crate::changelog::version()))), session_area);
     f.render_widget(Paragraph::new(agent).block(Block::bordered().title(" Agent ")), agent_area);
     if !agents.is_empty() {
         f.render_widget(Paragraph::new(agents).block(Block::bordered().title(agents_title)), agents_area);

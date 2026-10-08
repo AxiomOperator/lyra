@@ -1230,6 +1230,17 @@ scripts/lyra-check-config --offline   # just the file
 
 It exits 0 when all is well and 1 on errors. It needs only Python 3.11+.
 
+### What's new and versions
+
+Every change to lyra is listed in `CHANGELOG.json`, newest first. You see it on the app's **What's new** page (in the rail and in the menu under your initials). After an update, a note says which version you're on now and links there.
+
+Versions are `major.minor.fix.build`:
+- **build** counts every change and only starts again with a new major;
+- **minor** goes up for features;
+- **fix** goes up for bug fixes.
+
+`lyra --version` prints the version, and the TUI shows it in the Session panel's title.
+
 ### The chat
 
 The app's chat is built from Vercel AI Elements:

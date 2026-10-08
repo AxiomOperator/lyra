@@ -50,6 +50,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
 import { ConversationList } from "./lyra/conversations";
 import { EverythingSearch } from "./lyra/everything";
+import { UpdatedNote, WhatsNewPage } from "./lyra/whatsnew";
 import { GoalsPage, MemoryPage, ModelsPage, RoutinesPage, SkillsPage } from "./lyra/manage";
 import { TasksPage } from "./lyra/tasks";
 import { NotesPage } from "./lyra/notes";
@@ -67,10 +68,10 @@ import { loadToken, saveToken, takeShared } from "./lyra/token";
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users";
-const manage: Manage[] = ["tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users"];
+type Manage = "whatsnew" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users";
+const manage: Manage[] = ["whatsnew", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users"];
 /** What a member (not an admin) has: their chats, tasks, status, activity, skills. */
-const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "tasks", "notes", "projects", "routines", "goals", "memory", "usage"];
+const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "whatsnew", "tasks", "notes", "projects", "routines", "goals", "memory", "usage"];
 
 type TabItem = {
   id: Tab;
@@ -83,7 +84,7 @@ type TabItem = {
 const railGroups: Tab[][] = [
   ["chat", "status", "activity"],
   ["tasks", "notes", "projects", "routines", "goals"],
-  ["memory", "skills", "coding", "model"],
+  ["memory", "skills", "coding", "model", "whatsnew"],
   ["machines", "devices", "users", "usage"],
 ];
 
@@ -188,10 +189,14 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
                       decides: {status.decide.model} · {status.decide.ms} ms
                     </span>
                   )}
+                  <span className="text-muted-foreground">lyra {status.version ?? "…"}</span>
                   <span className="text-muted-foreground">app {APP_VERSION}</span>
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => go("whatsnew")}>
+                <Sparkles /> What's new
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => go("more")}>
                 <Bell /> Notifications & more
               </DropdownMenuItem>
@@ -304,6 +309,7 @@ function Shell() {
   const more: TabItem[] = ([
     { id: "tasks", label: "Tasks", icon: ListTodo, badge: (status.pmi?.tasks ?? []).filter((t) => t.due && t.due < todayKey).length + pmiWaiting },
     { id: "notes", label: "Notes", icon: NotebookPen },
+    { id: "whatsnew", label: "What's new", icon: Sparkles },
     { id: "projects", label: "Projects", icon: FolderOpen },
     { id: "routines", label: "Routines", icon: AlarmClock, badge: (status.routines ?? []).filter((r) => r.runs[0]?.needs_user).length },
     { id: "coding", label: "Coding", icon: Code2 },
@@ -377,6 +383,11 @@ function Shell() {
             <AlertDescription className="text-amber-300">{banner}</AlertDescription>
           </Alert>
         )}
+        {!newer && (
+          <div className="px-3">
+            <UpdatedNote open={() => setTab("whatsnew")} />
+          </div>
+        )}
         {newer && (
           <div className="flex items-center justify-between gap-3 border-b bg-teal-950/40 px-4 py-2 text-sm text-teal-200 lg:px-6">
             <span className="flex items-center gap-2">
@@ -397,6 +408,7 @@ function Shell() {
           {tab === "more" && <MorePage toChat={() => setTab("chat")} open={setTab} update={updateApp} />}
           {tab === "tasks" && <TasksPage onBack={toMore} />}
           {tab === "notes" && <NotesPage onBack={toMore} />}
+          {tab === "whatsnew" && <WhatsNewPage onBack={toMore} />}
           {tab === "projects" && <ProjectsPage onBack={toMore} />}
           {tab === "routines" && <RoutinesPage onBack={toMore} toChat={() => setTab("chat")} />}
           {tab === "coding" && <CodingPage onBack={toMore} />}

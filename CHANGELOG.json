@@ -1,0 +1,278 @@
+[
+  {
+    "version": "0.20.0.136",
+    "date": "2026-10-08",
+    "title": "What's new and version numbers",
+    "new": [
+      "This What's new page: every change to lyra, newest first.",
+      "lyra has a version number (major.minor.fix.build), shown in the menu under your initials.",
+      "After an update, a note tells you the new version and links here."
+    ]
+  },
+  {
+    "version": "0.19.0.135",
+    "date": "2026-10-08",
+    "title": "Assistant: finding times, recaps, watches and more",
+    "new": [
+      "Find a time: \"find 30 minutes with Dana and Juan next week\" checks everyone's free/busy and suggests slots in your working hours; pick one and lyra sends the invite after your Allow.",
+      "End-of-day recap at the end of your working day: today's meetings, tasks that slipped, mail waiting and how tomorrow starts. On the Status page too, and /recap.",
+      "\"Tell me when …\": lyra watches for mail from someone, a reply to a thread, a PMI task changing or a Teams message, and lets you know. See and stop them on the Status page.",
+      "Meeting follow-up: after a Teams meeting, lyra summarizes the transcript, lists decisions and action items, offers your items as tasks and drafts the follow-up mail (once an admin turns transcripts on).",
+      "Search everything with Ctrl-K (⌘K): conversations, notes, memories, mail, Teams and files at once.",
+      "Read replies aloud: a speaker on each reply, an auto-read switch for the car, speed and your device's voices.",
+      "Your own skills: what lyra learns from your conversations is yours alone, and you approve, reject or stop it on the Skills page."
+    ],
+    "improved": [
+      "When lyra wants to change a file in a project folder, the Allow card shows the change line by line (removed in red, added in green)."
+    ]
+  },
+  {
+    "version": "0.18.0.127",
+    "date": "2026-10-07",
+    "title": "A richer chat",
+    "new": [
+      "Pictures and scanned PDFs you attach in chat are read by the vision model, so lyra knows what they show.",
+      "Files you attach show as chips with previews and stay on your message.",
+      "Approvals appear right at the step that asks.",
+      "An agent's work is a card you can fold away, with its steps inside.",
+      "Sources under answers: the web pages used and the memories lyra recalled.",
+      "A small meter under each reply shows how much of the model's context it used, with tokens and cost on hover.",
+      "Starter prompts on an empty chat.",
+      "Plans show their steps, recovery points and Run / Cancel above the composer.",
+      "Command output looks like a terminal, folder listings like a tree, and file contents are highlighted.",
+      "Admins switch models by tapping the model name in the composer."
+    ],
+    "improved": [
+      "lyra's teal (from its icon) as the accent colour.",
+      "Names under the sidebar's icons on desktop too.",
+      "A quieter New conversation button."
+    ]
+  },
+  {
+    "version": "0.17.0.121",
+    "date": "2026-10-07",
+    "title": "A tidier sidebar",
+    "new": [
+      "Conversations grouped: Pinned, your folders, then Today, Yesterday, This week, This month, Earlier, and Archived.",
+      "Pin, move to a folder or archive a conversation from its ⋯ menu; lyra suggests a folder for new ones."
+    ],
+    "improved": [
+      "lyra's pages moved to a slim icon rail, so the sidebar beside it is just your conversations, one line each.",
+      "On a phone the bottom tab bar is gone (everything is in the sidebar); a dot on the menu button means something is waiting.",
+      "Names under the icons on a phone."
+    ],
+    "fixed": [
+      "The icon column no longer shows a sideways scroll bar."
+    ]
+  },
+  {
+    "version": "0.16.0.116",
+    "date": "2026-10-07",
+    "title": "Project folders, PDFs and pictures",
+    "new": [
+      "Projects: lend lyra a folder on your own PC (Chrome or Edge); it can list, read, search and, with your Allow, write files there. Only you can reach it.",
+      "Always allow a folder, so lyra writes there without asking each time.",
+      "lyra reads PDFs, and with a vision model scanned PDFs and pictures too.",
+      "Every model's cost (embeddings, reranker, decisions, vision) counts in AI usage.",
+      "A script that checks lyra's settings before a restart (scripts/lyra-check-config)."
+    ],
+    "fixed": [
+      "Asking about a lent folder no longer wanders off to the server or another machine.",
+      "A white logo on a transparent background no longer reads as blank.",
+      "Writing to a project folder now asks for your Allow instead of failing.",
+      "Some settings only took effect after a reload; they now apply from the start."
+    ]
+  },
+  {
+    "version": "0.15.0.106",
+    "date": "2026-10-07",
+    "title": "AI usage",
+    "new": [
+      "Admins see AI usage across everyone and per person; everyone sees their own (Usage page, /usage).",
+      "Every model call is counted: chat, agents, lyra's own work, the decision model, embeddings and the reranker."
+    ]
+  },
+  {
+    "version": "0.14.0.103",
+    "date": "2026-10-07",
+    "title": "A personal assistant",
+    "new": [
+      "Plan my day: focus blocks for tasks due soon, around your meetings, within your working hours.",
+      "Proactive help: meeting prep before meetings, new mail triaged into tasks and draft replies, nudges for mail nobody answered.",
+      "lyra learns your writing style from your own sent mail and drafts like you.",
+      "Notes and lists, and \"who is …\" across your memory, mail, calendar and tasks.",
+      "Teams chats and OneDrive/SharePoint files, read-only."
+    ],
+    "fixed": [
+      "\"Who is\" finds people by any part of their name.",
+      "Buttons on the app's pages can run their commands."
+    ]
+  },
+  {
+    "version": "0.13.0.95",
+    "date": "2026-10-07",
+    "title": "Outlook calendar and mail",
+    "new": [
+      "Connect your own Outlook: today's meetings, free time, invites drafted for your approval.",
+      "Your mail: search, read, triage, and drafts written as HTML emails; sending waits for your yes."
+    ],
+    "fixed": [
+      "A meeting ending at midnight no longer shows on the next day.",
+      "The inbox loads reliably."
+    ]
+  },
+  {
+    "version": "0.12.0.90",
+    "date": "2026-10-07",
+    "title": "lyra for the whole team",
+    "new": [
+      "Sign in with Microsoft. New people wait for an admin to let them in; admins and members have different pages.",
+      "Each person has their own conversations, memories, about-me, tasks, briefing, goals and routines; pushes go only to whom they're for.",
+      "Memory capture and the Memory page for everyone, each person's own."
+    ],
+    "fixed": [
+      "A review of everything shared closed the gaps where one person could see another's."
+    ]
+  },
+  {
+    "version": "0.11.0.80",
+    "date": "2026-10-07",
+    "title": "PMI",
+    "new": [
+      "Your PMI tasks, reminders and projects in lyra: a Tasks page, a briefing section, and reminders with Done / Later buttons.",
+      "Connect other services by their OpenAPI description; anything that writes asks first."
+    ],
+    "fixed": [
+      "PMI's live updates reconnect quietly."
+    ]
+  },
+  {
+    "version": "0.10.0.75",
+    "date": "2026-10-06",
+    "title": "Coding agents, Windows and the daily briefing",
+    "new": [
+      "Problems lyra notices are researched by themselves, read-only, with what to do.",
+      "Coding work handed to Claude Code or OpenCode, which can ask lyra back.",
+      "lyra-node for Windows.",
+      "A daily briefing each morning: what happened and what needs a look."
+    ],
+    "improved": [
+      "Nothing runs anywhere but the server unless you name the machine."
+    ],
+    "fixed": [
+      "Alerts aren't sent again after a restart.",
+      "Windows: PowerShell is found when running as a service."
+    ]
+  },
+  {
+    "version": "0.9.0.62",
+    "date": "2026-10-06",
+    "title": "Always on",
+    "new": [
+      "Nightly backups of lyra.",
+      "Machine health and alerts: disks, memory, load, failed services, updates.",
+      "Routines: scheduled checks that only tell you when something needs you.",
+      "One command across machines with @all and groups.",
+      "A Status page: everything lyra depends on, with uptime and response times."
+    ],
+    "improved": [
+      "A cleaner app look, and conversation search at the top of the sidebar.",
+      "lyra reconnects when the connection goes quiet."
+    ]
+  },
+  {
+    "version": "0.8.0.53",
+    "date": "2026-10-06",
+    "title": "Quick decisions and search",
+    "new": [
+      "A small decision model makes lyra's quick yes/no and routing choices in milliseconds.",
+      "Search across all your conversations."
+    ],
+    "fixed": [
+      "The decision model reads its answers correctly and fits its limits."
+    ]
+  },
+  {
+    "version": "0.7.0.47",
+    "date": "2026-10-06",
+    "title": "The app grows up",
+    "new": [
+      "Web search, and a real Stop button.",
+      "Several conversations at once, each device its own.",
+      "On the phone: attach files, dictate, and share to lyra from other apps.",
+      "Manage lyra from the app: memory, skills, goals, the model and machine rules.",
+      "Pair a device with a code, a link or a QR code.",
+      "A desktop layout."
+    ],
+    "fixed": [
+      "Dictation no longer repeats words on Android."
+    ]
+  },
+  {
+    "version": "0.6.0.38",
+    "date": "2026-10-05",
+    "title": "lyra on your phone",
+    "new": [
+      "lyra serve: the app for phones and browsers, live, with push notifications.",
+      "Runs as an always-on service.",
+      "lyra-node lends a machine's tools to lyra; lyra connect uses lyra from a terminal elsewhere.",
+      "Machines and devices: pairing, install, update and remove, and @machine to pick one.",
+      "The app rebuilt with a modern look; the Operator's commands show as cards."
+    ]
+  },
+  {
+    "version": "0.5.0.31",
+    "date": "2026-10-05",
+    "title": "Working on machines",
+    "new": [
+      "The Operator: shell, files, web requests and SSH, every change waiting for your yes.",
+      "Approvals get their own box.",
+      "Saved conversations: continue the last one or resume any."
+    ]
+  },
+  {
+    "version": "0.4.0.27",
+    "date": "2026-10-05",
+    "title": "Agents and goals",
+    "new": [
+      "Faster, smarter memory.",
+      "Replies shown as formatted text.",
+      "lyra finds the right tool for a task by itself.",
+      "Long-lived goals lyra works toward.",
+      "Specialist agents lyra hands work to.",
+      "A / command list as you type."
+    ]
+  },
+  {
+    "version": "0.3.0.19",
+    "date": "2026-10-05",
+    "title": "lyra improves itself",
+    "new": [
+      "lyra reviews how it does and proposes improvements, tested before they're used, with roll back."
+    ],
+    "fixed": [
+      "Many smaller gaps in memory, planning and self-improvement closed."
+    ]
+  },
+  {
+    "version": "0.2.0.13",
+    "date": "2026-10-04",
+    "title": "Memory, skills and plans",
+    "new": [
+      "lyra remembers: facts and past work, recalled when they matter.",
+      "lyra learns skills from corrections and repeated work.",
+      "Side panels showing what lyra is doing.",
+      "About-you, personality and agent notes lyra reads.",
+      "Plans: goals broken into steps, carried out and checked."
+    ]
+  },
+  {
+    "version": "0.1.0.4",
+    "date": "2026-10-04",
+    "title": "The first lyra",
+    "new": [
+      "A chat for your own local AI model, in the terminal, with streaming replies.",
+      "Time to first word, tokens and cost for each reply."
+    ]
+  }
+]

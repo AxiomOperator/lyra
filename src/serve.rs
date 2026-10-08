@@ -106,6 +106,7 @@ fn status(app: &App, machines: &[String]) -> Value {
             json!({ "model": model, "decided": decided, "to_chat": to_chat, "ms": ms })
         }),
         "context_window": crate::stats::CONTEXT_WINDOW.load(std::sync::atomic::Ordering::Relaxed),
+        "version": crate::changelog::version(),
         // The plan this conversation is running (the app's plan card).
         "plan": app.current_plan.as_ref().map(|p| json!({
             "id": lyra_execution::short(p.id), "version": p.version, "status": p.status, "busy": app.plan_busy,
@@ -651,7 +652,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "watches" | "everything") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "watches" | "everything" | "changelog") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -1672,6 +1673,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         "routines" => crate::acting::run(&app.owner, || crate::routines::view(&[], 10)),
         "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
         "recap" => crate::recap::last_for(&app.owner).map_or(Value::Null, |r| json!(r)),
+        "changelog" => json!({ "version": crate::changelog::version(), "releases": crate::changelog::all() }),
         "watches" => json!(crate::watches::list_for(&app.owner)),
         // AI usage: everyone's and each person's for admins, their own for members.
         // The current plan's recovery points (admins; members have no plans).

@@ -77,6 +77,8 @@ export interface Health {
 }
 
 export interface Status {
+  /** This lyra's version (major.minor.fix.build). */
+  version?: string;
   /** The chat model's context window in tokens (0: unknown). */
   context_window?: number;
   /** The plan this conversation is running (see chat-parts2's PlanView). */

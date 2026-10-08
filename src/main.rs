@@ -4,6 +4,7 @@ mod backup;
 mod briefing;
 mod calendar;
 mod caps;
+mod changelog;
 mod coding;
 mod commands;
 mod config;
@@ -3568,6 +3569,10 @@ fn main() {
     }
     let sub = args.get(1).map(String::as_str);
     match sub {
+        Some("--version" | "-V" | "version") => {
+            println!("lyra {}", changelog::version());
+            return;
+        }
         Some("pair") => return pair_command(&args[2..]),
         Some("backup") => return backup_cli(&args[2..]),
         Some("restore") => return restore_cli(&args[2..]),
