@@ -127,12 +127,15 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
         aria-label={t.label}
         onClick={() => go(t.id)}
         className={cn(
-          "relative flex size-9 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [&>svg]:size-[18px]",
+          "relative flex shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [&>svg]:size-[18px]",
+          // A phone has no hover: each icon says what it is.
+          isMobile ? "w-14 flex-col gap-0.5 py-1" : "size-9",
           tab === t.id && "bg-sidebar-accent text-sidebar-accent-foreground",
         )}
       >
         <t.icon />
-        {!!t.badge && <span className="absolute -top-0.5 -right-0.5 min-w-4 rounded-full bg-amber-400 px-1 text-center font-semibold text-[10px] text-black leading-4">{t.badge}</span>}
+        {isMobile && <span className="w-full truncate text-center text-[10px] leading-tight">{t.label}</span>}
+        {!!t.badge && <span className={cn("absolute min-w-4 rounded-full bg-amber-400 px-1 text-center font-semibold text-[10px] text-black leading-4", isMobile ? "top-0.5 right-2" : "-top-0.5 -right-0.5")}>{t.badge}</span>}
       </button>,
       t.id,
     );
@@ -140,7 +143,7 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
     <Sidebar collapsible="offcanvas" variant="inset">
       <div className="flex h-full min-h-0">
         {/* The rail: lyra's pages, with what waits on each. */}
-        <nav className="flex w-12 shrink-0 flex-col items-center gap-1 py-2">
+        <nav className={cn("flex shrink-0 flex-col items-center gap-1 py-2", isMobile ? "w-16" : "w-12")}>
           {tip(
             connected ? "lyra · connected" : "lyra · not connected",
             <button type="button" aria-label="lyra" onClick={() => go("chat")} className="relative mb-1 flex size-9 items-center justify-center">
@@ -148,9 +151,10 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
               <span className={cn("absolute right-0.5 bottom-0.5 size-2 rounded-full ring-2 ring-sidebar", connected ? "bg-emerald-500" : "bg-red-500")} />
             </button>,
           )}
-          <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto">
+          {/* Scrolls on a short screen, never sideways, without a bar. */}
+          <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-x-hidden overflow-y-auto pt-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {groups.map((g, i) => (
-              <div key={i} className={cn("flex flex-col items-center gap-1", i > 0 && "mt-1 border-sidebar-border border-t pt-2")}>
+              <div key={i} className={cn("flex flex-col items-center", isMobile ? "gap-0" : "gap-1", i > 0 && (isMobile ? "mt-0.5 border-sidebar-border border-t pt-1" : "mt-1 border-sidebar-border border-t pt-2"))}>
                 {g.map(railItem)}
               </div>
             ))}
