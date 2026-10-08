@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.25.0.142",
+    "date": "2026-10-08",
+    "title": "Status and roadmap",
+    "improved": [
+      "A full overview of where lyra stands: what works, known issues, gaps, and the roadmap (status.md in the project)."
+    ]
+  },
+  {
     "version": "0.25.0.141",
     "date": "2026-10-08",
     "title": "Questions and Q&A",
