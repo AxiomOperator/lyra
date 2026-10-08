@@ -29,6 +29,11 @@ pub fn available() -> bool {
     ENTRA.read().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|e| e.ready())
 }
 
+/// Connections may ask for Teams meeting transcripts (`[web.entra] meetings`).
+pub fn meetings_enabled() -> bool {
+    ENTRA.read().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|e| e.meetings)
+}
+
 pub fn connected_for(user: &str) -> bool {
     crate::secrets::token_for("graph", user).is_some()
 }
@@ -84,7 +89,9 @@ fn access(user: &str) -> Result<String, String> {
     let refresh = crate::secrets::token_for("graph", user).ok_or("your Outlook calendar isn't connected: More → Connect Outlook calendar in the app")?;
     let entra = ENTRA.read().unwrap_or_else(|e| e.into_inner()).clone().filter(|e| e.ready()).ok_or("Microsoft sign-in isn't set up on this server")?;
     // Ask for what they granted (a connection from before mail: the calendar only).
-    let scope = if has(user, "Chat.Read") {
+    let scope = if has(user, "OnlineMeetingTranscript.Read.All") {
+        lyra_web::oidc::OUTLOOK_MEETINGS
+    } else if has(user, "Chat.Read") {
         lyra_web::oidc::OUTLOOK
     } else if has(user, "Mail.ReadWrite") {
         lyra_web::oidc::OUTLOOK_MAIL

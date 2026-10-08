@@ -1712,6 +1712,8 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
                         v["connected"] = json!(true);
                         v["mail"] = json!(crate::mail::connected_for(&app.owner));
                         v["teams"] = json!(crate::teams::connected_for(&app.owner));
+                        v["meetings"] = json!(crate::meetings::ready(&app.owner));
+                        v["meetings_available"] = json!(crate::calendar::meetings_enabled());
                         v
                     }
                     Err(e) => json!({ "available": true, "connected": true, "error": e }),

@@ -434,6 +434,10 @@ export interface CalendarToday {
   mail?: boolean;
   /** …and Teams chats and files. */
   teams?: boolean;
+  /** They can read their Teams meetings' transcripts (meeting follow-ups). */
+  meetings?: boolean;
+  /** The server asks for transcripts when connecting ([web.entra] meetings). */
+  meetings_available?: boolean;
   error?: string;
   events?: CalEvent[];
   clashes?: string[];

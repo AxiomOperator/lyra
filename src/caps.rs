@@ -596,6 +596,7 @@ impl Caps {
         if crate::calendar::available() {
             caps.extend(crate::calendar::capabilities());
             caps.extend(crate::mail::capabilities());
+            caps.extend(crate::meetings::capabilities());
             caps.extend(crate::style::capabilities());
             caps.extend(crate::teams::capabilities());
             caps.extend(crate::files::capabilities());
@@ -886,6 +887,7 @@ impl Caps {
             _ if c.source == "style" => crate::style::call(&c.name, &args),
             // What the person this turn is for asked to be told about.
             _ if c.source == "watches" => crate::watches::call(&c.name, &args),
+            _ if c.source == "meetings" => crate::meetings::call(&c.name, &args),
             // Teams and files of whoever this turn is for (read-only; attaching only touches their draft).
             _ if c.source == "teams" => crate::teams::call(&c.name, &args),
             _ if c.source == "files" => crate::files::call(&c.name, &args),

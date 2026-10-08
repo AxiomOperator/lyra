@@ -64,6 +64,9 @@ pub struct Seen {
     pub mail_since: Option<DateTime<Utc>>,
     #[serde(default)]
     pub last_followups: Option<DateTime<Utc>>,
+    /// Teams meetings a follow-up was offered for (event id → when).
+    #[serde(default)]
+    pub meetings_offered: HashMap<String, DateTime<Utc>>,
     /// The last try at learning how they write.
     #[serde(default)]
     pub style_tried: Option<DateTime<Utc>>,
@@ -304,6 +307,21 @@ pub fn pass(url: &str, model: &str, mail_due: bool) -> Pass {
             }
             out.prep.push(prep(e, &me));
         }
+    }
+    // A Teams meeting just ended: offer the follow-up (once), when its transcript can be read.
+    if crate::meetings::ready(&user)
+        && let Ok(ended) = crate::calendar::events(now - Duration::minutes(100), now)
+    {
+        for e in crate::meetings::just_ended(&ended, now) {
+            let Some(id) = e["id"].as_str() else { continue };
+            if seen.meetings_offered.contains_key(id) {
+                continue;
+            }
+            seen.meetings_offered.insert(id.to_string(), now);
+            let title = e["subject"].as_str().unwrap_or("your meeting");
+            out.prep.push((format!("Follow up on {title}?"), format!("Ask lyra \"follow up on {title}\": a summary, decisions, action items as tasks, and a follow-up mail to draft.")));
+        }
+        seen.meetings_offered.retain(|_, t| now - *t < Duration::days(14));
     }
     if mail_due {
         // How they write: learned once mail is connected, again each week (tried once a day).

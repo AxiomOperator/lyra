@@ -819,7 +819,7 @@ async fn connect_calendar(State(s): State<Arc<Shared>>, headers: HeaderMap) -> R
         logins.insert(state.clone(), oidc::Pending { verifier: verifier.clone(), nonce: nonce.clone(), device: String::new(), created: Instant::now(), connect: Some((who.user.clone(), oid)) });
     }
     let callback = format!("{}/auth/callback", s.public_url);
-    let url = oidc::authorize_url_for(&s.entra, &callback, &state, &nonce, &verifier, oidc::OUTLOOK);
+    let url = oidc::authorize_url_for(&s.entra, &callback, &state, &nonce, &verifier, s.entra.connect_scope());
     let mut r = Json(json!({ "url": url })).into_response();
     if let Ok(v) = HeaderValue::from_str(&format!("{LOGIN_COOKIE}={state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600")) {
         r.headers_mut().insert(header::SET_COOKIE, v);
@@ -883,7 +883,7 @@ async fn auth_callback(State(s): State<Arc<Shared>>, Query(q): Query<CallbackQue
         return signin_error(if q.error_description.is_empty() { "Microsoft didn't sign you in" } else { &q.error_description });
     }
     let callback = format!("{}/auth/callback", s.public_url);
-    let scope = if pending.connect.is_some() { oidc::OUTLOOK } else { oidc::SIGN_IN };
+    let scope = if pending.connect.is_some() { s.entra.connect_scope() } else { oidc::SIGN_IN };
     let form = oidc::token_form_for(&s.entra, &q.code, &callback, &pending.verifier, scope);
     let answer = async {
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build().map_err(|e| e.to_string())?;

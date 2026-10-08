@@ -49,9 +49,9 @@ export function CalendarCard() {
             : "Connect your own Outlook: today's meetings and new mail in your briefing, free time, and invites and replies drafted for your approval."}
         </CardDescription>
         <CardAction className="flex gap-1">
-          {cal.connected && !cal.teams && (
+          {cal.connected && (!cal.teams || (cal.meetings_available && !cal.meetings)) && (
             <Button size="sm" onClick={() => void connect()}>
-              <Link2 /> {cal.mail ? "Add Teams & files" : "Add mail"}
+              <Link2 /> {!cal.mail ? "Add mail" : !cal.teams ? "Add Teams & files" : "Add meeting transcripts"}
             </Button>
           )}
           {cal.connected ? (

@@ -20,6 +20,7 @@ mod markdown;
 mod mcp_server;
 mod learn;
 mod mail;
+mod meetings;
 mod lock;
 mod mem;
 mod notes;

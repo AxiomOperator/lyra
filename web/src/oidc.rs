@@ -25,9 +25,18 @@ pub struct Entra {
     /// The client secret: from lyra's secrets file, never the config.
     #[serde(skip)]
     pub secret: Option<String>,
+    /// Connections also ask for Teams meeting transcripts (OnlineMeetings.Read,
+    /// OnlineMeetingTranscript.Read.All: an admin grants them in Entra first).
+    #[serde(default)]
+    pub meetings: bool,
 }
 
 impl Entra {
+    /// What a connection asks Microsoft for.
+    pub fn connect_scope(&self) -> &'static str {
+        if self.meetings { OUTLOOK_MEETINGS } else { OUTLOOK }
+    }
+
     pub fn ready(&self) -> bool {
         !self.tenant.trim().is_empty() && !self.client_id.trim().is_empty() && self.secret.is_some()
     }
@@ -54,6 +63,9 @@ pub const CALENDAR: &str = "openid profile email offline_access Calendars.ReadWr
 pub const OUTLOOK_MAIL: &str = "openid profile email offline_access Calendars.ReadWrite Mail.ReadWrite Mail.Send";
 /// Their Microsoft 365: calendar, mail, Teams chats and files, kept up with a refresh token.
 pub const OUTLOOK: &str = "openid profile email offline_access Calendars.ReadWrite Mail.ReadWrite Mail.Send Chat.Read Files.Read.All";
+/// …and their Teams meetings' transcripts (meeting follow-ups). A connection
+/// asks for this; one made before keeps refreshing with what it was granted.
+pub const OUTLOOK_MEETINGS: &str = "openid profile email offline_access Calendars.ReadWrite Mail.ReadWrite Mail.Send Chat.Read Files.Read.All OnlineMeetings.Read OnlineMeetingTranscript.Read.All";
 
 /// PKCE: the code challenge for a verifier.
 pub fn challenge(verifier: &str) -> String {
@@ -173,7 +185,7 @@ mod tests {
     const TENANT: &str = "11111111-2222-3333-4444-555555555555";
 
     fn entra() -> Entra {
-        Entra { tenant: TENANT.into(), client_id: "app-1".into(), owner_email: "me@fbcad.org".into(), secret: Some("s3cret".into()) }
+        Entra { tenant: TENANT.into(), client_id: "app-1".into(), owner_email: "me@fbcad.org".into(), secret: Some("s3cret".into()), meetings: false }
     }
 
     fn token(claims: Value) -> String {

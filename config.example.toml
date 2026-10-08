@@ -294,6 +294,10 @@ currency = "$"
 # registration these delegated Microsoft Graph permissions: Calendars.ReadWrite
 # (calendar, plan my day), Mail.ReadWrite and Mail.Send (mail, drafts, triage),
 # Chat.Read (Teams chats), Files.Read.All (OneDrive and SharePoint files).
+# Meeting follow-ups from Teams transcripts also need OnlineMeetings.Read and
+# OnlineMeetingTranscript.Read.All (admin consent); grant them, then turn this on
+# and connect Outlook again:
+# meetings = false
 
 # Web search (see README): web_search asks a SearXNG instance (JSON format on),
 # web_fetch reads a page as text. Both only read; replies cite their sources.

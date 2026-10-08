@@ -1126,6 +1126,22 @@ The first user is the **owner**, an admin. Devices paired before users existed a
 `/users` lists everyone, and `/users approve|admin|member|disable <who>` changes someone.
 `/whoami` says who a conversation belongs to.
 
+### Meeting follow-up
+
+After a Teams meeting, ask lyra to "follow up on the firewall sync". `meeting_followup` reads the meeting's transcript and who was there, and lyra writes:
+- a short summary
+- the decisions made
+- action items with owners
+
+It then offers your own items as PMI tasks and drafts a follow-up mail to the attendees; sending waits for your Allow. When transcripts can be read, lyra also offers the follow-up by push 10–90 minutes after a Teams meeting ends.
+
+Reading transcripts needs two more delegated Microsoft Graph permissions on the app registration: `OnlineMeetings.Read` and `OnlineMeetingTranscript.Read.All`, the second with admin consent. Once they're granted:
+1. Set `[web.entra] meetings = true`.
+2. Restart lyra.
+3. Each person taps **Add meeting transcripts** on the Outlook card.
+
+Meetings only have a transcript if transcription was on in Teams. Without one, lyra follows up from the agenda and what you tell it.
+
 ### "Tell me when …"
 
 Ask "tell me when Jeremy replies" or "let me know when the PMI firewall task changes", and lyra watches for it:
