@@ -1137,7 +1137,8 @@ even an admin.
 lyra can list the folder, read files in it (text, code, Word, Excel, PowerPoint)
 and search it (`project_folders`, `project_list`, `project_read`,
 `project_search`). It can also write a file (`project_write`), which waits for
-your Allow and shows what will change. There's no shell and nothing outside the
+your Allow and shows what will change. To stop being asked for one folder, tap **Always
+allow** next to it on the Projects page; tap it again to be asked again. There's no shell and nothing outside the
 folder. After the browser restarts it may want your OK again: tap **Allow** on
 the Projects page. Members have this too.
 

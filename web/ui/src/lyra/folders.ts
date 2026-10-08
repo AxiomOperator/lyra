@@ -31,11 +31,14 @@ interface FileH extends Entry {
 export interface ProjectFolder {
   name: string;
   handle: Dir;
+  /** lyra may change files here without asking each time. */
+  trusted?: boolean;
 }
 export interface FolderState {
   name: string;
   writable: boolean;
   allowed: boolean;
+  trusted: boolean;
 }
 
 export const supported = typeof window !== "undefined" && "showDirectoryPicker" in window;
@@ -91,7 +94,7 @@ export async function folderStates(): Promise<FolderState[]> {
     list.map(async (f) => {
       const rw = await f.handle.queryPermission({ mode: "readwrite" }).catch(() => "denied" as PermissionState);
       const r = rw === "granted" ? rw : await f.handle.queryPermission({ mode: "read" }).catch(() => "denied" as PermissionState);
-      return { name: f.name, writable: rw === "granted", allowed: r === "granted" };
+      return { name: f.name, writable: rw === "granted", allowed: r === "granted", trusted: !!f.trusted };
     }),
   );
 }
@@ -122,6 +125,11 @@ export async function renameFolder(name: string, to: string) {
   if (!t || list.some((f) => f.name.toLowerCase() === t.toLowerCase() && f.name !== name)) return false;
   await save(list.map((f) => (f.name === name ? { ...f, name: t } : f)));
   return true;
+}
+
+/** Let lyra change files in a folder without asking each time (or ask again). */
+export async function trustFolder(name: string, on: boolean) {
+  await save((await load()).map((f) => (f.name === name ? { ...f, trusted: on } : f)));
 }
 
 /** Give lyra the browser's OK again (after a restart it may ask; needs a tap). */

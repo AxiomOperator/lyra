@@ -695,7 +695,7 @@ impl Caps {
             return crate::mail::approval(&c.name, &args);
         }
         if c.source == "projects" {
-            return crate::projects::approval(&c.name, &args);
+            return crate::projects::approval(self.remote.get().map(|r| r.as_ref()), &c.name, &args);
         }
         // Another machine decides for itself (its own rules), and says what it would do.
         if c.source == "system"
@@ -875,7 +875,7 @@ impl Caps {
                 _ => crate::mail::call(&c.name, &args),
             },
             // Folders on the person's own PC, through their own open page; a write needs their yes.
-            _ if c.source == "projects" => match crate::projects::approval(&c.name, &args) {
+            _ if c.source == "projects" => match crate::projects::approval(self.remote.get().map(|r| r.as_ref()), &c.name, &args) {
                 Some(ask) if !approved => Err(format!("{} needs the user's approval ({})", c.name, ask.what)),
                 _ => crate::projects::call(self.remote.get().map(|r| r.as_ref()), &c.name, &args),
             },
@@ -1236,7 +1236,11 @@ mod tests {
             Err(format!("{machine} isn't connected"))
         }
         fn folders(&self, user: &str) -> Vec<(String, lyra_web::Folder)> {
-            (user == "dana").then(|| ("Dana's PC".to_string(), lyra_web::Folder { name: "Firewall".into(), writable: true, allowed: true })).into_iter().collect()
+            if user != "dana" {
+                return Vec::new();
+            }
+            let f = |name: &str, trusted: bool| ("Dana's PC".to_string(), lyra_web::Folder { name: name.into(), writable: true, allowed: true, trusted });
+            vec![f("Firewall", false), f("Scratch", true)]
         }
         fn call_folder(&self, user: &str, folder: &str, req: Value, _: std::time::Duration) -> Result<Value, String> {
             Ok(json!({ "user": user, "folder": folder, "op": req["op"], "path": req["path"] }))
@@ -1261,6 +1265,12 @@ mod tests {
         let w = r#"{"folder":"Firewall","path":"notes.md","content":"hi"}"#;
         assert!(caps.approval("project_write", w).unwrap().what.contains("notes.md in Firewall"));
         assert!(crate::acting::run("dana", || caps.invoke("project_write", w, member, false, true)).contains("approval"));
+        // A folder they trust: no asking (for them; anyone else is still asked).
+        let t = r#"{"folder":"Scratch","path":"notes.md","content":"hi"}"#;
+        assert!(crate::acting::run("dana", || caps.approval("project_write", t)).is_none());
+        assert!(crate::acting::run("owner", || caps.approval("project_write", t)).is_some());
+        let wrote: Value = crate::acting::run("dana", || serde_json::from_str(&caps.invoke("project_write", t, member, false, true)).unwrap());
+        assert_eq!(wrote["op"], "write");
         // Still no shell for members.
         assert!(caps.invoke("shell_run", r#"{"command":"ls"}"#, CallContext { agent: Some("operator"), member: true, ..CallContext::new(None, "") }, true, true).contains("for admins"));
     }

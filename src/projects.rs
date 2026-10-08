@@ -84,12 +84,17 @@ pub fn capabilities() -> Vec<Capability> {
     ]
 }
 
-/// A write needs the person's yes, showing what changes.
-pub fn approval(name: &str, args: &Value) -> Option<Ask> {
+/// A write needs the person's yes, showing what changes, unless they trust
+/// that folder (set on their Projects page: "change files without asking").
+pub fn approval(remote: Option<&dyn Remote>, name: &str, args: &Value) -> Option<Ask> {
     if name != "project_write" {
         return None;
     }
     let (folder, path) = (args["folder"].as_str().unwrap_or("?"), args["path"].as_str().unwrap_or("?"));
+    let user = crate::acting::current();
+    if remote.is_some_and(|r| r.folders(&user).iter().any(|(_, f)| f.trusted && f.name.eq_ignore_ascii_case(folder))) {
+        return None;
+    }
     let append = args["append"] == true;
     Some(Ask {
         what: format!("{} {path} in {folder}", if append { "add to" } else { "write" }),

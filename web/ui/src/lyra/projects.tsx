@@ -5,11 +5,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { FolderOpen, FolderPlus, Pencil, ShieldCheck, Trash2 } from "lucide-react";
+import { CheckCheck, FolderOpen, FolderPlus, Pencil, ShieldCheck, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Back } from "./manage";
 import { Page, useConfirm } from "./parts";
-import { addFolder, allowFolder, folderStates, onFoldersChanged, removeFolder, renameFolder, supported, type FolderState } from "./folders";
+import { addFolder, allowFolder, folderStates, onFoldersChanged, removeFolder, renameFolder, supported, trustFolder, type FolderState } from "./folders";
 
 export function ProjectsPage({ onBack }: { onBack: () => void }) {
   const [folders, setFolders] = useState<FolderState[]>([]);
@@ -65,6 +65,20 @@ export function ProjectsPage({ onBack }: { onBack: () => void }) {
                 <span className="min-w-0 flex-1 truncate text-sm">{f.name}</span>
               )}
               {f.allowed ? <Badge variant="secondary">{f.writable ? "read & change" : "read only"}</Badge> : <Badge variant="destructive">needs your OK</Badge>}
+              {f.allowed && f.writable && (
+                <Button
+                  size="sm"
+                  variant={f.trusted ? "secondary" : "outline"}
+                  title={f.trusted ? "lyra changes files here without asking: tap to be asked again" : "Let lyra change files here without asking each time"}
+                  onClick={() =>
+                    f.trusted
+                      ? void trustFolder(f.name, false)
+                      : confirm({ title: `Let lyra change files in ${f.name} without asking?`, text: "It still can't delete anything or reach outside this folder, and only your own conversations can use it. Turn this off any time.", action: "Always allow", run: () => void trustFolder(f.name, true) })
+                  }
+                >
+                  <CheckCheck /> {f.trusted ? "Always allowed" : "Always allow"}
+                </Button>
+              )}
               {!f.allowed || !f.writable ? (
                 <Button size="sm" onClick={() => void allowFolder(f.name)}>
                   <ShieldCheck /> Allow

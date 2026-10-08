@@ -158,6 +158,9 @@ pub struct Folder {
     /// The browser still has their OK (after a restart it may ask again).
     #[serde(default)]
     pub allowed: bool,
+    /// They said lyra may change files here without asking each time.
+    #[serde(default)]
+    pub trusted: bool,
 }
 
 /// An open page and the folders it lends.
@@ -1595,7 +1598,7 @@ mod tests {
 
     #[test]
     fn folder_requests_only_reach_the_persons_own_pages() {
-        let f = |name: &str, allowed: bool| Folder { name: name.into(), writable: true, allowed };
+        let f = |name: &str, allowed: bool| Folder { name: name.into(), writable: true, allowed, trusted: false };
         let (dana, admin) = ([f("Firewall", true)], [f("Firewall", true), f("Budget", true)]);
         let earlier = Instant::now();
         let later = earlier + std::time::Duration::from_secs(5);
