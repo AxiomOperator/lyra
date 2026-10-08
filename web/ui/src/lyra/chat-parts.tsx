@@ -110,6 +110,24 @@ export function SentAttachments({ files }: { files: Sent[] }) {
 
 // ---- approvals, at the call that asks
 
+/** What an approval would do: a diff (`--- now` / `+++ after`) in colour, else as it is. */
+export function ApprovalDetail({ detail }: { detail: string }) {
+  const cls = "max-h-[40vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-black/40 p-3 font-mono text-sm";
+  if (!detail.startsWith("--- now")) return <pre className={cn(cls, "text-cyan-300")}>{detail}</pre>;
+  return (
+    <pre className={cls}>
+      {detail
+        .split("\n")
+        .filter((l) => !l.startsWith("--- ") && !l.startsWith("+++ "))
+        .map((l, i) => (
+          <div key={i} className={cn(l.startsWith("+") ? "bg-emerald-950/60 text-emerald-300" : l.startsWith("-") ? "bg-red-950/60 text-red-300" : l.startsWith("@@") ? "text-sky-400/80" : "text-muted-foreground")}>
+            {l || " "}
+          </div>
+        ))}
+    </pre>
+  );
+}
+
 /** The question an approval asks, with Allow once / Deny / For session, shown at its tool call. */
 export function ApprovalAt({ a, more }: { a: Approval; more: number }) {
   const { send } = useLyra();
@@ -130,7 +148,7 @@ export function ApprovalAt({ a, more }: { a: Approval; more: number }) {
         </span>
       </ConfirmationTitle>
       <ConfirmationRequest>
-        {a.detail && <pre className="max-h-[30vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-black/40 p-3 font-mono text-cyan-300 text-sm">{a.detail}</pre>}
+        {a.detail && <ApprovalDetail detail={a.detail} />}
         <div className={cn("text-sm", a.dangerous ? "text-red-300" : "text-amber-300")}>
           <span className="font-semibold">{a.dangerous ? "Risk: " : "Why it asks: "}</span>
           {a.why}

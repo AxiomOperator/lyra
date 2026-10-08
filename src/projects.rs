@@ -96,12 +96,32 @@ pub fn approval(remote: Option<&dyn Remote>, name: &str, args: &Value) -> Option
         return None;
     }
     let append = args["append"] == true;
-    Some(Ask {
-        what: format!("{} {path} in {folder}", if append { "add to" } else { "write" }),
-        detail: args["content"].as_str().unwrap_or("").chars().take(800).collect(),
-        why: if append { "it changes a file on your PC".into() } else { "it creates the file, or replaces it if it's there".into() },
-        dangerous: false,
-    })
+    let content = args["content"].as_str().unwrap_or("");
+    // What's there now, from their page, to show the change rather than just the new text.
+    let before = remote.and_then(|r| {
+        let path = safe_path(path).ok()?;
+        let v = r.call_folder(&user, folder, json!({ "op": "read", "path": path, "binary": false, "max_bytes": 400_000 }), std::time::Duration::from_secs(15)).ok()?;
+        v["text"].as_str().map(str::to_string)
+    });
+    let (detail, why) = match (&before, append) {
+        (Some(old), true) => (change(old, &format!("{old}{content}")), "it adds to a file on your PC (the + lines)".to_string()),
+        (Some(old), false) if old == content => ("(no change: the file already says this)".to_string(), "it rewrites a file on your PC with the same text".to_string()),
+        (Some(old), false) => (change(old, content), "it changes a file on your PC (− removed, + added)".to_string()),
+        (None, _) => (content.chars().take(1500).collect(), "it creates a new file on your PC".to_string()),
+    };
+    Some(Ask { what: format!("{} {path} in {folder}", if append { "add to" } else if before.is_some() { "change" } else { "create" }), detail, why, dangerous: false })
+}
+
+/// The change from `old` to `new` as a unified diff (3 lines of context), cut to fit an approval.
+pub fn change(old: &str, new: &str) -> String {
+    let diff = similar::TextDiff::from_lines(old, new);
+    let text = diff.unified_diff().context_radius(3).header("now", "after").to_string();
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() > 80 {
+        format!("{}\n… {} more lines", lines[..80].join("\n"), lines.len() - 80)
+    } else {
+        text.trim_end().to_string()
+    }
 }
 
 const OFFICE: &[&str] = &[".docx", ".xlsx", ".pptx"];
@@ -175,6 +195,12 @@ mod tests {
         assert!(mentions(&[], "read notes.md in my project folder"));
         assert!(!mentions(&lent, "check the firewall on the server"), "the whole name, as words");
         assert!(!mentions(&lent, "restart the covh service"));
+    }
+
+    #[test]
+    fn changes_show_as_a_diff() {
+        let d = change("# Notes\nmilk\neggs\n", "# Notes\nmilk\nbread\n");
+        assert!(d.starts_with("--- now") && d.contains("-eggs") && d.contains("+bread") && d.contains(" milk"), "{d}");
     }
 
     #[test]

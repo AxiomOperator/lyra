@@ -19,7 +19,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { useLyra } from "./store";
 import type { Approval, ChatMessage, PairRequest } from "./types";
 import { ComposerModel, PlanCard, ToolFileContent, ToolFileTree, ToolTerminal, type PlanView } from "./chat-parts2";
-import { AgentTask, ApprovalAt, ComposerAttachments, ReplyContext, ReplySources, SentAttachments, StarterSuggestions, approvalCall, splitAttached, webSources } from "./chat-parts";
+import { AgentTask, ApprovalAt, ApprovalDetail, ComposerAttachments, ReplyContext, ReplySources, SentAttachments, StarterSuggestions, approvalCall, splitAttached, webSources } from "./chat-parts";
 
 /** The approval waiting, and the call it's shown at. */
 type Asking = { callId: string; a: Approval; more: number } | null;
@@ -229,7 +229,7 @@ export function ApprovalCard({ a, more }: { a: Approval; more: number }) {
             <span className="text-sky-400">{a.agent}</span> wants to {a.what}
           </div>
         </div>
-        <pre className="max-h-[30vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-black/40 p-3 font-mono text-cyan-300 text-sm">{a.detail}</pre>
+        <ApprovalDetail detail={a.detail} />
         <div className={cn("text-sm", a.dangerous ? "text-red-300" : "text-amber-300")}>
           <span className="font-semibold">{a.dangerous ? "Risk: " : "Why it asks: "}</span>
           {a.why}
