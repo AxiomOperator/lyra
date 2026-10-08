@@ -19,6 +19,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { useLyra } from "./store";
 import type { Approval, ChatMessage, PairRequest } from "./types";
 import { ComposerModel, PlanCard, ToolFileContent, ToolFileTree, ToolTerminal, type PlanView } from "./chat-parts2";
+import { SpeakButton, VoiceButton, useAutoRead } from "./voice";
 import { AgentTask, ApprovalAt, ApprovalDetail, ComposerAttachments, ReplyContext, ReplySources, SentAttachments, StarterSuggestions, approvalCall, splitAttached, webSources } from "./chat-parts";
 
 /** The approval waiting, and the call it's shown at. */
@@ -121,10 +122,11 @@ function ToolCallView({ name, args, result }: { name: string; args: string; resu
   );
 }
 
-function Footer({ m, max, model }: { m: ChatMessage; max: number; model?: string }) {
-  if (!m.stats && !m.agents?.length && !m.skills?.length) return null;
+function Footer({ m, max, model, id }: { m: ChatMessage; max: number; model?: string; id: string }) {
+  if (!m.stats && !m.agents?.length && !m.skills?.length && !m.content.trim()) return null;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
+      <SpeakButton id={id} text={m.content} />
       {m.usage && <ReplyContext usage={m.usage} max={max} model={model} />}
       {m.stats && <span>{m.stats}</span>}
       {m.agents?.length > 0 && <span className="text-sky-400">handled with {m.agents.join(", ")}</span>}
@@ -133,7 +135,7 @@ function Footer({ m, max, model }: { m: ChatMessage; max: number; model?: string
   );
 }
 
-function MessageView({ m, results, streaming, asking, max, model, turn }: { m: ChatMessage; results: Map<string, string>; streaming: boolean; asking: Asking; max: number; model?: string; turn?: ChatMessage[] }) {
+function MessageView({ m, results, streaming, asking, max, model, turn, id }: { m: ChatMessage; results: Map<string, string>; streaming: boolean; asking: Asking; max: number; model?: string; turn?: ChatMessage[]; id: string }) {
   // A call, and the approval it waits for when it's this one.
   const call = (c: ChatMessage["calls"][number]) => (
     <div key={c.id} className="space-y-2">
@@ -165,7 +167,7 @@ function MessageView({ m, results, streaming, asking, max, model, turn }: { m: C
             {m.calls?.map(call)}
             {/* The turn's sources, under its answer. */}
             {!streaming && turn && <ReplySources web={webSources(turn, results)} memories={m.memory_notes ?? []} />}
-            <Footer m={m} max={max} model={model} />
+            {!streaming && <Footer m={m} max={max} model={model} id={id} />}
           </MessageContent>
         </Message>
       );
@@ -487,6 +489,7 @@ function Composer() {
                 onTranscriptionChange={(said) => setText(withDictation(typedBefore.current, said))}
               />
             )}
+            <VoiceButton />
             <ComposerModel admin={user?.admin ?? true} />
           </PromptInputTools>
           {/* While a reply is being written the button stops it. */}
@@ -515,6 +518,12 @@ export function ChatPage() {
   const callId = approvalCall(messages, results, approvals[0]);
   const asking: Asking = callId && approvals[0] ? { callId, a: approvals[0], more: approvals.length - 1 } : null;
   const max = status.context_window ?? 0;
+  // Read each finished reply aloud, when that's on for this device.
+  const lastReply = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "assistant" && messages[i].content.trim()) return { id: `${status.session ?? ""}-${i}`, text: messages[i].content };
+    return null;
+  }, [messages, status.session]);
+  useAutoRead(lastReply, !!status.waiting);
   // Each turn's answer (its last reply with words) gets the turn's messages, for its sources.
   const turns = useMemo(() => {
     const out = new Map<number, ChatMessage[]>();
@@ -553,7 +562,7 @@ export function ChatPage() {
           )}
           {messages.map((m, i) =>
             (m.role === "tool" || m.role === "agent_tool") && m.tool_call_id && attached.has(m.tool_call_id) ? null : (
-              <MessageView key={i} m={m} results={results} streaming={!!status.waiting && i === messages.length - 1} asking={asking} max={max} model={status.model} turn={turns.get(i)} />
+              <MessageView key={i} m={m} results={results} streaming={!!status.waiting && i === messages.length - 1} asking={asking} max={max} model={status.model} turn={turns.get(i)} id={`${status.session ?? ""}-${i}`} />
             ),
           )}
           {thinking && <Shimmer className="text-sm">Thinking…</Shimmer>}

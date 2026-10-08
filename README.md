@@ -1242,6 +1242,15 @@ The app's chat is built from Vercel AI Elements:
 - **Model:** admins tap the model name in the composer to switch models.
 - **Starter prompts:** shown on an empty chat.
 
+### Read replies aloud
+
+Each reply has a speaker button that reads it aloud; tap again to stop. The speaker button in the composer opens the read-aloud panel:
+- **Read replies aloud:** each finished reply is spoken, e.g. in the car.
+- **Speed**
+- **Voice:** any of the device's own voices; your language's come first.
+
+Speech uses the device's own voices (the browser's speech synthesis), so it works on phones and desktops without anything on the server. Code blocks and links aren't read out. The settings stay on each device.
+
 ### Search everything (Ctrl-K)
 
 Ctrl-K (⌘K on a Mac), or **Search** in the header, searches all of these at once, each person's own only:
