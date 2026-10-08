@@ -225,7 +225,7 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
                     "count": all.len(), "last": all.first().map(|b| json!({ "name": b.name, "made": b.made.to_rfc3339(), "size": b.size })),
                 })
             }),
-            "lyra": env!("CARGO_PKG_VERSION"),
+            "lyra": crate::changelog::version(),
             "app": hub.app_version(),
             "node_build": node_build.map(|b| b.chars().take(12).collect::<String>()),
             "model": app.model,

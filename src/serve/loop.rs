@@ -928,7 +928,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             let up = serving_since.elapsed().as_secs();
             i.serving = Some(format!(
                 "v{} · up {}d {}h {}m · {} conversation{} open · {} device{} connected",
-                env!("CARGO_PKG_VERSION"),
+                crate::changelog::version(),
                 up / 86400,
                 up % 86400 / 3600,
                 up % 3600 / 60,

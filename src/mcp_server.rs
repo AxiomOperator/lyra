@@ -224,7 +224,7 @@ pub fn answer(rt: &tokio::runtime::Runtime, c: &Result<RemoteConfig, String>, re
         "initialize" => Ok(json!({
             "protocolVersion": req["params"]["protocolVersion"].as_str().unwrap_or(PROTOCOL),
             "capabilities": { "tools": {} },
-            "serverInfo": { "name": "lyra", "version": env!("CARGO_PKG_VERSION") },
+            "serverInfo": { "name": "lyra", "version": crate::changelog::version() },
             "instructions": "lyra is the user's always-on assistant: ask it about their machines, servers, projects, routines and what it remembers.",
         })),
         "ping" => Ok(json!({})),

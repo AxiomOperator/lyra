@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.25.2.146",
+    "date": "2026-10-08",
+    "title": "The right version everywhere",
+    "fixed": [
+      "The Status page's server line, the About details and lyra's connection for coding agents show lyra's real version instead of 0.1.0."
+    ]
+  },
+  {
     "version": "0.25.1.145",
     "date": "2026-10-08",
     "title": "Health check shows the real version",
