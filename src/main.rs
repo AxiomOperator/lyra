@@ -3303,8 +3303,8 @@ fn converse(
                 let (text, names) = caps.search(&call.function.arguments);
                 found.extend(names);
                 text
-            } else if let Some(ask) = caps.manager.get(&call.function.name).filter(|c| matches!(c.source.as_str(), "calendar" | "mail")).and_then(|_| caps.approval(&call.function.name, &call.function.arguments)) {
-                // Changes others see: the person approves them right here.
+            } else if let Some(ask) = caps.manager.get(&call.function.name).filter(|c| matches!(c.source.as_str(), "calendar" | "mail" | "projects")).and_then(|_| caps.approval(&call.function.name, &call.function.arguments)) {
+                // Changes others see, and files on their PC: the person approves them right here.
                 match agents.map(|env| agents::approve(env, &agents::main_profile(), &call.function.name, ask)) {
                     Some(Ok(())) => caps.invoke(&call.function.name, &call.function.arguments, ctx, true, true),
                     Some(Err(why)) => json!({ "error": why }).to_string(),
