@@ -10,22 +10,16 @@ import { Separator } from "@/components/ui/separator";
 import {
   Sidebar,
   SidebarContent,
-  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
   SidebarHeader,
   SidebarInset,
-  SidebarMenu,
-  SidebarMenuBadge,
-  SidebarMenuButton,
-  SidebarMenuItem,
   SidebarProvider,
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
   Activity,
@@ -40,7 +34,6 @@ import {
   Brain,
   Cpu,
   Ellipsis,
-  EllipsisVertical,
   RefreshCw,
   GraduationCap,
   MessageSquare,
@@ -51,7 +44,6 @@ import {
   Sparkles,
   Target,
   WifiOff,
-  ChevronRight,
 } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
@@ -85,43 +77,32 @@ type TabItem = {
   badge?: number;
 };
 
-/** The sidebar's sections below the main pages, in order. */
-type NavGroup = { id: string; label: string; items: Tab[] };
-const navGroups: NavGroup[] = [
-  { id: "work", label: "Work", items: ["tasks", "notes", "projects", "routines", "goals"] },
-  { id: "lyra", label: "lyra", items: ["memory", "skills", "coding", "model"] },
-  { id: "admin", label: "Admin", items: ["machines", "devices", "users", "usage"] },
+/** The icon rail's pages, in groups (a line between them). */
+const railGroups: Tab[][] = [
+  ["chat", "status", "activity"],
+  ["tasks", "notes", "projects", "routines", "goals"],
+  ["memory", "skills", "coding", "model"],
+  ["machines", "devices", "users", "usage"],
 ];
-/** Always shown at the top of the sidebar. */
-const navTop: Tab[] = ["chat", "status", "activity"];
 
-/** Which sections are open (remembered on this device). */
-function useOpenGroups() {
-  const [open, setOpen] = useState<Record<string, boolean>>(() => {
-    try {
-      return { work: true, ...JSON.parse(localStorage.getItem("lyra-nav") ?? "{}") };
-    } catch {
-      return { work: true };
-    }
-  });
-  const toggle = (id: string, on: boolean) =>
-    setOpen((o) => {
-      const next = { ...o, [id]: on };
-      try {
-        localStorage.setItem("lyra-nav", JSON.stringify(next));
-      } catch {
-        // fine: it just won't be remembered
-      }
-      return next;
-    });
-  return [open, toggle] as const;
-}
-
-/** The sidebar (dashboard-01's inset style): navigation, lyra's pages,
- *  conversations, and this device at the bottom. A sheet on a phone. */
+/** The sidebar (dashboard-01's inset style): an icon rail of lyra's pages
+ *  on the left, the conversations beside it, this device at the bottom of
+ *  the rail. A sheet on a phone. */
 function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more: TabItem[]; tab: Tab; setTab: (t: Tab) => void; update: () => void }) {
   const { connected, status, say, device, user } = useLyra();
-  const { setOpenMobile } = useSidebar();
+  const { setOpenMobile, isMobile } = useSidebar();
+  // Tooltips on hover only (a phone would pop one up as the sheet opens).
+  const tip = (label: string, child: React.ReactElement, key?: string) =>
+    isMobile ? (
+      <span key={key} className="contents">
+        {child}
+      </span>
+    ) : (
+      <Tooltip key={key}>
+        <TooltipTrigger asChild>{child}</TooltipTrigger>
+        <TooltipContent side="right">{label}</TooltipContent>
+      </Tooltip>
+    );
   // Refreshed as conversations start, finish or get a title, here or on another device.
   const live = status.conversations ?? [];
   const [sessionList, reloadSessions] = useData<Session[]>("sessions", [status.title, JSON.stringify(live)]);
@@ -136,136 +117,107 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
     go("chat");
   };
   const search = useConversationSearch();
-  const [openGroups, toggleGroup] = useOpenGroups();
   const all = [...tabs, ...more];
-  const byId = (id: Tab) => all.find((t) => t.id === id);
-  // A member's own usage: under lyra (they've no Admin section).
-  const groups = navGroups
-    .map((g) => ({ ...g, items: g.items.map(byId).filter((t): t is TabItem => !!t) }))
-    .map((g) => (g.id === "lyra" && !(user?.admin ?? true) ? { ...g, items: [...g.items, ...[byId("usage")].filter((t): t is TabItem => !!t)] } : g))
-    .map((g) => (g.id === "admin" && !(user?.admin ?? true) ? { ...g, items: [] } : g))
-    .filter((g) => g.items.length > 0);
-  const item = (t: TabItem) => (
-    <SidebarMenuItem key={t.id}>
-      <SidebarMenuButton tooltip={t.label} isActive={tab === t.id} onClick={() => go(t.id)}>
+  const groups = railGroups.map((g) => g.map((id) => all.find((t) => t.id === id)).filter((t): t is TabItem => !!t)).filter((g) => g.length > 0);
+  const railItem = (t: TabItem) =>
+    tip(
+      t.label,
+      <button
+        type="button"
+        aria-label={t.label}
+        onClick={() => go(t.id)}
+        className={cn(
+          "relative flex size-9 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [&>svg]:size-[18px]",
+          tab === t.id && "bg-sidebar-accent text-sidebar-accent-foreground",
+        )}
+      >
         <t.icon />
-        <span>{t.label}</span>
-      </SidebarMenuButton>
-      {!!t.badge && (
-        <SidebarMenuBadge className="rounded-full bg-amber-400 font-semibold text-black peer-hover/menu-button:text-black peer-data-[active=true]/menu-button:text-black">{t.badge}</SidebarMenuBadge>
-      )}
-    </SidebarMenuItem>
-  );
+        {!!t.badge && <span className="absolute -top-0.5 -right-0.5 min-w-4 rounded-full bg-amber-400 px-1 text-center font-semibold text-[10px] text-black leading-4">{t.badge}</span>}
+      </button>,
+      t.id,
+    );
   return (
     <Sidebar collapsible="offcanvas" variant="inset">
-      <SidebarHeader>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton className="data-[slot=sidebar-menu-button]:p-1.5!" onClick={() => go("chat")}>
-              <img src="/icon-192.png" alt="" className="size-5! rounded" />
-              <span className="font-semibold text-base">lyra</span>
-              <span title={connected ? "connected" : "not connected"} className={cn("ml-auto size-2 rounded-full", connected ? "bg-emerald-500" : "bg-red-500")} />
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-        <SearchBox query={search.query} setQuery={search.setQuery} />
-      </SidebarHeader>
-      <SidebarContent>
-        {/* Searching: the results take the sidebar until the box is cleared. */}
-        {search.hits && (
-          <SidebarGroup className="min-h-0 flex-1">
-            <SidebarGroupLabel>Conversations mentioning “{search.query.trim()}”</SidebarGroupLabel>
-            <SidebarGroupContent className="min-h-0 flex-1 overflow-y-auto">
-              <SearchHits hits={search.hits} open={resume} />
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
-        {!search.hits && (
-          <>
-            <SidebarGroup>
-              <SidebarGroupContent className="flex flex-col gap-2">
-                <SidebarMenu>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton
-                      tooltip="New conversation"
-                      className="min-w-8 bg-primary text-primary-foreground duration-200 ease-linear hover:bg-primary/90 hover:text-primary-foreground active:bg-primary/90 active:text-primary-foreground"
-                      onClick={() => {
-                        say("/new");
-                        go("chat");
-                      }}
-                    >
-                      <MessageSquarePlus />
-                      <span>New conversation</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                </SidebarMenu>
-                <SidebarMenu>{navTop.map(byId).filter((t): t is TabItem => !!t).map(item)}</SidebarMenu>
-              </SidebarGroupContent>
-            </SidebarGroup>
-            {groups.map((g) => {
-              // The open page's section stays open; a closed one shows what waits inside.
-              const isOpen = openGroups[g.id] || g.items.some((t) => t.id === tab);
-              const waiting = g.items.reduce((n, t) => n + (t.badge ?? 0), 0);
-              return (
-                <Collapsible key={g.id} open={isOpen} onOpenChange={(on) => toggleGroup(g.id, on)} className="group/collapsible">
-                  <SidebarGroup className="py-0">
-                    <SidebarGroupLabel asChild>
-                      <CollapsibleTrigger className="flex w-full items-center gap-1 hover:text-sidebar-foreground">
-                        <ChevronRight className="size-3.5 transition-transform group-data-[state=open]/collapsible:rotate-90" />
-                        <span>{g.label}</span>
-                        {!isOpen && waiting > 0 && <span className="ml-auto rounded-full bg-amber-400 px-1.5 font-semibold text-[10px] text-black">{waiting}</span>}
-                      </CollapsibleTrigger>
-                    </SidebarGroupLabel>
-                    <CollapsibleContent>
-                      <SidebarMenu>{g.items.map(item)}</SidebarMenu>
-                    </CollapsibleContent>
-                  </SidebarGroup>
-                </Collapsible>
-              );
-            })}
-            <ConversationList sessions={sessions ?? []} active={tab === "chat"} open={resume} reload={reloadSessions} />
-          </>
-        )}
-      </SidebarContent>
-      <SidebarFooter>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <SidebarMenuButton size="lg" className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground">
-                  <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-accent font-semibold text-xs uppercase">{(user?.name ?? device?.name ?? "?").slice(0, 2)}</span>
-                  <span className="grid flex-1 text-left text-sm leading-tight">
-                    <span className="truncate font-medium">{user?.name ?? device?.name ?? "this device"}</span>
-                    <span className="truncate text-muted-foreground text-xs">{user ? `${user.admin ? "admin" : "member"} · ${device?.name ?? ""}` : status.model}</span>
-                  </span>
-                  <EllipsisVertical className="ml-auto size-4" />
-                </SidebarMenuButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent className="w-(--radix-dropdown-menu-trigger-width) min-w-56 rounded-lg" side="right" align="end" sideOffset={4}>
-                <DropdownMenuLabel className="font-normal">
-                  <div className="grid text-xs leading-tight">
-                    <span className="font-medium text-sm">{device?.name}</span>
-                    <span className="text-muted-foreground">model {status.model}</span>
-                    {status.decide && (
-                      <span className="text-muted-foreground">
-                        decides: {status.decide.model} · {status.decide.ms} ms
-                      </span>
-                    )}
-                    <span className="text-muted-foreground">app {APP_VERSION}</span>
-                  </div>
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => go("more")}>
-                  <Bell /> Notifications & more
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={update}>
-                  <RefreshCw /> Update the app
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarFooter>
+      <div className="flex h-full min-h-0">
+        {/* The rail: lyra's pages, with what waits on each. */}
+        <nav className="flex w-12 shrink-0 flex-col items-center gap-1 py-2">
+          {tip(
+            connected ? "lyra · connected" : "lyra · not connected",
+            <button type="button" aria-label="lyra" onClick={() => go("chat")} className="relative mb-1 flex size-9 items-center justify-center">
+              <img src="/icon-192.png" alt="" className="size-6 rounded" />
+              <span className={cn("absolute right-0.5 bottom-0.5 size-2 rounded-full ring-2 ring-sidebar", connected ? "bg-emerald-500" : "bg-red-500")} />
+            </button>,
+          )}
+          <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto">
+            {groups.map((g, i) => (
+              <div key={i} className={cn("flex flex-col items-center gap-1", i > 0 && "mt-1 border-sidebar-border border-t pt-2")}>
+                {g.map(railItem)}
+              </div>
+            ))}
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button type="button" aria-label="This device" className="mt-1 flex size-9 items-center justify-center rounded-lg bg-sidebar-accent font-semibold text-xs uppercase">
+                {(user?.name ?? device?.name ?? "?").slice(0, 2)}
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className="min-w-56 rounded-lg" side="right" align="end" sideOffset={4}>
+              <DropdownMenuLabel className="font-normal">
+                <div className="grid text-xs leading-tight">
+                  <span className="font-medium text-sm">{user?.name ?? device?.name ?? "this device"}</span>
+                  {user && (
+                    <span className="text-muted-foreground">
+                      {user.admin ? "admin" : "member"} · {device?.name}
+                    </span>
+                  )}
+                  <span className="text-muted-foreground">model {status.model}</span>
+                  {status.decide && (
+                    <span className="text-muted-foreground">
+                      decides: {status.decide.model} · {status.decide.ms} ms
+                    </span>
+                  )}
+                  <span className="text-muted-foreground">app {APP_VERSION}</span>
+                </div>
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => go("more")}>
+                <Bell /> Notifications & more
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={update}>
+                <RefreshCw /> Update the app
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </nav>
+        {/* The conversations. */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <SidebarHeader className="gap-2">
+            <Button
+              className="w-full justify-start"
+              onClick={() => {
+                say("/new");
+                go("chat");
+              }}
+            >
+              <MessageSquarePlus /> New conversation
+            </Button>
+            <SearchBox query={search.query} setQuery={search.setQuery} />
+          </SidebarHeader>
+          <SidebarContent>
+            {/* Searching: the results take the panel until the box is cleared. */}
+            {search.hits ? (
+              <SidebarGroup className="min-h-0 flex-1">
+                <SidebarGroupLabel>Conversations mentioning “{search.query.trim()}”</SidebarGroupLabel>
+                <SidebarGroupContent className="min-h-0 flex-1 overflow-y-auto">
+                  <SearchHits hits={search.hits} open={resume} />
+                </SidebarGroupContent>
+              </SidebarGroup>
+            ) : (
+              <ConversationList sessions={sessions} active={tab === "chat"} open={resume} reload={reloadSessions} />
+            )}
+          </SidebarContent>
+        </div>
+      </div>
     </Sidebar>
   );
 }
@@ -355,7 +307,7 @@ function Shell() {
   return (
     <SidebarProvider
       className="h-dvh min-h-0 bg-sidebar text-foreground"
-      style={{ "--sidebar-width": "calc(var(--spacing) * 72)", "--header-height": "calc(var(--spacing) * 12)" } as React.CSSProperties}
+      style={{ "--sidebar-width": "calc(var(--spacing) * 84)", "--header-height": "calc(var(--spacing) * 12)" } as React.CSSProperties}
     >
       <AppSidebar tabs={tabs} more={more} tab={tab} setTab={setTab} update={updateApp} />
       <SidebarInset className="min-h-0 min-w-0 overflow-hidden">

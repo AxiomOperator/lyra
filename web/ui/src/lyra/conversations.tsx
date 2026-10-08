@@ -37,6 +37,21 @@ export function dateGroup(updated: string, now = new Date()): string {
 }
 const DATES = ["Today", "Yesterday", "This week", "This month", "Earlier"];
 
+/** A short age for a row: 5m, 3h, 2d, 4w, 6mo. */
+export function age(iso: string, now = Date.now()): string {
+  const m = Math.max(0, (now - new Date(iso).getTime()) / 60_000);
+  if (m < 60) return `${Math.max(1, Math.round(m))}m`;
+  if (m < 1440) return `${Math.round(m / 60)}h`;
+  if (m < 10080) return `${Math.round(m / 1440)}d`;
+  if (m < 43200) return `${Math.round(m / 10080)}w`;
+  return `${Math.round(m / 43200)}mo`;
+}
+
+/** A plain small heading (dates, Pinned). */
+function Label({ children }: { children: ReactNode }) {
+  return <div className="px-2 pt-3 pb-1 font-medium text-[11px] text-muted-foreground uppercase tracking-wide">{children}</div>;
+}
+
 function useOpen(key: string, initial: boolean) {
   const [open, setOpen] = useState<boolean>(() => {
     try {
@@ -93,12 +108,10 @@ export function ConversationList({ sessions, active, open, reload }: { sessions:
 
   const row = (s: Session) => (
     <SidebarMenuItem key={s.id}>
-      <SidebarMenuButton size="lg" isActive={s.current && active} onClick={() => open(s.id, s.current)} className="h-auto py-1.5 pr-8">
-        <span className="grid min-w-0 flex-1 leading-tight">
-          <span className="truncate text-sm">{s.title || "(untitled)"}</span>
-          <span className="truncate text-muted-foreground text-xs">{ago(s.updated)}</span>
-        </span>
+      <SidebarMenuButton isActive={s.current && active} onClick={() => open(s.id, s.current)} title={`${s.title || "(untitled)"} · ${ago(s.updated)}`} className="group/row pr-7">
         {s.answering && <span title="answering" className="size-2 shrink-0 animate-pulse rounded-full bg-sky-400" />}
+        <span className="min-w-0 flex-1 truncate">{s.title || "(untitled)"}</span>
+        <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums group-hover/menu-item:invisible">{age(s.updated)}</span>
       </SidebarMenuButton>
       {/* lyra's suggested folder: one tap files it. */}
       {s.suggested && !s.folder && !s.archived && (
@@ -114,7 +127,7 @@ export function ConversationList({ sessions, active, open, reload }: { sessions:
       )}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <SidebarMenuAction showOnHover aria-label="More" className="top-2.5">
+          <SidebarMenuAction showOnHover aria-label="More">
             <Ellipsis />
           </SidebarMenuAction>
         </DropdownMenuTrigger>
@@ -175,14 +188,15 @@ export function ConversationList({ sessions, active, open, reload }: { sessions:
   };
 
   return (
-    <SidebarGroup className="min-h-0 flex-1">
-      <SidebarGroupLabel>Conversations</SidebarGroupLabel>
+    <SidebarGroup className="min-h-0 flex-1 pt-0">
       <SidebarGroupContent className="min-h-0 flex-1 overflow-y-auto">
         {pinned.length > 0 && (
-          <Section id="pinned" label="Pinned" icon={<Pin className="size-3" />} initial>
-            {pinned.map(row)}
-          </Section>
+          <>
+            <Label>Pinned</Label>
+            <SidebarMenu>{pinned.map(row)}</SidebarMenu>
+          </>
         )}
+        {folders.some((f) => filed(f).length > 0) && <Label>Folders</Label>}
         {folders.map((f) =>
           filed(f).length > 0 ? (
             <Section key={f} id={`folder-${f}`} label={f} icon={<Folder className="size-3" />} count={filed(f).length} initial={false}>
@@ -193,9 +207,10 @@ export function ConversationList({ sessions, active, open, reload }: { sessions:
         {DATES.map((d) => {
           const these = loose.filter((s) => dateGroup(s.updated) === d);
           return these.length > 0 ? (
-            <Section key={d} id={`date-${d}`} label={d} initial={d !== "Earlier"}>
-              {these.map(row)}
-            </Section>
+            <div key={d}>
+              <Label>{d}</Label>
+              <SidebarMenu>{these.map(row)}</SidebarMenu>
+            </div>
           ) : null;
         })}
         {archived.length > 0 && (
