@@ -254,15 +254,15 @@ pub fn save(r: &Routine) -> Result<(), String> {
         return Err("a routine needs something to do".into());
     }
     let dir = dir().ok_or("no lyra home")?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let text = toml::to_string_pretty(r).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join(format!("{}.toml", r.name)), text).map_err(|e| e.to_string())
+    crate::store::write_text(&dir.join(format!("{}.toml", r.name)), &text)
 }
 
 pub fn delete(name: &str) -> Result<Routine, String> {
     let r = find(name)?;
     let dir = dir().ok_or("no lyra home")?;
     std::fs::remove_file(dir.join(format!("{}.toml", r.name))).map_err(|e| e.to_string())?;
+    let _guard = RUNS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut runs = runs();
     runs.remove(&r.name);
     save_runs(&runs);
@@ -286,15 +286,12 @@ pub fn create(name: &str, schedule: &str, prompt: &str, notify: Notify, changes:
 static RUNS_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn runs() -> HashMap<String, Vec<Run>> {
-    dir().and_then(|d| std::fs::read_to_string(d.join("runs.json")).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    dir().map(|d| crate::store::read_json(&d.join("runs.json"))).unwrap_or_default()
 }
 
 fn save_runs(runs: &HashMap<String, Vec<Run>>) {
     if let Some(dir) = dir() {
-        let _ = std::fs::create_dir_all(&dir);
-        if let Ok(text) = serde_json::to_string_pretty(runs) {
-            let _ = std::fs::write(dir.join("runs.json"), text);
-        }
+        let _ = crate::store::write_json(&dir.join("runs.json"), runs);
     }
 }
 

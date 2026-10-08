@@ -33,12 +33,9 @@ fn notes_of(text: &str) -> String {
 
 fn write(user: &str, learned: &str, notes: &str, at: Option<DateTime<Utc>>) -> Result<(), String> {
     let p = path(user).ok_or("no lyra home")?;
-    if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-    }
     let stamp = at.map(|t| format!("<!-- learned {} -->\n", t.to_rfc3339())).unwrap_or_default();
     let text = format!("# How I write\n\n{stamp}{LEARNED}\n\n{}\n\n{NOTES}\n\n{}\n", learned.trim(), notes.trim());
-    std::fs::write(p, text).map_err(|e| e.to_string())
+    crate::store::write_text(&p, &text)
 }
 
 /// For a prompt: how to write as them.

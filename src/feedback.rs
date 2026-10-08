@@ -321,18 +321,14 @@ fn path() -> Option<PathBuf> {
     Some(crate::config::home()?.join("feedback").join("feedback.json"))
 }
 
+// Changes go through `LOCK` (read, change, write as one step); the file
+// itself is written atomically by `store`.
 fn load() -> Vec<Item> {
-    path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    path().map(|p| crate::store::read_json(&p)).unwrap_or_default()
 }
 
 fn save(all: &[Item]) -> Result<(), String> {
-    let p = path().ok_or("no home directory")?;
-    if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-    }
-    let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(all).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())?;
+    crate::store::write_json(&path().ok_or("no home directory")?, all)?;
     REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }

@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.25.3.147",
+    "date": "2026-10-08",
+    "title": "Safer saving",
+    "fixed": [
+      "A watch you added or cancelled while lyra was checking your others no longer disappears or comes back.",
+      "Stopping a watch with no name no longer stops your first one by mistake.",
+      "lyra's saved lists (watches, recaps, feedback, Q&A, routines, notes, writing style, briefings and more) are saved in one step, so a crash or two saves at once can't leave a half-written file. A file that can't be read is kept aside instead of being written over."
+    ]
+  },
+  {
     "version": "0.25.2.146",
     "date": "2026-10-08",
     "title": "The right version everywhere",

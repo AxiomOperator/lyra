@@ -728,18 +728,13 @@ impl Alerts {
     /// What was told before a restart (`~/.lyra/alerts/status.json`).
     pub fn load() -> Alerts {
         let path = crate::config::home().map(|h| h.join("alerts").join("status.json"));
-        let told = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let told = path.as_ref().map(|p| crate::store::read_json(p)).unwrap_or_default();
         Alerts { streak: HashMap::new(), told, path }
     }
 
     fn save(&self) {
         let Some(path) = &self.path else { return };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(text) = serde_json::to_string_pretty(&self.told) {
-            let _ = std::fs::write(path, text);
-        }
+        let _ = crate::store::write_json(path, &self.told);
     }
 }
 

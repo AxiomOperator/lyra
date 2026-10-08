@@ -138,7 +138,7 @@ Recurring errors:
 | ID | Issue | Where | Fix |
 |---|---|---|---|
 | I-3 | **The curator can pull personal skills into shared ones.** `review_collection` and `apply_plan` look at all skills, so duplicates or merges can include someone's own skill and an admin's approval makes it shared. | `learning/src/manager.rs:665-686`, `src/learn.rs:161-168` | Filter `owner.is_none()` in both. |
-| I-4 | **The watches file can lose updates.** No lock, no atomic write, and `pass` saves an old copy after slow network checks, so a watch added or cancelled meanwhile is lost or comes back. | `src/watches.rs:40-46, 147-167` | Lock, write to a temp file and rename, then re-load and merge before saving. |
+| I-4 ✅ | **Fixed in 0.25.3.147** (`store.rs`; `pass` now takes out only the watches that fired). *Was:* **The watches file can lose updates.** No lock, no atomic write, and `pass` saves an old copy after slow network checks, so a watch added or cancelled meanwhile is lost or comes back. | `src/watches.rs:40-46, 147-167` | Lock, write to a temp file and rename, then re-load and merge before saving. |
 | I-5 | **One app connection freezes while a slow request runs** (search everything, Enhance, models). The WebSocket loop awaits the answer inside `select!`, so the page gets no live updates and its folder requests stall. | `web/src/lib.rs` "get" arm | Answer each Get in its own task, through a channel. |
 | I-6 | **Some requests block every conversation** while they make network or model calls on the serve loop: the app's Mail, Calendar and PMI pages; `/recap`, `/mail`, `/today`, `/pmi` and `/model` from page buttons; reading all sessions for the list and search. | `src/serve/data.rs` `data()`, `quiet_command` (`src/commands/dispatch.rs`) | Move them to threads, as `everything`, `models` and `feedback_enhance` already are. |
 | I-7 | **Attachments are parsed on the loop, and leftovers carry over.** PDF text and image base64 are done inline. `attach_images` and `attach_looks` are set before the `/new`, `/resume` and busy branches, so they can ride along on the next message. | `src/serve/loop.rs` (the `send` arm) | Set them only where `send()` runs; do the work in the turn thread. |
@@ -157,11 +157,11 @@ Recurring errors:
 | I-15 | The Operator runs commands that don't exist on the target ("program not found", 8×), mostly PowerShell and Linux mix-ups. | Tell it the target's OS and shell in its prompt; a better error. |
 | I-16 | PMI 422 "a closing comment goes with completing the task". | Ask for or add a closing comment in `pmi_complete`. |
 | I-17 | "no open lyra page has the folder "."": the model passes "." as a folder name. | Treat "."/"" as "which folder?" and list the folders. |
-| I-18 | `watches::cancel ""` removes the first watch. | Reject an empty id. |
+| I-18 ✅ | **Fixed in 0.25.3.147.** *Was:* `watches::cancel ""` removes the first watch. | Reject an empty id. |
 | I-19 | `teams_from` watches can fire on messages from before the watch existed. | Compare against `created`. |
 | I-20 | Promoting a question to Q&A isn't atomic, and the same question can be promoted twice. | Check `source` first; link both steps. |
 | I-21 | Feedback: `analyzing` can stick if its thread panics; the badge re-reads the file for every status update; Q&A saves don't bump the refresh counter. | Small fixes in `feedback.rs`, `qa.rs` and `serve/mod.rs` `status()`. |
-| I-22 | `recap` saves aren't atomic. | Write to a temp file and rename. |
+| I-22 ✅ | **Fixed in 0.25.3.147.** *Was:* `recap` saves aren't atomic. | Write to a temp file and rename. |
 | I-23 | Members get "that's for admins" for their own **briefing** page (it's missing from the member list). | Add `briefing` to the member list. |
 | I-24 | "Search everything" threads keep running after its 8 s cutoff. | One search at a time per person. |
 
@@ -200,7 +200,7 @@ Recurring errors:
 | ID | Debt | Why it matters |
 |---|---|---|
 | **D-1** ✅ | **Done in 0.25.0.144:** `main.rs` 4,405 → 2,140 lines and `serve.rs` split into `serve/{mod,loop,data,pushes}.rs`, with `turn.rs`, `startup.rs` (one `configure()` for start and reload) and `commands/` alongside. *Was:* **`src/main.rs` is 4,405 lines and `src/serve.rs` 2,241.** `main.rs` holds the app state, the command dispatcher (40 commands), the tool loop, the startup and reload config and more. `serve.rs`'s `data()` has 28 arms. | These are the slowest files to change and review, and the source of bugs like startup config only applied on reload (since fixed). Split them into `commands/`, `turn.rs`, `startup.rs`, and `serve/{loop,data,pushes}.rs`. |
-| D-2 | **About 12 hand-rolled JSON file stores** (watches, recap, feedback, qa, proactive, routines, sessions meta, style, notes, health and status alerts…), most writing with a plain `fs::write` and ignoring errors. | Races and torn writes (I-4, I-22). One small `JsonStore<T>` helper (lock, temp file, rename, error logging) used everywhere. |
+| **D-2** ✅ | **Done in 0.25.3.147:** `src/store.rs` (`JsonStore<T>` with a lock per file, `write_atomic`/`write_json`/`read_json`/`write_text`; an unreadable file is set aside as `<name>.bad-<time>` and logged) used by watches, recap, feedback, Q&A, proactive, routines, health and status alerts, diagnoses, briefings, coding jobs, PMI nags, style, notes, sessions and their meta, the OpenAPI spec cache and the MCP files. *Was:* **About 12 hand-rolled JSON file stores** (watches, recap, feedback, qa, proactive, routines, sessions meta, style, notes, health and status alerts…), most writing with a plain `fs::write` and ignoring errors. | Races and torn writes (I-4, I-22). One small `JsonStore<T>` helper (lock, temp file, rename, error logging) used everywhere. |
 | D-3 | **Duplicated helpers:** two HTML/XML-to-text strippers (`teams.rs`, `files.rs`) besides `html2text`; two near-identical `Alerts` types (`health.rs`, `status.rs`); Graph HTTP helpers spread across modules. | Pull them into `text.rs`, `alerts.rs` and `graph.rs`. |
 | D-4 | **`execution/src/engine.rs` has about 25 `unwrap()`s** outside tests, e.g. `plan.step_mut(id).unwrap()`. | A bad plan state would panic the plan thread. Replace them with errors. |
 | D-5 | **The app's main bundle is 1.7 MB** (Shiki grammars add about 1 MB more on demand). | A slow first load on phones. Split the routes (Feedback, Q&A, Usage, manage pages) and lazy-load Shiki. |
@@ -229,7 +229,7 @@ Recurring errors:
 ### Now: hardening (about a week)
 1. **I-1, I-2, I-3:** the cross-user problems.
 2. **I-5, I-6, I-7:** nothing slow on the serve loop or a connection's loop.
-3. **D-2:** one atomic JSON store, which also fixes I-4 and I-22.
+3. ~~D-2: one atomic JSON store, which also fixes I-4 and I-22~~ (done).
 4. **I-9, I-10, I-12, I-13, I-23** and the small ones (I-17 to I-21).
 5. **G-1:** a Playwright smoke suite (sign in, chat, approval, feedback, Q&A, projects) against a demo lyra with a fake model, run before each deploy.
 6. **O-1, O-5, O-6:** log rotation, a test restore, an external uptime check.

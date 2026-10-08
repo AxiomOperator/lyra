@@ -60,14 +60,12 @@ fn path() -> Option<std::path::PathBuf> {
 }
 
 pub fn all() -> Vec<Diagnosis> {
-    path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    path().map(|p| crate::store::read_json(&p)).unwrap_or_default()
 }
 
 fn save(list: &[Diagnosis]) {
-    if let Some(p) = path()
-        && let Ok(text) = serde_json::to_string_pretty(list)
-    {
-        let _ = std::fs::write(p, text);
+    if let Some(p) = path() {
+        let _ = crate::store::write_json(&p, list);
     }
 }
 

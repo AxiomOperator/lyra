@@ -113,12 +113,8 @@ impl Session {
 
 /// Write a session (atomically: a half-written file never replaces a good one).
 pub fn save(dir: &Path, s: &Session) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{}.json", s.id));
-    let tmp = dir.join(format!(".{}.json.tmp", s.id));
     let text = serde_json::to_string(s).map_err(|e| e.to_string())?;
-    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    crate::store::write_text(&dir.join(format!("{}.json", s.id)), &text)
 }
 
 fn load_file(path: &Path) -> Result<Session, String> {
@@ -368,7 +364,7 @@ fn meta_path(dir: &Path) -> PathBuf {
 
 /// Every conversation's keeping, by id.
 pub fn metas(dir: &Path) -> std::collections::HashMap<String, Meta> {
-    std::fs::read_to_string(meta_path(dir)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    crate::store::read_json(&meta_path(dir))
 }
 
 /// Change one conversation's keeping (only one of `owner`'s own).
@@ -382,9 +378,7 @@ pub fn set_meta(dir: &Path, id: &str, owner: &str, change: impl FnOnce(&mut Meta
     if *m == Meta::default() {
         all.remove(&s.id);
     }
-    let tmp = dir.join(".meta.json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, meta_path(dir)).map_err(|e| e.to_string())?;
+    crate::store::write_json(&meta_path(dir), &all)?;
     Ok(out)
 }
 

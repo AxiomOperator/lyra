@@ -58,8 +58,7 @@ fn read_file(p: &std::path::Path) -> Option<Note> {
 
 fn write_note(n: &Note) -> Result<(), String> {
     let d = dir().ok_or("no lyra home")?;
-    std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
-    std::fs::write(d.join(format!("{}.md", n.slug)), format!("# {}\n\n{}\n", n.title.trim(), n.text.trim_end())).map_err(|e| e.to_string())
+    crate::store::write_text(&d.join(format!("{}.md", n.slug)), &format!("# {}\n\n{}\n", n.title.trim(), n.text.trim_end()))
 }
 
 /// Every note, newest first.

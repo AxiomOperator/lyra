@@ -953,15 +953,12 @@ fn nags_path(user: &str) -> Option<std::path::PathBuf> {
 impl Nags {
     /// One person's (kept across restarts).
     pub fn load_for(user: &str) -> Self {
-        nags_path(user).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        nags_path(user).map(|p| crate::store::read_json(&p)).unwrap_or_default()
     }
 
     pub fn save_for(&self, user: &str) {
         if let Some(p) = nags_path(user) {
-            if let Some(dir) = p.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            let _ = std::fs::write(p, serde_json::to_string_pretty(self).unwrap_or_default());
+            let _ = crate::store::write_json(&p, self);
         }
     }
 

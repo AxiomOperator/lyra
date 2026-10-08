@@ -334,8 +334,7 @@ fn spec_from_url(name: &str, url: &str) -> Result<String, String> {
     match fetched {
         Ok(text) => {
             if let Some(p) = &cache {
-                let _ = p.parent().map(std::fs::create_dir_all);
-                let _ = std::fs::write(p, &text);
+                let _ = crate::store::write_text(p, &text);
             }
             Ok(text)
         }

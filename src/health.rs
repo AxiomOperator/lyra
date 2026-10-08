@@ -171,19 +171,14 @@ impl Alerts {
     /// What was told before a restart (`~/.lyra/alerts/health.json`).
     pub fn load() -> Alerts {
         let path = crate::config::home().map(|h| h.join("alerts").join("health.json"));
-        let told: Told = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let told: Told = path.as_ref().map(|p| crate::store::read_json(p)).unwrap_or_default();
         Alerts { active: told.active, offline_told: told.offline_told, offline: HashMap::new(), path }
     }
 
     fn save(&self) {
         let Some(path) = &self.path else { return };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
         let told = Told { active: self.active.clone(), offline_told: self.offline_told.clone() };
-        if let Ok(text) = serde_json::to_string_pretty(&told) {
-            let _ = std::fs::write(path, text);
-        }
+        let _ = crate::store::write_json(path, &told);
     }
 }
 

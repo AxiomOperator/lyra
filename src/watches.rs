@@ -33,16 +33,12 @@ fn path(user: &str) -> Option<PathBuf> {
     if user == lyra_web::users::OWNER { Some(crate::config::home()?.join("watches.json")) } else { Some(crate::context::user_dir(user)?.join("watches.json")) }
 }
 
-pub fn list_for(user: &str) -> Vec<Watch> {
-    path(user).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+fn store(user: &str) -> Result<crate::store::JsonStore<Vec<Watch>>, String> {
+    Ok(crate::store::JsonStore::new(path(user).ok_or("no home directory")?))
 }
 
-fn save_for(user: &str, all: &[Watch]) -> Result<(), String> {
-    let p = path(user).ok_or("no home directory")?;
-    if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(p, serde_json::to_string_pretty(all).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+pub fn list_for(user: &str) -> Vec<Watch> {
+    store(user).map(|s| s.load()).unwrap_or_default()
 }
 
 /// Anyone has a watch (the loop only looks for people who do).
@@ -89,18 +85,19 @@ pub fn add(kind: &str, target: &str, days: i64) -> Result<Watch, String> {
         other => return Err(format!("can't watch for {other:?}: mail_from, mail_reply, task or teams_from")),
     };
     let w = Watch { id: new_id(), kind: kind.into(), target: target.into(), label, created: now, state, until: now + Duration::days(days.clamp(1, 60)) };
-    let mut all = list_for(&user);
-    all.push(w.clone());
-    save_for(&user, &all)?;
+    store(&user)?.update(|all| all.push(w.clone()))?;
     Ok(w)
 }
 
 pub fn cancel(user: &str, id: &str) -> Result<Watch, String> {
-    let mut all = list_for(user);
-    let i = all.iter().position(|w| w.id == id.trim() || w.label.to_lowercase().contains(&id.trim().to_lowercase())).ok_or_else(|| format!("no watch {id:?}"))?;
-    let w = all.remove(i);
-    save_for(user, &all)?;
-    Ok(w)
+    let key = id.trim().to_lowercase();
+    if key.is_empty() {
+        return Err("which watch? (its id from /watches)".into());
+    }
+    store(user)?.try_update(|all| {
+        let i = all.iter().position(|w| w.id == key || w.label.to_lowercase().contains(&key)).ok_or_else(|| format!("no watch {id:?}"))?;
+        Ok(all.remove(i))
+    })
 }
 
 /// A name or address in a "Name <address>"-style sender.
@@ -151,19 +148,27 @@ pub fn pass() -> Vec<(String, String)> {
         return vec![];
     }
     let now = Utc::now();
-    let mut keep = Vec::new();
+    // The checks take a while (mail, PMI, Teams): made without holding the file,
+    // then only the ones that fired or ran out are taken out, so a watch added
+    // or cancelled meanwhile stays as it is.
+    let mut done = Vec::new();
     let mut fired = Vec::new();
-    for w in all {
+    for w in &all {
         if now > w.until {
             fired.push(("Stopped watching".to_string(), format!("{} (nothing in {} days)", w.label, (w.until - w.created).num_days())));
+            done.push(w.id.clone());
             continue;
         }
-        match check(&w) {
-            Ok(Some(what)) => fired.push((format!("You asked: {}", w.label), what)),
-            _ => keep.push(w),
+        if let Ok(Some(what)) = check(w) {
+            fired.push((format!("You asked: {}", w.label), what));
+            done.push(w.id.clone());
         }
     }
-    let _ = save_for(&user, &keep);
+    if !done.is_empty()
+        && let Ok(s) = store(&user)
+    {
+        let _ = s.update(|all| all.retain(|w| !done.contains(&w.id)));
+    }
     fired
 }
 

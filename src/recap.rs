@@ -56,17 +56,13 @@ fn path(user: &str) -> Option<PathBuf> {
 }
 
 pub fn last_for(user: &str) -> Option<Recap> {
-    serde_json::from_str(&std::fs::read_to_string(path(user)?).ok()?).ok()
+    crate::store::read_json::<Option<Recap>>(&path(user)?)
 }
 
 pub fn save_for(user: &str, r: &Recap) {
     if let Some(p) = path(user) {
-        if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(text) = serde_json::to_string_pretty(r) {
-            let _ = std::fs::write(p, text);
-        }
+        // Atomic: the Status page may be reading it (a failure is logged).
+        let _ = crate::store::write_json(&p, r);
     }
 }
 

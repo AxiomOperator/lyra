@@ -89,10 +89,7 @@ impl Seen {
             m.retain(|_, t| *t > cutoff);
         }
         if let Some(p) = path() {
-            if let Some(d) = p.parent() {
-                let _ = std::fs::create_dir_all(d);
-            }
-            let _ = std::fs::write(p, serde_json::to_string_pretty(self).unwrap_or_default());
+            let _ = crate::store::write_json(&p, self);
         }
     }
 }

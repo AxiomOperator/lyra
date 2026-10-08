@@ -177,7 +177,7 @@ fn jobs_path() -> Option<std::path::PathBuf> {
 }
 
 pub fn jobs() -> Vec<Record> {
-    jobs_path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    jobs_path().map(|p| crate::store::read_json(&p)).unwrap_or_default()
 }
 
 fn keep(r: Record) {
@@ -186,12 +186,7 @@ fn keep(r: Record) {
     let mut all = jobs();
     all.insert(0, r);
     all.truncate(100);
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(text) = serde_json::to_string_pretty(&all) {
-        let _ = std::fs::write(path, text);
-    }
+    let _ = crate::store::write_json(&path, &all);
 }
 
 /// The last job in a folder on a machine (to continue it).

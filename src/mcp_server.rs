@@ -92,7 +92,7 @@ async fn own_session(c: &RemoteConfig) -> Result<String, String> {
     };
     let _ = ws.close(None).await;
     if let Some(p) = session_file() {
-        let _ = std::fs::write(p, &id);
+        let _ = crate::store::write_text(&p, &id);
     }
     Ok(id)
 }
@@ -206,10 +206,7 @@ fn install() -> Result<String, String> {
         let path = lyra_node::home().join(".config/opencode/opencode.json");
         let mut cfg: Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| json!({ "$schema": "https://opencode.ai/config.json" }));
         cfg["mcp"]["lyra"] = json!({ "type": "local", "command": [exe, "mcp"], "enabled": true });
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
-        std::fs::write(&path, serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        crate::store::write_json(&path, &cfg)?;
         out.push(format!("OpenCode: added to {}", path.display()));
     } else {
         out.push("OpenCode: not installed".into());

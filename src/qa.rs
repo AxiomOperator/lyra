@@ -45,19 +45,13 @@ fn path() -> Option<PathBuf> {
 }
 
 pub fn all() -> Vec<Entry> {
-    let mut v: Vec<Entry> = path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let mut v: Vec<Entry> = path().map(|p| crate::store::read_json(&p)).unwrap_or_default();
     v.sort_by_key(|e| std::cmp::Reverse(e.updated));
     v
 }
 
 fn save(all: &[Entry]) -> Result<(), String> {
-    let p = path().ok_or("no home directory")?;
-    if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-    }
-    let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(all).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+    crate::store::write_json(&path().ok_or("no home directory")?, all)
 }
 
 /// Add or change an entry (admins). `id` 0 adds one.

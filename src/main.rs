@@ -8,6 +8,7 @@ mod changelog;
 mod coding;
 mod commands;
 mod startup;
+mod store;
 mod turn;
 mod config;
 mod connect;
