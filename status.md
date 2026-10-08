@@ -131,7 +131,7 @@ Recurring errors:
 | ID | Issue | Where | Fix |
 |---|---|---|---|
 | **I-1** | **Lent project folders belong to the browser, not the person.** Folder handles live in IndexedDB under one key and are re-announced as whoever signs in next. On a shared PC or browser profile, user B's chat can read, search and (after approval) write user A's folders. | `web/ui/src/lyra/folders.ts:57-78`, `web/src/lib.rs` "folders" | Key the store by user (`folders:<id>`), and only announce the signed-in person's folders. |
-| **I-2** | **`/history <skill>` shows another member's personal skill:** its versions, evidence (from their conversations) and related skills. Members are allowed `/history`, and it looks the skill up without checking whose it is. | `src/learn.rs:308`, `src/main.rs:1458` | `find_as(key, viewer)` in `history` (and `rollback`). |
+| **I-2** | **`/history <skill>` shows another member's personal skill:** its versions, evidence (from their conversations) and related skills. Members are allowed `/history`, and it looks the skill up without checking whose it is. | `src/learn.rs:308`, `src/commands/dispatch.rs` (`/history`) | `find_as(key, viewer)` in `history` (and `rollback`). |
 
 ### Medium
 
@@ -140,9 +140,9 @@ Recurring errors:
 | I-3 | **The curator can pull personal skills into shared ones.** `review_collection` and `apply_plan` look at all skills, so duplicates or merges can include someone's own skill and an admin's approval makes it shared. | `learning/src/manager.rs:665-686`, `src/learn.rs:161-168` | Filter `owner.is_none()` in both. |
 | I-4 | **The watches file can lose updates.** No lock, no atomic write, and `pass` saves an old copy after slow network checks, so a watch added or cancelled meanwhile is lost or comes back. | `src/watches.rs:40-46, 147-167` | Lock, write to a temp file and rename, then re-load and merge before saving. |
 | I-5 | **One app connection freezes while a slow request runs** (search everything, Enhance, models). The WebSocket loop awaits the answer inside `select!`, so the page gets no live updates and its folder requests stall. | `web/src/lib.rs` "get" arm | Answer each Get in its own task, through a channel. |
-| I-6 | **Some requests block every conversation** while they make network or model calls on the serve loop: the app's Mail, Calendar and PMI pages; `/recap`, `/mail`, `/today`, `/pmi` and `/model` from page buttons; reading all sessions for the list and search. | `src/serve.rs` `data()` and `quiet_command` | Move them to threads, as `everything`, `models` and `feedback_enhance` already are. |
-| I-7 | **Attachments are parsed on the loop, and leftovers carry over.** PDF text and image base64 are done inline. `attach_images` and `attach_looks` are set before the `/new`, `/resume` and busy branches, so they can ride along on the next message. | `src/serve.rs:545-548` | Set them only where `send()` runs; do the work in the turn thread. |
-| I-8 | **Folder suggestions start twice.** `looked` is set only after the decision model answers, so each refresh of the list starts another thread for the same conversations. | `src/serve.rs:1654-1669` | Mark them in progress before spawning; skip ones the user has filed meanwhile. |
+| I-6 | **Some requests block every conversation** while they make network or model calls on the serve loop: the app's Mail, Calendar and PMI pages; `/recap`, `/mail`, `/today`, `/pmi` and `/model` from page buttons; reading all sessions for the list and search. | `src/serve/data.rs` `data()`, `quiet_command` (`src/commands/dispatch.rs`) | Move them to threads, as `everything`, `models` and `feedback_enhance` already are. |
+| I-7 | **Attachments are parsed on the loop, and leftovers carry over.** PDF text and image base64 are done inline. `attach_images` and `attach_looks` are set before the `/new`, `/resume` and busy branches, so they can ride along on the next message. | `src/serve/loop.rs` (the `send` arm) | Set them only where `send()` runs; do the work in the turn thread. |
+| I-8 | **Folder suggestions start twice.** `looked` is set only after the decision model answers, so each refresh of the list starts another thread for the same conversations. | `src/serve/data.rs` (`"sessions"`) | Mark them in progress before spawning; skip ones the user has filed meanwhile. |
 | I-9 | **Find a time can miss busy time.** The calendar reads at most 100 events with no paging; free-text spans aren't capped. | `src/calendar.rs:260-266, 312` | Follow `@odata.nextLink`; cap spans at about 21 days. |
 | I-10 | **Usage undercounts at month end.** Files are named by UTC month but read by local month (Texas is behind UTC). | `src/usage.rs:103, 120-126` | Walk months in UTC. |
 | I-11 | **A trusted folder on one PC can skip approval for a same-named folder on another PC.** Trust and routing are decided separately. | `src/projects.rs:95`, `web/src/lib.rs` `pick_page` | Decide trust and route by the same page. |
@@ -182,7 +182,7 @@ Recurring errors:
 | ID | Gap |
 |---|---|
 | **G-1** | **The web app has no automated tests.** That's 16.5k lines of TypeScript, and every change is checked by hand or with ad-hoc headless screenshots. A Playwright smoke suite against a demo lyra with a fake model (the same setup used during development) would catch regressions like the production-only Terminal crash. |
-| **G-2** | **Thin tests on the server's riskiest parts:** `serve.rs` (2 tests, 2,241 lines), `plan.rs` (0 / 514), `search.rs` (0), `acting.rs` (0), `connect.rs` (2), `evolve.rs` (2), and the Graph modules (`calendar.rs` 4, `mail.rs` 4, `teams.rs` 1, `files.rs` 1), whose network paths are untested. |
+| **G-2** | **Thin tests on the server's riskiest parts:** `serve/` (2 tests, about 2,000 lines), `plan.rs` (0 / 514), `search.rs` (0), `acting.rs` (0), `connect.rs` (2), `evolve.rs` (2), and the Graph modules (`calendar.rs` 4, `mail.rs` 4, `teams.rs` 1, `files.rs` 1), whose network paths are untested. |
 | G-3 | **Features nobody has tried with live data yet:** find a time, watches, meeting follow-up, search everything over mail, Teams and files, and personal skills for a real member. They're built and unit-tested but not exercised against Microsoft 365 or PMI. |
 | G-4 | **No usage budgets or alerts** (proposed earlier as item 8): no per-person monthly limits, no warning at 80%. |
 | G-5 | **No in-app admin view of server health** beyond Status: logs, restart history and error rates (§3 needed SSH). |
@@ -199,7 +199,7 @@ Recurring errors:
 
 | ID | Debt | Why it matters |
 |---|---|---|
-| **D-1** | **`src/main.rs` is 4,405 lines and `src/serve.rs` 2,241.** `main.rs` holds the app state, the command dispatcher (40 commands), the tool loop, the startup and reload config and more. `serve.rs`'s `data()` has 28 arms. | These are the slowest files to change and review, and the source of bugs like startup config only applied on reload (since fixed). Split them into `commands/`, `turn.rs`, `startup.rs`, and `serve/{loop,data,pushes}.rs`. |
+| **D-1** ✅ | **Done in 0.25.0.144:** `main.rs` 4,405 → 2,140 lines and `serve.rs` split into `serve/{mod,loop,data,pushes}.rs`, with `turn.rs`, `startup.rs` (one `configure()` for start and reload) and `commands/` alongside. *Was:* **`src/main.rs` is 4,405 lines and `src/serve.rs` 2,241.** `main.rs` holds the app state, the command dispatcher (40 commands), the tool loop, the startup and reload config and more. `serve.rs`'s `data()` has 28 arms. | These are the slowest files to change and review, and the source of bugs like startup config only applied on reload (since fixed). Split them into `commands/`, `turn.rs`, `startup.rs`, and `serve/{loop,data,pushes}.rs`. |
 | D-2 | **About 12 hand-rolled JSON file stores** (watches, recap, feedback, qa, proactive, routines, sessions meta, style, notes, health and status alerts…), most writing with a plain `fs::write` and ignoring errors. | Races and torn writes (I-4, I-22). One small `JsonStore<T>` helper (lock, temp file, rename, error logging) used everywhere. |
 | D-3 | **Duplicated helpers:** two HTML/XML-to-text strippers (`teams.rs`, `files.rs`) besides `html2text`; two near-identical `Alerts` types (`health.rs`, `status.rs`); Graph HTTP helpers spread across modules. | Pull them into `text.rs`, `alerts.rs` and `graph.rs`. |
 | D-4 | **`execution/src/engine.rs` has about 25 `unwrap()`s** outside tests, e.g. `plan.step_mut(id).unwrap()`. | A bad plan state would panic the plan thread. Replace them with errors. |
@@ -235,7 +235,7 @@ Recurring errors:
 6. **O-1, O-5, O-6:** log rotation, a test restore, an external uptime check.
 
 ### Next: make it easier to live with (2–4 weeks)
-1. **D-1:** split `main.rs` and `serve.rs`. **D-9:** one command table.
+1. ~~D-1: split `main.rs` and `serve.rs`~~ (done). **D-9:** one command table.
 2. **D-5:** a smaller app bundle, faster on phones.
 3. **G-4:** usage budgets and alerts.
 4. **D-6:** a Settings page for the everyday options.

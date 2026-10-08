@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.25.0.144",
+    "date": "2026-10-08",
+    "title": "Tidier inside",
+    "improved": [
+      "lyra's code is reorganised so changes are quicker and safer to make. Nothing changes in how it works; settings now load the same way on start and on reload, by design."
+    ]
+  },
+  {
     "version": "0.25.0.143",
     "date": "2026-10-08",
     "title": "Ready for a bigger database later",
