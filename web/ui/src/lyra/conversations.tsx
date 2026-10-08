@@ -108,7 +108,7 @@ export function ConversationList({ sessions, active, open, reload }: { sessions:
 
   const row = (s: Session) => (
     <SidebarMenuItem key={s.id}>
-      <SidebarMenuButton isActive={s.current && active} onClick={() => open(s.id, s.current)} title={`${s.title || "(untitled)"} · ${ago(s.updated)}`} className="group/row pr-7">
+      <SidebarMenuButton isActive={s.current && active} onClick={() => open(s.id, s.current)} title={`${s.title || "(untitled)"} · ${ago(s.updated)}`} className="group/row pr-7 data-[active=true]:bg-primary/10 data-[active=true]:text-primary data-[active=true]:shadow-[inset_2px_0_0_var(--primary)]">
         {s.answering && <span title="answering" className="size-2 shrink-0 animate-pulse rounded-full bg-sky-400" />}
         <span className="min-w-0 flex-1 truncate">{s.title || "(untitled)"}</span>
         <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums group-hover/menu-item:invisible">{age(s.updated)}</span>

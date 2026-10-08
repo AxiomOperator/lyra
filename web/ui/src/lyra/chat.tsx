@@ -147,7 +147,7 @@ function MessageView({ m, results, streaming, asking, max, model, turn }: { m: C
       return (
         <Message from="user">
           <SentAttachments files={files} />
-          {text.trim() && <MessageContent className="whitespace-pre-wrap">{text}</MessageContent>}
+          {text.trim() && <MessageContent className="whitespace-pre-wrap group-[.is-user]:bg-primary/15 group-[.is-user]:ring-1 group-[.is-user]:ring-primary/25">{text}</MessageContent>}
         </Message>
       );
     }

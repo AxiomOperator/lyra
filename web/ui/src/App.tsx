@@ -136,7 +136,7 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
           // A phone has no hover: each icon says what it is.
           // Each icon says what it is, on a phone and on a desktop.
           "w-14 flex-col gap-0.5 py-1",
-          tab === t.id && "bg-sidebar-accent text-sidebar-accent-foreground",
+          tab === t.id && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary",
         )}
       >
         <t.icon />
