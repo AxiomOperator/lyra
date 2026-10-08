@@ -34,7 +34,7 @@ It runs entirely on local models:
 | **Health** | Good. Production is stable: no panics, every model answering, backups nightly, disk 31%. |
 | **Breadth** | Very wide for its age (5 days, 141 commits, about 57k lines of Rust and 16.5k of TypeScript). |
 | **Biggest risks** | 2 verified cross-user problems (I-1, I-2); the server loop doing slow network work inline (I-5, I-6); a web app with no automated tests (G-1). |
-| **Biggest opportunities** | Hardening and test coverage before more users join; splitting the two very large files (`main.rs`, `serve.rs`); a few high-value assistant features (§8). |
+| **Biggest opportunities** | Hardening and test coverage before more users join; test coverage and the remaining technical debt (§6); a few high-value assistant features (§8). |
 
 ---
 
@@ -160,7 +160,7 @@ Recurring errors:
 | I-18 | `watches::cancel ""` removes the first watch. | Reject an empty id. |
 | I-19 | `teams_from` watches can fire on messages from before the watch existed. | Compare against `created`. |
 | I-20 | Promoting a question to Q&A isn't atomic, and the same question can be promoted twice. | Check `source` first; link both steps. |
-| I-21 | Feedback: `analyzing` can stick if its thread panics; the badge re-reads the file for every status update; Q&A saves don't bump the refresh counter. | Small fixes in `feedback.rs`, `qa.rs` and `serve.rs:112`. |
+| I-21 | Feedback: `analyzing` can stick if its thread panics; the badge re-reads the file for every status update; Q&A saves don't bump the refresh counter. | Small fixes in `feedback.rs`, `qa.rs` and `serve/mod.rs` `status()`. |
 | I-22 | `recap` saves aren't atomic. | Write to a temp file and rename. |
 | I-23 | Members get "that's for admins" for their own **briefing** page (it's missing from the member list). | Add `briefing` to the member list. |
 | I-24 | "Search everything" threads keep running after its 8 s cutoff. | One search at a time per person. |

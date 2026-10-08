@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.25.1.145",
+    "date": "2026-10-08",
+    "title": "Health check shows the real version",
+    "fixed": [
+      "lyra's health check (/health) reports lyra's own version instead of 0.1.0."
+    ]
+  },
+  {
     "version": "0.25.0.144",
     "date": "2026-10-08",
     "title": "Tidier inside",

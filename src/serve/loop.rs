@@ -314,7 +314,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 }
                 Inbound::Health(reply) => {
                     let _ = reply.send(json!({
-                        "version": env!("CARGO_PKG_VERSION"),
+                        "version": crate::changelog::version(),
                         "uptime_seconds": started.elapsed().as_secs(),
                         "busy": convs.iter().any(|c| c.app.waiting),
                         "conversations": convs.len(),
