@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { ChevronDown, CircleCheck, CircleX, Moon, RefreshCw, Sun, TriangleAlert } from "lucide-react";
+import { ChevronDown, CircleCheck, CircleX, Eye, Moon, RefreshCw, Sun, TriangleAlert, X } from "lucide-react";
 import { useState } from "react";
 import { DiagnosisNote } from "./diagnosis";
 import { Page } from "./parts";
@@ -163,6 +163,41 @@ const mark: Record<BriefingLevel, { icon: typeof Sun; cls: string }> = {
   ok: { icon: CircleCheck, cls: "text-emerald-500" },
 };
 
+/** "Tell me when …": what lyra is watching for, with a way to stop. */
+function WatchesCard() {
+  const { run } = useLyra();
+  const [watches, reload] = useData<{ id: string; label: string; created: string; until: string }[] | null>("watches");
+  if (!watches?.length) return null;
+  return (
+    <Card className="gap-2 py-4">
+      <CardHeader className="px-4">
+        <CardDescription className="flex items-center gap-1.5">
+          <Eye className="size-4" /> Watching for
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="divide-y px-4">
+        {watches.map((w) => (
+          <div key={w.id} className="flex items-center gap-2 py-1.5 text-sm">
+            <span className="min-w-0 flex-1">{w.label}</span>
+            <span className="shrink-0 text-muted-foreground text-xs">since {ago(w.created)}</span>
+            <Button
+              size="icon"
+              variant="ghost"
+              aria-label="Stop watching"
+              onClick={async () => {
+                await run(`/watches cancel ${w.id}`);
+                reload();
+              }}
+            >
+              <X />
+            </Button>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 /** The end-of-day recap: today, what slipped, mail waiting, tomorrow. */
 function RecapCard() {
   const { run } = useLyra();
@@ -305,6 +340,7 @@ export function StatusPage({ toMachines, toChat, go }: { toMachines: () => void;
     >
       <BriefingCard briefing={status.briefing} go={go} />
       <RecapCard />
+      <WatchesCard />
       <SectionCards rows={rows} at={board?.at} banner={banner.text} />
       {groups.map((g) => (
         <Card key={g} className="gap-1 py-3">

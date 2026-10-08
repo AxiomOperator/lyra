@@ -46,6 +46,16 @@ fn matches(a: &Value, who: &str) -> bool {
     words(who).iter().any(|x| name_words.contains(&x.as_str()) || (x.len() >= 4 && local.contains(x.as_str())))
 }
 
+/// A sender or attendee (`{"emailAddress": {name, address}}`) is this person.
+pub fn matches_address(a: &Value, who: &str) -> bool {
+    matches(a, who)
+}
+
+/// A display name is this person (any word of what was said).
+pub fn name_matches(name: &str, who: &str) -> bool {
+    matches(&json!({ "emailAddress": { "name": name, "address": "" } }), who)
+}
+
 /// A meeting is with them: they're on it, or its title names them.
 fn with_them(e: &Value, who: &str) -> bool {
     let title = e["subject"].as_str().unwrap_or("").to_lowercase();

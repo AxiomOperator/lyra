@@ -1126,6 +1126,16 @@ The first user is the **owner**, an admin. Devices paired before users existed a
 `/users` lists everyone, and `/users approve|admin|member|disable <who>` changes someone.
 `/whoami` says who a conversation belongs to.
 
+### "Tell me when …"
+
+Ask "tell me when Jeremy replies" or "let me know when the PMI firewall task changes", and lyra watches for it:
+- mail from someone (`mail_from`)
+- a reply on a thread you sent, found by words in its subject (`mail_reply`)
+- a PMI task changing status (`task`)
+- a Teams message from someone (`teams_from`)
+
+lyra checks every two minutes, in your own accounts. When it happens you get a push and the watch ends. A watch gives up after two weeks unless you say otherwise. The Status page lists what it's watching for, each with a ✕ to stop it; so does `/watches`, with `/watches cancel <id>` to stop one. Members have this too.
+
 ### End-of-day recap
 
 At the end of each person's working day (`[planner] day_end`, 16:30 by default, working days only), lyra pushes a recap:

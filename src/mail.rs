@@ -130,6 +130,13 @@ pub fn sent_between(from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<Value>
     list(&format!("/me/mailFolders/sentitems/messages?$filter={}&$top=40&$orderby=sentDateTime desc&$select=subject,from,toRecipients,sentDateTime,bodyPreview,conversationId", enc(&f)))
 }
 
+/// Mail received since a time, newest first (for "tell me when …").
+pub fn received_since(since: DateTime<Utc>) -> Result<Vec<Value>, String> {
+    ready()?;
+    let f = format!("receivedDateTime ge {}", since.format("%Y-%m-%dT%H:%M:%SZ"));
+    list(&format!("/me/messages?$filter={}&$top=50&$orderby=receivedDateTime desc&$select=id,subject,from,receivedDateTime,conversationId,isDraft", enc(&f)))
+}
+
 /// Every message in a conversation (who answered, when).
 pub fn conversation(id: &str) -> Result<Vec<Value>, String> {
     ready()?;

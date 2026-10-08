@@ -579,6 +579,10 @@ impl Caps {
         caps.extend(crate::routines::capabilities());
         caps.extend(crate::notes::capabilities());
         caps.extend(crate::people::capabilities());
+        // "Tell me when …" (mail, PMI, Teams).
+        if crate::calendar::available() || crate::pmi::anyone() {
+            caps.extend(crate::watches::capabilities());
+        }
         // Folders lent by people's open pages (only through lyra serve).
         if self.remote.get().is_some() {
             caps.extend(crate::projects::capabilities());
@@ -880,6 +884,8 @@ impl Caps {
                 _ => crate::projects::call(self.remote.get().map(|r| r.as_ref()), &c.name, &args),
             },
             _ if c.source == "style" => crate::style::call(&c.name, &args),
+            // What the person this turn is for asked to be told about.
+            _ if c.source == "watches" => crate::watches::call(&c.name, &args),
             // Teams and files of whoever this turn is for (read-only; attaching only touches their draft).
             _ if c.source == "teams" => crate::teams::call(&c.name, &args),
             _ if c.source == "files" => crate::files::call(&c.name, &args),

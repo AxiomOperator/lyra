@@ -522,6 +522,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let (recap_tx, recap_rx) = std::sync::mpsc::channel::<(String, crate::recap::Recap)>();
     let mut last_recap_look = Instant::now() - Duration::from_secs(120);
     let mut recapping: std::collections::HashSet<String> = Default::default();
+    // "Tell me when …": each person's watches, looked at every two minutes.
+    let (watch_tx, watch_rx) = std::sync::mpsc::channel::<(String, Vec<(String, String)>)>();
+    let mut last_watch = Instant::now();
+    let mut watching: std::collections::HashSet<String> = Default::default();
     let started = Instant::now();
     let mut convs = vec![Conv::new(primary)];
     loop {
@@ -647,7 +651,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "watches") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -1151,6 +1155,30 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 });
             }
         }
+        if last_watch.elapsed() >= Duration::from_secs(120) {
+            last_watch = Instant::now();
+            for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id) {
+                if watching.contains(&u) || !crate::watches::any(&u) {
+                    continue;
+                }
+                watching.insert(u.clone());
+                let tx = watch_tx.clone();
+                std::thread::spawn(move || {
+                    let fired = crate::acting::run(&u, crate::watches::pass);
+                    let _ = tx.send((u, fired));
+                });
+            }
+        }
+        while let Ok((user, fired)) = watch_rx.try_recv() {
+            watching.remove(&user);
+            for (title, body) in fired {
+                if user == convs[0].app.owner {
+                    convs[0].app.log(Level::Plan, format!("👀 {title}: {body}"));
+                }
+                hub.notify(Notification { title, body, tag: "watch".into(), approval: None, url: None, actions: vec![], reference: None, to: To::User(user.clone()) });
+            }
+            everyone = true;
+        }
         while let Ok((user, r)) = recap_rx.try_recv() {
             recapping.remove(&user);
             crate::recap::save_for(&user, &r);
@@ -1636,6 +1664,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         "routines" => crate::acting::run(&app.owner, || crate::routines::view(&[], 10)),
         "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
         "recap" => crate::recap::last_for(&app.owner).map_or(Value::Null, |r| json!(r)),
+        "watches" => json!(crate::watches::list_for(&app.owner)),
         // AI usage: everyone's and each person's for admins, their own for members.
         // The current plan's recovery points (admins; members have no plans).
         "plan_checkpoints" if app.admin => match (app.current_plan.as_ref(), app.engine.as_ref()) {
