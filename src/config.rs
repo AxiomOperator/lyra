@@ -468,6 +468,40 @@ pub fn set_system(doc: &mut toml_edit::DocumentMut, s: &lyra_system::Settings) {
 mod tests {
     use super::*;
 
+    /// config.example.toml with its settings uncommented (`# [table]`, `# key = value`).
+    fn example_uncommented() -> String {
+        let text = include_str!("../config.example.toml");
+        let setting = |l: &str| {
+            let l = l.trim_start();
+            l.starts_with('[') || l.split_once(" = ").is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '"' || c == '.' || c == '-'))
+        };
+        text.lines().map(|l| match l.strip_prefix("# ") {
+            Some(rest) if setting(rest) => rest,
+            _ => l,
+        }).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn the_example_config_reads_and_shows_every_section() {
+        // Every setting in it, turned on, still reads as lyra's config.
+        let text = example_uncommented();
+        let c: Config = toml::from_str(&text).unwrap_or_else(|e| panic!("config.example.toml, uncommented: {e}"));
+        assert!(c.vision_model.is_some() && c.decide.is_some(), "its commented tables come through");
+        // Every table of `Config` (a field that isn't a plain value) has a `[name]` in it.
+        let src = include_str!("config.rs");
+        let body = &src[src.find("pub struct Config {").unwrap()..];
+        let body = &body[..body.find("\n}").unwrap()];
+        let plain = ["String", "bool", "f64", "u32", "u64", "usize", "Option<f64>", "Option<String>"];
+        let missing: Vec<&str> = body
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("pub ")?.split_once(": "))
+            .filter(|(_, ty)| !plain.contains(&ty.trim_end_matches(',')))
+            .map(|(name, _)| name)
+            .filter(|name| !text.contains(&format!("[{name}]")) && !text.contains(&format!("[{name}.")) && !text.contains(&format!("[[{name}.")))
+            .collect();
+        assert!(missing.is_empty(), "config.example.toml has no section for: {missing:?}");
+    }
+
     #[test]
     fn edits_keep_the_rest_of_config_toml() {
         let dir = std::env::temp_dir().join(format!("lyra-config-edit-{}", std::process::id()));

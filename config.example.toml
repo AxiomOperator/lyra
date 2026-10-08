@@ -10,13 +10,16 @@ model = "llama3.2"
 # structured_thinking = true
 
 # Cost tracking: price per million tokens (leave at 0 for a free local model).
+# These also price AI usage (/usage, the app's Usage page); only the chat model's
+# calls are priced: the decision, embedding, reranker and vision models count tokens.
 input_cost_per_mtok = 0.0
 cached_input_cost_per_mtok = 0.0    # prompt tokens served from cache; defaults to the input price
 output_cost_per_mtok = 0.0
 currency = "$"
 
-# Embedding and reranker models (optional). Not used by the chat yet; lyra
-# checks they respond at startup and on Ctrl-L.
+# Embedding and reranker models (optional): memory search, finding tools and
+# routing to agents (embeddings), and ordering what's found (reranker). lyra
+# checks they respond at startup and on Ctrl-L; their calls count in AI usage.
 # [embedding]
 # url = "http://localhost:8082/v1"
 # model = "embedding"
@@ -33,6 +36,16 @@ currency = "$"
 # model = "clef-flash"
 # min_confidence = 0.75
 # max_state_chars = 1000   # raise with llama-server's -b/-ub (e.g. 20000 for -ub 8192)
+
+# A vision model (see README, "PDFs, scans and pictures"): reads pictures and
+# scanned PDFs (project folders, OneDrive) and answers in text, so the chat model
+# needn't see. Any OpenAI-compatible model taking image_url parts, e.g. a Qwen-VL
+# or Gemma GGUF on llama-server started with its --mmproj file. Give it its own
+# server or port: [decide] needs clef-flash where it points.
+# [vision_model]
+# url = "http://localhost:8090/v1"
+# model = "gemma-4-31b-it-q8_0"
+# max_pages = 6            # most scanned pages looked at in one read
 
 # Memory (see README): facts, episodes and working memory, with automatic
 # capture, superseding, hybrid recall (keywords + [embedding] vectors) and a
@@ -269,6 +282,10 @@ currency = "$"
 # tenant = "<directory (tenant) id>"
 # client_id = "<application (client) id>"
 # owner_email = "you@example.org"   # this account's first sign-in is the owner (admin)
+# Each person connects their own Outlook in the app (More → Outlook). Give the app
+# registration these delegated Microsoft Graph permissions: Calendars.ReadWrite
+# (calendar, plan my day), Mail.ReadWrite and Mail.Send (mail, drafts, triage),
+# Chat.Read (Teams chats), Files.Read.All (OneDrive and SharePoint files).
 
 # Web search (see README): web_search asks a SearXNG instance (JSON format on),
 # web_fetch reads a page as text. Both only read; replies cite their sources.
@@ -329,6 +346,29 @@ currency = "$"
 # schedule = "every day at 07:30"
 # notify = true
 # summary = true
+
+# Plan my day (see README): focus blocks for due tasks on each person's own
+# calendar, within working hours; lyra keeps quiet outside them and in meetings.
+# [planner]
+# enabled = true
+# day_start = "07:30"       # working hours (quiet time outside them)
+# day_end = "16:30"
+# lunch_start = "11:30"     # kept free
+# lunch_end = "12:30"
+# days = "weekdays"         # or names: "mon tue wed thu fri"
+# max_blocks = 3            # most focus blocks a day
+# horizon_days = 3          # tasks due within this many days get blocks (overdue first)
+# max_share = 0.5           # blocks take at most this share of the day's free time
+
+# Proactive help (see README): meeting prep, mail triage and follow-ups, for each
+# person with Outlook connected. Drafts are only ever drafts: nothing is sent.
+# [proactive]
+# enabled = true
+# prep_minutes = 15         # meeting prep this long before
+# mail_tasks = true         # mail asking something becomes a personal task
+# flag = true               # …is flagged
+# drafts = true             # …and gets a draft reply in Drafts
+# followup_days = 3         # sent mail unanswered this long gets a nudge
 
 # PMI, the project-management app (see README): tasks, reminders, projects.
 # Its access token goes in config/secrets.toml with `lyra pmi token` or /pmi token.
