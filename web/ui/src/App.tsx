@@ -25,6 +25,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import {
   Activity,
@@ -50,6 +51,7 @@ import {
   Sparkles,
   Target,
   WifiOff,
+  ChevronRight,
 } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
@@ -83,6 +85,38 @@ type TabItem = {
   badge?: number;
 };
 
+/** The sidebar's sections below the main pages, in order. */
+type NavGroup = { id: string; label: string; items: Tab[] };
+const navGroups: NavGroup[] = [
+  { id: "work", label: "Work", items: ["tasks", "notes", "projects", "routines", "goals"] },
+  { id: "lyra", label: "lyra", items: ["memory", "skills", "coding", "model"] },
+  { id: "admin", label: "Admin", items: ["machines", "devices", "users", "usage"] },
+];
+/** Always shown at the top of the sidebar. */
+const navTop: Tab[] = ["chat", "status", "activity"];
+
+/** Which sections are open (remembered on this device). */
+function useOpenGroups() {
+  const [open, setOpen] = useState<Record<string, boolean>>(() => {
+    try {
+      return { work: true, ...JSON.parse(localStorage.getItem("lyra-nav") ?? "{}") };
+    } catch {
+      return { work: true };
+    }
+  });
+  const toggle = (id: string, on: boolean) =>
+    setOpen((o) => {
+      const next = { ...o, [id]: on };
+      try {
+        localStorage.setItem("lyra-nav", JSON.stringify(next));
+      } catch {
+        // fine: it just won't be remembered
+      }
+      return next;
+    });
+  return [open, toggle] as const;
+}
+
 /** The sidebar (dashboard-01's inset style): navigation, lyra's pages,
  *  conversations, and this device at the bottom. A sheet on a phone. */
 function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more: TabItem[]; tab: Tab; setTab: (t: Tab) => void; update: () => void }) {
@@ -101,6 +135,15 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
     go("chat");
   };
   const search = useConversationSearch();
+  const [openGroups, toggleGroup] = useOpenGroups();
+  const all = [...tabs, ...more];
+  const byId = (id: Tab) => all.find((t) => t.id === id);
+  // A member's own usage: under lyra (they've no Admin section).
+  const groups = navGroups
+    .map((g) => ({ ...g, items: g.items.map(byId).filter((t): t is TabItem => !!t) }))
+    .map((g) => (g.id === "lyra" && !(user?.admin ?? true) ? { ...g, items: [...g.items, ...[byId("usage")].filter((t): t is TabItem => !!t)] } : g))
+    .map((g) => (g.id === "admin" && !(user?.admin ?? true) ? { ...g, items: [] } : g))
+    .filter((g) => g.items.length > 0);
   const item = (t: TabItem) => (
     <SidebarMenuItem key={t.id}>
       <SidebarMenuButton tooltip={t.label} isActive={tab === t.id} onClick={() => go(t.id)}>
@@ -155,13 +198,30 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 </SidebarMenu>
-                <SidebarMenu>{tabs.filter((t) => t.id !== "more").map(item)}</SidebarMenu>
+                <SidebarMenu>{navTop.map(byId).filter((t): t is TabItem => !!t).map(item)}</SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
-            <SidebarGroup>
-              <SidebarGroupLabel>Lyra</SidebarGroupLabel>
-              <SidebarMenu>{more.map(item)}</SidebarMenu>
-            </SidebarGroup>
+            {groups.map((g) => {
+              // The open page's section stays open; a closed one shows what waits inside.
+              const isOpen = openGroups[g.id] || g.items.some((t) => t.id === tab);
+              const waiting = g.items.reduce((n, t) => n + (t.badge ?? 0), 0);
+              return (
+                <Collapsible key={g.id} open={isOpen} onOpenChange={(on) => toggleGroup(g.id, on)} className="group/collapsible">
+                  <SidebarGroup className="py-0">
+                    <SidebarGroupLabel asChild>
+                      <CollapsibleTrigger className="flex w-full items-center gap-1 hover:text-sidebar-foreground">
+                        <ChevronRight className="size-3.5 transition-transform group-data-[state=open]/collapsible:rotate-90" />
+                        <span>{g.label}</span>
+                        {!isOpen && waiting > 0 && <span className="ml-auto rounded-full bg-amber-400 px-1.5 font-semibold text-[10px] text-black">{waiting}</span>}
+                      </CollapsibleTrigger>
+                    </SidebarGroupLabel>
+                    <CollapsibleContent>
+                      <SidebarMenu>{g.items.map(item)}</SidebarMenu>
+                    </CollapsibleContent>
+                  </SidebarGroup>
+                </Collapsible>
+              );
+            })}
             <SidebarGroup className="min-h-0 flex-1">
               <SidebarGroupLabel>Conversations</SidebarGroupLabel>
               <SidebarGroupContent className="min-h-0 flex-1 overflow-y-auto">
@@ -211,11 +271,6 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
                   </div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                {(user?.admin ?? true) && (
-                  <DropdownMenuItem onClick={() => go("devices")}>
-                    <Smartphone /> Devices
-                  </DropdownMenuItem>
-                )}
                 <DropdownMenuItem onClick={() => go("more")}>
                   <Bell /> Notifications & more
                 </DropdownMenuItem>
