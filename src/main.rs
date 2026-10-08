@@ -3206,6 +3206,16 @@ fn prices(config: &Config) -> usage::Prices {
         cached: config.cached_input_cost_per_mtok.unwrap_or(config.input_cost_per_mtok),
         output: config.output_cost_per_mtok,
         currency: config.currency.clone(),
+        // Every other model at its own section's prices.
+        kinds: [
+            ("embedding", config.embedding.as_ref().map(|e| &e.price)),
+            ("reranker", config.reranker.as_ref().map(|e| &e.price)),
+            ("decision", config.decide.as_ref().map(|d| &d.price)),
+            ("vision", config.vision_model.as_ref().map(|v| &v.price)),
+        ]
+        .into_iter()
+        .filter_map(|(k, p)| Some((k.to_string(), p?.clone())))
+        .collect(),
     }
 }
 

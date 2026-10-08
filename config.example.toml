@@ -10,8 +10,9 @@ model = "llama3.2"
 # structured_thinking = true
 
 # Cost tracking: price per million tokens (leave at 0 for a free local model).
-# These also price AI usage (/usage, the app's Usage page); only the chat model's
-# calls are priced: the decision, embedding, reranker and vision models count tokens.
+# These also price AI usage (/usage, the app's Usage page). They're the chat
+# model's; every other model takes the same keys in its own section
+# ([embedding], [reranker], [decide], [vision_model]); left out, it costs 0.
 input_cost_per_mtok = 0.0
 cached_input_cost_per_mtok = 0.0    # prompt tokens served from cache; defaults to the input price
 output_cost_per_mtok = 0.0
@@ -23,10 +24,12 @@ currency = "$"
 # [embedding]
 # url = "http://localhost:8082/v1"
 # model = "embedding"
+# input_cost_per_mtok = 0.0      # its own prices, for AI usage (like the chat model's)
 #
 # [reranker]
 # url = "http://localhost:8081/v1"
 # model = "reranker"
+# input_cost_per_mtok = 0.0
 
 # A decision model (see README), e.g. clef-flash on llama-server's /v1/systemone:
 # routing, memory links, step checks and per-turn gates in milliseconds. Leave it
@@ -36,6 +39,8 @@ currency = "$"
 # model = "clef-flash"
 # min_confidence = 0.75
 # max_state_chars = 1000   # raise with llama-server's -b/-ub (e.g. 20000 for -ub 8192)
+# input_cost_per_mtok = 0.0      # its own prices, for AI usage
+# output_cost_per_mtok = 0.0
 
 # A vision model (see README, "PDFs, scans and pictures"): reads pictures and
 # scanned PDFs (project folders, OneDrive) and answers in text, so the chat model
@@ -46,6 +51,9 @@ currency = "$"
 # url = "http://localhost:8090/v1"
 # model = "gemma-4-31b-it-q8_0"
 # max_pages = 6            # most scanned pages looked at in one read
+# input_cost_per_mtok = 0.0      # its own prices, for AI usage
+# cached_input_cost_per_mtok = 0.0
+# output_cost_per_mtok = 0.0
 
 # Memory (see README): facts, episodes and working memory, with automatic
 # capture, superseding, hybrid recall (keywords + [embedding] vectors) and a

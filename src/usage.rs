@@ -4,7 +4,7 @@
 //! (`~/.lyra/usage/<YYYY-MM>.jsonl`); admins see everyone's totals and each
 //! person's, members their own.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock};
@@ -30,13 +30,50 @@ pub struct Call {
     pub ms: u64,
 }
 
-/// Prices per million tokens (`input_cost_per_mtok` …), for an estimate.
+/// Prices per million tokens (`input_cost_per_mtok` …), for an estimate:
+/// the chat model's, and each other model's from its own section.
 #[derive(Debug, Clone, Default)]
 pub struct Prices {
     pub input: f64,
     pub cached: f64,
     pub output: f64,
     pub currency: String,
+    /// The other models' prices by kind ("decision", "embedding", "reranker", "vision").
+    pub kinds: HashMap<String, Price>,
+}
+
+/// A model's prices in its own section (`[embedding]`, `[decide]`, …), the
+/// same keys as the chat model's at the top.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct Price {
+    #[serde(default)]
+    pub input_cost_per_mtok: f64,
+    /// Prompt tokens served from cache; the input price when not set.
+    #[serde(default)]
+    pub cached_input_cost_per_mtok: Option<f64>,
+    #[serde(default)]
+    pub output_cost_per_mtok: f64,
+}
+
+impl Price {
+    fn is_set(&self) -> bool {
+        self.input_cost_per_mtok > 0.0 || self.output_cost_per_mtok > 0.0
+    }
+}
+
+impl Prices {
+    /// (input, cached, output) per million tokens for a call of this kind.
+    fn of(&self, kind: &str) -> (f64, f64, f64) {
+        match kind {
+            // The chat model: chat turns, agents' and plans' steps, lyra's own work.
+            "chat" | "agent" | "background" => (self.input, if self.cached > 0.0 { self.cached } else { self.input }, self.output),
+            k => self.kinds.get(k).map_or((0.0, 0.0, 0.0), |p| (p.input_cost_per_mtok, p.cached_input_cost_per_mtok.unwrap_or(p.input_cost_per_mtok), p.output_cost_per_mtok)),
+        }
+    }
+
+    fn any(&self) -> bool {
+        self.input > 0.0 || self.output > 0.0 || self.kinds.values().any(Price::is_set)
+    }
 }
 
 static PRICES: RwLock<Option<Prices>> = RwLock::new(None);
@@ -113,12 +150,10 @@ impl Total {
         self.cached += c.cached;
         self.output += c.output;
         self.ms += c.ms;
-        // The prices are the chat model's; the small models' calls count tokens only.
-        if !matches!(c.kind.as_str(), "chat" | "agent" | "background") {
-            return;
-        }
+        // Each call at its own model's prices.
+        let (input, cached, output) = p.of(&c.kind);
         let fresh = c.input.saturating_sub(c.cached) as f64;
-        self.cost += (fresh * p.input + c.cached as f64 * if p.cached > 0.0 { p.cached } else { p.input } + c.output as f64 * p.output) / 1_000_000.0;
+        self.cost += (fresh * input + c.cached as f64 * cached + c.output as f64 * output) / 1_000_000.0;
     }
 }
 
@@ -147,7 +182,7 @@ pub fn summary(days: i64, only: Option<&str>) -> Value {
     json!({
         "days": days,
         "currency": p.currency,
-        "priced": p.input > 0.0 || p.output > 0.0,
+        "priced": p.any(),
         "total": all,
         "users": users,
         "kinds": by_kind,
@@ -199,7 +234,7 @@ mod tests {
 
     #[test]
     fn totals_add_up_and_cost_uses_the_cache_price() {
-        let p = Prices { input: 1.0, cached: 0.1, output: 2.0, currency: "USD".into() };
+        let mut p = Prices { input: 1.0, cached: 0.1, output: 2.0, currency: "USD".into(), ..Default::default() };
         let mut t = Total::default();
         let c = Call { at: Utc::now(), user: "u".into(), kind: "chat".into(), model: "m".into(), input: 1_000_000, cached: 500_000, output: 1_000_000, ms: 10 };
         t.add(&c, &p);
@@ -207,6 +242,14 @@ mod tests {
         assert_eq!((t.calls, t.input, t.cached, t.output), (2, 2_000_000, 1_000_000, 2_000_000));
         // Each: 0.5M fresh × 1 + 0.5M cached × 0.1 + 1M out × 2 = 2.55
         assert!((t.cost - 5.1).abs() < 1e-9, "{}", t.cost);
+        // Another model's call: its own prices (none set: free).
+        let e = Call { kind: "embedding".into(), input: 2_000_000, cached: 0, output: 0, ..c.clone() };
+        let mut t = Total::default();
+        t.add(&e, &p);
+        assert_eq!(t.cost, 0.0);
+        p.kinds.insert("embedding".into(), Price { input_cost_per_mtok: 0.02, ..Default::default() });
+        t.add(&e, &p);
+        assert!((t.cost - 0.04).abs() < 1e-9 && p.any(), "{}", t.cost);
         assert_eq!(tokens(1_234), "1.2k");
         assert_eq!(tokens(2_500_000), "2.5M");
     }

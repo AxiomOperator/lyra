@@ -1184,11 +1184,15 @@ Every model call lyra makes is kept in `~/.lyra/usage/<YYYY-MM>.jsonl`, credited
 the person it was for: their chat turns (`chat`), their agents' and plans' steps
 (`agent`), and lyra's own work on their behalf such as memory capture, mail triage,
 briefings and reviews (`background`), plus the small models: the decision model
-(`decision`), embeddings (`embedding`) and the reranker (`reranker`). `/usage [days]` (default 7) and the app's
+(`decision`), embeddings (`embedding`), the reranker (`reranker`) and the vision
+model (`vision`). `/usage [days]` (default 7) and the app's
 **Usage** page show admins the total across everyone plus each person's share by
 kind and model. Members see only their own. With `input_cost_per_mtok`,
 `cached_input_cost_per_mtok` and `output_cost_per_mtok` set, each line also shows an
-estimated cost for the chat model's calls (the small models count tokens only).
+estimated cost. Those top-level prices are the chat model's. Each other model takes
+the same keys in its own section (`[embedding]`, `[reranker]`, `[decide]`,
+`[vision_model]`), and every call is priced at its own model's rates. A model
+with no prices costs 0.
 
 **Signing in with Microsoft (Entra ID).** Coworkers sign in with their organization account,
 and anyone new waits until an admin lets them in. You get a push, then run `/users approve

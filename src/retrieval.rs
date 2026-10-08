@@ -15,6 +15,9 @@ pub struct Endpoint {
     /// The embedding model's vector size; asked of the model when not set.
     #[serde(default)]
     pub dimensions: Option<usize>,
+    /// Its prices (`input_cost_per_mtok` …), for AI usage.
+    #[serde(flatten, default)]
+    pub price: crate::usage::Price,
 }
 
 impl Endpoint {

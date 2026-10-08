@@ -487,6 +487,10 @@ mod tests {
         let text = example_uncommented();
         let c: Config = toml::from_str(&text).unwrap_or_else(|e| panic!("config.example.toml, uncommented: {e}"));
         assert!(c.vision_model.is_some() && c.decide.is_some(), "its commented tables come through");
+        // Every model's own prices read (whole numbers as well as decimals).
+        let priced: Config = toml::from_str("[embedding]\nurl = \"u\"\nmodel = \"e\"\ninput_cost_per_mtok = 1\n[decide]\nurl = \"u\"\noutput_cost_per_mtok = 0.5\n").unwrap();
+        assert_eq!(priced.embedding.unwrap().price.input_cost_per_mtok, 1.0);
+        assert_eq!(priced.decide.unwrap().price.output_cost_per_mtok, 0.5);
         // Every table of `Config` (a field that isn't a plain value) has a `[name]` in it.
         let src = include_str!("config.rs");
         let body = &src[src.find("pub struct Config {").unwrap()..];

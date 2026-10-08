@@ -33,6 +33,9 @@ pub struct Settings {
     /// raise both together.
     #[serde(default = "default_max_state_chars")]
     pub max_state_chars: usize,
+    /// Its prices (`input_cost_per_mtok` …), for AI usage.
+    #[serde(flatten, default)]
+    pub price: crate::usage::Price,
 }
 
 fn default_max_state_chars() -> usize {
@@ -303,7 +306,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn settings(url: &str) -> Settings {
-        Settings { url: url.into(), model: "clef-flash".into(), min_confidence: 0.75, max_state_chars: 1000 }
+        Settings { url: url.into(), model: "clef-flash".into(), min_confidence: 0.75, max_state_chars: 1000, price: Default::default() }
     }
 
     #[test]

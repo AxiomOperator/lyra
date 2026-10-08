@@ -20,6 +20,9 @@ pub struct Settings {
     /// Most scanned pages looked at in one read.
     #[serde(default = "default_pages")]
     pub max_pages: usize,
+    /// Its prices (`input_cost_per_mtok` …), for AI usage.
+    #[serde(flatten, default)]
+    pub price: crate::usage::Price,
 }
 
 fn default_pages() -> usize {
