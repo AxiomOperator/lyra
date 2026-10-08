@@ -518,6 +518,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut pro_round: u64 = 0;
     let mut pro_busy: std::collections::HashSet<String> = Default::default();
     let (action_tx, action_rx) = std::sync::mpsc::channel::<(String, String, String, Result<String, String>)>();
+    // The end-of-day recap: looked for once a minute, made once a day per person.
+    let (recap_tx, recap_rx) = std::sync::mpsc::channel::<(String, crate::recap::Recap)>();
+    let mut last_recap_look = Instant::now() - Duration::from_secs(120);
+    let mut recapping: std::collections::HashSet<String> = Default::default();
     let started = Instant::now();
     let mut convs = vec![Conv::new(primary)];
     loop {
@@ -643,7 +647,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -1132,6 +1136,32 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 });
             }
         }
+        if last_recap_look.elapsed() >= Duration::from_secs(60) && crate::recap::settings().enabled {
+            last_recap_look = Instant::now();
+            let now = chrono::Local::now();
+            for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id) {
+                if recapping.contains(&u) || !(crate::calendar::connected_for(&u) || crate::pmi::configured_for(&u)) || !crate::recap::due(&u, now) {
+                    continue;
+                }
+                recapping.insert(u.clone());
+                let tx = recap_tx.clone();
+                std::thread::spawn(move || {
+                    let r = crate::acting::run(&u, || crate::recap::gather(chrono::Utc::now()));
+                    let _ = tx.send((u, r));
+                });
+            }
+        }
+        while let Ok((user, r)) = recap_rx.try_recv() {
+            recapping.remove(&user);
+            crate::recap::save_for(&user, &r);
+            if user == convs[0].app.owner {
+                convs[0].app.log(Level::Plan, format!("end of day: {}", crate::recap::push_body(&r)));
+            }
+            if crate::recap::settings().notify && !r.parts.is_empty() {
+                hub.notify(Notification { title: "End of day".into(), body: crate::recap::push_body(&r), tag: "recap".into(), approval: None, url: Some("/?page=status".into()), actions: vec![], reference: None, to: To::User(user.clone()) });
+            }
+            everyone = true;
+        }
         while let Ok((user, p)) = pro_rx.try_recv() {
             pro_busy.remove(&user);
             let mine = user == convs[0].app.owner;
@@ -1605,6 +1635,7 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         }
         "routines" => crate::acting::run(&app.owner, || crate::routines::view(&[], 10)),
         "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
+        "recap" => crate::recap::last_for(&app.owner).map_or(Value::Null, |r| json!(r)),
         // AI usage: everyone's and each person's for admins, their own for members.
         // The current plan's recovery points (admins; members have no plans).
         "plan_checkpoints" if app.admin => match (app.current_plan.as_ref(), app.engine.as_ref()) {

@@ -369,6 +369,13 @@ currency = "$"
 # horizon_days = 3          # tasks due within this many days get blocks (overdue first)
 # max_share = 0.5           # blocks take at most this share of the day's free time
 
+# The end-of-day recap (see README): today's meetings, tasks that slipped, mail
+# waiting, how tomorrow starts. Pushed to each person at the end of their working day.
+# [recap]
+# enabled = true
+# notify = true
+# at = ""                  # empty: [planner] day_end; or "17:00"
+
 # Proactive help (see README): meeting prep, mail triage and follow-ups, for each
 # person with Outlook connected. Drafts are only ever drafts: nothing is sent.
 # [proactive]

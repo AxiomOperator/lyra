@@ -6,12 +6,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { ChevronDown, CircleCheck, CircleX, RefreshCw, Sun, TriangleAlert } from "lucide-react";
+import { ChevronDown, CircleCheck, CircleX, Moon, RefreshCw, Sun, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import { DiagnosisNote } from "./diagnosis";
 import { Page } from "./parts";
 import { ago } from "./push";
-import { useLyra } from "./store";
+import { useData, useLyra } from "./store";
 import type { Briefing, BriefingLevel, CheckState, StatusRow } from "./types";
 
 const dot: Record<CheckState, string> = {
@@ -163,6 +163,53 @@ const mark: Record<BriefingLevel, { icon: typeof Sun; cls: string }> = {
   ok: { icon: CircleCheck, cls: "text-emerald-500" },
 };
 
+/** The end-of-day recap: today, what slipped, mail waiting, tomorrow. */
+function RecapCard() {
+  const { run } = useLyra();
+  const [recap, reload] = useData<{ at: string; parts: { title: string; lines: string[] }[] } | null>("recap");
+  const [asked, setAsked] = useState(false);
+  // Only once there's been one, or late in the day.
+  if (!recap && new Date().getHours() < 15) return null;
+  return (
+    <Card className="gap-2 py-4">
+      <CardHeader className="px-4">
+        <CardDescription className="flex items-center gap-1.5">
+          <Moon className="size-4" /> End of day{recap && ` · ${ago(recap.at)}`}
+        </CardDescription>
+        <CardTitle className="text-lg">{recap?.parts[0]?.title ?? "No recap yet"}</CardTitle>
+        <CardAction>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={asked}
+            onClick={async () => {
+              setAsked(true);
+              await run("/recap");
+              reload();
+              setAsked(false);
+            }}
+          >
+            <RefreshCw className={cn(asked && "animate-spin")} /> Recap now
+          </Button>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="space-y-3 px-4">
+        {!recap && <p className="text-muted-foreground text-sm">One comes at the end of your working day ([planner] day_end) and is pushed to your devices.</p>}
+        {recap?.parts.map((p, i) => (
+          <div key={i} className="space-y-0.5">
+            {i > 0 && <div className="font-medium text-sm">{p.title}</div>}
+            {p.lines.map((l, j) => (
+              <div key={j} className="text-muted-foreground text-sm">
+                {l}
+              </div>
+            ))}
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 /** The daily briefing: what needs a look first; the rest folded away. */
 function BriefingCard({ briefing, go }: { briefing: Briefing | null | undefined; go: (page: string) => void }) {
   const { run } = useLyra();
@@ -257,6 +304,7 @@ export function StatusPage({ toMachines, toChat, go }: { toMachines: () => void;
       }
     >
       <BriefingCard briefing={status.briefing} go={go} />
+      <RecapCard />
       <SectionCards rows={rows} at={board?.at} banner={banner.text} />
       {groups.map((g) => (
         <Card key={g} className="gap-1 py-3">

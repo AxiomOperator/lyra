@@ -1126,6 +1126,17 @@ The first user is the **owner**, an admin. Devices paired before users existed a
 `/users` lists everyone, and `/users approve|admin|member|disable <who>` changes someone.
 `/whoami` says who a conversation belongs to.
 
+### End-of-day recap
+
+At the end of each person's working day (`[planner] day_end`, 16:30 by default, working days only), lyra pushes a recap:
+- **Today:** today's meetings.
+- **Still open:** PMI tasks due by today that are still open.
+- **Due tomorrow:** tasks due tomorrow.
+- **Mail:** unread mail in Focused, and mail they sent that hasn't been answered.
+- **Tomorrow:** how tomorrow starts.
+
+It shows on the Status page under the morning briefing. `/recap` makes one now. Settings are under `[recap]`: `at` sets another time, and `notify = false` stops the push.
+
 ### Finding a time with others
 
 "Find 30 minutes with Dana and Juan next week" calls `cal_find_time`:

@@ -51,6 +51,8 @@ pub struct Config {
     pub planner: crate::planner::Settings,
     /// `[proactive]` table: meeting prep, mail triage (tasks, flags, drafts), follow-ups.
     pub proactive: crate::proactive::Settings,
+    /// `[recap]`: the end-of-day recap.
+    pub recap: crate::recap::Settings,
     /// `[pmi]` table: PMI, the project-management app (its token is in secrets.toml).
     pub pmi: crate::pmi::Settings,
     /// `[groups]` table: named sets of machines (web = ["web1", "web2"]) for @group and fleet_run.
@@ -334,6 +336,7 @@ impl Default for Config {
             briefing: Default::default(),
             planner: Default::default(),
             proactive: Default::default(),
+            recap: Default::default(),
             pmi: Default::default(),
             status: Default::default(),
             diagnose: Default::default(),
