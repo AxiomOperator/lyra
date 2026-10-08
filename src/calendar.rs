@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Duration as Span, Local, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration as Span, Local, NaiveTime, TimeZone, Timelike, Utc};
 use lyra_capabilities::{Capability, CapabilityKind, RiskLevel};
 use serde_json::{Value, json};
 
@@ -286,6 +286,108 @@ fn free(events: &[Value], day: (DateTime<Utc>, DateTime<Utc>), hours: (NaiveTime
     out
 }
 
+/// The days to look in: the next 5 working days, or what `within` says.
+fn days_within(within: &str) -> Vec<chrono::NaiveDate> {
+    let s = crate::planner::settings();
+    let today = Local::now().date_naive();
+    let w = within.trim().to_lowercase();
+    let work = |from: chrono::NaiveDate, n: usize| -> Vec<chrono::NaiveDate> { from.iter_days().take(21).filter(|d| s.workday(*d)).take(n).collect() };
+    match w.as_str() {
+        "" | "soon" | "this week or next" => work(today, 5),
+        "this week" => {
+            let monday = today - Span::days(today.weekday().num_days_from_monday() as i64);
+            (0..7).map(|i| monday + Span::days(i)).filter(|d| *d >= today && s.workday(*d)).collect()
+        }
+        "next week" => {
+            let monday = today - Span::days(today.weekday().num_days_from_monday() as i64) + Span::days(7);
+            (0..7).map(|i| monday + Span::days(i)).filter(|d| s.workday(*d)).collect()
+        }
+        _ => match span(&w) {
+            Ok((from, to)) => from.with_timezone(&Local).date_naive().iter_days().take_while(|d| *d < to.with_timezone(&Local).date_naive().max(from.with_timezone(&Local).date_naive() + Span::days(1))).filter(|d| s.workday(*d)).collect(),
+            Err(_) => work(today, 5),
+        },
+    }
+}
+
+/// Times everyone is free: the user's calendar and the others' free/busy.
+fn find_time(args: &Value) -> Result<Value, String> {
+    let minutes = args["minutes"].as_i64().unwrap_or(30).clamp(10, 8 * 60);
+    let count = args["count"].as_u64().unwrap_or(5).clamp(1, 10) as usize;
+    let mut people = Vec::new();
+    let mut unknown = Vec::new();
+    for who in args["attendees"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        match crate::people::email_of(who) {
+            Some(p) => people.push(p),
+            None => unknown.push(who.to_string()),
+        }
+    }
+    if people.is_empty() {
+        return Err(format!("couldn't find an email address for {}: give it (name@fbcad.org)", unknown.join(", ")));
+    }
+    let days = days_within(args["within"].as_str().unwrap_or(""));
+    let (Some(first), Some(last)) = (days.first(), days.last()) else { return Err("no working days in that span".into()) };
+    let s = crate::planner::settings();
+    let (Some(((from, _), _)), Some(((_, to), _))) = (s.hours(*first), s.hours(*last)) else { return Err("couldn't work out the working day".into()) };
+    // Their busy times, as events with start and end.
+    let body = json!({
+        "schedules": people.iter().map(|(_, e)| e.clone()).collect::<Vec<_>>(),
+        "startTime": graph_time(from),
+        "endTime": graph_time(to),
+        "availabilityViewInterval": 30,
+    });
+    let v = graph(reqwest::Method::POST, "/me/calendar/getSchedule", Some(&body))?;
+    let mut busy: Vec<Value> = events(from, to)?;
+    let mut hidden = Vec::new();
+    for sched in v["value"].as_array().into_iter().flatten() {
+        if sched["error"].is_object() {
+            hidden.push(sched["scheduleId"].as_str().unwrap_or("?").to_string());
+            continue;
+        }
+        for item in sched["scheduleItems"].as_array().into_iter().flatten().filter(|i| i["status"] != "free") {
+            busy.push(json!({ "start": item["start"], "end": item["end"], "showAs": "busy" }));
+        }
+    }
+    // Free stretches each day, minus lunch; at most two suggestions a day, spread out.
+    let mut slots = Vec::new();
+    let now = Utc::now() + Span::minutes(30);
+    for d in &days {
+        let Some(((ds, de), (ls, le))) = s.hours(*d) else { continue };
+        let mut day_busy = busy.clone();
+        day_busy.push(json!({ "start": graph_time(ls), "end": graph_time(le), "showAs": "busy" }));
+        let (open, close) = (ds.with_timezone(&Local).time(), de.with_timezone(&Local).time());
+        let mut today_count = 0;
+        for (gs, ge) in free(&day_busy, (ds, de), (open, close), minutes) {
+            // On the hour or half hour, and not in the past.
+            let mut start = gs.max(now);
+            let m = start.with_timezone(&Local).minute();
+            if m % 30 != 0 {
+                start += Span::minutes((30 - (m % 30)) as i64);
+                start -= Span::seconds(start.timestamp() % 60);
+            }
+            if start + Span::minutes(minutes) <= ge && today_count < 2 {
+                slots.push(start);
+                today_count += 1;
+            }
+        }
+    }
+    let shown: Vec<Value> = slots
+        .iter()
+        .take(count)
+        .map(|t| {
+            let l = t.with_timezone(&Local);
+            json!({ "when": l.format("%a %b %-d %H:%M").to_string(), "for_cal_create": l.format("%b %-d %H:%M").to_string().to_lowercase(), "until": (l + Span::minutes(minutes)).format("%H:%M").to_string() })
+        })
+        .collect();
+    Ok(json!({
+        "with": people.iter().map(|(n, e)| json!({ "name": n, "email": e })).collect::<Vec<_>>(),
+        "not_found": unknown,
+        "calendar_hidden": hidden,
+        "minutes": minutes,
+        "slots": shown,
+        "next": "offer these; once the user picks one, cal_create with the attendees' emails and `when` = for_cal_create (they approve the invite)",
+    }))
+}
+
 // ---- tools
 
 pub fn capabilities() -> Vec<Capability> {
@@ -316,6 +418,18 @@ pub fn capabilities() -> Vec<Capability> {
                 "to": { "type": "string", "description": "Day ends (default 17:00)." },
             }),
             &[],
+        ),
+        tool(
+            "cal_find_time",
+            "Find times that suit the user and other people: checks everyone's Outlook free/busy within working hours (lunch kept free) and suggests a few slots. Then cal_create sends the invite (the user approves first).",
+            RiskLevel::ReadOnly,
+            json!({
+                "attendees": { "type": "array", "items": { "type": "string" }, "description": "Names or email addresses." },
+                "minutes": { "type": "integer", "description": "How long (default 30)." },
+                "within": { "type": "string", "description": "When: \"this week\", \"next week\", \"tomorrow\", a day (\"thursday\"); default the next 5 working days." },
+                "count": { "type": "integer", "description": "How many slots (default 5)." },
+            }),
+            &["attendees"],
         ),
         tool("cal_invites", "Meeting invites the user hasn't answered yet (the next two weeks).", RiskLevel::ReadOnly, json!({}), &[]),
         tool(
@@ -413,6 +527,7 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
             let gaps = free(&list, day, (hour("from", "08:00"), hour("to", "17:00")), minutes);
             Ok(json!({ "free": gaps.iter().map(|(s, e)| format!("{} – {}", local(*s), e.with_timezone(&Local).format("%H:%M"))).collect::<Vec<_>>() }))
         }
+        "cal_find_time" => find_time(args),
         "cal_invites" => {
             let now = Utc::now();
             let list = events(now, now + Span::days(14))?;
@@ -563,6 +678,20 @@ mod tests {
         let gaps: Vec<String> = free(&list, day, hours, 30).iter().map(|(s, e)| format!("{}-{}", s.with_timezone(&Local).format("%H:%M"), e.with_timezone(&Local).format("%H:%M"))).collect();
         assert_eq!(gaps, ["08:00-09:00", "09:15-10:00", "11:30-12:00", "12:45-17:00"], "a gap of exactly 30 minutes counts");
         assert_eq!(free(&list, day, hours, 45).len(), 3, "a shorter one doesn't");
+    }
+
+    #[test]
+    fn meeting_times_are_looked_for_on_working_days() {
+        let today = Local::now().date_naive();
+        let next = days_within("next week");
+        assert_eq!(next.len(), 5, "{next:?}");
+        assert!(next.iter().all(|d| *d > today && !matches!(d.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun)));
+        let soon = days_within("");
+        assert_eq!(soon.len(), 5);
+        assert!(soon[0] >= today);
+        assert!(days_within("this week").iter().all(|d| *d >= today));
+        let tomorrow = days_within("tomorrow");
+        assert!(tomorrow.len() <= 1 && tomorrow.iter().all(|d| *d == today + Span::days(1)), "{tomorrow:?}");
     }
 
     #[test]

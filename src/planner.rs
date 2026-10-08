@@ -85,7 +85,7 @@ impl Settings {
     }
 
     /// The working day's span and lunch, in UTC.
-    fn hours(&self, d: NaiveDate) -> Option<(Span, Span)> {
+    pub(crate) fn hours(&self, d: NaiveDate) -> Option<(Span, Span)> {
         Some((
             (self.at(d, hm(&self.day_start, (7, 30)))?, self.at(d, hm(&self.day_end, (16, 30)))?),
             (self.at(d, hm(&self.lunch_start, (11, 30)))?, self.at(d, hm(&self.lunch_end, (12, 30)))?),

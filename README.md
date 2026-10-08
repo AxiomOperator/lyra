@@ -1126,6 +1126,15 @@ The first user is the **owner**, an admin. Devices paired before users existed a
 `/users` lists everyone, and `/users approve|admin|member|disable <who>` changes someone.
 `/whoami` says who a conversation belongs to.
 
+### Finding a time with others
+
+"Find 30 minutes with Dana and Juan next week" calls `cal_find_time`:
+- lyra finds each person's email address from your meetings or mail.
+- It checks their Outlook free/busy along with your calendar (Microsoft Graph `getSchedule`, which the existing Calendars.ReadWrite permission covers).
+- It suggests a few slots within your working hours (`[planner]`), with lunch kept free and at most two a day.
+
+Pick one and lyra sends the invite with `cal_create`, after your Allow.
+
 ### Projects: folders on your PC
 
 In the app, **More → Projects → Open folder…** lends lyra a folder on this PC. It

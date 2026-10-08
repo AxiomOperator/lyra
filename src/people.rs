@@ -53,6 +53,32 @@ fn with_them(e: &Value, who: &str) -> bool {
     e["attendees"].as_array().is_some_and(|a| a.iter().any(|x| matches(x, who))) || words(who).iter().any(|x| title_words.contains(&x.as_str()))
 }
 
+/// A person's name and email address, from the user's meetings (the last and
+/// next few weeks) or their mail: what an invite needs.
+pub fn email_of(who: &str) -> Option<(String, String)> {
+    let w = who.trim();
+    if w.contains('@') {
+        return Some((w.to_string(), w.to_string()));
+    }
+    if crate::calendar::connected_for(&crate::acting::current()) {
+        let now = Utc::now();
+        if let Ok(events) = crate::calendar::events(now - Duration::days(45), now + Duration::days(21))
+            && let Some(a) = events.iter().flat_map(|e| e["attendees"].as_array().into_iter().flatten()).find(|a| matches(a, w))
+        {
+            return Some((a["emailAddress"]["name"].as_str().unwrap_or(w).to_string(), a["emailAddress"]["address"].as_str()?.to_string()));
+        }
+    }
+    let first = words(w).into_iter().next()?;
+    let v = crate::mail::call("mail_search", &json!({ "query": w, "count": 10 })).or_else(|_| crate::mail::call("mail_search", &json!({ "query": first, "count": 10 }))).ok()?;
+    v["messages"].as_array()?.iter().find_map(|m| {
+        let from = m["from"].as_str()?;
+        // "Name <address>"
+        let (name, addr) = from.rsplit_once('<').map(|(n, a)| (n.trim().to_string(), a.trim_end_matches('>').trim().to_string()))?;
+        let fake = json!({ "emailAddress": { "name": name, "address": addr } });
+        matches(&fake, w).then_some((name, addr))
+    })
+}
+
 pub fn call(name: &str, args: &Value, mem: Option<&crate::mem::Mem>) -> Result<Value, String> {
     if name != "who_is" {
         return Err(format!("{name} isn't a people tool"));
