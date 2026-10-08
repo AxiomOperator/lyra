@@ -1,11 +1,10 @@
 // Syntax highlighting with only the languages lyra's chats use (the stock
 // Streamdown/AI Elements setup ships every Shiki grammar and the WebAssembly
-// regex engine: hundreds of files, megabytes). Grammars load on first use.
+// regex engine: hundreds of files, megabytes). Shiki itself and each grammar
+// load on first use, so a page without code never fetches them.
 
 import type { CodeHighlighterPlugin } from "@streamdown/code";
 import type { HighlighterCore, LanguageInput, TokensResult } from "shiki/core";
-import { createHighlighterCore } from "shiki/core";
-import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
 const grammars: Record<string, () => Promise<{ default: LanguageInput }>> = {
   bash: () => import("shiki/langs/bash.mjs"),
@@ -53,11 +52,15 @@ let core: Promise<HighlighterCore> | null = null;
 
 /** The highlighter, with `lang` loaded (or "text"). */
 export async function getHighlighter(lang: string): Promise<{ highlighter: HighlighterCore; lang: string }> {
-  core ??= createHighlighterCore({
-    themes: [import("shiki/themes/github-light.mjs"), import("shiki/themes/github-dark.mjs")],
-    langs: [],
-    engine: createJavaScriptRegexEngine({ forgiving: true }),
-  });
+  core ??= Promise.all([import("shiki/core"), import("shiki/engine/javascript")]).then(([{ createHighlighterCore }, { createJavaScriptRegexEngine }]) =>
+    createHighlighterCore({
+      themes: [import("shiki/themes/github-light.mjs"), import("shiki/themes/github-dark.mjs")],
+      langs: [],
+      engine: createJavaScriptRegexEngine({ forgiving: true }),
+    }),
+  );
+  // A failed load (offline) is tried again next time, not remembered.
+  core.catch(() => (core = null));
   const highlighter = await core;
   const id = resolveLanguage(lang);
   if (id !== "text" && !highlighter.getLoadedLanguages().includes(id)) {

@@ -9,10 +9,10 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { Archive, ArrowLeft, Check, ChevronDown, Pause, Pencil, Play, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { Archive, Check, ChevronDown, Pause, Pencil, Play, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { ago } from "./push";
-import { Page, useConfirm } from "./parts";
+import { Back, Failed, Page, useAction, useConfirm } from "./parts";
 import { useLyra } from "./store";
 import type { GoalRow, GoalsPageData, MemoryPageData, ModelsData, Routine, RoutineRun, RulesData, SkillRow, SkillsPageData, SystemRules } from "./types";
 
@@ -29,46 +29,6 @@ function usePage<T>(what: string, arg?: unknown) {
     if (ready) load();
   }, [ready, load]);
   return [data, load] as const;
-}
-
-/** Run a command, show lyra's answer, reload the page. */
-export function useAction(reload: () => void) {
-  const { run } = useLyra();
-  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const act = useCallback(
-    async (command: string) => {
-      setBusy(true);
-      const r = await run(command);
-      setBusy(false);
-      setNote(r);
-      reload();
-      return r.ok;
-    },
-    [run, reload],
-  );
-  const shown = note && (
-    <div className={cn("flex items-start justify-between gap-2 rounded-md border px-3 py-2 text-sm", note.ok ? "border-teal-700/60 bg-teal-950/30 text-teal-100" : "border-red-800/60 bg-red-950/30 text-red-200")}>
-      <span className="whitespace-pre-wrap break-words">{note.text}</span>
-      <button type="button" onClick={() => setNote(null)} className="text-muted-foreground hover:text-foreground">
-        <X className="size-4" />
-      </button>
-    </div>
-  );
-  return { act, busy, note: shown };
-}
-
-export function Back({ onBack }: { onBack: () => void }) {
-  return (
-    // Wide screens have the sidebar instead.
-    <Button size="icon" variant="ghost" onClick={onBack} aria-label="Back" className="md:hidden">
-      <ArrowLeft />
-    </Button>
-  );
-}
-
-export function Failed({ error }: { error?: string }) {
-  return error ? <p className="rounded-md border border-red-800/60 bg-red-950/30 px-3 py-2 text-red-200 text-sm">{error}</p> : null;
 }
 
 function Pct({ value }: { value: number }) {

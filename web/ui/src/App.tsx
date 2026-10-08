@@ -48,26 +48,76 @@ import {
   WifiOff,
   Search,
 } from "lucide-react";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState, type ComponentType, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
 import { ConversationList } from "./lyra/conversations";
 import { EverythingSearch } from "./lyra/everything";
 import { UpdatedNote, WhatsNewPage } from "./lyra/whatsnew";
-import { FeedbackPage } from "./lyra/feedback";
-import { QAPage } from "./lyra/qa";
-import { GoalsPage, MemoryPage, ModelsPage, RoutinesPage, SkillsPage } from "./lyra/manage";
-import { TasksPage } from "./lyra/tasks";
-import { NotesPage } from "./lyra/notes";
-import { UsersPage } from "./lyra/users";
-import { UsagePage } from "./lyra/usage";
-import { ProjectsPage } from "./lyra/projects";
-import { StatusPage } from "./lyra/status";
 import { CodingPage } from "./lyra/coding";
-import { ActivityPage, DevicesPage, MachinesPage, MorePage } from "./lyra/pages";
 import { SearchBox, SearchHits, useConversationSearch } from "./lyra/search";
 import { APP_VERSION, LyraProvider, useData, useLyra } from "./lyra/store";
 import type { Session } from "./lyra/types";
 import { loadToken, saveToken, takeShared } from "./lyra/token";
+
+// Pages other than the chat load when first opened, so a phone's first load
+// is only the chat (D-5). Each module becomes its own chunk.
+// After an update the old chunks are gone: a page that can't load its chunk
+// reloads once to get the new app (not again, so a real outage shows the error).
+const RELOADED = "lyra-chunk-reload";
+function remember(key: string, value: string | null) {
+  try {
+    if (value === null) sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, value);
+  } catch {
+    // Storage blocked: no reload loop guard, so no reload either.
+  }
+}
+function reloadedOnce() {
+  try {
+    return sessionStorage.getItem(RELOADED) !== null;
+  } catch {
+    return true;
+  }
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function page<M extends Record<K, ComponentType<any>>, K extends keyof M>(load: () => Promise<M>, name: K) {
+  return lazy(() =>
+    load().then(
+      (m) => {
+        remember(RELOADED, null);
+        return { default: m[name] };
+      },
+      (e) => {
+        if (reloadedOnce()) throw e;
+        remember(RELOADED, "1");
+        location.reload();
+        return new Promise<never>(() => {});
+      },
+    ),
+  );
+}
+const FeedbackPage = page(() => import("./lyra/feedback"), "FeedbackPage");
+const QAPage = page(() => import("./lyra/qa"), "QAPage");
+const GoalsPage = page(() => import("./lyra/manage"), "GoalsPage");
+const MemoryPage = page(() => import("./lyra/manage"), "MemoryPage");
+const ModelsPage = page(() => import("./lyra/manage"), "ModelsPage");
+const RoutinesPage = page(() => import("./lyra/manage"), "RoutinesPage");
+const SkillsPage = page(() => import("./lyra/manage"), "SkillsPage");
+const TasksPage = page(() => import("./lyra/tasks"), "TasksPage");
+const NotesPage = page(() => import("./lyra/notes"), "NotesPage");
+const UsersPage = page(() => import("./lyra/users"), "UsersPage");
+const UsagePage = page(() => import("./lyra/usage"), "UsagePage");
+const ProjectsPage = page(() => import("./lyra/projects"), "ProjectsPage");
+const StatusPage = page(() => import("./lyra/status"), "StatusPage");
+const ActivityPage = page(() => import("./lyra/pages"), "ActivityPage");
+const DevicesPage = page(() => import("./lyra/pages"), "DevicesPage");
+const MachinesPage = page(() => import("./lyra/pages"), "MachinesPage");
+const MorePage = page(() => import("./lyra/pages"), "MorePage");
+
+/** While a page's chunk loads: a quiet line, not a flash of the old page. */
+function Loading() {
+  return <div className="flex flex-1 items-center justify-center text-muted-foreground text-sm">Loading…</div>;
+}
 
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
@@ -408,6 +458,7 @@ function Shell() {
         )}
 
         <div className="flex min-h-0 flex-1 flex-col">
+          <Suspense fallback={<Loading />}>
           {tab === "chat" && <ChatPage />}
           {tab === "status" && <StatusPage toMachines={() => setTab("machines")} toChat={() => setTab("chat")} go={(p) => setTab(p as Tab)} />}
           {tab === "machines" && <MachinesPage mention={mention} toStatus={() => setTab("status")} toChat={() => setTab("chat")} />}
@@ -428,6 +479,7 @@ function Shell() {
           {tab === "model" && <ModelsPage onBack={toMore} />}
           {tab === "usage" && <UsagePage onBack={toMore} />}
           {tab === "users" && <UsersPage onBack={toMore} />}
+          </Suspense>
         </div>
 
       </SidebarInset>

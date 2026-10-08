@@ -13,8 +13,7 @@ import { Bug, ChevronDown, CircleHelp, Lightbulb, Loader2, Paperclip, RefreshCw,
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { upload } from "./chat";
 import { SentAttachments } from "./chat-parts";
-import { Back, Failed } from "./manage";
-import { Page } from "./parts";
+import { Back, Failed, Page } from "./parts";
 import { ago } from "./push";
 import { useLyra } from "./store";
 

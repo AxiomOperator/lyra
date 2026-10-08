@@ -130,3 +130,19 @@
     @apply font-sans;
     }
 }
+
+/* The Shimmer text sweep (components/ai-elements/shimmer.tsx). */
+@keyframes lyra-shimmer {
+  from {
+    background-position: 100% center;
+  }
+  to {
+    background-position: 0% center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [style*="lyra-shimmer"] {
+    animation: none !important;
+  }
+}

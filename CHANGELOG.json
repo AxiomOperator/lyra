@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.26.0.149",
+    "date": "2026-10-08",
+    "title": "Faster to open",
+    "improved": [
+      "The app opens faster, especially on phones: it loads about a third less at the start. Pages like Feedback, Q&A, Usage, Tasks and Memory load the first time you open them, and code highlighting loads with the first reply that has code.",
+      "After lyra is updated, a page opened in an app that was already open loads the new version instead of failing."
+    ]
+  },
+  {
     "version": "0.25.4.148",
     "date": "2026-10-08",
     "title": "Clearer Microsoft 365 messages",

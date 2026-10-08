@@ -6,8 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Sparkles, Wrench, X, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Back } from "./manage";
-import { Page } from "./parts";
+import { Back, Page } from "./parts";
 import { useData, useLyra } from "./store";
 
 interface Release {

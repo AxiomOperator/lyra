@@ -8,7 +8,8 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: { alias: { "@": path.resolve(__dirname, "./src") } },
-  build: { outDir: "dist", emptyOutDir: true, chunkSizeWarningLimit: 2000 },
+  // The warning limit keeps the first load in check (D-5: pages and Shiki load on demand).
+  build: { outDir: "dist", emptyOutDir: true, chunkSizeWarningLimit: 1100 },
   server: {
     proxy: {
       "/api": "http://127.0.0.1:8484",

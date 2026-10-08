@@ -11,7 +11,6 @@ import { cn } from "@/lib/utils";
 import type { LanguageModelUsage } from "ai";
 import type { ComponentProps } from "react";
 import { createContext, useContext, useMemo } from "react";
-import { getUsage } from "tokenlens";
 
 const PERCENT_MAX = 100;
 const ICON_RADIUS = 10;
@@ -20,6 +19,11 @@ const ICON_CENTER = 12;
 const ICON_STROKE_WIDTH = 2;
 
 type ModelId = string;
+
+// lyra prices replies itself (its own model prices, `[pricing]`) and passes the
+// cost in as children; the stock component's tokenlens catalogue of hosted
+// models (about 500 KB) isn't loaded.
+const priceOf = (): number | undefined => undefined;
 
 interface ContextSchema {
   usedTokens: number;
@@ -196,15 +200,9 @@ export const ContextContentFooter = ({
   className,
   ...props
 }: ContextContentFooterProps) => {
-  const { modelId, usage } = useContextValue();
+  const { modelId } = useContextValue();
   const costUSD = modelId
-    ? getUsage({
-        modelId,
-        usage: {
-          input: usage?.inputTokens ?? 0,
-          output: usage?.outputTokens ?? 0,
-        },
-      }).costUSD?.totalUSD
+    ? priceOf()
     : undefined;
   const totalCost = new Intl.NumberFormat("en-US", {
     currency: "USD",
@@ -267,10 +265,7 @@ export const ContextInputUsage = ({
   }
 
   const inputCost = modelId
-    ? getUsage({
-        modelId,
-        usage: { input: inputTokens, output: 0 },
-      }).costUSD?.totalUSD
+    ? priceOf()
     : undefined;
   const inputCostText = new Intl.NumberFormat("en-US", {
     currency: "USD",
@@ -307,10 +302,7 @@ export const ContextOutputUsage = ({
   }
 
   const outputCost = modelId
-    ? getUsage({
-        modelId,
-        usage: { input: 0, output: outputTokens },
-      }).costUSD?.totalUSD
+    ? priceOf()
     : undefined;
   const outputCostText = new Intl.NumberFormat("en-US", {
     currency: "USD",
@@ -348,10 +340,7 @@ export const ContextReasoningUsage = ({
   }
 
   const reasoningCost = modelId
-    ? getUsage({
-        modelId,
-        usage: { reasoningTokens },
-      }).costUSD?.totalUSD
+    ? priceOf()
     : undefined;
   const reasoningCostText = new Intl.NumberFormat("en-US", {
     currency: "USD",
@@ -388,10 +377,7 @@ export const ContextCacheUsage = ({
   }
 
   const cacheCost = modelId
-    ? getUsage({
-        modelId,
-        usage: { cacheReads: cacheTokens, input: 0, output: 0 },
-      }).costUSD?.totalUSD
+    ? priceOf()
     : undefined;
   const cacheCostText = new Intl.NumberFormat("en-US", {
     currency: "USD",

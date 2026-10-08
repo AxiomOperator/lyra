@@ -10,8 +10,7 @@ import { cn } from "@/lib/utils";
 import { ChevronDown, CircleHelp, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { MessageResponse } from "@/components/ai-elements/message";
-import { Back, Failed } from "./manage";
-import { Page, useConfirm } from "./parts";
+import { Back, Failed, Page, useConfirm } from "./parts";
 import { ago } from "./push";
 import { useData, useLyra } from "./store";
 

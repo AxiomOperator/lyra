@@ -7,8 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { CheckCheck, FolderOpen, FolderPlus, Pencil, ShieldCheck, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { Back } from "./manage";
-import { Page, useConfirm } from "./parts";
+import { Back, Page, useConfirm } from "./parts";
 import { addFolder, allowFolder, folderStates, onFoldersChanged, removeFolder, renameFolder, supported, trustFolder, type FolderState } from "./folders";
 
 export function ProjectsPage({ onBack }: { onBack: () => void }) {

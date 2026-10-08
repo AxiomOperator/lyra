@@ -5,8 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useState } from "react";
-import { Back, Failed } from "./manage";
-import { Page } from "./parts";
+import { Back, Failed, Page } from "./parts";
 import { useLyra } from "./store";
 
 type Total = { calls: number; input: number; cached: number; output: number; ms: number; cost: number };

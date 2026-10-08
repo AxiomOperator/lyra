@@ -7,8 +7,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { CheckSquare, Plus, Square, Trash2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
-import { Back, Failed, useAction } from "./manage";
-import { Page, useConfirm } from "./parts";
+import { Back, Failed, Page, useAction, useConfirm } from "./parts";
 import { useData } from "./store";
 
 interface NoteView {
