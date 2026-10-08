@@ -651,7 +651,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "watches") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "watches" | "everything") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -688,6 +688,14 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         "set_rules" => {
                             let answer = set_server_rules(&mut convs[0].app, &arg["system"]);
                             let _ = reply.send(answer.unwrap_or_else(|e| json!({ "error": e })));
+                        }
+                        // One search for everything (Ctrl-K): off this loop, their own things only.
+                        "everything" => {
+                            let (query, user) = (arg["query"].as_str().unwrap_or("").to_string(), convs[i].app.owner.clone());
+                            let mem = convs[i].app.tools.as_ref().map(|t| t.mem.clone());
+                            std::thread::spawn(move || {
+                                let _ = reply.send(crate::search::everything(&query, &user, mem));
+                            });
                         }
                         "models" => {
                             let (url, current) = (convs[i].app.base_url.clone(), convs[i].app.model.clone());

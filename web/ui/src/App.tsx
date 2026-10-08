@@ -44,10 +44,12 @@ import {
   Sparkles,
   Target,
   WifiOff,
+  Search,
 } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
 import { ConversationList } from "./lyra/conversations";
+import { EverythingSearch } from "./lyra/everything";
 import { GoalsPage, MemoryPage, ModelsPage, RoutinesPage, SkillsPage } from "./lyra/manage";
 import { TasksPage } from "./lyra/tasks";
 import { NotesPage } from "./lyra/notes";
@@ -256,6 +258,18 @@ function Shell() {
     });
   }, [ready]);
   const [tab, setTab] = useState<Tab>("chat");
+  // One search for everything: Ctrl-K / ⌘K, or the header's search button.
+  const [searching, setSearching] = useState(false);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSearching((s) => !s);
+      }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, []);
   // Opened from a notification for a page (the briefing → Status): go there.
   useEffect(() => {
     const go = (page: string | null) => {
@@ -336,6 +350,12 @@ function Shell() {
             <div className="min-w-0 flex-1">
               <h1 className="truncate font-medium text-base leading-tight">{tab === "chat" ? status.title || "lyra" : title}</h1>
             </div>
+            <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground" onClick={() => setSearching(true)} aria-label="Search everything">
+              <Search className="size-4" />
+              <span className="hidden text-xs md:inline">Search</span>
+              <kbd className="hidden rounded border px-1 font-mono text-[10px] md:inline">Ctrl K</kbd>
+            </Button>
+            <EverythingSearch open={searching} setOpen={setSearching} go={(p) => setTab(p as Tab)} />
             {ready && (
               <Badge
                 variant="outline"

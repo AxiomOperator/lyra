@@ -1242,6 +1242,18 @@ The app's chat is built from Vercel AI Elements:
 - **Model:** admins tap the model name in the composer to switch models.
 - **Starter prompts:** shown on an empty chat.
 
+### Search everything (Ctrl-K)
+
+Ctrl-K (⌘K on a Mac), or **Search** in the header, searches all of these at once, each person's own only:
+- conversations
+- notes and lists
+- memories
+- Outlook mail
+- Teams chats
+- OneDrive/SharePoint files
+
+Picking a result opens it: a conversation in lyra, the Notes or Memory page, or the mail, chat or file in Microsoft 365. A source that's slow or not connected is skipped rather than holding up the rest.
+
 ### The conversation list
 
 In the app's sidebar, conversations are grouped:

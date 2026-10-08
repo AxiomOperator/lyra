@@ -12,7 +12,7 @@ use crate::caps::Ask;
 
 /// Bodies as plain text, times in UTC.
 const TEXT: &str = "outlook.body-content-type=\"text\", outlook.timezone=\"UTC\"";
-const SELECT: &str = "subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,isRead,importance,hasAttachments,flag,inferenceClassification,conversationId,isDraft";
+const SELECT: &str = "subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,isRead,importance,hasAttachments,flag,inferenceClassification,conversationId,isDraft,webLink";
 
 /// Mail is connected for this person (their Outlook connection includes it).
 pub fn connected_for(user: &str) -> bool {
@@ -57,6 +57,9 @@ fn brief(m: &Value) -> Value {
         "received": when(&m["receivedDateTime"]),
         "preview": m["bodyPreview"].as_str().unwrap_or("").chars().take(220).collect::<String>(),
     });
+    if let Some(l) = m["webLink"].as_str() {
+        v["link"] = json!(l);
+    }
     if m["isRead"] == false {
         v["unread"] = json!(true);
     }

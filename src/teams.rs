@@ -66,6 +66,7 @@ pub fn chats(count: usize) -> Result<Vec<Value>, String> {
                 "last": text_of(last["body"]["content"].as_str().unwrap_or("")).chars().take(200).collect::<String>(),
                 "at": when(&last["createdDateTime"]),
                 "unread": at.zip(read).is_some_and(|(a, r)| a > r) && from != my_name,
+                "link": c["webUrl"],
             })
         })
         .collect())

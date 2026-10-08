@@ -33,6 +33,7 @@ mod migrate;
 mod retrieval;
 mod routines;
 mod serve;
+mod search;
 mod secrets;
 mod sessions;
 mod stats;
