@@ -17,8 +17,12 @@ export interface ChatMessage {
   tool_call_id: string | null;
   stats: string | null;
   memories: string[];
+  /** What the recalled memories say (when lyra still has them). */
+  memory_notes?: { id: string; text: string }[];
   skills: string[];
   agents: string[];
+  /** The reply's tokens, time and cost, for its context meter. */
+  usage?: { input: number; cached: number; output: number; ms: number; estimated: boolean; cost: number; currency: string } | null;
 }
 
 export interface Approval {
@@ -28,6 +32,8 @@ export interface Approval {
   detail: string;
   why: string;
   dangerous: boolean;
+  /** The tool it's for: the question shows at that call. */
+  tool?: string;
 }
 
 export interface PairRequest {
@@ -71,6 +77,8 @@ export interface Health {
 }
 
 export interface Status {
+  /** The chat model's context window in tokens (0: unknown). */
+  context_window?: number;
   phase?: string;
   waiting?: boolean;
   model?: string;

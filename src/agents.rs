@@ -92,6 +92,8 @@ pub struct ApprovalRequest {
     pub detail: String,
     pub why: String,
     pub dangerous: bool,
+    /// The tool it's for (the app shows the question at that call).
+    pub tool: String,
     pub reply: Sender<Answer>,
 }
 
@@ -107,7 +109,7 @@ pub fn approve(env: &Env, profile: &AgentProfile, tool: &str, ask: crate::caps::
     let (reply, answer) = std::sync::mpsc::channel();
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let request = ApprovalRequest { id, agent: profile.title.clone(), what: ask.what, detail: ask.detail, why: ask.why, dangerous: ask.dangerous, reply };
+    let request = ApprovalRequest { id, agent: profile.title.clone(), what: ask.what, detail: ask.detail, why: ask.why, dangerous: ask.dangerous, tool: tool.to_string(), reply };
     env.tx.send(StreamEvent::Approval(request)).map_err(|_| "lyra is closing".to_string())?;
     match answer.recv_timeout(std::time::Duration::from_secs(timeout)) {
         Ok(Answer::Yes) => Ok(()),

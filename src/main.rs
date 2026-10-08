@@ -227,7 +227,7 @@ enum StreamEvent {
     /// Fresh numbers for the memory panel.
     Memory(Result<MemorySnapshot, String>),
     /// Memories the context compiler put in the prompt (short ids) and their size.
-    MemoriesApplied { ids: Vec<String>, tokens: u64 },
+    MemoriesApplied { ids: Vec<String>, texts: Vec<String>, tokens: u64 },
     /// A finished memory capture or curation.
     MemoryReview { curation: bool, review: Review<Vec<String>> },
     /// Notes from background memory work (upkeep, feedback).
@@ -386,6 +386,8 @@ struct App {
     /// Memories the context compiler chose for the current (or last) reply.
     applied_memories: Vec<String>,
     applied_memories_tokens: u64,
+    /// What recalled memories say, by short id (the app lists them under a reply).
+    memory_texts: std::collections::HashMap<String, String>,
     /// A memory capture is running in the background.
     capturing: bool,
     /// A memory curation is running in the background.
@@ -547,6 +549,7 @@ impl App {
             last_run: None,
             applied_memories: Vec::new(),
             applied_memories_tokens: 0,
+            memory_texts: Default::default(),
             capturing: false,
             memory_curating: false,
             memory_curate_every: config.memory.curate.every_days(),
@@ -938,7 +941,11 @@ impl App {
                 }
                 self.skills = Some(snapshot);
             }
-            StreamEvent::MemoriesApplied { ids, tokens } => {
+            StreamEvent::MemoriesApplied { ids, texts, tokens } => {
+                // What they say, for the app's sources under the reply.
+                for (id, text) in ids.iter().zip(texts) {
+                    self.memory_texts.insert(id.clone(), text);
+                }
                 self.log(Level::Memory, format!("recalled {} memor{}: {}", ids.len(), if ids.len() == 1 { "y" } else { "ies" }, ids.join(" ")));
                 self.applied_memories = ids;
                 self.applied_memories_tokens = tokens;
@@ -3158,7 +3165,8 @@ fn apply_memories(mem: &Mem, message: &str, run: Uuid, history: &mut Vec<Value>,
                 let mut section = compiled.section.unwrap_or_default();
                 if !compiled.used.is_empty() {
                     let ids = compiled.used.iter().map(|r| r.memory.short_id()).collect();
-                    let _ = tx.send(StreamEvent::MemoriesApplied { ids, tokens: compiled.tokens as u64 });
+                    let texts = compiled.used.iter().map(|r| r.memory.content.chars().take(240).collect()).collect();
+                    let _ = tx.send(StreamEvent::MemoriesApplied { ids, texts, tokens: compiled.tokens as u64 });
                 }
                 section.push_str(&format!("\n\nThis person's memories are theirs alone: save and recall them in scope \"{scope}\"."));
                 add_to_system(history, section.trim());
@@ -3175,7 +3183,8 @@ fn apply_memories(mem: &Mem, message: &str, run: Uuid, history: &mut Vec<Value>,
         Ok(compiled) => {
             if let Some(section) = compiled.section {
                 let ids = compiled.used.iter().map(|r| r.memory.short_id()).collect();
-                let _ = tx.send(StreamEvent::MemoriesApplied { ids, tokens: compiled.tokens as u64 });
+                let texts = compiled.used.iter().map(|r| r.memory.content.chars().take(240).collect()).collect();
+                let _ = tx.send(StreamEvent::MemoriesApplied { ids, texts, tokens: compiled.tokens as u64 });
                 sections.push(section);
             }
         }
@@ -3666,6 +3675,7 @@ fn main() {
     usage::configure(prices(&config));
     vision::configure(config.vision_model.clone());
     proactive::configure(config.proactive.clone());
+    stats::learn_context_window(&config.url);
     let web = config.web.clone();
     let mut app = App::new(config, Context::load(), services);
     for note in migrated {

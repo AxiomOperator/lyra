@@ -28,7 +28,13 @@ fn web_message(app: &App, m: &Message) -> Value {
         "calls": calls,
         "tool_call_id": m.tool_call_id,
         "stats": m.stats.as_ref().map(|s| crate::ui::reply_stats(s, &app.pricing)),
+        // The numbers, for the app's context meter.
+        "usage": m.stats.as_ref().map(|s| json!({
+            "input": s.input, "cached": s.cached, "output": s.output, "ms": s.elapsed.as_millis() as u64, "estimated": s.estimated,
+            "cost": app.pricing.cost(s.input, s.cached, s.output), "currency": app.pricing.currency,
+        })),
         "memories": m.memories,
+        "memory_notes": m.memories.iter().filter_map(|id| app.memory_texts.get(id).map(|t| json!({ "id": id, "text": t }))).collect::<Vec<_>>(),
         "skills": m.skills,
         "agents": m.agents,
     })
@@ -99,8 +105,9 @@ fn status(app: &App, machines: &[String]) -> Value {
             let (decided, to_chat, ms) = crate::decide::stats();
             json!({ "model": model, "decided": decided, "to_chat": to_chat, "ms": ms })
         }),
+        "context_window": crate::stats::CONTEXT_WINDOW.load(std::sync::atomic::Ordering::Relaxed),
         "approvals": app.approvals.iter().map(|r| json!({
-            "id": r.id, "agent": r.agent, "what": r.what, "detail": r.detail, "why": r.why, "dangerous": r.dangerous,
+            "id": r.id, "agent": r.agent, "what": r.what, "detail": r.detail, "why": r.why, "dangerous": r.dangerous, "tool": r.tool,
         })).collect::<Vec<_>>(),
         "machines": machines,
         "groups": app.caps.as_ref().map(|c| {

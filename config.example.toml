@@ -351,6 +351,7 @@ currency = "$"
 # The daily briefing (see README): what happened and what needs a look, pushed
 # each morning by lyra serve.
 # [briefing]
+# enabled = true
 # schedule = "every day at 07:30"
 # notify = true
 # summary = true

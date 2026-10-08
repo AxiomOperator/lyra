@@ -24,6 +24,33 @@ impl Usage {
 }
 
 /// Measurements for one reply.
+/// The chat model's context window in tokens (0: not known yet), asked of
+/// its server once at startup.
+pub static CONTEXT_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Ask the chat model's server for its context window (llama.cpp's
+/// `/models` meta or `/props`; vLLM's `max_model_len`), in the background.
+pub fn learn_context_window(url: &str) {
+    let base = url.trim_end_matches('/').to_string();
+    std::thread::spawn(move || {
+        let get = |u: &str| -> Option<serde_json::Value> {
+            reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(10)).build().ok()?.get(u).send().ok()?.json().ok()
+        };
+        let models = get(&format!("{base}/models"));
+        let n = models
+            .as_ref()
+            .and_then(|m| m["data"][0]["meta"]["n_ctx"].as_u64().or_else(|| m["data"][0]["max_model_len"].as_u64()))
+            .or_else(|| {
+                let root = base.strip_suffix("/v1").unwrap_or(&base);
+                let p = get(&format!("{root}/props"))?;
+                p["default_generation_settings"]["n_ctx"].as_u64().or_else(|| p["n_ctx"].as_u64())
+            });
+        if let Some(n) = n {
+            CONTEXT_WINDOW.store(n, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+}
+
 pub struct Stats {
     /// Time from sending the request to the first token (reasoning or content).
     pub ttft: Option<Duration>,

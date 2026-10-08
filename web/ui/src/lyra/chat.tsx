@@ -14,10 +14,14 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { AtSign, Bot, FileIcon, Link2, Paperclip, ShieldAlert, ShieldCheck, ShieldX, Slash, TriangleAlert, X } from "lucide-react";
+import { AtSign, Link2, Paperclip, ShieldAlert, ShieldCheck, ShieldX, Slash, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useLyra } from "./store";
 import type { Approval, ChatMessage, PairRequest } from "./types";
+import { AgentTask, ApprovalAt, ComposerAttachments, ReplyContext, ReplySources, SentAttachments, StarterSuggestions, approvalCall, splitAttached, webSources } from "./chat-parts";
+
+/** The approval waiting, and the call it's shown at. */
+type Asking = { callId: string; a: Approval; more: number } | null;
 
 // ---- messages
 
@@ -116,10 +120,11 @@ function ToolCallView({ name, args, result }: { name: string; args: string; resu
   );
 }
 
-function Footer({ m }: { m: ChatMessage }) {
+function Footer({ m, max, model }: { m: ChatMessage; max: number; model?: string }) {
   if (!m.stats && !m.agents?.length && !m.skills?.length) return null;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
+      {m.usage && <ReplyContext usage={m.usage} max={max} model={model} />}
       {m.stats && <span>{m.stats}</span>}
       {m.agents?.length > 0 && <span className="text-sky-400">handled with {m.agents.join(", ")}</span>}
       {m.skills?.length > 0 && <span className="text-fuchsia-400">skills: {m.skills.join(", ")}</span>}
@@ -127,14 +132,24 @@ function Footer({ m }: { m: ChatMessage }) {
   );
 }
 
-function MessageView({ m, results, streaming }: { m: ChatMessage; results: Map<string, string>; streaming: boolean }) {
+function MessageView({ m, results, streaming, asking, max, model, turn }: { m: ChatMessage; results: Map<string, string>; streaming: boolean; asking: Asking; max: number; model?: string; turn?: ChatMessage[] }) {
+  // A call, and the approval it waits for when it's this one.
+  const call = (c: ChatMessage["calls"][number]) => (
+    <div key={c.id} className="space-y-2">
+      <ToolCallView name={c.name} args={c.arguments} result={results.get(c.id)} />
+      {asking?.callId === c.id && <ApprovalAt a={asking.a} more={asking.more} />}
+    </div>
+  );
   switch (m.role) {
-    case "user":
+    case "user": {
+      const { text, files } = splitAttached(m.content);
       return (
         <Message from="user">
-          <MessageContent className="whitespace-pre-wrap">{m.content}</MessageContent>
+          <SentAttachments files={files} />
+          {text.trim() && <MessageContent className="whitespace-pre-wrap">{text}</MessageContent>}
         </Message>
       );
+    }
     case "assistant":
       return (
         <Message from="assistant">
@@ -146,8 +161,10 @@ function MessageView({ m, results, streaming }: { m: ChatMessage; results: Map<s
               </Reasoning>
             )}
             {m.content && <MessageResponse isAnimating={streaming}>{m.content}</MessageResponse>}
-            {m.calls?.map((c) => <ToolCallView key={c.id} name={c.name} args={c.arguments} result={results.get(c.id)} />)}
-            <Footer m={m} />
+            {m.calls?.map(call)}
+            {/* The turn's sources, under its answer. */}
+            {!streaming && turn && <ReplySources web={webSources(turn, results)} memories={m.memory_notes ?? []} />}
+            <Footer m={m} max={max} model={model} />
           </MessageContent>
         </Message>
       );
@@ -157,26 +174,13 @@ function MessageView({ m, results, streaming }: { m: ChatMessage; results: Map<s
       const working = m.content.includes("· working on it");
       const [head, ...rest] = m.content.split("\n");
       return (
-        <div className="space-y-3 rounded-lg border border-sky-900/60 bg-sky-950/30 p-3 text-sm">
-          <div className="flex items-start gap-3">
-            <Bot className="mt-0.5 size-4 shrink-0 text-sky-400" />
-            <div className="min-w-0 flex-1">
-              {working ? <Shimmer className="text-sky-200">{head}</Shimmer> : <div className="font-medium text-sky-200">{head}</div>}
-            </div>
-          </div>
-          {m.calls?.length > 0 && (
-            <div className="space-y-2">
-              {m.calls.map((c) => (
-                <ToolCallView key={c.id} name={c.name} args={c.arguments} result={results.get(c.id)} />
-              ))}
-            </div>
-          )}
+        <AgentTask head={head} working={working} steps={m.calls?.length ? m.calls.map(call) : <div className="text-muted-foreground text-xs">{working ? "starting…" : "no steps"}</div>}>
           {rest.join("\n").trim() && (
-            <div className="text-sky-100/90">
+            <div className="mt-3 text-sky-100/90">
               <MessageResponse>{rest.join("\n")}</MessageResponse>
             </div>
           )}
-        </div>
+        </AgentTask>
       );
     }
     case "approval": {
@@ -323,10 +327,6 @@ function usePalette(text: string): Entry[] {
 /** Can this browser turn speech into text itself? (no server transcription) */
 const canDictate = typeof window !== "undefined" && ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
 
-function sizeText(n: number) {
-  return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`;
-}
-
 /** Send a file to lyra; returns its upload id. */
 async function upload(token: string, file: File): Promise<string> {
   const r = await fetch("/api/files", {
@@ -458,16 +458,7 @@ function Composer() {
       <PromptInput onSubmit={() => void submit()}>
         {(files.length > 0 || busy) && (
           <PromptInputHeader className="flex flex-wrap gap-1.5 px-3 pt-2">
-            {files.map((f, i) => (
-              <span key={`${f.name}-${i}`} className="flex max-w-full items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1 text-xs">
-                <FileIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                <span className="truncate">{f.name}</span>
-                <span className="text-muted-foreground">{sizeText(f.size)}</span>
-                <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFiles((all) => all.filter((_, j) => j !== i))}>
-                  <X className="size-3.5" />
-                </button>
-              </span>
-            ))}
+            <ComposerAttachments files={files} remove={(i) => setFiles((all) => all.filter((_, j) => j !== i))} />
             {busy && <span className="w-full text-muted-foreground text-xs">{busy}</span>}
           </PromptInputHeader>
         )}
@@ -517,6 +508,33 @@ export function ChatPage() {
   }, [messages]);
   const attached = useMemo(() => new Set(messages.flatMap((m) => (m.calls ?? []).map((c) => c.id))), [messages]);
   const approvals = status.approvals ?? [];
+  const { user } = useLyra();
+  // The first approval shows at its tool call; one with no call here (another
+  // machine's, a plan's) waits above the composer as before.
+  const callId = approvalCall(messages, results, approvals[0]);
+  const asking: Asking = callId && approvals[0] ? { callId, a: approvals[0], more: approvals.length - 1 } : null;
+  const max = status.context_window ?? 0;
+  // Each turn's answer (its last reply with words) gets the turn's messages, for its sources.
+  const turns = useMemo(() => {
+    const out = new Map<number, ChatMessage[]>();
+    let start = 0;
+    const close = (end: number) => {
+      const turn = messages.slice(start, end);
+      for (let j = end - 1; j >= start; j--)
+        if (messages[j].role === "assistant" && messages[j].content.trim()) {
+          out.set(j, turn);
+          break;
+        }
+    };
+    messages.forEach((m, i) => {
+      if (m.role === "user" && i > start) {
+        close(i);
+        start = i;
+      }
+    });
+    close(messages.length);
+    return out;
+  }, [messages]);
   const pairing = status.pairing ?? [];
   const last = messages[messages.length - 1];
   // An agent's card shows its own progress; this is for lyra itself.
@@ -526,10 +544,15 @@ export function ChatPage() {
     <div className="flex min-h-0 flex-1 flex-col">
       <Conversation className="min-h-0 flex-1">
         <ConversationContent className="mx-auto w-full max-w-3xl gap-5 px-3 py-4 md:px-6 md:py-6">
-          {ready && messages.length === 0 && <ConversationEmptyState title="Ask lyra anything" description="Type / for commands, @ to pick a machine." />}
+          {ready && messages.length === 0 && (
+            <div className="flex flex-1 flex-col items-center justify-center gap-6">
+              <ConversationEmptyState className="flex-none" title="Ask lyra anything" description="Type / for commands, @ to pick a machine." />
+              <StarterSuggestions admin={user?.admin ?? true} />
+            </div>
+          )}
           {messages.map((m, i) =>
             (m.role === "tool" || m.role === "agent_tool") && m.tool_call_id && attached.has(m.tool_call_id) ? null : (
-              <MessageView key={i} m={m} results={results} streaming={!!status.waiting && i === messages.length - 1} />
+              <MessageView key={i} m={m} results={results} streaming={!!status.waiting && i === messages.length - 1} asking={asking} max={max} model={status.model} turn={turns.get(i)} />
             ),
           )}
           {thinking && <Shimmer className="text-sm">Thinking…</Shimmer>}
@@ -541,7 +564,7 @@ export function ChatPage() {
         {pairing.map((p) => (
           <PairCard key={p.id} p={p} className="mx-3 mb-2" />
         ))}
-        {approvals[0] && <ApprovalCard a={approvals[0]} more={approvals.length - 1} />}
+        {approvals[0] && !asking && <ApprovalCard a={approvals[0]} more={approvals.length - 1} />}
         <Composer />
       </div>
     </div>
