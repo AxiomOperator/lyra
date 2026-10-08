@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.25.4.148",
+    "date": "2026-10-08",
+    "title": "Clearer Microsoft 365 messages",
+    "fixed": [
+      "When Microsoft 365 refuses or can't find something (a file, a chat, a mail), lyra says so plainly instead of talking about calendar events or Outlook permissions.",
+      "Teams messages that show HTML code as text (like &lt;tag&gt;) now read the way they were written."
+    ]
+  },
+  {
     "version": "0.25.3.147",
     "date": "2026-10-08",
     "title": "Safer saving",

@@ -9,11 +9,11 @@ use chrono::{DateTime, Duration, Local, Utc};
 use lyra_capabilities::{Capability, CapabilityKind, RiskLevel};
 use serde_json::{Value, json};
 
-use crate::calendar::{graph, utc};
+use crate::graph::{graph, utc};
 
 /// The person can read their meetings' transcripts.
 pub fn ready(user: &str) -> bool {
-    crate::calendar::connected_for(user) && crate::calendar::has(user, "OnlineMeetingTranscript.Read.All")
+    crate::graph::connected_for(user) && crate::graph::has(user, "OnlineMeetingTranscript.Read.All")
 }
 
 /// Teams meetings that ended in the last `days`, newest first.
@@ -80,8 +80,7 @@ fn transcript(e: &Value) -> Result<String, String> {
     let id = m["value"][0]["id"].as_str().ok_or("Teams doesn't show this meeting to you (only meetings you organized or joined in your organization)")?.to_string();
     let t = graph(reqwest::Method::GET, &format!("/me/onlineMeetings/{}/transcripts", lyra_web::oidc::encode(&id)), None)?;
     let tid = t["value"].as_array().and_then(|v| v.last()).and_then(|t| t["id"].as_str()).ok_or("this meeting wasn't transcribed (start transcription in Teams next time)")?.to_string();
-    let url = format!("https://graph.microsoft.com/v1.0/me/onlineMeetings/{}/transcripts/{}/content?$format=text/vtt", lyra_web::oidc::encode(&id), lyra_web::oidc::encode(&tid));
-    let bytes = crate::calendar::graph_bytes(&url)?;
+    let bytes = crate::graph::graph_bytes(&format!("/me/onlineMeetings/{}/transcripts/{}/content?$format=text/vtt", lyra_web::oidc::encode(&id), lyra_web::oidc::encode(&tid)))?;
     Ok(vtt_text(&String::from_utf8_lossy(&bytes)))
 }
 
@@ -107,7 +106,7 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
         return Err(format!("{name} isn't a meetings tool"));
     }
     let user = crate::acting::current();
-    if !crate::calendar::connected_for(&user) {
+    if !crate::graph::connected_for(&user) {
         return Err("your Outlook isn't connected: in the app, More → Outlook → Connect".into());
     }
     let e = find(args["meeting"].as_str().unwrap_or(""))?;
@@ -165,7 +164,7 @@ mod tests {
         let now = Utc::now();
         let ev = |ago: i64, online: bool| {
             let end = now - Duration::minutes(ago);
-            let mut e = json!({ "end": crate::calendar::graph_time(end), "subject": "Sync" });
+            let mut e = json!({ "end": crate::graph::graph_time(end), "subject": "Sync" });
             if online {
                 e["onlineMeeting"] = json!({ "joinUrl": "https://teams.microsoft.com/l/meetup-join/x" });
             }

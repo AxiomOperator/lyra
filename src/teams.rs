@@ -5,36 +5,21 @@ use chrono::{DateTime, Local, Utc};
 use lyra_capabilities::{Capability, CapabilityKind, RiskLevel};
 use serde_json::{Value, json};
 
-use crate::calendar::graph;
+use crate::graph::graph;
 
 pub fn connected_for(user: &str) -> bool {
-    crate::calendar::connected_for(user) && crate::calendar::has(user, "Chat.Read")
+    crate::graph::connected_for(user) && crate::graph::has(user, "Chat.Read")
 }
 
 fn ready() -> Result<(), String> {
     let user = crate::acting::current();
-    if !crate::calendar::connected_for(&user) {
+    if !crate::graph::connected_for(&user) {
         return Err("your Microsoft 365 isn't connected: in the app, More → Outlook → Connect".into());
     }
-    if !crate::calendar::has(&user, "Chat.Read") {
+    if !crate::graph::has(&user, "Chat.Read") {
         return Err("lyra can't see your Teams chats yet: connect again (More → Outlook → Add Teams & files)".into());
     }
     Ok(())
-}
-
-/// A Teams message's text: HTML tags out, entities read.
-pub fn text_of(html: &str) -> String {
-    let mut out = String::new();
-    let mut tag = false;
-    for c in html.replace("<br>", "\n").replace("</p>", "\n").chars() {
-        match c {
-            '<' => tag = true,
-            '>' => tag = false,
-            c if !tag => out.push(c),
-            _ => {}
-        }
-    }
-    out.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").trim().to_string()
 }
 
 fn when(v: &Value) -> String {
@@ -63,7 +48,7 @@ pub fn chats(count: usize) -> Result<Vec<Value>, String> {
                 "chat": name,
                 "kind": c["chatType"],
                 "last_from": from,
-                "last": text_of(last["body"]["content"].as_str().unwrap_or("")).chars().take(200).collect::<String>(),
+                "last": crate::text::html_text(last["body"]["content"].as_str().unwrap_or("")).chars().take(200).collect::<String>(),
                 "at": when(&last["createdDateTime"]),
                 "unread": at.zip(read).is_some_and(|(a, r)| a > r) && from != my_name,
                 "link": c["webUrl"],
@@ -112,22 +97,11 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
                 .into_iter()
                 .flatten()
                 .filter(|m| m["messageType"] == "message")
-                .map(|m| json!({ "from": m["from"]["user"]["displayName"], "at": when(&m["createdDateTime"]), "text": text_of(m["body"]["content"].as_str().unwrap_or("")).chars().take(1500).collect::<String>() }))
+                .map(|m| json!({ "from": m["from"]["user"]["displayName"], "at": when(&m["createdDateTime"]), "text": crate::text::html_text(m["body"]["content"].as_str().unwrap_or("")).chars().take(1500).collect::<String>() }))
                 .collect();
             msgs.reverse();
             Ok(json!({ "messages": msgs }))
         }
         other => Err(format!("{other} isn't a Teams tool")),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn teams_html_reads_as_text() {
-        assert_eq!(text_of("<p>Can you <b>check</b> the firewall&nbsp;rules?</p><p>Thanks</p>"), "Can you check the firewall rules?\nThanks");
-        assert_eq!(text_of("<at id=\"0\">Garrett</at> ping"), "Garrett ping");
     }
 }

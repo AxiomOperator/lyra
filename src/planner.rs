@@ -264,8 +264,8 @@ fn blocks_in(events: &[Value]) -> Vec<Block> {
                 event: e["id"].as_str().map(str::to_string),
                 task,
                 title: e["subject"].as_str().unwrap_or("").trim_start_matches("Focus: ").to_string(),
-                start: crate::calendar::utc(&e["start"])?,
-                end: crate::calendar::utc(&e["end"])?,
+                start: crate::graph::utc(&e["start"])?,
+                end: crate::graph::utc(&e["end"])?,
             })
         })
         .collect()
@@ -276,7 +276,7 @@ fn meetings_in(events: &[Value]) -> Vec<(DateTime<Utc>, DateTime<Utc>)> {
     events
         .iter()
         .filter(|e| e["isCancelled"] != true && e["showAs"] != "free" && !e["categories"].as_array().is_some_and(|c| c.iter().any(|x| x == "lyra")))
-        .filter_map(|e| Some((crate::calendar::utc(&e["start"])?, crate::calendar::utc(&e["end"])?)))
+        .filter_map(|e| Some((crate::graph::utc(&e["start"])?, crate::graph::utc(&e["end"])?)))
         .collect()
 }
 
@@ -304,7 +304,7 @@ fn local_hm(t: DateTime<Utc>) -> String {
 pub fn run() -> Result<Vec<String>, String> {
     let s = settings();
     let user = crate::acting::current();
-    if !s.enabled || !crate::calendar::connected_for(&user) || !crate::pmi::configured_for(&user) {
+    if !s.enabled || !crate::graph::connected_for(&user) || !crate::pmi::configured_for(&user) {
         return Ok(vec![]);
     }
     let now = Local::now();
@@ -322,24 +322,24 @@ pub fn run() -> Result<Vec<String>, String> {
             Change::Create(b) => {
                 let body = json!({
                     "subject": format!("Focus: {}", b.title),
-                    "start": crate::calendar::graph_time(b.start),
-                    "end": crate::calendar::graph_time(b.end),
+                    "start": crate::graph::graph_time(b.start),
+                    "end": crate::graph::graph_time(b.end),
                     "showAs": "busy",
                     "sensitivity": "private",
                     "isReminderOn": false,
                     "categories": ["lyra"],
                     "body": { "contentType": "text", "content": format!("{MARK}{} (lyra moves or removes this block as your day changes)", b.task) },
                 });
-                crate::calendar::graph(reqwest::Method::POST, "/me/events", Some(&body))?;
+                crate::graph::graph(reqwest::Method::POST, "/me/events", Some(&body))?;
                 said.push(format!("focus block {}–{} for {}", local_hm(b.start), local_hm(b.end), b.title));
             }
             Change::Move { event, title, start, end } => {
-                let body = json!({ "start": crate::calendar::graph_time(start), "end": crate::calendar::graph_time(end) });
-                crate::calendar::graph(reqwest::Method::PATCH, &format!("/me/events/{}", lyra_web::oidc::encode(&event)), Some(&body))?;
+                let body = json!({ "start": crate::graph::graph_time(start), "end": crate::graph::graph_time(end) });
+                crate::graph::graph(reqwest::Method::PATCH, &format!("/me/events/{}", lyra_web::oidc::encode(&event)), Some(&body))?;
                 said.push(format!("moved the focus block for {title} to {}–{} (a meeting took its time)", local_hm(start), local_hm(end)));
             }
             Change::Remove { event, title, why } => {
-                crate::calendar::graph(reqwest::Method::DELETE, &format!("/me/events/{}", lyra_web::oidc::encode(&event)), None)?;
+                crate::graph::graph(reqwest::Method::DELETE, &format!("/me/events/{}", lyra_web::oidc::encode(&event)), None)?;
                 said.push(format!("removed the focus block for {title}: {why}"));
             }
         }
@@ -353,7 +353,7 @@ pub fn today() -> Result<Value, String> {
     let s = settings();
     let date = Local::now().date_naive();
     let (day, lunch) = s.hours(date).ok_or("no such day")?;
-    let events = if crate::calendar::connected_for(&user) { crate::calendar::events(day.0 - Duration::hours(3), day.1 + Duration::hours(6)).unwrap_or_default() } else { vec![] };
+    let events = if crate::graph::connected_for(&user) { crate::calendar::events(day.0 - Duration::hours(3), day.1 + Duration::hours(6)).unwrap_or_default() } else { vec![] };
     let blocks: Vec<Value> = blocks_in(&events).iter().map(|b| json!({ "title": b.title, "start": local_hm(b.start), "end": local_hm(b.end), "task": b.task })).collect();
     let tasks = if crate::pmi::configured_for(&user) { crate::pmi::call("pmi_tasks", &json!({ "due": "week" })).map(|v| tasks_from(&v)).unwrap_or_default() } else { vec![] };
     let mail = if crate::mail::connected_for(&user) { crate::mail::inbox(true, true, 3).map(|m| m.iter().map(|x| json!({ "from": x["from"]["emailAddress"]["name"], "subject": x["subject"] })).collect::<Vec<_>>()).unwrap_or_default() } else { vec![] };
@@ -369,7 +369,7 @@ pub fn today() -> Result<Value, String> {
 /// `/today [plan]`: the day; plan re-plans it now.
 pub fn command(arg: &str) -> Result<String, String> {
     let user = crate::acting::current();
-    if !crate::calendar::connected_for(&user) || !crate::pmi::configured_for(&user) {
+    if !crate::graph::connected_for(&user) || !crate::pmi::configured_for(&user) {
         return Err("plan my day needs your Outlook calendar and PMI connected (More in the app; /pmi token)".into());
     }
     let mut out = Vec::new();
@@ -401,7 +401,7 @@ pub fn quiet(user: &str) -> bool {
     if !s.working_now(now) {
         return true;
     }
-    if !crate::calendar::connected_for(user) {
+    if !crate::graph::connected_for(user) {
         return false;
     }
     let t = now.with_timezone(&Utc);
@@ -471,7 +471,7 @@ mod tests {
         assert!(plan(&s, saturday, at(9, 0), &[], &[task("a", 0, "high")], &[]).is_empty());
         let full = vec![(at(7, 30), at(16, 30))];
         assert!(plan(&s, day(), at(7, 30), &full, &[task("a", 0, "high")], &[]).is_empty(), "no time, no block");
-        let blocks = blocks_in(&[json!({ "id": "x", "subject": "Focus: write the report", "categories": ["lyra"], "bodyPreview": "lyra focus block · PMI task t-42 (lyra moves…)", "start": crate::calendar::graph_time(at(9, 0)), "end": crate::calendar::graph_time(at(10, 0)) })]);
+        let blocks = blocks_in(&[json!({ "id": "x", "subject": "Focus: write the report", "categories": ["lyra"], "bodyPreview": "lyra focus block · PMI task t-42 (lyra moves…)", "start": crate::graph::graph_time(at(9, 0)), "end": crate::graph::graph_time(at(10, 0)) })]);
         assert_eq!((blocks[0].task.as_str(), blocks[0].title.as_str()), ("t-42", "write the report"));
     }
 }

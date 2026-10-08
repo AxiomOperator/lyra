@@ -69,7 +69,7 @@ pub fn everything(query: &str, user: &str, mem: Option<Arc<Mem>>) -> Value {
                 .unwrap_or_default()
         }));
     }
-    if crate::calendar::connected_for(user) && crate::calendar::has(user, "Files.Read.All") {
+    if crate::graph::connected_for(user) && crate::graph::has(user, "Files.Read.All") {
         let q6 = q.clone();
         spawn(5, "Files", Box::new(move || {
             crate::files::search(&q6, 6)

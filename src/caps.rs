@@ -582,7 +582,7 @@ impl Caps {
         caps.extend(crate::feedback::capabilities());
         caps.extend(crate::qa::capabilities());
         // "Tell me when …" (mail, PMI, Teams).
-        if crate::calendar::available() || crate::pmi::anyone() {
+        if crate::graph::available() || crate::pmi::anyone() {
             caps.extend(crate::watches::capabilities());
         }
         // Folders lent by people's open pages (only through lyra serve).
@@ -595,7 +595,7 @@ impl Caps {
         if crate::pmi::anyone() {
             caps.extend(crate::pmi::capabilities());
         }
-        if crate::calendar::available() {
+        if crate::graph::available() {
             caps.extend(crate::calendar::capabilities());
             caps.extend(crate::mail::capabilities());
             caps.extend(crate::meetings::capabilities());

@@ -9,14 +9,14 @@ use base64::Engine;
 use lyra_capabilities::{Capability, CapabilityKind, RiskLevel};
 use serde_json::{Value, json};
 
-use crate::calendar::graph;
+use crate::graph::graph;
 
 /// Attached as a file up to this size; bigger ones go in as a link.
 const ATTACH_UP_TO: u64 = 3 * 1024 * 1024;
 
 fn ready() -> Result<(), String> {
     let user = crate::acting::current();
-    if !crate::calendar::connected_for(&user) || !crate::calendar::has(&user, "Files.Read.All") {
+    if !crate::graph::connected_for(&user) || !crate::graph::has(&user, "Files.Read.All") {
         return Err("lyra can't see your files yet: connect again (More → Outlook → Add Teams & files)".into());
     }
     Ok(())
@@ -49,22 +49,6 @@ pub fn search(query: &str, count: usize) -> Result<Vec<Value>, String> {
         .collect())
 }
 
-/// Text out of Office XML: paragraphs become lines, tags go.
-fn xml_text(xml: &str) -> String {
-    let xml = xml.replace("</w:p>", "\n").replace("</a:p>", "\n").replace("</si>", "\n").replace("<w:tab/>", "\t");
-    let mut out = String::new();
-    let mut tag = false;
-    for c in xml.chars() {
-        match c {
-            '<' => tag = true,
-            '>' => tag = false,
-            c if !tag => out.push(c),
-            _ => {}
-        }
-    }
-    out.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join("\n")
-}
-
 /// The text of a Word, Excel or PowerPoint file (its zip of XML).
 pub fn office_text(bytes: &[u8], name: &str) -> Result<String, String> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| format!("can't open {name}: {e}"))?;
@@ -86,7 +70,7 @@ pub fn office_text(bytes: &[u8], name: &str) -> Result<String, String> {
         if let Ok(mut f) = zip.by_name(p) {
             let _ = f.read_to_string(&mut s);
         }
-        let t = xml_text(&s);
+        let t = crate::text::xml_text(&s);
         if !t.is_empty() {
             out.push(if lower.ends_with(".pptx") { format!("[{}]\n{t}", p.trim_start_matches("ppt/slides/").trim_end_matches(".xml")) } else { t });
         }
@@ -95,8 +79,7 @@ pub fn office_text(bytes: &[u8], name: &str) -> Result<String, String> {
 }
 
 fn content(drive: &str, id: &str) -> Result<Vec<u8>, String> {
-    let url = format!("https://graph.microsoft.com/v1.0/drives/{}/items/{}/content", lyra_web::oidc::encode(drive), lyra_web::oidc::encode(id));
-    crate::calendar::graph_bytes(&url)
+    crate::graph::graph_bytes(&format!("/drives/{}/items/{}/content", lyra_web::oidc::encode(drive), lyra_web::oidc::encode(id)))
 }
 
 pub fn capabilities() -> Vec<Capability> {

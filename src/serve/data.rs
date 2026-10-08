@@ -154,9 +154,9 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
         },
         // Today's calendar (theirs), or how to connect it.
         "calendar" => {
-            if !crate::calendar::available() {
+            if !crate::graph::available() {
                 json!({ "available": false })
-            } else if !crate::calendar::connected_for(&app.owner) {
+            } else if !crate::graph::connected_for(&app.owner) {
                 json!({ "available": true, "connected": false })
             } else {
                 match crate::acting::run(&app.owner, crate::calendar::today) {
@@ -166,7 +166,7 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
                         v["mail"] = json!(crate::mail::connected_for(&app.owner));
                         v["teams"] = json!(crate::teams::connected_for(&app.owner));
                         v["meetings"] = json!(crate::meetings::ready(&app.owner));
-                        v["meetings_available"] = json!(crate::calendar::meetings_enabled());
+                        v["meetings_available"] = json!(crate::graph::meetings_enabled());
                         v
                     }
                     Err(e) => json!({ "available": true, "connected": true, "error": e }),

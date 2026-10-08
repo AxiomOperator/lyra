@@ -104,7 +104,7 @@ pub fn due_for_prep<'a>(events: &'a [Value], now: DateTime<Utc>, minutes: i64, s
         .filter(|e| !e["categories"].as_array().is_some_and(|c| c.iter().any(|x| x == "lyra")))
         .filter(|e| e["attendees"].as_array().is_some_and(|a| !a.is_empty()))
         .filter(|e| e["id"].as_str().is_some_and(|id| !seen.prepped.contains_key(id)))
-        .filter(|e| crate::calendar::utc(&e["start"]).is_some_and(|s| s > now && s - now <= Duration::minutes(minutes)))
+        .filter(|e| crate::graph::utc(&e["start"]).is_some_and(|s| s > now && s - now <= Duration::minutes(minutes)))
         .collect()
 }
 
@@ -124,7 +124,7 @@ fn names(e: &Value) -> Vec<(String, String)> {
 /// The prep note for a meeting: who, the latest mail with them, open tasks about it.
 fn prep(e: &Value, me: &str) -> (String, String) {
     let subject = e["subject"].as_str().unwrap_or("a meeting").to_string();
-    let at = crate::calendar::utc(&e["start"]).map(|t| t.with_timezone(&Local).format("%H:%M").to_string()).unwrap_or_default();
+    let at = crate::graph::utc(&e["start"]).map(|t| t.with_timezone(&Local).format("%H:%M").to_string()).unwrap_or_default();
     let people: Vec<(String, String)> = names(e).into_iter().filter(|(_, a)| !a.eq_ignore_ascii_case(me)).take(6).collect();
     let mut lines = Vec::new();
     if !people.is_empty() {
@@ -291,7 +291,7 @@ pub fn pass(url: &str, model: &str, mail_due: bool) -> Pass {
     let s = settings();
     let user = crate::acting::current();
     let mut out = Pass { prep: vec![], done: vec![] };
-    if !s.enabled || !crate::calendar::connected_for(&user) {
+    if !s.enabled || !crate::graph::connected_for(&user) {
         return out;
     }
     let mut seen = Seen::load();
@@ -343,7 +343,7 @@ mod tests {
         let start = Utc::now() + Duration::minutes(mins);
         json!({
             "id": id, "subject": "Budget review",
-            "start": crate::calendar::graph_time(start), "end": crate::calendar::graph_time(start + Duration::minutes(30)),
+            "start": crate::graph::graph_time(start), "end": crate::graph::graph_time(start + Duration::minutes(30)),
             "attendees": (0..attendees).map(|i| json!({ "emailAddress": { "name": format!("P{i}"), "address": format!("p{i}@x.org") } })).collect::<Vec<_>>(),
         })
     }

@@ -369,7 +369,7 @@ pub(crate) fn serve_main(mut app: App, web: &lyra_web::Settings, rt: &tokio::run
     let mut web = web.clone();
     web.entra.secret = secrets::token("entra");
     // Calendars sign in with the same Microsoft app.
-    calendar::configure(web.entra.clone());
+    graph::configure(web.entra.clone());
     let hub = match lyra_web::Hub::start(rt, &web, &dir, tx) {
         Ok(h) => h,
         Err(e) => {

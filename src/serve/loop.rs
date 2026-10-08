@@ -171,9 +171,9 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     everyone = true;
                 }
                 Inbound::Connected { user, service, token, scope } => {
-                    crate::calendar::forget_access(&user);
-                    match crate::secrets::set_token_for(&service, &token, &user).and_then(|_| crate::calendar::keep_scope(&user, &scope)) {
-                        Ok(()) if user == convs[0].app.owner => convs[0].app.log(Level::Info, format!("your Outlook is connected ({})", crate::calendar::granted_text(&user))),
+                    crate::graph::forget_access(&user);
+                    match crate::secrets::set_token_for(&service, &token, &user).and_then(|_| crate::graph::keep_scope(&user, &scope)) {
+                        Ok(()) if user == convs[0].app.owner => convs[0].app.log(Level::Info, format!("your Outlook is connected ({})", crate::graph::granted_text(&user))),
                         Ok(()) => {}
                         Err(e) => convs[0].app.log(Level::Error, format!("couldn't keep a calendar connection: {e}")),
                     }
@@ -661,7 +661,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         if last_plan.elapsed() >= Duration::from_secs(15 * 60) && crate::planner::settings().enabled && crate::planner::settings().working_now(chrono::Local::now()) {
             last_plan = Instant::now();
             for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id) {
-                if planning.contains(&u) || !crate::calendar::connected_for(&u) || !crate::pmi::configured_for(&u) {
+                if planning.contains(&u) || !crate::graph::connected_for(&u) || !crate::pmi::configured_for(&u) {
                     continue;
                 }
                 planning.insert(u.clone());
@@ -696,7 +696,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             let mail_due = pro_round % 2 == 1;
             let (url, model) = (format!("{}/chat/completions", convs[0].app.base_url.trim_end_matches('/')), convs[0].app.model.clone());
             for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id) {
-                if pro_busy.contains(&u) || !crate::calendar::connected_for(&u) {
+                if pro_busy.contains(&u) || !crate::graph::connected_for(&u) {
                     continue;
                 }
                 pro_busy.insert(u.clone());
@@ -711,7 +711,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             last_recap_look = Instant::now();
             let now = chrono::Local::now();
             for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id) {
-                if recapping.contains(&u) || !(crate::calendar::connected_for(&u) || crate::pmi::configured_for(&u)) || !crate::recap::due(&u, now) {
+                if recapping.contains(&u) || !(crate::graph::connected_for(&u) || crate::pmi::configured_for(&u)) || !crate::recap::due(&u, now) {
                     continue;
                 }
                 recapping.insert(u.clone());
@@ -829,7 +829,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     .into_iter()
                     .filter(|u| u.status == lyra_web::Status::Active && u.id != owner)
                     .map(|u| u.id)
-                    .filter(|u| pmi.get(u).is_some_and(|p| p.state.at.is_some()) || crate::calendar::connected_for(u))
+                    .filter(|u| pmi.get(u).is_some_and(|p| p.state.at.is_some()) || crate::graph::connected_for(u))
                     .map(|u| {
                         let since = crate::briefing::window_start(crate::briefing::last_for(&u).map(|b| b.at), at);
                         // Their tasks, routines and goals.
@@ -842,7 +842,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 std::thread::spawn(move || {
                     for (user, mut inputs) in std::iter::once((owner, inputs)).chain(others) {
                         // Their calendar today, when they've connected it.
-                        if crate::calendar::connected_for(&user) {
+                        if crate::graph::connected_for(&user) {
                             inputs.calendar = crate::acting::run(&user, crate::calendar::today).ok();
                         }
                         if crate::teams::connected_for(&user) {

@@ -94,7 +94,7 @@ fn time(v: &Value) -> String {
 pub fn gather(now: DateTime<Utc>) -> Recap {
     let user = crate::acting::current();
     let mut parts = Vec::new();
-    if crate::calendar::connected_for(&user) {
+    if crate::graph::connected_for(&user) {
         // Today's meetings.
         if let Ok(v) = crate::calendar::call("cal_agenda", &json!({ "when": "today" })) {
             let lines: Vec<String> = v["events"].as_array().into_iter().flatten().filter(|e| e["all_day"] != true).map(|e| format!("{} {}", time(&e["start"]).rsplit(' ').next().unwrap_or(""), time(&e["title"]))).collect();

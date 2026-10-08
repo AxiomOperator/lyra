@@ -102,42 +102,6 @@ fn search(s: &Settings, args: &Value) -> Result<Value, String> {
     Ok(results(&body, count))
 }
 
-/// A page as text: scripts, styles and navigation dropped, links kept short.
-pub fn page_text(html: &str, max: usize) -> String {
-    // Drop what is never content before converting.
-    let mut cleaned = html.to_string();
-    for tag in ["script", "style", "noscript", "svg", "nav", "footer", "header", "form", "iframe"] {
-        loop {
-            let lower = cleaned.to_lowercase();
-            let Some(start) = lower.find(&format!("<{tag}")) else { break };
-            let close = format!("</{tag}>");
-            let end = lower[start..].find(&close).map_or(cleaned.len(), |e| start + e + close.len());
-            cleaned.replace_range(start..end, " ");
-        }
-    }
-    let text = html2text::from_read(cleaned.as_bytes(), 100).unwrap_or_default();
-    let mut out = String::new();
-    let mut blank = 0;
-    for line in text.lines() {
-        let line = line.trim_end();
-        if line.trim().is_empty() {
-            blank += 1;
-            if blank > 1 {
-                continue;
-            }
-        } else {
-            blank = 0;
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-    if out.chars().count() > max {
-        let kept: String = out.chars().take(max).collect();
-        return format!("{kept}\n… (page cut at {max} characters)");
-    }
-    out
-}
-
 fn fetch(s: &Settings, args: &Value) -> Result<Value, String> {
     let url = args["url"].as_str().ok_or("url is required")?.trim();
     if !(url.starts_with("http://") || url.starts_with("https://")) {
@@ -157,7 +121,7 @@ fn fetch(s: &Settings, args: &Value) -> Result<Value, String> {
     }
     let body = String::from_utf8_lossy(&bytes);
     let text = if kind.contains("html") || body.trim_start().starts_with('<') {
-        page_text(&body, s.fetch_max_chars)
+        crate::text::page_text(&body, s.fetch_max_chars)
     } else if kind.starts_with("text/") || kind.contains("json") || kind.contains("xml") {
         body.chars().take(s.fetch_max_chars).collect()
     } else {
@@ -201,16 +165,5 @@ mod tests {
         assert_eq!(r["results"][0]["title"], "Fedora Linux");
         let none = results(&json!({ "results": [], "unresponsive_engines": [["brave", "too many requests"]] }), 5);
         assert!(none["note"].as_str().unwrap().contains("brave"), "says why nothing came back");
-    }
-
-    #[test]
-    fn pages_read_as_text_without_scripts_or_menus() {
-        let html = r#"<html><head><title>T</title><style>.x{color:red}</style><script>alert(1)</script></head>
-            <body><nav><a href="/">Home</a> <a href="/about">About</a></nav>
-            <h1>Release notes</h1><p>Fedora 43 ships <b>GNOME 49</b>.</p><footer>© 2026</footer></body></html>"#;
-        let text = page_text(html, 10_000);
-        assert!(text.contains("Release notes") && text.contains("GNOME 49"), "{text}");
-        assert!(!text.contains("alert(1)") && !text.contains("color:red") && !text.contains("About") && !text.contains("2026"), "{text}");
-        assert!(page_text(&"<p>word </p>".repeat(5000), 100).contains("page cut at 100"));
     }
 }

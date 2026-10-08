@@ -70,7 +70,7 @@ pub fn email_of(who: &str) -> Option<(String, String)> {
     if w.contains('@') {
         return Some((w.to_string(), w.to_string()));
     }
-    if crate::calendar::connected_for(&crate::acting::current()) {
+    if crate::graph::connected_for(&crate::acting::current()) {
         let now = Utc::now();
         if let Ok(events) = crate::calendar::events(now - Duration::days(45), now + Duration::days(21))
             && let Some(a) = events.iter().flat_map(|e| e["attendees"].as_array().into_iter().flatten()).find(|a| matches(a, w))
@@ -123,12 +123,12 @@ pub fn call(name: &str, args: &Value, mem: Option<&crate::mem::Mem>) -> Result<V
             }
         }
     }
-    if crate::calendar::connected_for(&user) {
+    if crate::graph::connected_for(&user) {
         let now = Utc::now();
         if let Ok(events) = crate::calendar::events(now - Duration::days(21), now + Duration::days(21)) {
             let with: Vec<&Value> = events.iter().filter(|e| with_them(e, &who)).collect();
-            let (past, next): (Vec<&Value>, Vec<&Value>) = with.into_iter().partition(|e| crate::calendar::utc(&e["start"]).is_some_and(|s| s < now));
-            let show = |e: &&Value| json!({ "title": e["subject"], "when": crate::calendar::utc(&e["start"]).map(|t| t.with_timezone(&chrono::Local).format("%a %b %-d %H:%M").to_string()) });
+            let (past, next): (Vec<&Value>, Vec<&Value>) = with.into_iter().partition(|e| crate::graph::utc(&e["start"]).is_some_and(|s| s < now));
+            let show = |e: &&Value| json!({ "title": e["subject"], "when": crate::graph::utc(&e["start"]).map(|t| t.with_timezone(&chrono::Local).format("%a %b %-d %H:%M").to_string()) });
             out["last_meetings"] = json!(past.iter().rev().take(3).map(show).collect::<Vec<_>>());
             out["next_meetings"] = json!(next.iter().take(3).map(show).collect::<Vec<_>>());
             if let Some(a) = events.iter().flat_map(|e| e["attendees"].as_array().into_iter().flatten()).find(|a| matches(a, &who)) {

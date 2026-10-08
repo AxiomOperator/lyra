@@ -7,7 +7,7 @@ use chrono::{DateTime, Local, Utc};
 use lyra_capabilities::{Capability, CapabilityKind, RiskLevel};
 use serde_json::{Value, json};
 
-use crate::calendar::{graph, graph_with};
+use crate::graph::{graph, graph_with};
 use crate::caps::Ask;
 
 /// Bodies as plain text, times in UTC.
@@ -16,15 +16,15 @@ const SELECT: &str = "subject,from,toRecipients,ccRecipients,receivedDateTime,bo
 
 /// Mail is connected for this person (their Outlook connection includes it).
 pub fn connected_for(user: &str) -> bool {
-    crate::calendar::connected_for(user) && crate::calendar::has(user, "Mail.ReadWrite")
+    crate::graph::connected_for(user) && crate::graph::has(user, "Mail.ReadWrite")
 }
 
 fn ready() -> Result<(), String> {
     let user = crate::acting::current();
-    if !crate::calendar::connected_for(&user) {
+    if !crate::graph::connected_for(&user) {
         return Err("your Outlook isn't connected: in the app, More → Outlook → Connect".into());
     }
-    if !crate::calendar::has(&user, "Mail.ReadWrite") {
+    if !crate::graph::has(&user, "Mail.ReadWrite") {
         return Err("lyra can't see your mail yet: connect Outlook again (More → Outlook) to add mail".into());
     }
     Ok(())

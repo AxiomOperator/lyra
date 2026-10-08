@@ -151,34 +151,36 @@ pub fn describe(name: &str, h: &Value) -> String {
     out.join("\n")
 }
 
-/// Problems already reported, and machines gone quiet.
+/// Problems already reported, and machines gone quiet (`alerts/health.json`:
+/// `problem:<machine>:<key>` and `offline:<machine>`).
 #[derive(Default)]
 pub struct Alerts {
-    active: HashMap<String, HashMap<String, String>>,
+    told: crate::alerts::Ledger,
+    /// Since when each paired machine has been offline (not kept: a restart starts over).
     offline: HashMap<String, Instant>,
-    offline_told: HashSet<String>,
-    /// Where what's been told is kept, so a restart doesn't tell it again.
-    path: Option<std::path::PathBuf>,
 }
 
-#[derive(serde::Serialize, Deserialize, Default)]
-struct Told {
+/// The file as it was before `alerts::Ledger`.
+#[derive(Deserialize, Default)]
+struct Legacy {
+    #[serde(default)]
     active: HashMap<String, HashMap<String, String>>,
+    #[serde(default)]
     offline_told: HashSet<String>,
+}
+
+fn legacy(v: Value) -> HashMap<String, crate::alerts::Told> {
+    let old: Legacy = serde_json::from_value(v).unwrap_or_default();
+    let now = chrono::Utc::now();
+    let told = |text: &str| crate::alerts::Told { text: text.to_string(), since: now };
+    let problems = old.active.iter().flat_map(|(m, ps)| ps.iter().map(move |(k, t)| (format!("problem:{m}:{k}"), told(t))));
+    problems.chain(old.offline_told.iter().map(|m| (format!("offline:{m}"), told("offline")))).collect()
 }
 
 impl Alerts {
     /// What was told before a restart (`~/.lyra/alerts/health.json`).
     pub fn load() -> Alerts {
-        let path = crate::config::home().map(|h| h.join("alerts").join("health.json"));
-        let told: Told = path.as_ref().map(|p| crate::store::read_json(p)).unwrap_or_default();
-        Alerts { active: told.active, offline_told: told.offline_told, offline: HashMap::new(), path }
-    }
-
-    fn save(&self) {
-        let Some(path) = &self.path else { return };
-        let told = Told { active: self.active.clone(), offline_told: self.offline_told.clone() };
-        let _ = crate::store::write_json(path, &told);
+        Alerts { told: crate::alerts::Ledger::load("health", legacy), offline: HashMap::new() }
     }
 }
 
@@ -195,17 +197,24 @@ pub struct Change {
 impl Alerts {
     /// A new report from `machine`.
     pub fn report(&mut self, machine: &str, found: Vec<Problem>) -> Change {
-        let known = self.active.entry(machine.to_lowercase()).or_default();
-        let now: HashMap<String, String> = found.into_iter().map(|p| (p.key, p.text)).collect();
-        let new_keys: Vec<(String, String)> = now.iter().filter(|(k, _)| !known.contains_key(*k)).map(|(k, t)| (k.clone(), t.clone())).collect();
-        let cleared_keys: Vec<String> = known.keys().filter(|k| !now.contains_key(*k)).cloned().collect();
-        let new: Vec<String> = new_keys.iter().map(|(_, t)| t.clone()).collect();
-        let cleared: Vec<String> = known.iter().filter(|(k, _)| !now.contains_key(*k)).map(|(_, t)| t.clone()).collect();
-        *known = now;
-        if !new.is_empty() || !cleared.is_empty() {
-            self.save();
+        let prefix = format!("problem:{}:", machine.to_lowercase());
+        let known = self.told.under(&prefix);
+        let at = chrono::Utc::now();
+        let mut change = Change::default();
+        for p in &found {
+            if self.told.raise(&format!("{prefix}{}", p.key), &p.text, at) {
+                change.new.push(p.text.clone());
+                change.new_keys.push((p.key.clone(), p.text.clone()));
+            }
         }
-        Change { new, cleared, new_keys, cleared_keys }
+        for key in known.keys().filter(|k| !found.iter().any(|p| &p.key == *k)) {
+            if let Some(t) = self.told.clear(&format!("{prefix}{key}")) {
+                change.cleared.push(t.text);
+                change.cleared_keys.push(key.clone());
+            }
+        }
+        self.told.save();
+        change
     }
 
     /// Machines connected now; returns (gone quiet too long, back after that).
@@ -215,7 +224,7 @@ impl Alerts {
         for m in paired {
             if is_online(m) {
                 self.offline.remove(m);
-                if self.offline_told.remove(m) {
+                if self.told.clear(&format!("offline:{m}")).is_some() {
                     back.push(m.clone());
                 }
             } else {
@@ -224,18 +233,18 @@ impl Alerts {
         }
         // Unpaired machines are forgotten.
         self.offline.retain(|m, _| paired.contains(m));
-        self.offline_told.retain(|m| paired.contains(m));
+        self.told.retain(|k| k.strip_prefix("offline:").is_none_or(|m| paired.iter().any(|p| p == m)));
         let mut gone = Vec::new();
         if !quiet.is_zero() {
+            let at = chrono::Utc::now();
             for (m, since) in &self.offline {
-                if since.elapsed() >= quiet && self.offline_told.insert(m.clone()) {
+                if since.elapsed() >= quiet && self.told.raise(&format!("offline:{m}"), "offline", at) {
                     gone.push(m.clone());
                 }
             }
         }
-        if !gone.is_empty() || !back.is_empty() {
-            self.save();
-        }
+        gone.sort();
+        self.told.save();
         (gone, back)
     }
 }
@@ -285,13 +294,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("health.json");
         let s = Settings::default();
-        let mut a = Alerts { path: Some(path.clone()), ..Alerts::default() };
+        let mut a = Alerts { told: crate::alerts::Ledger::at(path.clone(), legacy), ..Alerts::default() };
         assert_eq!(a.report("desktop", problems(&report(50, &["x.mount"]), &s)).new.len(), 2, "the failed unit and the high load");
         // lyra restarts: the same problem isn't news.
-        let told: Told = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let mut again = Alerts { active: told.active, offline_told: told.offline_told, path: Some(path.clone()), ..Alerts::default() };
+        let mut again = Alerts { told: crate::alerts::Ledger::at(path.clone(), legacy), ..Alerts::default() };
         assert!(again.report("desktop", problems(&report(50, &["x.mount"]), &s)).new.is_empty());
         assert_eq!(again.report("desktop", problems(&report(50, &[]), &s)).cleared.len(), 1, "and it's still told when it clears");
+        // A file from before the ledger is read too: nothing is told twice after an update.
+        std::fs::write(&path, r#"{"active":{"desktop":{"unit:x.mount":"x.mount failed"}},"offline_told":["nas"]}"#).unwrap();
+        let mut old = Alerts { told: crate::alerts::Ledger::at(path.clone(), legacy), ..Alerts::default() };
+        assert!(old.report("desktop", problems(&report(50, &["x.mount"]), &s)).new.iter().all(|t| !t.contains("x.mount")));
+        let paired = vec!["nas".to_string()];
+        assert_eq!(old.connected(&paired, &["nas".into()], Duration::from_secs(60)), (vec![], vec!["nas".to_string()]), "nas was told offline: back");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

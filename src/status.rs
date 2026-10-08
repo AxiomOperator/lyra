@@ -718,23 +718,21 @@ pub fn worker(dir: PathBuf) -> (mpsc::Sender<Inputs>, mpsc::Receiver<Result<Boar
 /// Down twice in a row: told once; told again when it's back.
 #[derive(Default)]
 pub struct Alerts {
+    /// Checks down in a row (not kept: a restart starts over).
     streak: HashMap<String, u32>,
-    told: HashMap<String, DateTime<Utc>>,
-    /// Where what's been told is kept, so a restart doesn't tell it again.
-    path: Option<PathBuf>,
+    /// What's been told, by check id (`alerts/status.json`).
+    told: crate::alerts::Ledger,
+}
+
+/// The file as it was before `alerts::Ledger`: check id → since when.
+fn legacy(v: serde_json::Value) -> HashMap<String, crate::alerts::Told> {
+    serde_json::from_value::<HashMap<String, DateTime<Utc>>>(v).unwrap_or_default().into_iter().map(|(id, since)| (id, crate::alerts::Told { text: "down".into(), since })).collect()
 }
 
 impl Alerts {
     /// What was told before a restart (`~/.lyra/alerts/status.json`).
     pub fn load() -> Alerts {
-        let path = crate::config::home().map(|h| h.join("alerts").join("status.json"));
-        let told = path.as_ref().map(|p| crate::store::read_json(p)).unwrap_or_default();
-        Alerts { streak: HashMap::new(), told, path }
-    }
-
-    fn save(&self) {
-        let Some(path) = &self.path else { return };
-        let _ = crate::store::write_json(path, &self.told);
+        Alerts { streak: HashMap::new(), told: crate::alerts::Ledger::load("status", legacy) }
     }
 }
 
@@ -750,21 +748,20 @@ pub fn alerts(a: &mut Alerts, board: &Board, s: &Settings) -> Vec<(String, bool,
         if p.state == State::Down {
             let n = a.streak.entry(p.id.clone()).or_insert(0);
             *n += 1;
-            if *n == 2 && !a.told.contains_key(&p.id) {
-                a.told.insert(p.id.clone(), board.at);
-                out.push((p.id.clone(), true, format!("{} is down: {}", p.name, p.detail)));
+            if *n >= 2 && !a.told.is_told(&p.id) {
+                let text = format!("{} is down: {}", p.name, p.detail);
+                a.told.raise(&p.id, &text, board.at);
+                out.push((p.id.clone(), true, text));
             }
         } else {
             a.streak.remove(&p.id);
-            if let Some(since) = a.told.remove(&p.id) {
-                let mins = (board.at - since).num_minutes().max(1);
+            if let Some(t) = a.told.clear(&p.id) {
+                let mins = (board.at - t.since).num_minutes().max(1);
                 out.push((p.id.clone(), false, format!("{} is back after {mins} min", p.name)));
             }
         }
     }
-    if !out.is_empty() {
-        a.save();
-    }
+    a.told.save();
     out
 }
 
