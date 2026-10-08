@@ -43,6 +43,7 @@ mod style;
 mod status;
 mod teams;
 mod tools;
+mod qa;
 mod recap;
 mod usage;
 mod watches;

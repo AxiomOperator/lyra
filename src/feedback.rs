@@ -16,7 +16,7 @@ use lyra_capabilities::{Capability, CapabilityKind, RiskLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub const KINDS: &[&str] = &["bug", "feature"];
+pub const KINDS: &[&str] = &["bug", "feature", "question"];
 pub const STATUSES: &[&str] = &["new", "reviewing", "planned", "done", "wontdo"];
 pub const PRIORITIES: &[&str] = &["low", "normal", "high", "urgent"];
 pub const SEVERITIES: &[&str] = &["minor", "annoying", "blocking"];
@@ -102,6 +102,9 @@ pub struct Analysis {
     /// What to ask the sender.
     #[serde(default)]
     pub questions: Vec<String>,
+    /// Questions: lyra's draft answer, for an admin to edit and approve into Q&A.
+    #[serde(default)]
+    pub answer: Option<String>,
     pub at: DateTime<Utc>,
     #[serde(default)]
     pub error: Option<String>,
@@ -132,13 +135,15 @@ fn background(text: &str) -> String {
 
 const ANALYST: &str = "You help the admins of lyra, a self-hosted AI assistant (a Rust server with a web app, \
 memory, skills, agents, plans, machines, Outlook and Teams, PMI tasks), triage what users send them. \
-Read the bug report or feature request and lyra's documentation excerpts, then answer with only a JSON object:
+Read the bug report, feature request or question and lyra's documentation excerpts, then answer with only a JSON object:
 {\"summary\": \"what they're reporting or asking for, in two or three plain sentences\",
  \"cause\": \"bugs only: what's most likely behind it, or null\",
  \"approach\": [\"bugs: possible fixes, most likely first; features: implementation steps, in order\"],
  \"effort\": \"small | medium | large\",
  \"area\": \"the part of lyra it's about, in a few words\",
- \"questions\": [\"what to ask the sender if something's unclear (may be empty)\"]}
+ \"questions\": [\"what to ask the sender if something's unclear (may be empty)\"],
+ \"answer\": \"questions only: a draft answer for the sender, from the documentation: clear, friendly, a few short paragraphs or steps; say plainly if lyra can't do it yet; else null\"}
+For a question, \"approach\" may be empty.
 Be concrete and brief: 2 to 5 approach items. Say what you'd check or change, not code. Don't invent features lyra doesn't have.";
 
 /// Ask the model about it (blocking): the item, what's attached, lyra's docs.
@@ -149,7 +154,7 @@ fn analyze_now(item: &Item, seen: &[String]) -> Analysis {
     };
     let mut prompt = format!(
         "{}: {}\n\n{}\n\nFrom: {} · lyra {} · page: {}{}\n",
-        if item.kind == "bug" { "Bug report" } else { "Feature request" },
+        kind_word(&item.kind),
         item.title,
         if item.details.trim().is_empty() { "(no details)" } else { item.details.trim() },
         item.name,
@@ -182,6 +187,7 @@ fn analyze_now(item: &Item, seen: &[String]) -> Analysis {
                 effort: text("effort").map(|e| e.to_lowercase()).filter(|e| ["small", "medium", "large"].contains(&e.as_str())),
                 area: text("area"),
                 questions: list("questions"),
+                answer: text("answer").filter(|_| item.kind == "question"),
                 at: now,
                 error: None,
             }
@@ -222,12 +228,12 @@ pub fn analyze(id: u64, user: &str, files: Vec<(String, std::path::PathBuf)>) {
     });
 }
 
-const ENHANCER: &str = "You help someone write a clearer bug report or feature request for lyra, a self-hosted \
+const ENHANCER: &str = "You help someone write a clearer bug report, feature request or question for lyra, a self-hosted \
 AI assistant. Rewrite their description so it's clear and well organised, keeping their meaning and their \
 facts exactly. Never invent details they didn't give: no steps, errors, devices, versions or numbers of your own. \
 Where something useful is missing, add a short line in square brackets saying what to add, e.g. [Which page were \
 you on?]. Bugs: what they did, what happened, what they expected. Features: what they'd like, what for, how they \
-picture it. Plain sentences or short lists; no headings, no greeting, no sign-off. Answer with only the rewritten description.";
+picture it. Questions: what they want to know and what it's for. Plain sentences or short lists; no headings, no greeting, no sign-off. Answer with only the rewritten description.";
 
 /// A clearer draft of what someone is writing (the form's Enhance button), by the chat model.
 pub fn enhance(kind: &str, title: &str, details: &str) -> Result<String, String> {
@@ -238,7 +244,11 @@ pub fn enhance(kind: &str, title: &str, details: &str) -> Result<String, String>
     let (url, model) = MODEL.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("lyra's model isn't set up")?;
     let prompt = format!(
         "{}{}\n\nTheir description:\n{}",
-        if kind == "bug" { "A bug report" } else { "A feature request" },
+        match kind {
+            "bug" => "A bug report",
+            "question" => "A question",
+            _ => "A feature request",
+        },
         if title.trim().is_empty() { String::new() } else { format!(" titled \"{}\"", title.trim()) },
         details.chars().take(6000).collect::<String>()
     );
@@ -328,7 +338,11 @@ fn save(all: &[Item]) -> Result<(), String> {
 }
 
 fn kind_word(k: &str) -> &'static str {
-    if k == "bug" { "Bug report" } else { "Feature request" }
+    match k {
+        "bug" => "Bug report",
+        "question" => "Question",
+        _ => "Feature request",
+    }
 }
 
 pub fn status_word(s: &str) -> &'static str {
@@ -346,7 +360,7 @@ pub fn status_word(s: &str) -> &'static str {
 pub fn submit(who: &Who, kind: &str, title: &str, details: &str, severity: Option<&str>, files: Vec<File>, page: &str) -> Result<Item, String> {
     let kind = kind.trim().to_lowercase();
     if !KINDS.contains(&kind.as_str()) {
-        return Err("a bug report or a feature request?".into());
+        return Err("a bug report, a feature request or a question?".into());
     }
     let title = title.trim();
     if title.len() < 3 {
@@ -498,6 +512,31 @@ pub fn update(who: &Who, id: u64, status: Option<&str>, priority: Option<&str>, 
     Ok(out)
 }
 
+/// An admin answered a question in Q&A: it's done, the answer goes in its
+/// thread, and the sender hears once.
+pub fn answered(who: &Who, id: u64, answer: &str, qa: u64) -> Result<Item, String> {
+    if !who.admin {
+        return Err("only an admin answers in Q&A".into());
+    }
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = load();
+    let item = find(&mut all, id, who)?;
+    let now = Utc::now();
+    item.comments.push(Comment { by: who.user.clone(), name: who.name.clone(), admin: true, text: format!("{} → Done · answered in Q&A #{qa}", status_word(&item.status)), at: now, system: true });
+    item.comments.push(Comment { by: who.user.clone(), name: who.name.clone(), admin: true, text: answer.trim().to_string(), at: now, system: false });
+    item.status = "done".into();
+    item.updated = now;
+    if item.user != who.user {
+        item.news_for_sender = true;
+    }
+    let out = item.clone();
+    save(&all)?;
+    if out.user != who.user {
+        notify(Notice { to_admins: false, user: Some(out.user.clone()), title: format!("Your question #{} was answered", out.id), body: out.title.clone() });
+    }
+    Ok(out)
+}
+
 /// How many have news for them (the rail's badge): new ones for admins,
 /// replies and status changes on their own for everyone.
 pub fn badge(who: &Who) -> usize {
@@ -510,13 +549,13 @@ pub fn capabilities() -> Vec<Capability> {
     let mut c = Capability::new(
         "feedback_submit",
         CapabilityKind::NativeTool,
-        "Send the admins a bug report or a feature request for lyra, for the user: a short title and the details (what happened and what they expected, or what they'd like and why). They follow it on the Feedback page.",
+        "Send the admins a bug report, a feature request or a question about lyra, for the user: a short title and the details (what happened and what they expected, or what they'd like and why). They follow it on the Feedback page.",
         RiskLevel::LowWrite,
     );
     c.input_schema = json!({
         "type": "object",
         "properties": {
-            "kind": { "type": "string", "enum": ["bug", "feature"] },
+            "kind": { "type": "string", "enum": ["bug", "feature", "question"] },
             "title": { "type": "string" },
             "details": { "type": "string" },
             "severity": { "type": "string", "enum": ["minor", "annoying", "blocking"], "description": "Bugs: how bad it is for them." },

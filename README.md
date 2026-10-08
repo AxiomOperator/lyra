@@ -1233,7 +1233,7 @@ It exits 0 when all is well and 1 on errors. It needs only Python 3.11+.
 ### Feedback: bug reports and feature requests
 
 The app's **Feedback** page (in the rail, above What's new) has two parts:
-- **Send one:** a bug report (how bad it is, with screenshots or files) or a feature request. lyra adds the version and the page it came from.
+- **Send one:** a bug report (how bad it is, with screenshots or files), a feature request or a question. lyra adds the version and the page it came from.
 - **Track:** where each one stands. Members see their own; admins see everyone's.
   - Status moves through New → Reviewing → Planned → Done (with the version it shipped in) or Won't do.
   - Admins set the priority (low → urgent).
@@ -1248,6 +1248,16 @@ The app's **Feedback** page (in the rail, above What's new) has two parts:
 - **Admins** also see the likely cause and possible fixes (bugs), or a possible implementation and its size (features), plus questions worth asking the sender. Tapping a question puts it in the reply box, and ↻ reads the submission again after replies.
 
 You can also tell lyra "report a bug: …" or "I'd like lyra to …" (`feedback_submit`), and `/feedback` lists them. Everything is kept in `~/.lyra/feedback/feedback.json`. Files are uploads, so only the sender and the admins can open them.
+
+### Q&A
+
+Questions sent from the Feedback page get an answer drafted by lyra, from its documentation. Admins see the draft; the sender sees only the summary. An admin opens **Promote to Q&A**, edits the question and answer, and chooses **Approve and publish**. That:
+- adds it to **Q&A**
+- marks the question Done
+- puts the answer in its thread
+- tells the sender once
+
+The **Q&A** page (in the rail, above Feedback) is for everyone: every question and answer, with search. Admins can add entries directly, edit them and remove them. lyra checks Q&A (`qa_search`) when someone asks how to do something with lyra. It's kept in `~/.lyra/feedback/qa.json`.
 
 ### What's new and versions
 

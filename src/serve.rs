@@ -655,7 +655,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "watches" | "everything" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze" | "feedback_enhance") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "watches" | "everything" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze" | "feedback_enhance" | "qa" | "qa_put" | "qa_remove" | "qa_promote") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -1692,6 +1692,27 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         "recap" => crate::recap::last_for(&app.owner).map_or(Value::Null, |r| json!(r)),
         "changelog" => json!({ "version": crate::changelog::version(), "releases": crate::changelog::all() }),
         // Feedback: everyone sends and follows their own; admins see and move everyone's.
+        // Q&A: everyone reads it; admins add, change, remove and promote questions into it.
+        "qa" | "qa_put" | "qa_remove" | "qa_promote" => {
+            let who = crate::feedback::Who { user: app.owner.clone(), name: hub.users().get(&app.owner).map_or_else(|| "the owner".to_string(), |u| u.name), admin: app.admin };
+            let id = arg["id"].as_u64().unwrap_or(0);
+            let s = |k: &str| arg[k].as_str().unwrap_or("").to_string();
+            let done = match what {
+                "qa_put" => crate::qa::put(&who, id, &s("question"), &s("answer"), None, None).map(|e| json!({ "ok": true, "id": e.id })),
+                "qa_remove" => crate::qa::remove(&who, id).map(|_| json!({ "ok": true })),
+                "qa_promote" => {
+                    // A Feedback question, with the admin's approved answer.
+                    let asked = crate::feedback::list(&who).into_iter().find(|i| i.id == id && i.kind == "question");
+                    match asked {
+                        None => Err(format!("no question #{id}")),
+                        Some(q) => crate::qa::put(&who, 0, &s("question"), &s("answer"), Some(id), Some(q.name.clone()))
+                            .and_then(|e| crate::feedback::answered(&who, id, &s("answer"), e.id).map(|_| json!({ "ok": true, "qa": e.id }))),
+                    }
+                }
+                _ => Ok(json!({ "admin": who.admin, "entries": crate::qa::all() })),
+            };
+            done.unwrap_or_else(|e| json!({ "error": e }))
+        }
         "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze" => {
             let who = crate::feedback::Who { user: app.owner.clone(), name: hub.users().get(&app.owner).map_or_else(|| "the owner".to_string(), |u| u.name), admin: app.admin };
             let id = arg["id"].as_u64().unwrap_or(0);

@@ -581,6 +581,7 @@ impl Caps {
         caps.extend(crate::people::capabilities());
         // Bug reports and feature requests to the admins.
         caps.extend(crate::feedback::capabilities());
+        caps.extend(crate::qa::capabilities());
         // "Tell me when …" (mail, PMI, Teams).
         if crate::calendar::available() || crate::pmi::anyone() {
             caps.extend(crate::watches::capabilities());
@@ -891,6 +892,7 @@ impl Caps {
             _ if c.source == "watches" => crate::watches::call(&c.name, &args),
             _ if c.source == "meetings" => crate::meetings::call(&c.name, &args),
             _ if c.source == "feedback" => crate::feedback::call(&c.name, &args),
+            _ if c.source == "qa" => crate::qa::call(&c.name, &args),
             // Teams and files of whoever this turn is for (read-only; attaching only touches their draft).
             _ if c.source == "teams" => crate::teams::call(&c.name, &args),
             _ if c.source == "files" => crate::files::call(&c.name, &args),

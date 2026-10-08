@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.25.0.141",
+    "date": "2026-10-08",
+    "title": "Questions and Q&A",
+    "new": [
+      "Ask a question from the Feedback page, next to bug reports and feature requests.",
+      "lyra drafts an answer from its documentation; an admin edits it and publishes it to Q&A, and you're told your question was answered (the answer is in its thread too).",
+      "A Q&A page for everyone (in the rail, above Feedback): the questions people asked and their answers, with search. Admins can add, change and remove entries.",
+      "lyra looks in Q&A when you ask it how to do something with lyra."
+    ]
+  },
+  {
     "version": "0.24.0.140",
     "date": "2026-10-08",
     "title": "Enhance on the feedback form",

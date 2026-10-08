@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { Bug, ChevronDown, Lightbulb, Loader2, Paperclip, RefreshCw, Send, Sparkles, X } from "lucide-react";
+import { Bug, ChevronDown, CircleHelp, Lightbulb, Loader2, Paperclip, RefreshCw, Send, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { upload } from "./chat";
 import { SentAttachments } from "./chat-parts";
@@ -28,7 +28,7 @@ interface Comment {
 }
 interface Item {
   id: number;
-  kind: "bug" | "feature";
+  kind: "bug" | "feature" | "question";
   title: string;
   details: string;
   severity: string | null;
@@ -46,7 +46,7 @@ interface Item {
   news_for_sender: boolean;
   news_for_admins: boolean;
   /** lyra's read: everyone gets the summary; admins the rest. */
-  analysis?: { summary: string; cause?: string | null; approach?: string[]; effort?: string | null; area?: string | null; questions?: string[]; at: string; error?: string | null } | null;
+  analysis?: { summary: string; cause?: string | null; approach?: string[]; effort?: string | null; area?: string | null; questions?: string[]; answer?: string | null; at: string; error?: string | null } | null;
   analyzing?: boolean;
 }
 interface Data {
@@ -126,7 +126,7 @@ function SubmitCard({ sent, page }: { sent: () => void; page: string }) {
     <Card className="gap-3 py-4">
       <CardHeader className="px-4">
         <CardTitle className="text-base">Send one</CardTitle>
-        <CardDescription>Something broken, or something you'd like lyra to do. The admins see it; you follow it below.</CardDescription>
+        <CardDescription>Something broken, something you'd like lyra to do, or a question. The admins see it; you follow it below.</CardDescription>
       </CardHeader>
       <CardContent className="px-4">
         <form onSubmit={submit} className="space-y-3">
@@ -134,17 +134,18 @@ function SubmitCard({ sent, page }: { sent: () => void; page: string }) {
             options={[
               ["bug", "🐞 Bug report"],
               ["feature", "💡 Feature request"],
+              ["question", "❓ Question"],
             ]}
             value={kind}
             set={setKind}
           />
-          <Input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={140} placeholder={kind === "bug" ? "What's wrong, in a line" : "What you'd like, in a line"} />
+          <Input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={140} placeholder={kind === "bug" ? "What's wrong, in a line" : kind === "question" ? "Your question, in a line" : "What you'd like, in a line"} />
           <div className="space-y-1.5">
             <Textarea
               value={details}
               onChange={(e) => setDetails(e.target.value)}
               rows={5}
-              placeholder={kind === "bug" ? "What you did, what happened, what you expected. Steps help." : "What you'd use it for, and how you picture it working."}
+              placeholder={kind === "bug" ? "What you did, what happened, what you expected. Steps help." : kind === "question" ? "More about what you'd like to know, and what it's for." : "What you'd use it for, and how you picture it working."}
             />
             <div className="flex items-center gap-2">
               <Button type="button" size="sm" variant="outline" className="border-primary/40 text-primary hover:text-primary" disabled={enhancing || details.trim().length < 5} onClick={() => void enhance()} title="lyra rewrites it more clearly, keeping what you said">
@@ -243,11 +244,14 @@ function ItemCard({ i, admin, me, version, reload }: { i: Item; admin: boolean; 
     reload();
   };
   const st = STATUS[i.status] ?? STATUS.new;
-  const Icon = i.kind === "bug" ? Bug : Lightbulb;
+  const Icon = i.kind === "bug" ? Bug : i.kind === "question" ? CircleHelp : Lightbulb;
+  // Promote a question into Q&A: lyra's draft, edited and approved by an admin.
+  const [promoting, setPromoting] = useState<{ question: string; answer: string } | null>(null);
+  const [promoteError, setPromoteError] = useState("");
   return (
     <Card className={cn("gap-2 py-3", news && "border-primary/40")}>
       <button type="button" onClick={toggle} className="flex w-full items-start gap-3 px-4 text-left">
-        <Icon className={cn("mt-0.5 size-4 shrink-0", i.kind === "bug" ? "text-red-400" : "text-amber-300")} />
+        <Icon className={cn("mt-0.5 size-4 shrink-0", i.kind === "bug" ? "text-red-400" : i.kind === "question" ? "text-sky-400" : "text-amber-300")} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-mono text-muted-foreground text-xs">#{i.id}</span>
@@ -270,7 +274,7 @@ function ItemCard({ i, admin, me, version, reload }: { i: Item; admin: boolean; 
           {i.details && <p className="whitespace-pre-wrap text-sm">{i.details}</p>}
           <SentAttachments files={i.files} className="justify-start" />
           <p className="text-muted-foreground text-xs">
-            {i.kind === "bug" ? "Bug report" : "Feature request"}
+            {i.kind === "bug" ? "Bug report" : i.kind === "question" ? "Question" : "Feature request"}
             {i.severity && ` · ${i.severity}`} · sent {new Date(i.created).toLocaleString()} · lyra {i.version}
             {i.page && ` · from ${i.page}`}
           </p>
@@ -313,6 +317,12 @@ function ItemCard({ i, admin, me, version, reload }: { i: Item; admin: boolean; 
                         </ol>
                       </div>
                     )}
+                    {admin && i.kind === "question" && i.analysis.answer && (
+                      <div>
+                        <div className="text-muted-foreground text-xs">Draft answer</div>
+                        <p className="whitespace-pre-wrap">{i.analysis.answer}</p>
+                      </div>
+                    )}
                     {!!i.analysis.questions?.length && (
                       <div>
                         <div className="text-muted-foreground text-xs">Worth asking</div>
@@ -331,6 +341,42 @@ function ItemCard({ i, admin, me, version, reload }: { i: Item; admin: boolean; 
                 )}
               </div>
             )
+          )}
+          {/* Admins: a question becomes a Q&A entry everyone can read. */}
+          {admin && i.kind === "question" && i.status !== "done" && (
+            <div className="space-y-2">
+              {promoting === null ? (
+                <Button size="sm" variant="outline" className="border-primary/40 text-primary hover:text-primary" onClick={() => setPromoting({ question: i.title, answer: i.analysis?.answer ?? "" })}>
+                  <CircleHelp /> Promote to Q&A
+                </Button>
+              ) : (
+                <div className="space-y-2 rounded-lg border border-primary/30 bg-primary/5 p-3">
+                  <div className="font-medium text-primary text-xs uppercase tracking-wide">Into Q&A · everyone will see it</div>
+                  <Input value={promoting.question} onChange={(e) => setPromoting({ ...promoting, question: e.target.value })} placeholder="The question" />
+                  <Textarea value={promoting.answer} onChange={(e) => setPromoting({ ...promoting, answer: e.target.value })} rows={7} placeholder="The answer (lyra's draft, to edit)" />
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      disabled={promoting.question.trim().length < 3 || promoting.answer.trim().length < 3}
+                      onClick={async () => {
+                        const r = await call<{ ok?: boolean; error?: string }>("qa_promote", { id: i.id, ...promoting });
+                        if (r.error) setPromoteError(r.error);
+                        else {
+                          setPromoting(null);
+                          reload();
+                        }
+                      }}
+                    >
+                      Approve and publish
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setPromoting(null)}>
+                      Cancel
+                    </Button>
+                    {promoteError && <span className="text-red-400 text-xs">{promoteError}</span>}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
           {/* Admins move it along. */}
           {admin && (
@@ -414,6 +460,7 @@ export function FeedbackPage({ onBack }: { onBack: () => void }) {
               ["all", "All"],
               ["bug", "Bugs"],
               ["feature", "Features"],
+              ["question", "Questions"],
             ]}
             value={kind}
             set={setKind}
