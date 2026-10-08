@@ -623,7 +623,7 @@ impl Hub {
 
 fn router(shared: Arc<Shared>) -> Router {
     Router::new()
-        .route("/", get(|| app_file("index.html")))
+        .route("/", get(|headers: HeaderMap| app_file("index.html", headers)))
         .route("/api/pair", post(pair))
         .route("/api/pair/request", post(pair_request))
         .route("/api/pair/request/{id}", get(pair_poll))
@@ -650,7 +650,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/ws", get(ws))
         .route("/health", get(health))
         .route("/node", get(node_ws))
-        .fallback(get(|uri: axum::http::Uri| app_file_owned(uri.path().trim_start_matches('/').to_string())))
+        .fallback(get(|uri: axum::http::Uri, headers: HeaderMap| app_file_owned(uri.path().trim_start_matches('/').to_string(), headers)))
         .with_state(shared)
 }
 
@@ -687,11 +687,37 @@ fn content_type(path: &str) -> &'static str {
 
 /// A file of the web app. The page and the service worker carry the app's
 /// version; the bundle's files have content hashes, so they cache for good.
-async fn app_file(path: &'static str) -> Response {
-    app_file_owned(path.to_string()).await
+async fn app_file(path: &'static str, headers: HeaderMap) -> Response {
+    app_file_owned(path.to_string(), headers).await
 }
 
-async fn app_file_owned(path: String) -> Response {
+/// Whether the browser takes gzip (every current one does).
+fn takes_gzip(headers: &HeaderMap) -> bool {
+    headers.get(header::ACCEPT_ENCODING).and_then(|v| v.to_str().ok()).is_some_and(|v| v.split(',').any(|e| e.trim().split(';').next() == Some("gzip")))
+}
+
+/// A bundle file gzipped, made once and kept: the embedded app never changes
+/// while lyra runs, and a phone's first load is a third of the bytes.
+fn gzipped(path: &str, bytes: &'static [u8]) -> std::sync::Arc<Vec<u8>> {
+    static CACHE: std::sync::Mutex<Option<HashMap<String, std::sync::Arc<Vec<u8>>>>> = std::sync::Mutex::new(None);
+    let mut all = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    all.get_or_insert_with(HashMap::new)
+        .entry(path.to_string())
+        .or_insert_with(|| {
+            use std::io::Write;
+            let mut z = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+            let _ = z.write_all(bytes);
+            std::sync::Arc::new(z.finish().unwrap_or_default())
+        })
+        .clone()
+}
+
+/// Worth compressing: text (scripts, styles, maps, manifests, SVG).
+fn compressible(kind: &str) -> bool {
+    kind.starts_with("text/") || kind.contains("javascript") || kind.contains("json") || kind == "image/svg+xml" || kind == "application/wasm"
+}
+
+async fn app_file_owned(path: String, headers: HeaderMap) -> Response {
     let path = if path.is_empty() { "index.html".to_string() } else { path };
     let Some(file) = APP.get_file(&path) else { return error(StatusCode::NOT_FOUND, "not found") };
     let kind = content_type(&path);
@@ -700,7 +726,11 @@ async fn app_file_owned(path: String) -> Response {
         return ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, "no-cache")], text).into_response();
     }
     let cache = if path.starts_with("assets/") { "public, max-age=31536000, immutable" } else { "max-age=86400" };
-    ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, cache)], file.contents()).into_response()
+    if compressible(kind) && file.contents().len() > 1024 && takes_gzip(&headers) {
+        let body = gzipped(&path, file.contents());
+        return ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, cache), (header::CONTENT_ENCODING, "gzip"), (header::VARY, "Accept-Encoding")], body.as_ref().clone()).into_response();
+    }
+    ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, cache), (header::VARY, "Accept-Encoding")], file.contents()).into_response()
 }
 
 fn error(status: StatusCode, text: &str) -> Response {
@@ -1595,6 +1625,24 @@ fn app_version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_files_go_out_gzipped_when_the_browser_takes_it() {
+        let mut h = HeaderMap::new();
+        assert!(!takes_gzip(&h));
+        h.insert(header::ACCEPT_ENCODING, "br;q=1.0, gzip;q=0.8, deflate".parse().unwrap());
+        assert!(takes_gzip(&h));
+        h.insert(header::ACCEPT_ENCODING, "gzipx".parse().unwrap());
+        assert!(!takes_gzip(&h));
+        assert!(compressible("text/javascript; charset=utf-8") && compressible("text/css") && !compressible("image/png"));
+        let text: &'static [u8] = Box::leak("let a = 1;\n".repeat(2000).into_bytes().into_boxed_slice());
+        let z = gzipped("test/a.js", text);
+        assert!(z.len() < text.len() / 10, "compressed");
+        let mut back = Vec::new();
+        std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(z.as_slice()), &mut back).unwrap();
+        assert_eq!(back, text);
+        assert!(std::sync::Arc::ptr_eq(&z, &gzipped("test/a.js", text)), "made once");
+    }
 
     #[test]
     fn folder_requests_only_reach_the_persons_own_pages() {

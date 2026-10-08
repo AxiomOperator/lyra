@@ -4503,6 +4503,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
+ "flate2",
  "futures-util",
  "hkdf 0.12.4",
  "include_dir",

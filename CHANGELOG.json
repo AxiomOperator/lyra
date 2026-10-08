@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.26.1.150",
+    "date": "2026-10-08",
+    "title": "Much faster on phones",
+    "fixed": [
+      "The app is now sent compressed, so it downloads about four times faster: on a typical phone connection the first screen shows in about 2.5 seconds instead of about 10."
+    ]
+  },
+  {
     "version": "0.26.0.149",
     "date": "2026-10-08",
     "title": "Faster to open",

@@ -11,6 +11,7 @@ base64 = "0.22"
 chrono = { version = "0.4.45", features = ["serde"] }
 hkdf = "0.12"
 include_dir = "0.7"
+flate2 = "1.1.10"
 p256 = { version = "0.13", features = ["ecdh", "ecdsa"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls"] }
