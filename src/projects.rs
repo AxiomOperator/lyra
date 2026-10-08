@@ -24,6 +24,30 @@ pub fn safe_path(path: &str) -> Result<String, String> {
     Ok(parts.join("/"))
 }
 
+/// The message is about one of the person's project folders: it names one
+/// (as a whole word) or says "project folder".
+pub fn mentions(folders: &[String], message: &str) -> bool {
+    let m = message.to_lowercase();
+    if m.contains("project folder") || m.contains("projects folder") {
+        return true;
+    }
+    let words: Vec<&str> = m.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_').filter(|w| !w.is_empty()).collect();
+    folders.iter().any(|f| {
+        let f = f.to_lowercase();
+        let parts: Vec<&str> = f.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_').filter(|w| !w.is_empty()).collect();
+        !parts.is_empty() && words.windows(parts.len()).any(|w| w == parts.as_slice())
+    })
+}
+
+/// Whether a message for `user` is about a folder they lend (it stays with
+/// the main agent, which has the project tools, instead of going to the
+/// Operator or the Coder to look for it on a machine).
+pub fn about_a_folder(remote: Option<&dyn Remote>, user: &str, message: &str) -> bool {
+    let Some(r) = remote else { return false };
+    let names: Vec<String> = r.folders(user).into_iter().map(|(_, f)| f.name).collect();
+    mentions(&names, message)
+}
+
 pub fn capabilities() -> Vec<Capability> {
     let tool = |name: &str, description: &str, risk: RiskLevel, properties: Value, required: &[&str]| {
         let mut c = Capability::new(name, CapabilityKind::NativeTool, description, risk);
@@ -137,6 +161,16 @@ pub fn call(remote: Option<&dyn Remote>, name: &str, args: &Value) -> Result<Val
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn messages_about_a_lent_folder_are_told() {
+        let lent = vec!["ovh".to_string(), "Firewall Plan".to_string()];
+        assert!(mentions(&lent, "In my ovh project folder, read the scan"));
+        assert!(mentions(&lent, "what's in firewall plan?"));
+        assert!(mentions(&[], "read notes.md in my project folder"));
+        assert!(!mentions(&lent, "check the firewall on the server"), "the whole name, as words");
+        assert!(!mentions(&lent, "restart the covh service"));
+    }
 
     #[test]
     fn paths_stay_inside_the_folder() {

@@ -739,6 +739,8 @@ pub fn auto_delegate(env: &Env, message: &str, run: Uuid, history: &mut Vec<Valu
         }
         (_, Some(f)) if operator => RoutingDecision { agent: "operator".into(), confidence: 1.0, reason: format!("@{f}"), method: RouteMethod::Explicit },
         (Some(m), _) if operator => RoutingDecision { agent: "operator".into(), confidence: 1.0, reason: format!("@{m}"), method: RouteMethod::Explicit },
+        // A folder the person lends from their browser: the main agent has its tools.
+        _ if crate::projects::about_a_folder(env.caps.as_ref().and_then(|c| c.remote()).as_deref(), &crate::acting::current(), message) => return None,
         _ => env.agents.route(env, message)?,
     };
     let profile = env.agents.registry.get(&d.agent)?;
