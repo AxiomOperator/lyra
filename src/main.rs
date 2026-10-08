@@ -13,6 +13,7 @@ mod context;
 mod decide;
 mod diagnose;
 mod evolve;
+mod feedback;
 mod files;
 mod projects;
 mod goals;
@@ -1520,6 +1521,7 @@ impl App {
             "/usage" => self.usage_command(arg),
             "/recap" => recap::command(&self.owner),
             "/watches" | "/watch" => watches::command(&self.owner, arg),
+            "/feedback" => Ok(feedback::command(&feedback::Who { user: self.owner.clone(), name: String::new(), admin: self.admin })),
             "/memory" => {
                 let mem = self.mem().ok_or_else(|| match &self.memory_status {
                     Err(why) => why.clone(),
@@ -2991,7 +2993,7 @@ const LESSON_GATE: &str = "Does this conversation teach the assistant a reusable
 /// Commands the app's pages and buttons may run (each still checked by role).
 const PAGE_COMMANDS: &[&str] = &[
     "/memory", "/approve", "/reject", "/deprecate", "/goal", "/goals", "/model", "/backup", "/routine", "/routines", "/status", "/diagnose", "/coding",
-    "/briefing", "/tasks", "/task", "/pmi", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami", "/usage", "/sessions", "/plan", "/recap", "/watches",
+    "/briefing", "/tasks", "/task", "/pmi", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami", "/usage", "/sessions", "/plan", "/recap", "/watches", "/feedback",
 ];
 
 /// Commands a member (not an admin) may use. Their own memories, goals,
@@ -2999,7 +3001,7 @@ const PAGE_COMMANDS: &[&str] = &[
 /// tools, coding, devices, backups, agents and skills' approval stay admins'.
 fn member_may(name: &str, arg: &str) -> bool {
     match name {
-        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" => true,
+        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" | "/feedback" => true,
         // Their own skills (the commands check whose each one is).
         "/approve" | "/reject" | "/deprecate" => true,
         // Their own PMI account, routines and goals.
@@ -3101,6 +3103,7 @@ pub(crate) const COMMANDS: &str = "\
 /usage [days]                AI usage: everyone's and each person's (admins), your own (members)
 /recap                       your end-of-day recap now (it also comes at the end of the working day)
 /watches [cancel <id>]       what lyra watches for you (tell me when Jeremy replies)
+/feedback                    bug reports and feature requests: yours (admins: everyone's)
 /pmi [token <token>]         the PMI connection (your project-management app)
 /calendar [today|tomorrow|week|<day>|disconnect]   your Outlook calendar (connect it from More in the app)
 /today [plan]                plan my day: meetings, focus blocks for tasks due soon, mail to answer first (plan: re-plan now)

@@ -42,6 +42,7 @@ import {
   Server,
   Smartphone,
   Sparkles,
+  MessageSquareWarning,
   Target,
   WifiOff,
   Search,
@@ -51,6 +52,7 @@ import { ChatPage } from "./lyra/chat";
 import { ConversationList } from "./lyra/conversations";
 import { EverythingSearch } from "./lyra/everything";
 import { UpdatedNote, WhatsNewPage } from "./lyra/whatsnew";
+import { FeedbackPage } from "./lyra/feedback";
 import { GoalsPage, MemoryPage, ModelsPage, RoutinesPage, SkillsPage } from "./lyra/manage";
 import { TasksPage } from "./lyra/tasks";
 import { NotesPage } from "./lyra/notes";
@@ -68,10 +70,10 @@ import { loadToken, saveToken, takeShared } from "./lyra/token";
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "whatsnew" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users";
-const manage: Manage[] = ["whatsnew", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users"];
+type Manage = "whatsnew" | "feedback" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users";
+const manage: Manage[] = ["whatsnew", "feedback", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users"];
 /** What a member (not an admin) has: their chats, tasks, status, activity, skills. */
-const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "whatsnew", "tasks", "notes", "projects", "routines", "goals", "memory", "usage"];
+const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "whatsnew", "feedback", "tasks", "notes", "projects", "routines", "goals", "memory", "usage"];
 
 type TabItem = {
   id: Tab;
@@ -169,7 +171,7 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
             ))}
           </div>
           {/* What's new: at the foot of the rail, just above you. */}
-          {all.filter((t) => t.id === "whatsnew").map(railItem)}
+          {(["feedback", "whatsnew"] as Tab[]).map((id) => all.find((t) => t.id === id)).filter((t): t is TabItem => !!t).map(railItem)}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button type="button" aria-label="This device" className="mt-1 flex size-9 items-center justify-center rounded-lg bg-sidebar-accent font-semibold text-xs uppercase">
@@ -312,6 +314,7 @@ function Shell() {
     { id: "tasks", label: "Tasks", icon: ListTodo, badge: (status.pmi?.tasks ?? []).filter((t) => t.due && t.due < todayKey).length + pmiWaiting },
     { id: "notes", label: "Notes", icon: NotebookPen },
     { id: "whatsnew", label: "What's new", icon: Sparkles },
+    { id: "feedback", label: "Feedback", icon: MessageSquareWarning, badge: status.feedback_news ?? 0 },
     { id: "projects", label: "Projects", icon: FolderOpen },
     { id: "routines", label: "Routines", icon: AlarmClock, badge: (status.routines ?? []).filter((r) => r.runs[0]?.needs_user).length },
     { id: "coding", label: "Coding", icon: Code2 },
@@ -411,6 +414,7 @@ function Shell() {
           {tab === "tasks" && <TasksPage onBack={toMore} />}
           {tab === "notes" && <NotesPage onBack={toMore} />}
           {tab === "whatsnew" && <WhatsNewPage onBack={toMore} />}
+          {tab === "feedback" && <FeedbackPage onBack={toMore} />}
           {tab === "projects" && <ProjectsPage onBack={toMore} />}
           {tab === "routines" && <RoutinesPage onBack={toMore} toChat={() => setTab("chat")} />}
           {tab === "coding" && <CodingPage onBack={toMore} />}

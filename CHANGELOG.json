@@ -1,5 +1,20 @@
 [
   {
+    "version": "0.22.0.138",
+    "date": "2026-10-08",
+    "title": "Feedback: bug reports and feature requests",
+    "new": [
+      "A Feedback page (in the rail, above What's new) with two parts: send a bug report or a feature request, and follow where yours stand.",
+      "Bug reports say how bad it is, and can carry screenshots or files.",
+      "Each one moves through New, Reviewing, Planned, Done (with the version it shipped in) or Won't do, and has a comment thread with the admins.",
+      "You get a note when yours changes or someone replies; admins get one for each new submission and each of your comments. A badge shows what's new for you.",
+      "Or just tell lyra: \"report a bug: …\" or \"I'd like lyra to …\", and it files it for you."
+    ],
+    "improved": [
+      "Admins see everyone's, set status and priority, and reply; members see only their own."
+    ]
+  },
+  {
     "version": "0.21.0.137",
     "date": "2026-10-08",
     "title": "What's new where you'll find it",

@@ -1230,6 +1230,19 @@ scripts/lyra-check-config --offline   # just the file
 
 It exits 0 when all is well and 1 on errors. It needs only Python 3.11+.
 
+### Feedback: bug reports and feature requests
+
+The app's **Feedback** page (in the rail, above What's new) has two parts:
+- **Send one:** a bug report (how bad it is, with screenshots or files) or a feature request. lyra adds the version and the page it came from.
+- **Track:** where each one stands. Members see their own; admins see everyone's.
+  - Status moves through New → Reviewing → Planned → Done (with the version it shipped in) or Won't do.
+  - Admins set the priority (low → urgent).
+  - Each one has a comment thread between the sender and the admins.
+
+**Notifications:** admins get a push for each new submission and each of the sender's comments. The sender gets one when the status changes or an admin replies. The rail's badge counts what's new for you.
+
+You can also tell lyra "report a bug: …" or "I'd like lyra to …" (`feedback_submit`), and `/feedback` lists them. Everything is kept in `~/.lyra/feedback/feedback.json`. Files are uploads, so only the sender and the admins can open them.
+
 ### What's new and versions
 
 Every change to lyra is listed in `CHANGELOG.json`, newest first. You see it on the app's **What's new** page (in the rail and in the menu under your initials). After an update, a note says which version you're on now and links there.

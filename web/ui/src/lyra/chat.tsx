@@ -331,7 +331,7 @@ function usePalette(text: string): Entry[] {
 const canDictate = typeof window !== "undefined" && ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
 
 /** Send a file to lyra; returns its upload id. */
-async function upload(token: string, file: File): Promise<string> {
+export async function upload(token: string, file: File): Promise<string> {
   const r = await fetch("/api/files", {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": file.type || "application/octet-stream", "X-Filename": encodeURIComponent(file.name) },

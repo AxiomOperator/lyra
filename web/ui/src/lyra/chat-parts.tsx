@@ -97,10 +97,10 @@ function SentFile({ f }: { f: Sent }) {
 }
 
 /** The files a sent message carried. */
-export function SentAttachments({ files }: { files: Sent[] }) {
+export function SentAttachments({ files, className }: { files: Sent[]; className?: string }) {
   if (!files.length) return null;
   return (
-    <Attachments variant="inline" className="justify-end">
+    <Attachments variant="inline" className={className ?? "justify-end"}>
       {files.map((f) => (
         <SentFile key={f.id} f={f} />
       ))}

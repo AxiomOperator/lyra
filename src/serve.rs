@@ -107,6 +107,8 @@ fn status(app: &App, machines: &[String]) -> Value {
         }),
         "context_window": crate::stats::CONTEXT_WINDOW.load(std::sync::atomic::Ordering::Relaxed),
         "version": crate::changelog::version(),
+        // Bug reports and feature requests with news for this person.
+        "feedback_news": crate::feedback::badge(&crate::feedback::Who { user: app.owner.clone(), name: String::new(), admin: app.admin }),
         // The plan this conversation is running (the app's plan card).
         "plan": app.current_plan.as_ref().map(|p| json!({
             "id": lyra_execution::short(p.id), "version": p.version, "status": p.status, "busy": app.plan_busy,
@@ -652,7 +654,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "watches" | "everything" | "changelog") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "watches" | "everything" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -1164,6 +1166,12 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 });
             }
         }
+        // Bug reports and feature requests: who should hear about what.
+        for n in crate::feedback::take_notices() {
+            let to = if n.to_admins { To::Admins } else { To::User(n.user.clone().unwrap_or_default()) };
+            hub.notify(Notification { title: n.title, body: n.body, tag: "feedback".into(), approval: None, url: Some("/?page=feedback".into()), actions: vec![], reference: None, to });
+            everyone = true;
+        }
         if last_watch.elapsed() >= Duration::from_secs(120) {
             last_watch = Instant::now();
             for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id) {
@@ -1674,6 +1682,27 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
         "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
         "recap" => crate::recap::last_for(&app.owner).map_or(Value::Null, |r| json!(r)),
         "changelog" => json!({ "version": crate::changelog::version(), "releases": crate::changelog::all() }),
+        // Feedback: everyone sends and follows their own; admins see and move everyone's.
+        "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" => {
+            let who = crate::feedback::Who { user: app.owner.clone(), name: hub.users().get(&app.owner).map_or_else(|| "the owner".to_string(), |u| u.name), admin: app.admin };
+            let id = arg["id"].as_u64().unwrap_or(0);
+            let s = |k: &str| arg[k].as_str().map(str::to_string);
+            let done = match what {
+                "feedback_submit" => {
+                    // Their own uploads only.
+                    let files = arg["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str()).filter_map(|id| hub.upload(id)).filter(|(up, _)| up.user.as_deref().unwrap_or(lyra_web::users::OWNER) == who.user).map(|(up, _)| crate::feedback::File { id: up.id, name: up.name, mime: up.mime }).collect();
+                    crate::feedback::submit(&who, &s("kind").unwrap_or_default(), &s("title").unwrap_or_default(), &s("details").unwrap_or_default(), s("severity").as_deref(), files, &s("page").unwrap_or_default()).map(|i| json!({ "ok": true, "id": i.id }))
+                }
+                "feedback_comment" => crate::feedback::comment(&who, id, &s("text").unwrap_or_default()).map(|_| json!({ "ok": true })),
+                "feedback_update" => crate::feedback::update(&who, id, s("status").as_deref(), s("priority").as_deref(), s("shipped_in").as_deref()).map(|_| json!({ "ok": true })),
+                "feedback_seen" => crate::feedback::seen(&who, id).map(|_| json!({ "ok": true })),
+                _ => Ok(json!({
+                    "admin": who.admin, "me": who.user, "version": crate::changelog::version(),
+                    "items": crate::feedback::list(&who),
+                })),
+            };
+            done.unwrap_or_else(|e| json!({ "error": e }))
+        }
         "watches" => json!(crate::watches::list_for(&app.owner)),
         // AI usage: everyone's and each person's for admins, their own for members.
         // The current plan's recovery points (admins; members have no plans).
