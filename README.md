@@ -1241,6 +1241,8 @@ The app's **Feedback** page (in the rail, above What's new) has two parts:
 
 **Notifications:** admins get a push for each new submission and each of the sender's comments. The sender gets one when the status changes or an admin replies. The rail's badge counts what's new for you.
 
+**Enhance:** while writing, **Enhance** under the description has lyra rewrite it more clearly. It keeps what you said, invents nothing, and marks what's missing in [brackets]. Edit the draft, then **Use this** or **Keep mine**.
+
 **lyra's read:** after each submission, the chat model writes it up in the background, using the relevant parts of this README and what attached screenshots show (read by the vision model).
 - **Everyone** sees a short summary of how lyra understood it.
 - **Admins** also see the likely cause and possible fixes (bugs), or a possible implementation and its size (features), plus questions worth asking the sender. Tapping a question puts it in the reply box, and ↻ reads the submission again after replies.

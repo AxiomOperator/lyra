@@ -655,7 +655,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "watches" | "everything" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "watches" | "everything" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze" | "feedback_enhance") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -692,6 +692,14 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         "set_rules" => {
                             let answer = set_server_rules(&mut convs[0].app, &arg["system"]);
                             let _ = reply.send(answer.unwrap_or_else(|e| json!({ "error": e })));
+                        }
+                        // A clearer draft for the feedback form: off this loop (the model takes a moment).
+                        "feedback_enhance" => {
+                            let (kind, title, details, user) = (arg["kind"].as_str().unwrap_or("bug").to_string(), arg["title"].as_str().unwrap_or("").to_string(), arg["details"].as_str().unwrap_or("").to_string(), convs[i].app.owner.clone());
+                            std::thread::spawn(move || {
+                                let answer = crate::acting::run(&user, || crate::feedback::enhance(&kind, &title, &details));
+                                let _ = reply.send(answer.map_or_else(|e| json!({ "error": e }), |text| json!({ "text": text })));
+                            });
                         }
                         // One search for everything (Ctrl-K): off this loop, their own things only.
                         "everything" => {

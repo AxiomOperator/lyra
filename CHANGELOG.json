@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.24.0.140",
+    "date": "2026-10-08",
+    "title": "Enhance on the feedback form",
+    "new": [
+      "An Enhance button under the description on the bug report and feature request form: lyra rewrites what you wrote more clearly, keeping your meaning and facts, and never adding details you didn't give.",
+      "Where something useful is missing, the draft says what to add in [brackets].",
+      "You edit the draft, then choose Use this or Keep mine; nothing changes until you do."
+    ]
+  },
+  {
     "version": "0.23.0.139",
     "date": "2026-10-08",
     "title": "lyra reads your feedback",

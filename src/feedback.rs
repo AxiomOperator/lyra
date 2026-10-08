@@ -222,6 +222,36 @@ pub fn analyze(id: u64, user: &str, files: Vec<(String, std::path::PathBuf)>) {
     });
 }
 
+const ENHANCER: &str = "You help someone write a clearer bug report or feature request for lyra, a self-hosted \
+AI assistant. Rewrite their description so it's clear and well organised, keeping their meaning and their \
+facts exactly. Never invent details they didn't give: no steps, errors, devices, versions or numbers of your own. \
+Where something useful is missing, add a short line in square brackets saying what to add, e.g. [Which page were \
+you on?]. Bugs: what they did, what happened, what they expected. Features: what they'd like, what for, how they \
+picture it. Plain sentences or short lists; no headings, no greeting, no sign-off. Answer with only the rewritten description.";
+
+/// A clearer draft of what someone is writing (the form's Enhance button), by the chat model.
+pub fn enhance(kind: &str, title: &str, details: &str) -> Result<String, String> {
+    let details = details.trim();
+    if details.chars().count() < 5 {
+        return Err("write a little first, then lyra can make it clearer".into());
+    }
+    let (url, model) = MODEL.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("lyra's model isn't set up")?;
+    let prompt = format!(
+        "{}{}\n\nTheir description:\n{}",
+        if kind == "bug" { "A bug report" } else { "A feature request" },
+        if title.trim().is_empty() { String::new() } else { format!(" titled \"{}\"", title.trim()) },
+        details.chars().take(6000).collect::<String>()
+    );
+    let (reply, _) = crate::learn::complete(&url, &model, ENHANCER, &prompt)?;
+    let text = reply.trim().trim_matches('"').trim();
+    // Thinking models: only what follows their thoughts.
+    let text = text.rsplit_once("</think>").map_or(text, |(_, t)| t).trim();
+    if text.is_empty() {
+        return Err("lyra didn't come up with anything; try again".into());
+    }
+    Ok(text.to_string())
+}
+
 /// What `who` gets of an item: everything for admins; the sender sees the
 /// summary of lyra's read, not the admins' notes (cause, fixes, questions).
 pub fn view(item: &Item, who: &Who) -> Value {

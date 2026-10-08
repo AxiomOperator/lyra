@@ -88,6 +88,17 @@ function SubmitCard({ sent, page }: { sent: () => void; page: string }) {
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState("");
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  // Enhance: lyra's clearer draft, shown to edit, used only if they say so.
+  const [draft, setDraft] = useState<string | null>(null);
+  const [enhancing, setEnhancing] = useState(false);
+  const enhance = async () => {
+    setEnhancing(true);
+    setNote(null);
+    const r = await call<{ text?: string; error?: string }>("feedback_enhance", { kind, title, details });
+    setEnhancing(false);
+    if (r.text) setDraft(r.text);
+    else setNote({ ok: false, text: r.error ?? "Couldn't make a draft." });
+  };
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setNote(null);
@@ -128,12 +139,44 @@ function SubmitCard({ sent, page }: { sent: () => void; page: string }) {
             set={setKind}
           />
           <Input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={140} placeholder={kind === "bug" ? "What's wrong, in a line" : "What you'd like, in a line"} />
-          <Textarea
-            value={details}
-            onChange={(e) => setDetails(e.target.value)}
-            rows={5}
-            placeholder={kind === "bug" ? "What you did, what happened, what you expected. Steps help." : "What you'd use it for, and how you picture it working."}
-          />
+          <div className="space-y-1.5">
+            <Textarea
+              value={details}
+              onChange={(e) => setDetails(e.target.value)}
+              rows={5}
+              placeholder={kind === "bug" ? "What you did, what happened, what you expected. Steps help." : "What you'd use it for, and how you picture it working."}
+            />
+            <div className="flex items-center gap-2">
+              <Button type="button" size="sm" variant="outline" className="border-primary/40 text-primary hover:text-primary" disabled={enhancing || details.trim().length < 5} onClick={() => void enhance()} title="lyra rewrites it more clearly, keeping what you said">
+                {enhancing ? <Loader2 className="animate-spin" /> : <Sparkles />} {enhancing ? "Enhancing…" : "Enhance"}
+              </Button>
+              <span className="text-muted-foreground text-xs">A clearer draft from what you wrote; nothing changes until you use it.</span>
+            </div>
+            {draft !== null && (
+              <div className="space-y-2 rounded-lg border border-primary/30 bg-primary/5 p-3">
+                <div className="flex items-center gap-1.5 font-medium text-primary text-xs uppercase tracking-wide">
+                  <Sparkles className="size-3.5" /> lyra's draft
+                  <span className="font-normal text-muted-foreground normal-case tracking-normal">· edit it, then use it; [brackets] mark what you could add</span>
+                </div>
+                <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={7} />
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => {
+                      setDetails(draft);
+                      setDraft(null);
+                    }}
+                  >
+                    Use this
+                  </Button>
+                  <Button type="button" size="sm" variant="ghost" onClick={() => setDraft(null)}>
+                    Keep mine
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
           {kind === "bug" && (
             <div className="space-y-1">
               <div className="text-muted-foreground text-xs">How bad is it?</div>
