@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.25.0.143",
+    "date": "2026-10-08",
+    "title": "Ready for a bigger database later",
+    "improved": [
+      "New database work follows a rule that keeps it portable, so lyra could move to PostgreSQL later without a rewrite."
+    ]
+  },
+  {
     "version": "0.25.0.142",
     "date": "2026-10-08",
     "title": "Status and roadmap",

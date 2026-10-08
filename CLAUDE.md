@@ -90,5 +90,15 @@ cargo test --workspace
    - **Entry:** `version`, `date`, a short `title`, and `new` / `improved` / `fixed` lines. Write the lines for users, saying what they can now do or what's better, not file or function names.
    - **Where it shows:** lyra builds the file in. It's the app's What's new page, the version in the menu under your initials, the "lyra was updated" note, the TUI's Session title and `lyra --version`.
    - **Check:** `changelog::tests` enforces the format and the numbering.
-5. **Move a doc to `docs/done/` once it's completely implemented**, so `docs/` only holds work
+5. **Write SQL that would also run on PostgreSQL.** lyra uses SQLite today. Keep new tables, migrations and queries portable so a later move to PostgreSQL is mostly a driver change.
+   - **Library:** use `sqlx` with bound parameters (`?` placeholders, never formatted values).
+   - **Ids:** UUIDs or explicit ids stored as `TEXT`, not `AUTOINCREMENT` or `rowid`.
+   - **Times:** RFC 3339 `TEXT` written and parsed in Rust (chrono). Don't use SQLite's `datetime('now')`, `strftime` or `julianday`; pass the time in as a parameter.
+   - **Types:** standard ones only: `TEXT`, `INTEGER`, `BIGINT`, `REAL`, `BOOLEAN`, `BLOB`. Declare a column's type and keep to it, since PostgreSQL won't put a string in an integer column.
+   - **Inserts:** for insert-or-update, use `INSERT … ON CONFLICT (…) DO UPDATE` / `DO NOTHING`, never `INSERT OR REPLACE` or `REPLACE INTO`.
+   - **Constraints:** foreign keys and `CHECK`s declared in the schema, not only in Rust.
+   - **SQLite-only features stay in one place:** `PRAGMA`s, `VACUUM INTO`, `json_extract`, `GLOB` and `FTS5` live only in the connection setup or the backup code (`src/backup.rs`), never in feature queries. Search across text goes through LanceDB or plain `LIKE`.
+   - **Inside SQL:** plain `CASE`, `COALESCE` and joins; no `IFNULL`, `||` string tricks or rowid tricks.
+   - **Existing SQLite-only code** is fixed when it's next touched; don't rewrite working code just for this.
+6. **Move a doc to `docs/done/` once it's completely implemented**, so `docs/` only holds work
    still to do. Update any references to its path (README, CLAUDE.md, code comments).
