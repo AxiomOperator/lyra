@@ -52,11 +52,41 @@ pub fn handles(name: &str) -> bool {
 const LOOK: &str = "Transcribe all the text you can see, exactly, keeping its layout where it matters (tables as Markdown). \
 Then describe briefly anything else that matters: photos, diagrams, stamps, signatures, handwriting. Don't guess at what you can't read.";
 
+/// A PNG with see-through parts, on mid-grey: a white logo on a transparent
+/// background otherwise looks blank to the model. Others as they are.
+fn flatten(mime: &str, bytes: &[u8]) -> Option<Vec<u8>> {
+    if mime != "image/png" {
+        return None;
+    }
+    let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png).ok()?;
+    if !img.color().has_alpha() {
+        return None;
+    }
+    let mut rgba = img.to_rgba8();
+    if !rgba.pixels().any(|p| p[3] < 250) {
+        return None;
+    }
+    for p in rgba.pixels_mut() {
+        let a = p[3] as u32;
+        for c in 0..3 {
+            p[c] = ((p[c] as u32 * a + 128 * (255 - a)) / 255) as u8;
+        }
+        p[3] = 255;
+    }
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(rgba).write_to(&mut out, image::ImageFormat::Png).ok()?;
+    Some(out.into_inner())
+}
+
 /// Ask the vision model about images (`(mime, bytes)`).
 pub fn look(images: &[(&str, &[u8])], question: Option<&str>) -> Result<String, String> {
     let s = settings().ok_or("lyra has no vision model to look at pictures and scans: add one under [vision_model] in config.toml")?;
     let mut parts: Vec<Value> = vec![json!({ "type": "text", "text": question.filter(|q| !q.trim().is_empty()).map_or(LOOK.to_string(), |q| format!("{q}\n\n{LOOK}")) })];
-    parts.extend(images.iter().map(|(mime, bytes)| json!({ "type": "image_url", "image_url": { "url": format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)) } })));
+    parts.extend(images.iter().map(|(mime, bytes)| {
+        let flat = flatten(mime, bytes);
+        let bytes = flat.as_deref().unwrap_or(bytes);
+        json!({ "type": "image_url", "image_url": { "url": format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)) } })
+    }));
     let body = json!({ "model": s.model, "messages": [{ "role": "user", "content": parts }], "temperature": 0.1, "max_tokens": 4096 });
     let started = std::time::Instant::now();
     let resp = reqwest::blocking::Client::builder()
@@ -155,6 +185,19 @@ mod tests {
         assert!(!scanned(&["The firewall rules for the new building, phase one and two.".into()]));
         assert_eq!(image_type("Photo.JPG"), Some("image/jpeg"));
         assert!(handles("scan.pdf") && handles("a.webp") && !handles("notes.md"));
+    }
+
+    #[test]
+    fn transparent_pngs_go_on_grey() {
+        // A white, half see-through pixel and a clear one.
+        let mut img = image::RgbaImage::new(2, 1);
+        img.put_pixel(0, 0, image::Rgba([255, 255, 255, 255]));
+        img.put_pixel(1, 0, image::Rgba([255, 255, 255, 0]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let flat = image::load_from_memory(&flatten("image/png", png.get_ref()).unwrap()).unwrap().to_rgba8();
+        assert_eq!((flat.get_pixel(0, 0).0, flat.get_pixel(1, 0).0), ([255, 255, 255, 255], [128, 128, 128, 255]));
+        assert!(flatten("image/jpeg", b"x").is_none());
     }
 
     #[test]
