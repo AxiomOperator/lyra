@@ -14,8 +14,9 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { AtSign, Link2, Paperclip, ShieldAlert, ShieldCheck, ShieldX, Slash, TriangleAlert } from "lucide-react";
+import { AtSign, Clock, CloudOff, Link2, Paperclip, Pencil, ShieldAlert, ShieldCheck, ShieldX, Slash, TriangleAlert, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { loadDraft, saveDraft, type Queued } from "./outbox";
 import { useLyra } from "./store";
 import type { Approval, ChatMessage, PairRequest } from "./types";
 import { ComposerModel, PlanCard, ToolFileContent, ToolFileTree, ToolTerminal, type PlanView } from "./chat-parts2";
@@ -343,8 +344,24 @@ export async function upload(token: string, file: File): Promise<string> {
 }
 
 function Composer() {
-  const { say, send, status, token, user } = useLyra();
-  const [text, setText] = useState("");
+  const { say, send, status, token, user, connected, queue } = useLyra();
+  const session = status.session ?? "";
+  // What's being written here is kept on the device (offline, a reload, the
+  // app closed): each conversation has its own draft.
+  const [text, setText] = useState(() => loadDraft(session));
+  const draftFor = useRef(session);
+  useEffect(() => {
+    if (draftFor.current === session) return;
+    const before = draftFor.current;
+    draftFor.current = session;
+    // Typed before lyra said which conversation this is: it stays.
+    setText((t) => (before === "" && t.trim() ? t : loadDraft(session)));
+    if (before === "") saveDraft("", "");
+  }, [session]);
+  useEffect(() => {
+    const t = window.setTimeout(() => saveDraft(draftFor.current, text), 300);
+    return () => window.clearTimeout(t);
+  }, [text]);
   // The message as typed when dictation started; what's said goes after it.
   const typedBefore = useRef("");
   const [files, setFiles] = useState<File[]>([]);
@@ -391,6 +408,19 @@ function Composer() {
   const submit = async () => {
     const t = text.trim();
     if (!t && !files.length) return;
+    // A plain message goes through the outbox: sent now if lyra can take it,
+    // else when it's reachable again or done answering. Commands and files
+    // need lyra there.
+    if (!files.length && !t.startsWith("/")) {
+      queue(t);
+      setText("");
+      saveDraft(session, "");
+      return;
+    }
+    if (!connected) {
+      setBusy(files.length ? "Offline: files go when lyra is reachable again (your message is kept)." : "Offline: commands work when lyra is reachable again.");
+      return;
+    }
     let ids: string[] = [];
     if (files.length) {
       try {
@@ -407,6 +437,7 @@ function Composer() {
     }
     if (send({ type: "send", text: t, files: ids })) {
       setText("");
+      saveDraft(session, "");
       setFiles([]);
     }
   };
@@ -500,6 +531,41 @@ function Composer() {
   );
 }
 
+// ---- messages waiting to be sent
+
+/** The outbox, at the end of the conversation: what each is waiting for, and Edit / Cancel. */
+function QueuedMessages() {
+  const { outbox, connected, status, unqueue } = useLyra();
+  if (!outbox.length) return null;
+  const why = (q: Queued, i: number) =>
+    !connected ? "Offline — sends when lyra is reachable" : q.sentAt !== undefined ? "Sending…" : status.waiting || i > 0 ? "Sends when lyra has answered" : "Sending…";
+  return (
+    <>
+      {outbox.map((q, i) => (
+        <Message key={q.id} from="user" className="opacity-70">
+          <MessageContent className="border border-dashed border-teal-700/60">
+            <p className="whitespace-pre-wrap break-words">{q.text}</p>
+          </MessageContent>
+          <div className="flex items-center justify-end gap-2 text-muted-foreground text-xs">
+            {connected ? <Clock className="size-3" /> : <CloudOff className="size-3" />}
+            <span>{why(q, i)}</span>
+            {q.sentAt === undefined && (
+              <>
+                <button type="button" className="inline-flex items-center gap-0.5 hover:text-foreground" onClick={() => window.dispatchEvent(new CustomEvent("lyra-prefill", { detail: unqueue(q.id) }))}>
+                  <Pencil className="size-3" /> Edit
+                </button>
+                <button type="button" className="inline-flex items-center gap-0.5 hover:text-foreground" onClick={() => unqueue(q.id)}>
+                  <X className="size-3" /> Cancel
+                </button>
+              </>
+            )}
+          </div>
+        </Message>
+      ))}
+    </>
+  );
+}
+
 // ---- the page
 
 export function ChatPage() {
@@ -566,6 +632,7 @@ export function ChatPage() {
             ),
           )}
           {thinking && <Shimmer className="text-sm">Thinking…</Shimmer>}
+          <QueuedMessages />
         </ConversationContent>
         <ConversationScrollButton />
       </Conversation>

@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.28.0.152",
+    "date": "2026-10-08",
+    "title": "Works on a bad connection",
+    "new": [
+      "Messages you write while offline, or while lyra is still answering, wait in the chat and are sent in order as soon as lyra can take them. You can edit or cancel one until it goes, and one sent just as the connection dropped is sent again rather than lost.",
+      "What you're typing is kept for each conversation, even if you lose the connection, reload or close the app.",
+      "The app opens with your last conversation when lyra can't be reached."
+    ]
+  },
+  {
     "version": "0.27.0.151",
     "date": "2026-10-08",
     "title": "Settings page",

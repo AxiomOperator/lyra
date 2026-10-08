@@ -1,9 +1,12 @@
 // The live connection to `lyra serve`: a snapshot, then small updates
 // (add / append / replace / truncate / reset / status), mirrored into React
 // state. Sends messages, approvals, pairing answers and page requests.
+// Messages go through an outbox (outbox.ts): kept on the device until the
+// conversation shows them, sent when lyra is reachable and done answering.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { answer as answerFolder, folderStates, onFoldersChanged } from "./folders";
+import { forgetAll, loadLast, loadOutbox, newQueued, saveLast, saveOutbox, timesSaid, type Queued } from "./outbox";
 import { saveToken } from "./token";
 import type { ChatMessage, Command, Me, Status, ThisDevice } from "./types";
 
@@ -40,6 +43,8 @@ function reduce(state: State, msg: Update): State {
     };
   }
   if (msg.type === "lost") return { ...state, ready: false };
+  // The last conversation kept on this device, until lyra answers.
+  if (msg.type === "cached") return state.ready || state.messages.length ? state : { ...state, messages: (msg.messages as ChatMessage[]) ?? [], status: (msg.status as Status) ?? {} };
   if (msg.type === "push") return state.device ? { ...state, device: { ...state.device, push: msg.on as boolean } } : state;
   if (!state.ready) return state;
   if (msg.seq && msg.seq <= state.seq) return state;
@@ -86,6 +91,12 @@ interface Lyra extends State {
   onData: (fn: Listener) => () => void;
   setPush: (on: boolean) => void;
   unpaired: () => void;
+  /** Messages waiting to be sent, in this conversation. */
+  outbox: Queued[];
+  /** Send a message: now if lyra can take it, else as soon as it can. */
+  queue: (text: string) => void;
+  /** Take a waiting message back (its text, for editing). */
+  unqueue: (id: string) => string;
 }
 
 const Ctx = createContext<Lyra | null>(null);
@@ -105,6 +116,29 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
   const retry = useRef(0);
   const waiting = useRef(new Map<number, (data: unknown) => void>());
   const nextId = useRef(1);
+  // Each connection's number: a message sent on one that dropped is checked again.
+  const gen = useRef(0);
+  const [outbox, setOutbox] = useState<Queued[]>(loadOutbox);
+  const [tick, setTick] = useState(0);
+  const changeOutbox = useCallback((change: (list: Queued[]) => Queued[]) => {
+    setOutbox((list) => {
+      const next = change(list);
+      saveOutbox(next);
+      return next;
+    });
+  }, []);
+
+  // Opened without a connection: the last conversation, as it was.
+  useEffect(() => {
+    const last = loadLast();
+    let session = "";
+    try {
+      session = localStorage.getItem("lyra-session") ?? "";
+    } catch {
+      // no storage
+    }
+    if (last && (!session || last.session === session)) dispatch({ type: "cached", messages: last.messages, status: last.status });
+  }, []);
 
   useEffect(() => {
     let stopped = false;
@@ -123,6 +157,7 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
       ws.current = sock;
       sock.onopen = () => {
         retry.current = 0;
+        gen.current++;
         setConnected(true);
         setBanner("");
         sock.send(JSON.stringify({ type: "visible", visible: document.visibilityState === "visible" }));
@@ -171,6 +206,7 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
           .then((r) => {
             if (r.status === 401) {
               saveToken(null);
+              forgetAll();
               onUnpaired("This device isn't paired any more. Pair it again.");
               return;
             }
@@ -239,13 +275,74 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
   const setPush = useCallback((on: boolean) => dispatch({ type: "push", on }), []);
   const unpaired = useCallback(() => {
     saveToken(null);
+    forgetAll();
     ws.current?.close();
     onUnpaired();
   }, [onUnpaired]);
 
+  // Keep the conversation on the device (a few seconds after it settles).
+  useEffect(() => {
+    if (!state.ready || state.status.waiting) return;
+    const t = window.setTimeout(() => saveLast(state.messages, state.status), 2000);
+    return () => window.clearTimeout(t);
+  }, [state.ready, state.messages, state.status]);
+
+  const session = state.status.session ?? "";
+  const queue = useCallback(
+    (text: string) => {
+      let s = session;
+      if (!s) {
+        try {
+          s = localStorage.getItem("lyra-session") ?? "";
+        } catch {
+          // a new conversation: the server's
+        }
+      }
+      changeOutbox((list) => [...list, newQueued(s, text)]);
+    },
+    [session, changeOutbox],
+  );
+  const unqueue = useCallback(
+    (id: string) => {
+      const q = outbox.find((x) => x.id === id);
+      changeOutbox((list) => list.filter((x) => x.id !== id));
+      return q?.text ?? "";
+    },
+    [outbox, changeOutbox],
+  );
+
+  // The outbox, one message at a time, in order: sent when lyra is reachable
+  // and not answering, and taken out once the conversation shows it. One sent
+  // on a connection that then dropped, or not shown after a while, goes again.
+  const approvalsWaiting = (state.status.approvals ?? []).length > 0;
+  useEffect(() => {
+    const first = outbox.find((q) => q.session === session || !q.session);
+    if (!first || !state.ready || !session) return;
+    const said = timesSaid(state.messages, first.text);
+    if (first.sentAt !== undefined) {
+      if (said > (first.seen ?? 0)) {
+        changeOutbox((list) => list.filter((x) => x.id !== first.id));
+        return;
+      }
+      const stale = first.gen !== gen.current || (Date.now() - first.sentAt > 20000 && !state.status.waiting);
+      if (stale) changeOutbox((list) => list.map((x) => (x.id === first.id ? { ...x, sentAt: undefined, gen: undefined } : x)));
+      else {
+        const t = window.setTimeout(() => setTick((n) => n + 1), 5000);
+        return () => window.clearTimeout(t);
+      }
+      return;
+    }
+    if (!connected || (state.status.waiting && !approvalsWaiting)) return;
+    if (send({ type: "send", text: first.text })) {
+      const at = Date.now();
+      changeOutbox((list) => list.map((x) => (x.id === first.id ? { ...x, session, sentAt: at, gen: gen.current, seen: said } : x)));
+    }
+  }, [outbox, session, state.ready, state.messages, state.status.waiting, approvalsWaiting, connected, send, changeOutbox, tick]);
+
+  const mine = useMemo(() => outbox.filter((q) => q.session === session || !q.session), [outbox, session]);
   const value = useMemo<Lyra>(
-    () => ({ ...state, token, connected, banner, send, say, ask, call, run, onData, setPush, unpaired }),
-    [state, token, connected, banner, send, say, ask, call, run, onData, setPush, unpaired],
+    () => ({ ...state, token, connected, banner, send, say, ask, call, run, onData, setPush, unpaired, outbox: mine, queue, unqueue }),
+    [state, token, connected, banner, send, say, ask, call, run, onData, setPush, unpaired, mine, queue, unqueue],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
