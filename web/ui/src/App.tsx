@@ -84,7 +84,7 @@ type TabItem = {
 const railGroups: Tab[][] = [
   ["chat", "status", "activity"],
   ["tasks", "notes", "projects", "routines", "goals"],
-  ["memory", "skills", "coding", "model", "whatsnew"],
+  ["memory", "skills", "coding", "model"],
   ["machines", "devices", "users", "usage"],
 ];
 
@@ -168,6 +168,8 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
               </div>
             ))}
           </div>
+          {/* What's new: at the foot of the rail, just above you. */}
+          {all.filter((t) => t.id === "whatsnew").map(railItem)}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button type="button" aria-label="This device" className="mt-1 flex size-9 items-center justify-center rounded-lg bg-sidebar-accent font-semibold text-xs uppercase">

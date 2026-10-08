@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.21.0.137",
+    "date": "2026-10-08",
+    "title": "What's new where you'll find it",
+    "improved": [
+      "What's new now sits at the foot of the sidebar's rail, just above your initials."
+    ]
+  },
+  {
     "version": "0.20.0.136",
     "date": "2026-10-08",
     "title": "What's new and version numbers",
