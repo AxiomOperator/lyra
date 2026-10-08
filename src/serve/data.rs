@@ -212,6 +212,8 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
             let mine = app.personal().map(|u| format!("user:{u}"));
             page(app.mem().ok_or("memory is off".to_string()).and_then(|m| m.page(arg["query"].as_str().unwrap_or(""), arg["scope"].as_str().unwrap_or(""), mine.as_deref())))
         }
+        // The Settings page (admins): the common settings and their values.
+        "settings" => crate::settings::page(),
         "rules" => json!({
             "system": app.caps.as_ref().and_then(|c| c.system.as_ref()).map(|s| s.settings()).unwrap_or_default(),
             "path": crate::config::path().map(|p| crate::context::show(&p)),

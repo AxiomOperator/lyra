@@ -121,6 +121,7 @@ impl App {
             "/users" => self.users_command(arg),
             "/whoami" => Ok(self.whoami()),
             "/usage" => self.usage_command(arg),
+            "/settings" => self.settings_command(arg),
             "/recap" => recap::command(&self.owner),
             "/watches" | "/watch" => watches::command(&self.owner, arg),
             "/feedback" => Ok(feedback::command(&feedback::Who { user: self.owner.clone(), name: String::new(), admin: self.admin })),
@@ -255,7 +256,7 @@ impl App {
 /// Commands the app's pages and buttons may run (each still checked by role).
 pub(crate) const PAGE_COMMANDS: &[&str] = &[
     "/memory", "/approve", "/reject", "/deprecate", "/goal", "/goals", "/model", "/backup", "/routine", "/routines", "/status", "/diagnose", "/coding",
-    "/briefing", "/tasks", "/task", "/pmi", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami", "/usage", "/sessions", "/plan", "/recap", "/watches", "/feedback",
+    "/briefing", "/tasks", "/task", "/pmi", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami", "/usage", "/sessions", "/plan", "/recap", "/watches", "/feedback", "/settings",
 ];
 
 /// Commands a member (not an admin) may use. Their own memories, goals,

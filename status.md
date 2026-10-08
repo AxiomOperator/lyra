@@ -204,7 +204,7 @@ Recurring errors:
 | **D-3** ✅ | **Done in 0.25.4.148:** `text.rs` (`html_text`, `xml_text`, `page_text`: one tag stripper and one entity reader), `alerts.rs` (`Ledger`: told once, cleared once, kept in `alerts/<name>.json`, older files still read) under both `health::Alerts` and `status::Alerts`, and `graph.rs` (the Microsoft sign-in, each person's connection and access tokens, `graph`/`graph_with`/`graph_bytes`, Graph times) used by calendar, mail, Teams, files, meetings, planner and proactive; no module builds a Graph URL itself. *Was:* **Duplicated helpers:** two HTML/XML-to-text strippers (`teams.rs`, `files.rs`) besides `html2text`; two near-identical `Alerts` types (`health.rs`, `status.rs`); Graph HTTP helpers spread across modules. | Pull them into `text.rs`, `alerts.rs` and `graph.rs`. |
 | D-4 | **`execution/src/engine.rs` has about 25 `unwrap()`s** outside tests, e.g. `plan.step_mut(id).unwrap()`. | A bad plan state would panic the plan thread. Replace them with errors. |
 | **D-5** ✅ | **Done in 0.26.0.149:** the first load is 1.1 MB of JavaScript (345 KB gzipped), was 1.7 MB (480 KB). Every page but the chat loads when first opened (`page()` in `App.tsx`, reloading once if an update removed its chunk); Shiki's core, engine and themes load with the first code block; the unused tokenlens price catalogue and motion (Shimmer is CSS now) are gone; `chunkSizeWarningLimit` is 1100 KB so growth shows in the build. **0.26.1.150:** lyra-web now sends the app gzipped (it went out uncompressed before): on an emulated phone (1.6 Mbit/s, 150 ms, CPU ×4) the first screen takes 2.5 s and 392 KB, was 9.9 s and 1,849 KB. What's left is React, Streamdown with its Markdown/HTML parsers (parse5 for raw HTML in replies) and the chat. *Was:* **The app's main bundle is 1.7 MB** (Shiki grammars add about 1 MB more on demand). | A slow first load on phones. Split the routes (Feedback, Q&A, Usage, manage pages) and lazy-load Shiki. |
-| D-6 | **The config has 40 sections** (401-line example). | Powerful but daunting. The check script helps; a **Settings page** for the common ones (models, working hours, recap, notifications) would help more. |
+| **D-6** ✅ | **Done in 0.27.0.151:** a Settings page (admins; the menu under your initials and More) and `/settings` for the common ones: models (chat model, server, prices, vision and decision models), working hours, briefing and recap, notifications. `src/settings.rs` holds one list of fields (key, label, help, kind with limits, getter) that drives the page, the checks and the command; a save checks every value first, writes only what changed with `config::update` (comments, even after a value, kept; never a file lyra cannot read back) and reloads every conversation. *Was:* **The config has 40 sections** (401-line example). | Powerful but daunting. The check script helps; a **Settings page** for the common ones (models, working hours, recap, notifications) would help more. |
 | D-7 | `lancedb` is pinned at `=0.37.1` (0.38+ needs its `remote` feature). | Watch for a fix upstream, then upgrade. |
 | D-8 | **Changelog discipline relies on a rule.** The test checks format and numbering, but not that each commit has an entry. | A git pre-commit hook could enforce it. |
 | D-9 | **Help text is spread over 5 `COMMANDS` constants**, with `PAGE_COMMANDS` (32) and `member_may` kept by hand. | One table with each command's help, page permission and member permission. |
@@ -238,7 +238,7 @@ Recurring errors:
 1. ~~D-1: split `main.rs` and `serve.rs`~~ (done). **D-9:** one command table.
 2. ~~D-5: a smaller app bundle, faster on phones~~ (done).
 3. **G-4:** usage budgets and alerts.
-4. **D-6:** a Settings page for the everyday options.
+4. ~~D-6: a Settings page for the everyday options~~ (done).
 5. **G-3:** try every Microsoft 365 feature with real accounts and members; fix what turns up.
 6. **G-10:** turn on meeting transcripts once the permissions are granted.
 7. **I-14:** trim the chat prompt (faster and cheaper replies).
@@ -263,7 +263,7 @@ Grouped by who benefits; ⭐ marks the most useful.
 - **A document workspace:** draft a Word document or one-pager with lyra and save it to OneDrive (after approval).
 
 **Admins**
-- ⭐ **A Settings page** (D-6) and **an admin dashboard**: errors, restarts, model latency, usage trends and feedback counts on one screen.
+- ⭐ ~~**A Settings page** (D-6)~~ (done) and **an admin dashboard**: errors, restarts, model latency, usage trends and feedback counts on one screen.
 - **Per-person policies:** which tools, models and machines each member may use; spending limits (G-4).
 - **Audit log:** who approved what, when (from the existing approval records), searchable and exportable.
 - **A fleet view for machines:** patch status, last backup and disk trends across all nodes.

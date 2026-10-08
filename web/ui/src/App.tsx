@@ -29,6 +29,7 @@ import {
   NotebookPen,
   Users,
   Gauge,
+  Settings as SettingsIcon,
   FolderOpen,
   Bell,
   Brain,
@@ -107,6 +108,7 @@ const TasksPage = page(() => import("./lyra/tasks"), "TasksPage");
 const NotesPage = page(() => import("./lyra/notes"), "NotesPage");
 const UsersPage = page(() => import("./lyra/users"), "UsersPage");
 const UsagePage = page(() => import("./lyra/usage"), "UsagePage");
+const SettingsPage = page(() => import("./lyra/settings"), "SettingsPage");
 const ProjectsPage = page(() => import("./lyra/projects"), "ProjectsPage");
 const StatusPage = page(() => import("./lyra/status"), "StatusPage");
 const ActivityPage = page(() => import("./lyra/pages"), "ActivityPage");
@@ -122,8 +124,8 @@ function Loading() {
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users";
-const manage: Manage[] = ["whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users"];
+type Manage = "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings";
+const manage: Manage[] = ["whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings"];
 /** What a member (not an admin) has: their chats, tasks, status, activity, skills. */
 const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage"];
 
@@ -253,6 +255,12 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
               <DropdownMenuItem onClick={() => go("whatsnew")}>
                 <Sparkles /> What's new
               </DropdownMenuItem>
+              {/* Settings live here, not on the rail (it's full on a laptop screen). */}
+              {(user?.admin ?? true) && (
+                <DropdownMenuItem onClick={() => go("settings")}>
+                  <SettingsIcon /> Settings
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onClick={() => go("more")}>
                 <Bell /> Notifications & more
               </DropdownMenuItem>
@@ -377,6 +385,7 @@ function Shell() {
     { id: "model", label: "Model", icon: Cpu },
     { id: "usage", label: "Usage", icon: Gauge },
     { id: "users", label: "Users", icon: Users, badge: status.users_waiting ?? 0 },
+    { id: "settings", label: "Settings", icon: SettingsIcon },
   ] as TabItem[]).filter((t) => admin || forMembers.includes(t.id));
   const toMore = () => setTab("more");
   const tabs: TabItem[] = ([
@@ -479,6 +488,7 @@ function Shell() {
           {tab === "model" && <ModelsPage onBack={toMore} />}
           {tab === "usage" && <UsagePage onBack={toMore} />}
           {tab === "users" && <UsersPage onBack={toMore} />}
+          {tab === "settings" && <SettingsPage onBack={toMore} />}
           </Suspense>
         </div>
 

@@ -84,6 +84,7 @@ impl Stats {
 }
 
 /// Prices per million tokens, from the config file.
+#[derive(Clone)]
 pub struct Pricing {
     pub input_per_mtok: f64,
     pub cached_per_mtok: f64,

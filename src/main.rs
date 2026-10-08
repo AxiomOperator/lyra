@@ -43,6 +43,7 @@ mod serve;
 mod search;
 mod secrets;
 mod sessions;
+mod settings;
 mod stats;
 mod style;
 mod status;

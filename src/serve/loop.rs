@@ -236,6 +236,28 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                                 let _ = reply.send(answer.map(|v| json!({ "diff": v["stdout"], "error": v["error"] })).unwrap_or_else(|e| json!({ "error": e })));
                             });
                         }
+                        // The Settings page's Save: written to config.toml, then every
+                        // conversation picks it up (the model and prices are each one's own).
+                        "settings_set" => {
+                            let answer = match crate::settings::set(&arg["changes"]) {
+                                Ok(changed) if changed.is_empty() => json!({ "ok": true, "changed": changed, "page": crate::settings::page() }),
+                                Ok(changed) => {
+                                    convs[0].app.reload();
+                                    let (url, model, pricing, status) = (convs[0].app.base_url.clone(), convs[0].app.model.clone(), convs[0].app.pricing.clone(), convs[0].app.status.clone());
+                                    for c in convs.iter_mut() {
+                                        c.app.base_url = url.clone();
+                                        c.app.model = model.clone();
+                                        c.app.pricing = pricing.clone();
+                                        c.app.status = status.clone();
+                                        c.changed = true;
+                                    }
+                                    convs[0].app.log(Level::Agent, format!("settings changed from the app by {}: {}", who.user, changed.join(", ")));
+                                    json!({ "ok": true, "changed": changed, "page": crate::settings::page() })
+                                }
+                                Err(e) => json!({ "ok": false, "error": e }),
+                            };
+                            let _ = reply.send(answer);
+                        }
                         "set_rules" => {
                             let answer = set_server_rules(&mut convs[0].app, &arg["system"]);
                             let _ = reply.send(answer.unwrap_or_else(|e| json!({ "error": e })));

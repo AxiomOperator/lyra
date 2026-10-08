@@ -32,6 +32,7 @@ pub(crate) const COMMANDS: &str = "\
 /task add <what> [when] · /task done <n> [comment] · /task snooze <n> [1h|tomorrow]
 /users [approve|admin|member|disable <who>]   the people who use lyra serve (admins)
 /whoami                      who this conversation belongs to
+/settings [<key> <value>]    the common settings (models, working hours, briefing, recap, notifications); change one (admins)
 /usage [days]                AI usage: everyone's and each person's (admins), your own (members)
 /recap                       your end-of-day recap now (it also comes at the end of the working day)
 /watches [cancel <id>]       what lyra watches for you (tell me when Jeremy replies)

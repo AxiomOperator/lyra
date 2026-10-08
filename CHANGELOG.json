@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.27.0.151",
+    "date": "2026-10-08",
+    "title": "Settings page",
+    "new": [
+      "Admins have a Settings page (in the menu under your initials, and in More): the chat model and its server and prices, the vision and decision models, your working hours and days, the morning briefing and the end-of-day recap, and what lyra pushes and does by itself. Every value is checked before it's saved, and changes apply at once without a restart.",
+      "In the terminal, /settings lists the same settings and /settings <key> <value> changes one."
+    ]
+  },
+  {
     "version": "0.26.1.150",
     "date": "2026-10-08",
     "title": "Much faster on phones",

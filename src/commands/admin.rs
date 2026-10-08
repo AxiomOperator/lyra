@@ -217,6 +217,16 @@ impl App {
     }
 
     /// `/usage [days]`: everyone's and each person's for admins, one's own for members.
+    /// `/settings [<key> <value>]`: the common settings; a change reloads lyra.
+    pub(crate) fn settings_command(&mut self, arg: &str) -> Result<String, String> {
+        let text = crate::settings::command(arg)?;
+        if !arg.trim().is_empty() && !text.contains(" is already ") {
+            self.reload();
+            self.log(Level::Agent, format!("settings changed: {}", arg.trim()));
+        }
+        Ok(text)
+    }
+
     pub(crate) fn usage_command(&mut self, arg: &str) -> Result<String, String> {
         let days = arg.trim().parse::<i64>().unwrap_or(7);
         let users = self.hub.as_ref().map(|h| h.users().list()).unwrap_or_default();

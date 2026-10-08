@@ -18,6 +18,7 @@ impl App {
                 self.model = config.model.clone();
                 configure(&config);
                 self.pricing = pricing(&config);
+                self.status = config.status.clone();
                 if let Some(mem) = self.mem() {
                     for note in mem.reconfigure(config.memory.settings.clone(), config.embedding.clone()) {
                         self.log(Level::Memory, note);
