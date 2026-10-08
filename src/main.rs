@@ -1454,6 +1454,10 @@ impl App {
             "/caps" => self.caps_command(arg),
             "/goals" | "/goal" => self.goals_command(name, arg),
             "/agents" | "/agent" => self.agents_command(name, arg),
+            // Pin, archive, put in a folder (the app's list).
+            "/sessions" if ["pin", "unpin", "archive", "unarchive", "folder", "dismiss"].contains(&arg.split_whitespace().next().unwrap_or("")) => {
+                sessions::dir().ok_or("no home directory".to_string()).and_then(|d| sessions::keep_command(&d, &self.owner, arg))
+            }
             "/sessions" if arg.trim_start().starts_with("search") => {
                 let query = arg.trim_start().trim_start_matches("search").trim();
                 if query.is_empty() {
@@ -2942,7 +2946,7 @@ const LESSON_GATE: &str = "Does this conversation teach the assistant a reusable
 /// Commands the app's pages and buttons may run (each still checked by role).
 const PAGE_COMMANDS: &[&str] = &[
     "/memory", "/approve", "/reject", "/deprecate", "/goal", "/goals", "/model", "/backup", "/routine", "/routines", "/status", "/diagnose", "/coding",
-    "/briefing", "/tasks", "/task", "/pmi", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami", "/usage",
+    "/briefing", "/tasks", "/task", "/pmi", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami", "/usage", "/sessions",
 ];
 
 /// Commands a member (not an admin) may use. Their own memories, goals,

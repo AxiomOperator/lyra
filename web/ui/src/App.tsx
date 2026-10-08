@@ -55,6 +55,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ChatPage } from "./lyra/chat";
+import { ConversationList } from "./lyra/conversations";
 import { GoalsPage, MemoryPage, ModelsPage, RoutinesPage, SkillsPage } from "./lyra/manage";
 import { TasksPage } from "./lyra/tasks";
 import { NotesPage } from "./lyra/notes";
@@ -64,7 +65,6 @@ import { ProjectsPage } from "./lyra/projects";
 import { StatusPage } from "./lyra/status";
 import { CodingPage } from "./lyra/coding";
 import { ActivityPage, DevicesPage, MachinesPage, MorePage } from "./lyra/pages";
-import { ago } from "./lyra/push";
 import { SearchBox, SearchHits, useConversationSearch } from "./lyra/search";
 import { APP_VERSION, LyraProvider, useData, useLyra } from "./lyra/store";
 import type { Session } from "./lyra/types";
@@ -124,8 +124,9 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
   const { setOpenMobile } = useSidebar();
   // Refreshed as conversations start, finish or get a title, here or on another device.
   const live = status.conversations ?? [];
-  const [sessions] = useData<Session[]>("sessions", [status.title, JSON.stringify(live)]);
-  const answering = (id: string) => live.some((c) => c.session === id && c.answering);
+  const [sessionList, reloadSessions] = useData<Session[]>("sessions", [status.title, JSON.stringify(live)]);
+  // "Answering" comes live from the status, not the list.
+  const sessions = (sessionList ?? []).map((s) => ({ ...s, answering: live.some((c) => c.session === s.id && c.answering) }));
   const go = (t: Tab) => {
     setTab(t);
     setOpenMobile(false);
@@ -222,24 +223,7 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
                 </Collapsible>
               );
             })}
-            <SidebarGroup className="min-h-0 flex-1">
-              <SidebarGroupLabel>Conversations</SidebarGroupLabel>
-              <SidebarGroupContent className="min-h-0 flex-1 overflow-y-auto">
-                <SidebarMenu>
-                  {(sessions ?? []).slice(0, 40).map((s) => (
-                    <SidebarMenuItem key={s.id}>
-                      <SidebarMenuButton size="lg" isActive={s.current && tab === "chat"} onClick={() => resume(s.id, s.current)} className="h-auto py-1.5">
-                        <span className="grid min-w-0 flex-1 leading-tight">
-                          <span className="truncate text-sm">{s.title || "(untitled)"}</span>
-                          <span className="truncate text-muted-foreground text-xs">{ago(s.updated)}</span>
-                        </span>
-                        {answering(s.id) && <span title="answering" className="size-2 shrink-0 animate-pulse rounded-full bg-sky-400" />}
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  ))}
-                </SidebarMenu>
-              </SidebarGroupContent>
-            </SidebarGroup>
+            <ConversationList sessions={sessions ?? []} active={tab === "chat"} open={resume} reload={reloadSessions} />
           </>
         )}
       </SidebarContent>

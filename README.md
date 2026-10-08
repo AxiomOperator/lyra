@@ -1178,6 +1178,22 @@ scripts/lyra-check-config --offline   # just the file
 
 It exits 0 when all is well and 1 on errors. It needs only Python 3.11+.
 
+### The conversation list
+
+In the app's sidebar, conversations are grouped:
+- **Pinned**
+- your **folders**
+- the rest by date: Today, Yesterday, This week, This month, Earlier
+- **Archived**, folded away
+
+Each row's ⋯ menu pins it, moves it to a folder (or a new one) and archives it.
+Once you have folders, lyra suggests one for new conversations ("Move to
+Firewall?"). The suggestion comes from the decision model, once per
+conversation, and one tap accepts it. This is kept in `~/.lyra/sessions/meta.json`,
+apart from the conversations themselves. The same thing as commands:
+`/sessions pin|unpin|archive|unarchive <id>`,
+`/sessions folder <id> <name>` (`-` takes it out of its folder).
+
 ### AI usage
 
 Every model call lyra makes is kept in `~/.lyra/usage/<YYYY-MM>.jsonl`, credited to

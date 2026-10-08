@@ -1537,11 +1537,38 @@ fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build: Option<&s
     let page = |r: Result<Value, String>| r.unwrap_or_else(|e| json!({ "error": e }));
     match what {
         "sessions" => {
-            let all = crate::sessions::dir().map(|d| crate::sessions::list_for(&d, &app.owner)).unwrap_or_default();
-            json!(all.iter().take(60).map(|s| json!({
-                "id": s.id, "title": s.title, "turns": s.user_turns(), "updated": s.updated, "current": s.id == app.session_id,
-                "open": loaded.iter().any(|(id, _)| *id == s.id), "answering": loaded.iter().any(|(id, w)| *id == s.id && *w),
-            })).collect::<Vec<_>>())
+            let Some(dir) = crate::sessions::dir() else { return json!([]) };
+            let all = crate::sessions::list_for(&dir, &app.owner);
+            let metas = crate::sessions::metas(&dir);
+            let folders = crate::sessions::folders(&dir, &app.owner);
+            // A folder for a few new ones (the decision model, once each, in the background).
+            if !folders.is_empty() && crate::decide::model().is_some() {
+                let todo: Vec<String> = all.iter().filter(|s| s.id != app.session_id && s.updated > chrono::Utc::now() - chrono::Duration::days(14) && metas.get(&s.id).is_none_or(|m| !m.looked && m.folder.is_none() && !m.archived)).take(3).map(|s| s.id.clone()).collect();
+                if !todo.is_empty() {
+                    let (dir, owner) = (dir.clone(), app.owner.clone());
+                    std::thread::spawn(move || {
+                        crate::acting::set(&owner);
+                        for id in todo {
+                            let Ok(s) = crate::sessions::find_for(&dir, &id, &owner) else { continue };
+                            let pick = crate::sessions::suggest_folder(&s, &folders);
+                            let _ = crate::sessions::set_meta(&dir, &id, &owner, |m| {
+                                m.looked = true;
+                                m.suggested = pick;
+                            });
+                        }
+                    });
+                }
+            }
+            // The latest 300, and every pinned or filed one however old.
+            let keep = |s: &crate::sessions::Session| metas.get(&s.id).is_some_and(|m| m.pinned || m.folder.is_some());
+            json!(all.iter().enumerate().filter(|(i, s)| *i < 300 || keep(s)).map(|(_, s)| {
+                let m = metas.get(&s.id).cloned().unwrap_or_default();
+                json!({
+                    "id": s.id, "title": s.title, "turns": s.user_turns(), "updated": s.updated, "current": s.id == app.session_id,
+                    "open": loaded.iter().any(|(id, _)| *id == s.id), "answering": loaded.iter().any(|(id, w)| *id == s.id && *w),
+                    "pinned": m.pinned, "archived": m.archived, "folder": m.folder, "suggested": m.suggested,
+                })
+            }).collect::<Vec<_>>())
         }
         "search" => {
             let query = arg["query"].as_str().unwrap_or("").trim();

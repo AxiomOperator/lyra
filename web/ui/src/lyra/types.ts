@@ -132,6 +132,12 @@ export interface Session {
   open?: boolean;
   /** lyra is writing a reply in it right now. */
   answering?: boolean;
+  pinned?: boolean;
+  archived?: boolean;
+  /** The person's own folder for it. */
+  folder?: string | null;
+  /** The folder lyra suggests, until taken or dismissed. */
+  suggested?: string | null;
 }
 
 export interface ActivityLine {

@@ -133,7 +133,7 @@ pub fn list(dir: &Path) -> Vec<Session> {
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "json") && !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')))
+        .filter(|p| p.extension().is_some_and(|e| e == "json") && !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.') || n == "meta.json"))
         .filter_map(|p| load_file(&p).ok())
         .filter(|s| s.user_turns() > 0)
         .collect();
@@ -338,5 +338,145 @@ mod tests {
         assert!(find_for(&dir, "2026010", "owner").err().unwrap().contains("match"));
         assert!(find_for(&dir, "nope", "owner").is_err());
         assert!(describe(&list(&dir), 10).contains("second chat"));
+    }
+}
+
+/// How a person keeps a conversation in their list: pinned, archived, in a
+/// folder, and the folder lyra suggests. Kept apart from the conversation
+/// (`sessions/meta.json`), so saving one never loses it.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Meta {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// lyra's suggestion, until it's taken or dismissed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested: Option<String>,
+    /// lyra looked for a folder already (asked once per conversation).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub looked: bool,
+}
+
+static META: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn meta_path(dir: &Path) -> PathBuf {
+    dir.join("meta.json")
+}
+
+/// Every conversation's keeping, by id.
+pub fn metas(dir: &Path) -> std::collections::HashMap<String, Meta> {
+    std::fs::read_to_string(meta_path(dir)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+/// Change one conversation's keeping (only one of `owner`'s own).
+pub fn set_meta(dir: &Path, id: &str, owner: &str, change: impl FnOnce(&mut Meta)) -> Result<Meta, String> {
+    let s = find_for(dir, id, owner)?;
+    let _guard = META.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = metas(dir);
+    let m = all.entry(s.id.clone()).or_default();
+    change(m);
+    let out = m.clone();
+    if *m == Meta::default() {
+        all.remove(&s.id);
+    }
+    let tmp = dir.join(".meta.json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, meta_path(dir)).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// A person's folders, in the order they're first used (A–Z).
+pub fn folders(dir: &Path, owner: &str) -> Vec<String> {
+    let mine: std::collections::HashSet<String> = list_for(dir, owner).into_iter().map(|s| s.id).collect();
+    let mut names: Vec<String> = metas(dir).into_iter().filter(|(id, _)| mine.contains(id)).filter_map(|(_, m)| m.folder).collect();
+    names.sort_by_key(|n| n.to_lowercase());
+    names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    names
+}
+
+/// `/sessions pin|unpin|archive|unarchive|folder|dismiss <id> [folder]`.
+pub fn keep_command(dir: &Path, owner: &str, arg: &str) -> Result<String, String> {
+    let mut words = arg.split_whitespace();
+    let (Some(what), Some(id)) = (words.next(), words.next()) else {
+        return Err("usage: /sessions pin|unpin|archive|unarchive <id> · /sessions folder <id> <name> (- takes it out) · /sessions dismiss <id>".into());
+    };
+    let rest: String = words.collect::<Vec<_>>().join(" ");
+    let name = rest.trim().trim_matches('"').trim();
+    let (m, done) = match what {
+        "pin" => (set_meta(dir, id, owner, |m| m.pinned = true)?, "pinned".to_string()),
+        "unpin" => (set_meta(dir, id, owner, |m| m.pinned = false)?, "unpinned".to_string()),
+        "archive" => (set_meta(dir, id, owner, |m| {
+            m.archived = true;
+            m.pinned = false;
+        })?, "archived".to_string()),
+        "unarchive" => (set_meta(dir, id, owner, |m| m.archived = false)?, "back in the list".to_string()),
+        "dismiss" => (set_meta(dir, id, owner, |m| m.suggested = None)?, "suggestion dismissed".to_string()),
+        "folder" if name.is_empty() => return Err("which folder? (/sessions folder <id> <name>, or - to take it out)".into()),
+        "folder" if name == "-" => (set_meta(dir, id, owner, |m| m.folder = None)?, "out of its folder".to_string()),
+        "folder" => {
+            if name.chars().count() > 40 {
+                return Err("a folder name up to 40 characters".into());
+            }
+            // The same folder however it's typed.
+            let name = folders(dir, owner).into_iter().find(|f| f.eq_ignore_ascii_case(name)).unwrap_or_else(|| name.to_string());
+            (set_meta(dir, id, owner, |m| {
+                m.folder = Some(name.clone());
+                m.suggested = None;
+            })?, format!("moved to {name}"))
+        }
+        other => return Err(format!("/sessions {other}? pin, unpin, archive, unarchive, folder or dismiss")),
+    };
+    let _ = m;
+    Ok(format!("{id}: {done}"))
+}
+
+/// Which of the person's folders a conversation belongs in, if any: the
+/// decision model's pick from its title and first messages (asked once).
+pub fn suggest_folder(s: &Session, folders: &[String]) -> Option<String> {
+    if folders.is_empty() {
+        return None;
+    }
+    let text: String = s.messages.iter().filter(|m| m.role == "user").take(3).map(|m| m.content.chars().take(400).collect::<String>()).collect::<Vec<_>>().join("\n");
+    let mut options: Vec<(String, String)> = folders.iter().map(|f| (f.clone(), format!("Conversations about {f}."))).collect();
+    options.push(("none".into(), "None of these: a different subject.".into()));
+    let q = crate::decide::Question::Choice("Which folder does this conversation belong in?".into(), options);
+    let answers = crate::decide::ask("folder", &format!("{}\n{text}", s.title), &[("folder".into(), q)])?;
+    let a = crate::decide::confident(&answers, "folder")?;
+    folders.iter().find(|f| **f == a.choice).cloned()
+}
+
+#[cfg(test)]
+mod keep_tests {
+    use super::*;
+
+    #[test]
+    fn pins_folders_and_archive_are_kept_apart_and_only_for_the_owner() {
+        let dir = std::env::temp_dir().join(format!("lyra-sessions-meta-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Session { id: "20261008-090000-abc123".into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: "Firewall rules".into(), owner: "dana".into(), messages: vec![] };
+        s.messages.push(SavedMessage { role: "user".into(), content: "Firewall rules".into(), tool_calls: vec![], tool_call_id: None, reasoning: String::new(), memories: vec![], skills: vec![], agents: vec![] });
+        save(&dir, &s).unwrap();
+        assert!(keep_command(&dir, "dana", "folder abc123 Network").unwrap().contains("moved to Network"));
+        keep_command(&dir, "dana", "pin abc123").unwrap();
+        assert!(keep_command(&dir, "owner", "pin abc123").is_err(), "not someone else's");
+        // Saving the conversation again keeps them.
+        save(&dir, &s).unwrap();
+        let m = &metas(&dir)["20261008-090000-abc123"];
+        assert!(m.pinned && m.folder.as_deref() == Some("Network"));
+        assert_eq!(folders(&dir, "dana"), vec!["Network"]);
+        assert!(folders(&dir, "owner").is_empty());
+        // The same folder however it's typed; archiving unpins.
+        keep_command(&dir, "dana", "folder abc123 network").unwrap();
+        assert_eq!(metas(&dir)["20261008-090000-abc123"].folder.as_deref(), Some("Network"));
+        keep_command(&dir, "dana", "archive abc123").unwrap();
+        let m = &metas(&dir)["20261008-090000-abc123"];
+        assert!(m.archived && !m.pinned);
+        keep_command(&dir, "dana", "folder abc123 -").unwrap();
+        keep_command(&dir, "dana", "unarchive abc123").unwrap();
+        assert!(!metas(&dir).contains_key("20261008-090000-abc123"), "nothing left to keep");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
