@@ -1,0 +1,420 @@
+#!/usr/bin/env python3
+"""lyra-check-config: check lyra's config.toml before (re)starting lyra.
+
+  lyra-check-config                 the config lyra serve uses, and its models
+  lyra-check-config --offline       only the file (no network)
+  lyra-check-config path/to/config.toml
+
+It reports:
+  - TOML syntax errors (with the line)
+  - sections and keys lyra doesn't know (typos), compared with config.example.toml
+  - values of the wrong type (a number in quotes, "true" as a string, ...)
+  - known pitfalls ([vision] instead of [vision_model], the decision and vision
+    models on one server, secrets.toml readable by others, ...)
+  - each configured model and service: reachable, the right model, able to do
+    its job (the chat model, embeddings, reranker, decision model, vision model,
+    SearXNG, PMI)
+
+Exit status: 0 when nothing is wrong (warnings allowed), 1 on errors, 2 when
+the file can't be read at all. Needs Python 3.11+ (tomllib); nothing else.
+"""
+
+import argparse
+import difflib
+import json
+import os
+import socket
+import sys
+import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+# Tables whose keys are the user's own (names), not lyra's settings.
+FREE_FORM = {"groups", "memory.half_life_days"}
+# Settings that are fine to have though the example doesn't show them.
+EXTRA_KEYS = {"web.entra": {"client_secret"}}
+# A 1x1 PNG, to ask a vision model to look at something.
+PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+errors, warnings = [], []
+color = sys.stdout.isatty()
+
+
+def paint(code, text):
+    return f"\033[{code}m{text}\033[0m" if color else text
+
+
+def ok(msg):
+    print(f"  {paint('32', 'ok')}    {msg}")
+
+
+def warn(msg):
+    warnings.append(msg)
+    print(f"  {paint('33', 'warn')}  {msg}")
+
+
+def error(msg):
+    errors.append(msg)
+    print(f"  {paint('31', 'error')} {msg}")
+
+
+def section(title):
+    print(f"\n{paint('1', title)}")
+
+
+# ---- where things are
+
+def lyra_home():
+    if os.environ.get("LYRA_HOME"):
+        return Path(os.environ["LYRA_HOME"])
+    return Path.home() / ".lyra"
+
+
+def find_example(explicit):
+    for p in [explicit, HERE.parent / "config.example.toml", Path("/root/Projects/lyra/config.example.toml")]:
+        if p and Path(p).is_file():
+            return Path(p)
+    return None
+
+
+# ---- the example, as the shape of a valid config
+
+def example_shape(path):
+    """config.example.toml with its settings uncommented, as a dict."""
+    lines = []
+    for line in path.read_text().splitlines():
+        rest = line[2:] if line.startswith("# ") else None
+        if rest is not None:
+            r = rest.lstrip()
+            key = r.split(" = ", 1)[0] if " = " in r else ""
+            if r.startswith("[") or (key and all(c.isalnum() or c in '_".-' for c in key)):
+                line = rest
+        lines.append(line)
+    try:
+        return tomllib.loads("\n".join(lines))
+    except tomllib.TOMLDecodeError as e:
+        print(f"(the example couldn't be read, so keys aren't compared: {e})")
+        return None
+
+
+def type_name(v):
+    return {bool: "true/false", int: "a number", float: "a number", str: "text", list: "a list", dict: "a table"}.get(type(v), type(v).__name__)
+
+
+def same_type(have, want):
+    if isinstance(want, bool) or isinstance(have, bool):
+        return isinstance(have, bool) and isinstance(want, bool)
+    if isinstance(want, (int, float)):
+        return isinstance(have, (int, float))
+    return isinstance(have, type(want))
+
+
+def compare(have, want, at=""):
+    """Keys in `have` that `want` (the example) doesn't know, and wrong types."""
+    for key, value in have.items():
+        name = f"{at}.{key}" if at else key
+        if at in FREE_FORM:
+            continue
+        if key not in want:
+            if key in EXTRA_KEYS.get(at, set()):
+                continue
+            where = f"[{at}]" if at else "the top level"
+            near = difflib.get_close_matches(key, list(want), n=3, cutoff=0.7)
+            hint = f" (did you mean {', '.join(near[:3])}?)" if near else ""
+            error(f"{name}: lyra has no such setting in {where}{hint}; it would be ignored")
+            continue
+        expect = want[key]
+        if isinstance(value, dict) and isinstance(expect, dict):
+            compare(value, expect, name)
+        elif isinstance(value, list) and isinstance(expect, list) and value and expect and isinstance(expect[0], dict):
+            for i, item in enumerate(value):
+                if isinstance(item, dict):
+                    compare(item, expect[0], f"{name}[{i}]")
+        elif not same_type(value, expect):
+            if isinstance(value, str) and value.lower() in ("true", "false") and isinstance(expect, bool):
+                error(f'{name} = "{value}": write it without quotes ({value.lower()}) — lyra won\'t start otherwise')
+            elif isinstance(value, str) and isinstance(expect, (int, float)) and not isinstance(expect, bool):
+                error(f'{name} = "{value}": should be {type_name(expect)} without quotes — lyra won\'t start otherwise')
+            else:
+                error(f"{name} is {type_name(value)}, lyra expects {type_name(expect)} — lyra won't start otherwise")
+
+
+# ---- the network
+
+def request(url, body=None, timeout=15, headers=None):
+    """(status, parsed JSON or text). Raises on no connection."""
+    data = json.dumps(body).encode() if body is not None else None
+    h = {"Content-Type": "application/json"} if data else {}
+    h.update(headers or {})
+    req = urllib.request.Request(url, data=data, headers=h, method="POST" if data else "GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+            status = r.status
+    except urllib.error.HTTPError as e:
+        raw, status = e.read(), e.code
+    try:
+        return status, json.loads(raw)
+    except ValueError:
+        return status, raw.decode(errors="replace")[:300]
+
+
+def reach(name, url, body=None, timeout=15, headers=None):
+    """A request, or None after reporting why it failed."""
+    try:
+        return request(url, body, timeout, headers)
+    except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as e:
+        reason = getattr(e, "reason", e)
+        error(f"{name}: can't reach {url} ({reason})")
+        return None
+
+
+def base(url):
+    return url.rstrip("/")
+
+
+def server_root(url):
+    """http://host:port/v1 -> http://host:port (llama-server's /props lives there)."""
+    u = base(url)
+    return u[: -len("/v1")] if u.endswith("/v1") else u
+
+
+def models_of(reply):
+    out = set()
+    if isinstance(reply, dict):
+        for m in reply.get("data", []) or []:
+            out.add(m.get("id", ""))
+            out.update(m.get("aliases", []) or [])
+        for m in reply.get("models", []) or []:
+            out.add(m.get("name", "") or m.get("model", ""))
+    return {m for m in out if m}
+
+
+def message(reply):
+    if isinstance(reply, dict):
+        e = reply.get("error")
+        if isinstance(e, dict):
+            return e.get("message", str(e))
+        if e:
+            return str(e)
+    return str(reply)[:200]
+
+
+def check_chat(cfg):
+    url, model = cfg.get("url", ""), cfg.get("model", "")
+    if not url or not model:
+        error("url and model (the chat model) must be set")
+        return
+    r = reach("chat model", f"{base(url)}/models", timeout=10)
+    if r is None:
+        return
+    status, reply = r
+    names = models_of(reply)
+    if status == 200 and names and model not in names:
+        error(f"chat model: {url} serves {', '.join(sorted(names))}, not {model!r}")
+    elif status == 200:
+        ok(f"chat model {model} at {url}")
+    else:
+        warn(f"chat model: {url}/models answered {status} ({message(reply)}); couldn't confirm the model")
+    if cfg.get("vision") is True:
+        r = reach("chat model (vision)", f"{server_root(url)}/props", timeout=10)
+        if r and r[0] == 200 and isinstance(r[1], dict) and r[1].get("modalities", {}).get("vision") is False:
+            error("vision = true, but the chat model can't see images (llama-server needs its --mmproj)")
+
+
+def check_embedding(e):
+    r = reach("[embedding]", f"{base(e['url'])}/embeddings", {"model": e.get("model", ""), "input": ["lyra config check"]})
+    if r is None:
+        return
+    status, reply = r
+    try:
+        dims = len(reply["data"][0]["embedding"])
+    except (KeyError, IndexError, TypeError):
+        error(f"[embedding]: {status} {message(reply)}")
+        return
+    want = e.get("dimensions")
+    if want and want != dims:
+        error(f"[embedding]: dimensions = {want}, but the model gives {dims} (memory search would break)")
+    else:
+        ok(f"[embedding] {e.get('model')}: {dims}-dimensional vectors")
+
+
+def check_reranker(e):
+    r = reach("[reranker]", f"{base(e['url'])}/rerank", {"model": e.get("model", ""), "query": "cat", "documents": ["a cat", "a dog"]})
+    if r is None:
+        return
+    status, reply = r
+    results = reply.get("results") if isinstance(reply, dict) else None
+    if status == 200 and results:
+        ok(f"[reranker] {e.get('model')}: ranks documents")
+    else:
+        error(f"[reranker]: {status} {message(reply)}")
+
+
+def check_decide(d):
+    body = {"model": d.get("model", "clef-flash"), "state": "The user said thanks.", "questions": {"q": {"type": "noul", "instructions": "Is the user happy?"}}}
+    r = reach("[decide]", f"{base(d['url'])}/systemone", body, timeout=15)
+    if r is None:
+        return
+    status, reply = r
+    if status == 200 and isinstance(reply, dict) and "q" in (reply.get("answers") or {}):
+        ok(f"[decide] {d.get('model')}: answers (yes: {reply['answers']['q'].get('noul', 0):.2f})")
+    else:
+        error(f"[decide]: {status} {message(reply)} — lyra falls back to the slower chat model")
+
+
+def check_vision(v):
+    url, model = v.get("url", ""), v.get("model", "")
+    r = reach("[vision_model]", f"{server_root(url)}/props", timeout=10)
+    if r and r[0] == 200 and isinstance(r[1], dict) and "modalities" in r[1]:
+        if not r[1]["modalities"].get("vision"):
+            error(f"[vision_model]: {model} is loaded without vision (start llama-server with its --mmproj file)")
+            return
+    body = {"model": model, "max_tokens": 8, "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "What colour is this? One word."},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{PIXEL}"}},
+    ]}]}
+    r = reach("[vision_model]", f"{base(url)}/chat/completions", body, timeout=120)
+    if r is None:
+        return
+    status, reply = r
+    if status == 200 and isinstance(reply, dict) and reply.get("choices"):
+        ok(f"[vision_model] {model}: looks at pictures")
+    else:
+        error(f"[vision_model]: {status} {message(reply)}")
+    pages = v.get("max_pages")
+    if isinstance(pages, int) and not 1 <= pages <= 20:
+        warn(f"[vision_model] max_pages = {pages}: lyra uses 1-20")
+
+
+def check_search(s):
+    if s.get("enabled") is False:
+        return
+    url = s.get("searxng_url", "")
+    if not url:
+        return
+    r = reach("[search]", f"{base(url)}/search?q=lyra&format=json", timeout=15)
+    if r is None:
+        return
+    status, reply = r
+    if status == 200 and isinstance(reply, dict) and "results" in reply:
+        ok(f"[search] SearXNG at {url}")
+    elif status == 403:
+        error("[search]: SearXNG refuses JSON (add 'json' to search.formats in its settings.yml)")
+    else:
+        error(f"[search]: {status} {message(reply)}")
+
+
+def check_pmi(p):
+    if p.get("enabled") is False or not p.get("url"):
+        return
+    r = reach("[pmi]", base(p["url"]), timeout=10)
+    if r is not None:
+        ok(f"[pmi] {p['url']} answers ({r[0]})")
+
+
+def check_web(w):
+    public = w.get("public_url", "")
+    if public and not public.startswith("https://"):
+        warn("[web] public_url isn't https: the app can't be installed and push notifications won't work")
+    entra = w.get("entra") or {}
+    if entra:
+        for key in ("tenant", "client_id", "owner_email"):
+            if not entra.get(key) or str(entra.get(key)).startswith("<"):
+                error(f"[web.entra] {key} isn't set")
+        if "client_secret" in entra:
+            warn("[web.entra] client_secret is in config.toml: it belongs in config/secrets.toml (`lyra secret entra`)")
+
+
+# ---- the whole check
+
+def main():
+    ap = argparse.ArgumentParser(description="Check lyra's config.toml.")
+    ap.add_argument("config", nargs="?", help="config.toml (default: $LYRA_HOME/config/config.toml)")
+    ap.add_argument("--offline", action="store_true", help="only check the file, not the models and services")
+    ap.add_argument("--example", help="config.example.toml to compare with (default: the repo's)")
+    args = ap.parse_args()
+
+    home = lyra_home()
+    path = Path(args.config) if args.config else home / "config" / "config.toml"
+    print(paint("1", f"lyra config check: {path}"))
+
+    section("The file")
+    try:
+        text = path.read_text()
+    except OSError as e:
+        print(f"  {paint('31', 'error')} can't read it: {e}")
+        return 2
+    try:
+        cfg = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        error(f"not valid TOML: {e}")
+        print(f"\n{paint('31', '1 error')}: lyra won't start with this file.")
+        return 1
+    ok("valid TOML")
+
+    example = find_example(args.example)
+    shape = example_shape(example) if example else None
+    if shape is None:
+        warn("config.example.toml not found: settings aren't compared (use --example)")
+    else:
+        before = len(errors)
+        compare(cfg, shape)
+        if len(errors) == before:
+            ok(f"every setting is one lyra knows (compared with {example})")
+
+    # Known pitfalls.
+    if isinstance(cfg.get("vision"), dict):
+        error("[vision] is a table: lyra's vision model goes under [vision_model] (top-level `vision` is true/false)")
+    endpoints = {k: cfg[k] for k in ("embedding", "reranker", "decide", "vision_model") if isinstance(cfg.get(k), dict)}
+    for name, e in endpoints.items():
+        if not e.get("url") or not e.get("model"):
+            error(f"[{name}] needs both url and model")
+    d, v = endpoints.get("decide"), endpoints.get("vision_model")
+    if d and v and server_root(d.get("url", "")) == server_root(v.get("url", "")):
+        error("[decide] and [vision_model] point at the same server: one llama-server serves one model, so one of them won't work")
+    if cfg.get("input_cost_per_mtok", 0) == 0 and cfg.get("output_cost_per_mtok", 0) == 0:
+        ok("no prices set (AI usage shows tokens, no cost)")
+
+    secrets = path.parent / "secrets.toml"
+    if secrets.exists():
+        mode = secrets.stat().st_mode & 0o777
+        if mode & 0o077:
+            error(f"{secrets} is readable by others ({oct(mode)}): chmod 600 {secrets}")
+        else:
+            ok(f"secrets.toml is private ({oct(mode)})")
+        try:
+            tomllib.loads(secrets.read_text())
+        except tomllib.TOMLDecodeError as e:
+            error(f"secrets.toml isn't valid TOML: {e}")
+        except OSError:
+            pass
+    check_web(cfg.get("web") or {})
+
+    if args.offline:
+        print("\n(models and services not checked: --offline)")
+    else:
+        section("Models and services")
+        check_chat(cfg)
+        for name, check in (("embedding", check_embedding), ("reranker", check_reranker), ("decide", check_decide), ("vision_model", check_vision)):
+            e = endpoints.get(name)
+            if e and e.get("url"):
+                check(e)
+            else:
+                print(f"  -     [{name}] not set up")
+        check_search(cfg.get("search") or {})
+        check_pmi(cfg.get("pmi") or {})
+
+    print()
+    if errors:
+        print(paint("31", f"{len(errors)} error{'s' if len(errors) != 1 else ''}") + (f", {len(warnings)} warning{'s' if len(warnings) != 1 else ''}" if warnings else ""))
+        return 1
+    print(paint("32", "all good") + (f" ({len(warnings)} warning{'s' if len(warnings) != 1 else ''})" if warnings else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

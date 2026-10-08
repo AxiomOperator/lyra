@@ -1160,6 +1160,24 @@ max_pages = 6
 
 Its calls count under `vision` in AI usage.
 
+### Checking config.toml
+
+`scripts/lyra-check-config` checks the config before you restart lyra:
+- TOML syntax
+- settings lyra doesn't know (typos, with a "did you mean")
+- values of the wrong type
+- known pitfalls: `[vision]` instead of `[vision_model]`, the decision and vision
+  models on one server, a `secrets.toml` others can read
+- each configured model and service: the chat model, embeddings, reranker,
+  decision model, vision model, SearXNG and PMI
+
+```sh
+scripts/lyra-check-config             # $LYRA_HOME/config/config.toml (~/.lyra), and its models
+scripts/lyra-check-config --offline   # just the file
+```
+
+It exits 0 when all is well and 1 on errors. It needs only Python 3.11+.
+
 ### AI usage
 
 Every model call lyra makes is kept in `~/.lyra/usage/<YYYY-MM>.jsonl`, credited to
