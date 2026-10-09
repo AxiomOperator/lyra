@@ -63,6 +63,20 @@ pub struct User {
     /// The password was set by an admin (a first or reset one): they choose their own at sign-in.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub must_change: bool,
+    /// A "forgot my password" link's token (its SHA-256: the link itself is only
+    /// in their email) and until when it works.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reset: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_until: Option<DateTime<Utc>>,
+}
+
+/// How long a reset link works.
+pub const RESET_FOR: chrono::Duration = chrono::Duration::minutes(30);
+
+fn sha(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(text.trim().as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The fewest characters a password may have.
@@ -177,7 +191,7 @@ impl Users {
         if !all.is_empty() {
             return Ok(false);
         }
-        all.push(User { id: OWNER.into(), name: name.into(), email: String::new(), tenant: String::new(), oid: String::new(), role: Role::Admin, status: Status::Active, created: Utc::now(), last_seen: None, tool_rounds: None, username: String::new(), password: String::new(), must_change: false });
+        all.push(User { id: OWNER.into(), name: name.into(), email: String::new(), tenant: String::new(), oid: String::new(), role: Role::Admin, status: Status::Active, created: Utc::now(), last_seen: None, tool_rounds: None, username: String::new(), password: String::new(), must_change: false, reset: String::new(), reset_until: None });
         self.save(&all).map(|_| true)
     }
 
@@ -231,6 +245,48 @@ impl Users {
         Ok(u)
     }
 
+    /// "Forgot my password": a one-time token for someone who signs in with a
+    /// password and has an email address (`None` otherwise: nobody is told
+    /// which). Their old password keeps working until the link is used.
+    pub fn start_reset(&self, username: &str) -> Result<Option<(User, String)>, String> {
+        let key = username.trim().to_lowercase();
+        let mut all = self.list();
+        let Some(i) = all.iter().position(|u| !u.username.is_empty() && u.username == key) else { return Ok(None) };
+        if all[i].status != Status::Active || !all[i].email.contains('@') {
+            return Ok(None);
+        }
+        let token: String = (0..2).map(|_| uuid::Uuid::new_v4().simple().to_string()).collect();
+        all[i].reset = sha(&token);
+        all[i].reset_until = Some(Utc::now() + RESET_FOR);
+        let u = all[i].clone();
+        self.save(&all)?;
+        Ok(Some((u, token)))
+    }
+
+    /// A reset link used: the new password set (checked), the link spent.
+    pub fn finish_reset(&self, token: &str, new: &str) -> Result<User, String> {
+        check_strength(new)?;
+        let wanted = sha(token);
+        let mut all = self.list();
+        let i = all.iter().position(|u| !u.reset.is_empty() && u.reset == wanted).ok_or("that link has been used or replaced: ask for a new one")?;
+        if all[i].reset_until.is_none_or(|t| t < Utc::now()) {
+            all[i].reset.clear();
+            all[i].reset_until = None;
+            self.save(&all)?;
+            return Err("that link has expired (they work for 30 minutes): ask for a new one".into());
+        }
+        if all[i].status != Status::Active {
+            return Err("this account is turned off: ask an admin".into());
+        }
+        all[i].password = hash(new)?;
+        all[i].must_change = false;
+        all[i].reset.clear();
+        all[i].reset_until = None;
+        let u = all[i].clone();
+        self.save(&all)?;
+        Ok(u)
+    }
+
     /// Set (or clear) someone's email address: where lyra's emails to them go.
     /// For accounts without Microsoft (whose sign-in brings its own address).
     pub fn set_email(&self, key: &str, email: &str) -> Result<User, String> {
@@ -264,7 +320,7 @@ impl Users {
         }
         let temp = temporary_password();
         let id = format!("u-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
-        let user = User { id, name: name.chars().take(80).collect(), email: String::new(), tenant: String::new(), oid: String::new(), role, status: Status::Active, created: Utc::now(), last_seen: None, tool_rounds: None, username, password: hash(&temp)?, must_change: true };
+        let user = User { id, name: name.chars().take(80).collect(), email: String::new(), tenant: String::new(), oid: String::new(), role, status: Status::Active, created: Utc::now(), last_seen: None, tool_rounds: None, username, password: hash(&temp)?, must_change: true, reset: String::new(), reset_until: None };
         all.push(user.clone());
         self.save(&all)?;
         Ok((user, temp))
@@ -359,7 +415,7 @@ impl Users {
             None => match all.iter().position(|u| u.id == OWNER && u.oid.is_empty()).filter(|_| is_owner_email) {
                 Some(i) => i,
                 None => {
-                    all.push(User { id: oid.into(), name: name.into(), email: email.into(), tenant: tenant.into(), oid: oid.into(), role: Role::Member, status: Status::Pending, created: Utc::now(), last_seen: None, tool_rounds: None, username: String::new(), password: String::new(), must_change: false });
+                    all.push(User { id: oid.into(), name: name.into(), email: email.into(), tenant: tenant.into(), oid: oid.into(), role: Role::Member, status: Status::Pending, created: Utc::now(), last_seen: None, tool_rounds: None, username: String::new(), password: String::new(), must_change: false, reset: String::new(), reset_until: None });
                     all.len() - 1
                 }
             },
@@ -383,6 +439,25 @@ impl Users {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reset_link_works_once_and_only_for_its_account() {
+        let dir = std::env::temp_dir().join(format!("lyra-reset-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let users = Users::open(&dir);
+        users.ensure_owner("Owner").unwrap();
+        let (dana, _) = users.create_local("dana", "Dana", Role::Member).unwrap();
+        assert!(users.start_reset("dana").unwrap().is_none(), "no email: no link (and nothing says so)");
+        users.set_email("dana", "dana@example.org").unwrap();
+        assert!(users.start_reset("nobody").unwrap().is_none());
+        let (_, token) = users.start_reset("Dana").unwrap().unwrap();
+        assert!(!std::fs::read_to_string(dir.join("users.json")).unwrap().contains(&token), "only its hash is kept");
+        assert!(users.finish_reset(&token, "short").unwrap_err().contains("10"), "the new one is checked");
+        let u = users.finish_reset(&token, "a long new password").unwrap();
+        assert_eq!(u.id, dana.id);
+        assert!(users.sign_in("dana", "a long new password").is_ok());
+        assert!(users.finish_reset(&token, "another long password").unwrap_err().contains("used"), "once");
+    }
 
     #[test]
     fn local_accounts_sign_in_with_a_password_no_microsoft_needed() {
@@ -427,7 +502,7 @@ mod tests {
         assert!(users.ensure_owner("Garrett").unwrap());
         assert!(!users.ensure_owner("again").unwrap());
         assert_eq!(users.who(None).unwrap(), Who { user: OWNER.into(), name: "Garrett".into(), admin: true });
-        let dana = User { id: "oid-d".into(), name: "Dana".into(), email: "dana@fbcad.org".into(), tenant: "t".into(), oid: "oid-d".into(), role: Role::Member, status: Status::Pending, created: Utc::now(), last_seen: None, tool_rounds: None, username: String::new(), password: String::new(), must_change: false };
+        let dana = User { id: "oid-d".into(), name: "Dana".into(), email: "dana@fbcad.org".into(), tenant: "t".into(), oid: "oid-d".into(), role: Role::Member, status: Status::Pending, created: Utc::now(), last_seen: None, tool_rounds: None, username: String::new(), password: String::new(), must_change: false, reset: String::new(), reset_until: None };
         users.upsert(dana).unwrap();
         assert!(users.who(Some("oid-d")).is_none(), "pending can't sign in");
         users.update("DANA@fbcad.org", None, Some(Status::Active)).unwrap();

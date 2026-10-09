@@ -87,7 +87,47 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut watching: std::collections::HashSet<String> = Default::default();
     let started = Instant::now();
     let mut convs = vec![Conv::new(primary)];
+    // A stop waits for what's running; runs a restart cut off start again now.
+    catch_stop();
+    let mut draining: Option<Instant> = None;
+    // Routine runs done but not recorded yet (their check and email): a stop waits for them too.
+    let mut finishing = 0usize;
+    for (user, name) in crate::routines::take_resume() {
+        crate::routines::request_run_for(&user, &name);
+        convs[0].app.log(Level::Plan, format!("routine {name}: running again (a restart cut it off)"));
+    }
     loop {
+        if stopping() {
+            let busy: Vec<String> = convs
+                .iter()
+                .filter(|c| c.app.waiting || c.app.plan_busy)
+                .map(|c| c.routine.as_ref().map_or_else(|| if c.diagnosis.is_some() { "a problem write-up".to_string() } else { format!("a reply for {}", c.app.owner) }, |(r, _)| format!("routine {}", r.name)))
+                .chain((finishing > 0).then(|| format!("{finishing} routine result(s) being recorded")))
+                .collect();
+            let since = *draining.get_or_insert_with(|| {
+                println!("stopping: {}", if busy.is_empty() { "nothing running".to_string() } else { format!("waiting up to {}s for {}", drain().as_secs(), busy.join(", ")) });
+                Instant::now()
+            });
+            if busy.is_empty() || since.elapsed() >= drain() {
+                // What's still going: routines start again after the restart; replies say so.
+                let mut again = Vec::new();
+                for c in convs.iter_mut() {
+                    if let Some((r, _)) = &c.routine {
+                        again.push((c.app.owner.clone(), r.name.clone()));
+                    } else if c.app.waiting && c.diagnosis.is_none() {
+                        c.app.messages.push(Message::new("error", "lyra restarted while answering this. Try again to send it once more.".into()));
+                    }
+                    c.app.save_session();
+                }
+                if !again.is_empty() {
+                    println!("stopping: {} routine run(s) will start again: {}", again.len(), again.iter().map(|a| a.1.as_str()).collect::<Vec<_>>().join(", "));
+                    crate::routines::save_resume(&again);
+                }
+                println!("stopped");
+                std::process::exit(0);
+            }
+        }
+        let stopping_now = stopping();
         let mut everyone = false;
         // What the devices ask for (waiting a little when there's nothing).
         let mut next = inbound.recv_timeout(Duration::from_millis(40)).ok();
@@ -124,6 +164,18 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         c.app.answer_approval_id(id, &answer);
                         c.changed = true;
                     }
+                }
+                // A reset link, by email to its own account (off the loop).
+                Inbound::ResetLink { user, link } => {
+                    convs[0].app.log(Level::Agent, format!("a password reset link was asked for ({user})"));
+                    std::thread::spawn(move || {
+                        let body = format!(
+                            "Someone (hopefully you) asked to choose a new password for lyra.\n\n**[Choose a new password]({link})**\n\nThe link works once, for 30 minutes. If you didn't ask, ignore this email: your password stays as it is."
+                        );
+                        if let Err(e) = crate::mailout::send_to_me(&user, "Choose a new lyra password", &body, "reset") {
+                            eprintln!("the reset link for {user} wasn't emailed: {e}");
+                        }
+                    });
                 }
                 Inbound::Answer { id, value, device, who } => {
                     sync_role(&mut convs, &who);
@@ -196,8 +248,33 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "routine_save" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "briefing" | "watches" | "everything" | "templates" | "template_put" | "template_remove" | "meetings" | "meeting" | "meeting_notes" | "meeting_followup" | "meeting_draft" | "documents" | "document" | "document_save" | "document_remove" | "document_download" | "document_onedrive" | "document_mail" | "document_ask" | "me" | "me_export" | "me_clear_actions" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze" | "feedback_enhance" | "qa" | "qa_put" | "qa_remove" | "qa_promote" | "email" | "email_set" | "email_test") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "routine_save" | "routine_results" | "routine_result" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "briefing" | "watches" | "everything" | "templates" | "template_put" | "template_remove" | "meetings" | "meeting" | "meeting_notes" | "meeting_followup" | "meeting_draft" | "documents" | "document" | "document_save" | "document_remove" | "document_download" | "document_onedrive" | "document_mail" | "document_ask" | "me" | "me_export" | "me_clear_actions" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze" | "feedback_enhance" | "qa" | "qa_put" | "qa_remove" | "qa_promote" | "email" | "email_set" | "email_test") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
+                        continue;
+                    }
+                    // Running now (admins): every conversation at work, anyone's; and Stop.
+                    if what == "running" {
+                        let _ = reply.send(running_view(&convs, hub));
+                        continue;
+                    }
+                    if what == "running_stop" {
+                        let id = arg["session"].as_str().unwrap_or("");
+                        let answer = match convs.iter_mut().find(|c| c.app.session_id == id) {
+                            Some(c) => {
+                                let r = if c.app.waiting { c.app.stop() } else if c.app.plan_busy { c.app.command_result("/plan cancel") } else { Err("it isn't running any more".into()) };
+                                c.changed = true;
+                                if r.is_ok() {
+                                    convs[0].app.log(Level::Agent, format!("{} stopped {id} (Running now)", who.name));
+                                }
+                                r
+                            }
+                            None => Err("it isn't running any more".into()),
+                        };
+                        let _ = reply.send(match answer {
+                            Ok(t) => json!({ "ok": true, "text": t }),
+                            Err(e) => json!({ "error": e }),
+                        });
+                        everyone = true;
                         continue;
                     }
                     let loaded: Loaded = convs.iter().filter(|c| c.app.owner == who.user).map(|c| (c.app.session_id.clone(), c.app.waiting)).collect();
@@ -444,9 +521,19 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         let text = reply.map(|m| m.1).unwrap_or_default();
                         let (url, model, session, tx) = (format!("{}/chat/completions", c.app.base_url.trim_end_matches('/')), c.app.model.clone(), c.app.session_id.clone(), routine_tx.clone());
                         let whose = c.app.owner.clone();
+                        let began = chrono::Utc::now() - chrono::Duration::from_std(started.elapsed()).unwrap_or_default();
+                        finishing += 1;
                         std::thread::spawn(move || {
+                            // Its checks count for the run too.
+                            crate::usage::set_job(Some(session.clone()));
                             let (needs_user, decided_by) = if outcome == "ok" { crate::routines::needs_user(&url, &model, &r, &text) } else { (true, "it didn't finish".into()) };
                             let summary: String = text.trim().chars().take(400).collect();
+                            // The whole result, for its page and the next run.
+                            if outcome == "ok"
+                                && let Err(e) = crate::acting::run(&whose, || crate::routines::save_result(&r.name, chrono::Utc::now(), &text))
+                            {
+                                eprintln!("routine {}: its result wasn't kept: {e}", r.name);
+                            }
                             // Its result by email, to its person only.
                             let emailed = if !r.email {
                                 String::new()
@@ -456,7 +543,11 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                                 let subject = format!("{} · {}", r.name.replace('-', " "), chrono::Local::now().format("%a %b %-d"));
                                 crate::mailout::send_to_me(&whose, &subject, &text, "routine").unwrap_or_else(|e| format!("not emailed: {e}"))
                             };
-                            let run = crate::routines::Run { at: chrono::Utc::now(), seconds: started.elapsed().as_secs(), needs_user, outcome: outcome.into(), summary, session, decided_by, emailed };
+                            let spent = crate::usage::spent(&session, began);
+                            let run = crate::routines::Run {
+                                at: chrono::Utc::now(), seconds: started.elapsed().as_secs(), needs_user, outcome: outcome.into(), summary, session, decided_by, emailed,
+                                calls: spent.calls, tokens_in: spent.input, tokens_out: spent.output, cost: spent.cost,
+                            };
                             let _ = tx.send((whose, r, run));
                         });
                     }
@@ -511,7 +602,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             }
         }
         // Routines: due ones and ones asked for, each in its own conversation.
-        if last_routines.elapsed() >= Duration::from_secs(20) || routines_wanted() {
+        if !stopping_now && (last_routines.elapsed() >= Duration::from_secs(20) || routines_wanted()) {
             last_routines = Instant::now();
             // Everyone's: each runs in its person's own conversation, with their rights.
             let mut start: Vec<(String, crate::routines::Routine)> = crate::routines::due_all(chrono::Local::now());
@@ -534,7 +625,8 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     let Some(who) = hub.users().who(Some(&user)) else { continue };
                     convs[0].app.fork_for(&who)
                 };
-                app.input = crate::routines::message(&r);
+                // Its own person's past results go with it.
+                app.input = crate::acting::run(&user, || crate::routines::message(&r));
                 app.unattended = true;
                 app.send();
                 crate::routines::running_start(&user, &r.name, &app.session_id);
@@ -572,6 +664,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 });
             }
             crate::acting::run(&user, || crate::routines::record(&r.name, run));
+            finishing = finishing.saturating_sub(1);
             everyone = true;
         }
         // PMI, per person with a token: follow their live events (a thread each,
@@ -988,7 +1081,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         if last_diag.elapsed() >= Duration::from_secs(5) {
             last_diag = Instant::now();
             let d = convs[0].app.diagnose.clone();
-            if d.enabled && !convs.iter().any(|c| c.diagnosis.is_some()) && crate::diagnose::has_queued() {
+            if d.enabled && !stopping_now && !convs.iter().any(|c| c.diagnosis.is_some()) && crate::diagnose::has_queued() {
                 let mut app = convs[0].app.fork();
                 let session = app.session_id.clone();
                 if let Some(next) = crate::diagnose::start_next(|_| session.clone()) {
@@ -1196,7 +1289,9 @@ fn deliver(convs: &mut Vec<Conv>, hub: &Hub, m: Ready) {
         }
     } else {
         let c = &mut convs[i];
-        if c.app.waiting && !text.starts_with('/') && c.app.approvals.is_empty() {
+        if crate::serve::stopping() && !text.starts_with('/') {
+            c.app.messages.push(Message::new("info", "lyra is restarting in a moment: send it again shortly.".into()));
+        } else if c.app.waiting && !text.starts_with('/') && c.app.approvals.is_empty() {
             c.app.messages.push(Message::new("info", "lyra is still answering here — send it again when the reply is done (or start a new conversation)".into()));
         } else {
             c.app.log(Level::Info, format!("from {device}: {}", crate::shown(&text).chars().take(80).collect::<String>()));
@@ -1211,3 +1306,31 @@ fn deliver(convs: &mut Vec<Conv>, hub: &Hub, m: Ready) {
         c.changed = true;
     }
 }
+
+/// Running now (admins): each conversation at work, whoever's: what it is,
+/// since when, what it's doing, what its model calls have cost so far.
+fn running_view(convs: &[Conv], hub: &Hub) -> Value {
+    let users = hub.users();
+    let mut out = Vec::new();
+    for c in convs.iter().filter(|c| c.app.waiting || c.app.plan_busy) {
+        let who = users.get(&c.app.owner).map_or_else(|| c.app.owner.clone(), |u| u.name);
+        let (kind, what, since) = if let Some((r, started)) = &c.routine {
+            ("routine", r.name.clone(), Some(chrono::Utc::now() - chrono::Duration::from_std(started.elapsed()).unwrap_or_default()))
+        } else if c.diagnosis.is_some() {
+            ("diagnosis", c.app.messages.iter().find(|m| m.role == "user").map(|m| m.content.lines().next().unwrap_or("").chars().take(80).collect()).unwrap_or_default(), None)
+        } else if c.app.plan_busy && !c.app.waiting {
+            ("plan", c.app.current_goal.as_ref().map(|g| g.description.clone()).or_else(|| c.app.current_plan.as_ref().map(|p| lyra_execution::short(p.id))).unwrap_or_else(|| "a plan".into()), None)
+        } else {
+            ("reply", title(&c.app).unwrap_or_default(), None)
+        };
+        let since = since.or_else(|| c.app.started.map(|s| chrono::Utc::now() - chrono::Duration::from_std(s.elapsed()).unwrap_or_default()));
+        let spent = crate::usage::spent(&c.app.session_id, since.unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::hours(24)));
+        out.push(json!({
+            "session": c.app.session_id, "who": who, "kind": kind, "what": what, "since": since,
+            "doing": crate::ui::doing_text(&c.app), "calls": spent.calls, "tokens_in": spent.input, "tokens_out": spent.output, "cost": spent.cost,
+            "stoppable": c.app.waiting || c.app.plan_busy,
+        }));
+    }
+    json!(out)
+}
+

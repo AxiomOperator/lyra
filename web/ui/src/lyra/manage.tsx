@@ -564,9 +564,11 @@ function RoutineDialog({ open, routine, onClose, saved }: { open: boolean; routi
   const [notify, setNotify] = useState<Routine["notify"]>("problems");
   const [changes, setChanges] = useState(false);
   const [email, setEmail] = useState(false);
+  const [remember, setRemember] = useState(true);
   useEffect(() => {
     setChanges(routine?.changes ?? false);
     setEmail(routine?.email ?? false);
+    setRemember(routine?.remember ?? true);
     setName(routine?.name ?? "");
     setSchedule(routine?.schedule ?? "every day at 07:00");
     setPrompt(routine?.prompt ?? "");
@@ -577,7 +579,7 @@ function RoutineDialog({ open, routine, onClose, saved }: { open: boolean; routi
   const clean = (t: string) => t.replace(/\s+/g, " ").trim();
   const save = async () => {
     setBusy(true);
-    const r = await call<{ ok?: boolean; error?: string }>("routine_save", { original: routine?.name ?? "", name: clean(name), schedule: clean(schedule), prompt: prompt.trim(), notify, changes, email });
+    const r = await call<{ ok?: boolean; error?: string }>("routine_save", { original: routine?.name ?? "", name: clean(name), schedule: clean(schedule), prompt: prompt.trim(), notify, changes, email, remember });
     setBusy(false);
     if (r?.ok) {
       saved();
@@ -618,6 +620,13 @@ function RoutineDialog({ open, routine, onClose, saved }: { open: boolean; routi
               <span className="block text-muted-foreground text-xs">To you only, e.g. a morning digest with links. lyra writes the answer as the email.</span>
             </span>
           </label>
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-0.5 size-4 accent-teal-500" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+            <span>
+              Remember its last results
+              <span className="block text-muted-foreground text-xs">Each run sees its last two, so a daily brief builds on yesterday's instead of repeating it.</span>
+            </span>
+          </label>
           <label className="flex items-center justify-between gap-3 text-sm">
             <span>Tell me</span>
             <select value={notify} onChange={(e) => setNotify(e.target.value as Routine["notify"])} className="rounded-md border bg-background px-2 py-1.5 text-sm">
@@ -638,6 +647,94 @@ function RoutineDialog({ open, routine, onClose, saved }: { open: boolean; routi
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** "24 min", "45 s". */
+function took(s: number) {
+  return s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min` : s >= 90 ? `${Math.round(s / 60)} min` : `${s} s`;
+}
+
+/** "312k", "1.2M". */
+function tokens(n: number) {
+  return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`;
+}
+
+function money(c: number) {
+  return c < 0.01 ? `<${(0.01).toFixed(2)}` : c.toFixed(2);
+}
+
+/** Every routine's kept results (or one's), newest first, searchable; one read in full. */
+function PastResults({ only, onClose }: { only: string | null; onClose: () => void }) {
+  const { call, ready } = useLyra();
+  const [typed, setTyped] = useState("");
+  const [q, setQ] = useState("");
+  const [list, setList] = useState<{ name: string; at: string; when: string; title: string; preview: string }[] | null>(null);
+  const [open, setOpen] = useState<{ name: string; at: string; when: string; text: string } | null>(null);
+  useEffect(() => {
+    const t = window.setTimeout(() => setQ(typed.trim()), 250);
+    return () => window.clearTimeout(t);
+  }, [typed]);
+  useEffect(() => {
+    let current = true;
+    if (ready) void call<typeof list>("routine_results", { name: only ?? "", q }).then((d) => current && setList(Array.isArray(d) ? d : []));
+    return () => {
+      current = false;
+    };
+  }, [ready, call, only, q]);
+  const read = async (r: { name: string; at: string; when: string }) => {
+    const d = await call<{ text?: string; error?: string }>("routine_result", { name: r.name, at: r.at });
+    setOpen({ ...r, text: d?.text ?? d?.error ?? "" });
+  };
+  if (open)
+    return (
+      <Card className="gap-2 py-4">
+        <CardHeader className="px-4">
+          <CardTitle className="text-sm">
+            {open.name} · {new Date(open.when).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+          </CardTitle>
+          <CardAction>
+            <Button size="sm" variant="ghost" onClick={() => setOpen(null)}>
+              Back to the list
+            </Button>
+          </CardAction>
+        </CardHeader>
+        <CardContent className="break-words px-4 text-sm">
+          <MessageResponse>{open.text}</MessageResponse>
+        </CardContent>
+      </Card>
+    );
+  return (
+    <Card className="gap-2 py-4">
+      <CardHeader className="px-4">
+        <CardTitle className="text-sm">Past results{only ? `: ${only}` : ""}</CardTitle>
+        <CardDescription>Every run's whole result, newest first.</CardDescription>
+        <CardAction>
+          <Button size="sm" variant="ghost" onClick={onClose}>
+            <X /> Close
+          </Button>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="space-y-2 px-4">
+        <div className="relative">
+          <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Search the results (e.g. llama.cpp, GPT-6)" className="pl-9" aria-label="Search the results" />
+        </div>
+        {list && !list.length && <p className="py-4 text-center text-muted-foreground text-sm">{q ? `Nothing mentions “${q}”.` : "No results kept yet: they're kept from now on, one per run."}</p>}
+        {(list ?? []).map((r) => (
+          <button key={`${r.name}-${r.at}`} type="button" onClick={() => void read(r)} className="block w-full rounded-md border px-3 py-2 text-left hover:bg-accent/40">
+            <div className="flex items-center justify-between gap-2 text-sm">
+              <span className="min-w-0 truncate font-medium">{r.title || r.name}</span>
+              <span className="shrink-0 text-muted-foreground text-xs">
+                {only ? "" : `${r.name} · `}
+                {new Date(r.when).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+              </span>
+            </div>
+            <p className="line-clamp-2 text-muted-foreground text-xs">{r.preview}</p>
+          </button>
+        ))}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -668,7 +765,9 @@ function RunLine({ run, open }: { run: RoutineRun; open: (session: string) => vo
       <div className="flex items-center justify-between gap-2">
         <span className={cn("font-medium", run.outcome !== "ok" || run.needs_user ? "text-red-300" : "text-emerald-300")}>{mark}</span>
         <span className="text-muted-foreground text-xs">
-          {ago(run.at)} · {run.seconds}s · {run.decided_by}
+          {ago(run.at)} · {took(run.seconds)}
+          {!!run.calls && ` · ${run.calls} model call${run.calls === 1 ? "" : "s"} · ${tokens(run.tokens_in ?? 0)} in / ${tokens(run.tokens_out ?? 0)} out`}
+          {!!run.cost && ` · ${money(run.cost)}`} · {run.decided_by}
         </span>
       </div>
       <div className={cn("mt-1 break-words text-muted-foreground text-xs [&_p]:my-0.5", !more && "line-clamp-3")}>
@@ -695,6 +794,8 @@ export function RoutinesPage({ onBack, toChat }: { onBack: () => void; toChat: (
   const [confirm, dialog] = useConfirm();
   const [editing, setEditing] = useState<{ routine: Routine | null } | null>(null);
   const [history, setHistory] = useState<string | null>(null);
+  // Past results: every routine's (""), or one's.
+  const [past, setPast] = useState<string | null>(null);
   const routines = Array.isArray(data) ? data : [];
   const open = (session: string) => {
     say(`/resume ${session}`);
@@ -706,6 +807,9 @@ export function RoutinesPage({ onBack, toChat }: { onBack: () => void; toChat: (
       description="Things lyra does on a schedule — it tells you only when something needs you."
       action={
         <div className="flex gap-1">
+          <Button size="sm" variant="secondary" onClick={() => setPast(past === null ? "" : null)}>
+            Past results
+          </Button>
           <Button size="sm" onClick={() => setEditing({ routine: null })}>
             <Plus /> New
           </Button>
@@ -715,6 +819,7 @@ export function RoutinesPage({ onBack, toChat }: { onBack: () => void; toChat: (
     >
       {data && !Array.isArray(data) && <Failed error={data.error} />}
       {note}
+      {past !== null && <PastResults key={past} only={past || null} onClose={() => setPast(null)} />}
       {data && routines.length === 0 && (
         <p className="text-muted-foreground text-sm">
           No routines yet. Add one here, or just ask lyra: "every morning at 7, check disk space and failed services on @all and tell me if anything's wrong".
@@ -764,6 +869,18 @@ export function RoutinesPage({ onBack, toChat }: { onBack: () => void; toChat: (
                 <Button size="sm" variant="ghost" disabled={busy} onClick={() => act(`/routine ${r.enabled ? "pause" : "resume"} ${r.name}`)}>
                   {r.enabled ? <Pause /> : <Play />} {r.enabled ? "Pause" : "Resume"}
                 </Button>
+                {!!r.results && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setPast(r.name);
+                      window.scrollTo({ top: 0 });
+                    }}
+                  >
+                    Results ({r.results})
+                  </Button>
+                )}
                 <Button size="sm" variant="ghost" disabled={busy} onClick={() => setEditing({ routine: r })}>
                   <Pencil /> Edit
                 </Button>

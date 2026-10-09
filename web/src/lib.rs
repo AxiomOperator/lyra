@@ -63,6 +63,8 @@ pub enum Inbound {
     Stop { device: String, who: Who, session: String },
     /// An answer to an approval (`y`, `n`, `a`).
     Approve { id: u64, answer: String, device: String, who: Who },
+    /// "Forgot my password": email this person their one-time link.
+    ResetLink { user: String, link: String },
     /// An answer to something lyra asked in the chat: a form's values, or
     /// which steps to skip (`"go"`, `{"skip": […]}`, `"cancel"`).
     Answer { id: u64, value: Value, device: String, who: Who },
@@ -668,6 +670,8 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/api/auth/redeem", post(auth_redeem))
         .route("/api/auth/password", post(password_sign_in))
         .route("/api/auth/password/change", post(password_change))
+        .route("/api/auth/password/forgot", post(password_forgot))
+        .route("/api/auth/password/reset", post(password_reset))
         .route("/api/connect/calendar", post(connect_calendar))
         .route("/api/vapid", get(vapid_key))
         .route("/api/push", post(set_push))
@@ -871,6 +875,69 @@ async fn password_sign_in(State(s): State<Arc<Shared>>, Json(b): Json<PasswordBo
         Ok((d, token)) => {
             let _ = s.inbound.send(Inbound::DevicesChanged);
             Json(json!({ "token": token, "device": { "id": d.id, "name": d.name, "kind": d.kind }, "must_change": user.must_change })).into_response()
+        }
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}
+
+#[derive(Deserialize)]
+struct ForgotBody {
+    #[serde(default)]
+    username: String,
+}
+
+/// "Forgot my password": a one-time link to the account's email. The answer
+/// is the same whether or not there's such an account (or an address on it).
+async fn password_forgot(State(s): State<Arc<Shared>>, headers: HeaderMap, Json(b): Json<ForgotBody>) -> Response {
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    let key = format!("reset:{}", b.username.trim().to_lowercase());
+    {
+        let mut tries = s.tries.lock().unwrap_or_else(|e| e.into_inner());
+        tries.retain(|_, (_, since)| since.elapsed() < LOCKED_FOR);
+        let t = tries.entry(key).or_insert((0, Instant::now()));
+        t.0 += 1;
+        if t.0 > 3 {
+            return error(StatusCode::TOO_MANY_REQUESTS, "that's enough links for now: wait 15 minutes");
+        }
+    }
+    let said = Json(json!({ "ok": true, "text": "If that account has an email address, a link to choose a new password is on its way. It works for 30 minutes." })).into_response();
+    let base = if s.public_url.starts_with("http") {
+        s.public_url.clone()
+    } else {
+        match headers.get("origin").and_then(|v| v.to_str().ok()).filter(|o| o.starts_with("http")) {
+            Some(o) => o.trim_end_matches('/').to_string(),
+            None => return said,
+        }
+    };
+    if let Ok(Some((user, token))) = s.users.start_reset(&b.username) {
+        let _ = s.inbound.send(Inbound::ResetLink { user: user.id, link: format!("{base}/?reset={token}") });
+    }
+    said
+}
+
+#[derive(Deserialize)]
+struct ResetBody {
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    new: String,
+    #[serde(default)]
+    device: String,
+}
+
+/// A reset link used: the new password set, and this browser signed in.
+async fn password_reset(State(s): State<Arc<Shared>>, Json(b): Json<ResetBody>) -> Response {
+    let (users, token, new) = (s.users.clone(), b.token.clone(), b.new.clone());
+    let done = tokio::task::spawn_blocking(move || users.finish_reset(&token, &new)).await.unwrap_or_else(|e| Err(e.to_string()));
+    let user = match done {
+        Ok(u) => u,
+        Err(e) => return error(StatusCode::BAD_REQUEST, &e),
+    };
+    let device = if b.device.trim().is_empty() { "Browser" } else { b.device.trim() };
+    match s.devices.add(&format!("{} · {device}", user.name), "device", Some(&user.id)) {
+        Ok((d, token)) => {
+            let _ = s.inbound.send(Inbound::DevicesChanged);
+            Json(json!({ "token": token, "device": { "id": d.id, "name": d.name, "kind": d.kind } })).into_response()
         }
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }

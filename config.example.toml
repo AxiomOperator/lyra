@@ -322,6 +322,8 @@ currency = "$"
 # searxng_url = "http://127.0.0.1:8080"
 # max_results = 8
 # fetch_max_chars = 20000
+# reader = true            # long pages condensed (facts, dates, links) by the background model
+#                           # (the fallback when it takes background jobs) before the chat model sees them
 
 # Nightly backups of the lyra home (see README): lyra-<time>.tar.gz files.
 # [backup]

@@ -456,6 +456,19 @@ pub fn configure(s: Structured) {
 }
 
 /// One non-streaming chat completion; returns the reply text and its usage.
+/// The chat model's chat completions URL and name, for work done outside a
+/// conversation that has no App at hand (the web reader). Set at start, on
+/// `/reload` and `/model`.
+static CHAT: std::sync::RwLock<Option<(String, String)>> = std::sync::RwLock::new(None);
+
+pub(crate) fn set_chat(base_url: &str, model: &str) {
+    *CHAT.write().unwrap_or_else(|e| e.into_inner()) = Some((format!("{}/chat/completions", base_url.trim_end_matches('/')), model.to_string()));
+}
+
+pub(crate) fn chat() -> Option<(String, String)> {
+    CHAT.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 pub(crate) fn complete(
     url: &str,
     model: &str,

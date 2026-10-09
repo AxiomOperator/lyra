@@ -60,6 +60,9 @@ pub struct Routine {
     /// Each run's result is emailed to its person (only them).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub email: bool,
+    /// Each run sees its last results (so a daily brief doesn't repeat itself).
+    #[serde(default = "yes")]
+    pub remember: bool,
     pub created: DateTime<Utc>,
 }
 
@@ -86,6 +89,15 @@ pub struct Run {
     /// Emailed: how ("sent to … with Postmark"), or why not ("not emailed: …"); empty when it isn't emailed.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub emailed: String,
+    /// What it took: model calls, tokens in and out, and their cost (0 when no prices are set).
+    #[serde(default)]
+    pub calls: u64,
+    #[serde(default)]
+    pub tokens_in: u64,
+    #[serde(default)]
+    pub tokens_out: u64,
+    #[serde(default)]
+    pub cost: f64,
 }
 
 /// Runs kept per routine.
@@ -288,6 +300,9 @@ pub fn put(arg: &serde_json::Value) -> Result<serde_json::Value, String> {
             if let Some(e) = arg["email"].as_bool() {
                 r.email = e;
             }
+            if let Some(m) = arg["remember"].as_bool() {
+                r.remember = m;
+            }
             save(&r)?;
             r
         }
@@ -315,7 +330,7 @@ pub fn create(name: &str, schedule: &str, prompt: &str, notify: Notify, changes:
     if find(&name).is_ok() {
         return Err(format!("there's already a routine called {name} (/routine edit or delete it)"));
     }
-    let r = Routine { name, schedule: schedule.trim().into(), prompt: prompt.trim().into(), notify, enabled: true, changes, email, created: Utc::now() };
+    let r = Routine { name, schedule: schedule.trim().into(), prompt: prompt.trim().into(), notify, enabled: true, changes, email, remember: true, created: Utc::now() };
     save(&r)?;
     Ok(r)
 }
@@ -366,7 +381,7 @@ pub fn view(recent: usize) -> serde_json::Value {
         .map(|r| {
             let mine = runs.get(&r.name).cloned().unwrap_or_default();
             serde_json::json!({
-                "name": r.name, "schedule": r.schedule, "prompt": r.prompt, "notify": r.notify.as_str(), "enabled": r.enabled, "changes": r.changes, "email": r.email,
+                "name": r.name, "schedule": r.schedule, "prompt": r.prompt, "notify": r.notify.as_str(), "enabled": r.enabled, "changes": r.changes, "email": r.email, "remember": r.remember, "results": results(&r.name).len(),
                 "valid": parse_schedule(&r.schedule).is_ok(),
                 "next": if r.enabled { next_run(r, mine.first().map(|x| x.at)).map(|n| n.to_rfc3339()) } else { None },
                 "running": running.contains(&r.name),
@@ -409,7 +424,7 @@ pub fn running_start(user: &str, name: &str, session: &str) {
     all.push((user.to_string(), name.to_string(), r));
     drop(all);
     bump();
-    crate::acting::run(user, || record(name, Run { at: Utc::now(), seconds: 0, needs_user: false, outcome: "running".into(), summary: String::new(), session: session.to_string(), decided_by: String::new(), emailed: String::new() }));
+    crate::acting::run(user, || record(name, Run { at: Utc::now(), seconds: 0, needs_user: false, outcome: "running".into(), summary: String::new(), session: session.to_string(), decided_by: String::new(), emailed: String::new(), calls: 0, tokens_in: 0, tokens_out: 0, cost: 0.0 }));
 }
 
 /// What it's doing now ("searching the web", "Coder: writing…").
@@ -432,6 +447,25 @@ pub fn running_for(user: &str) -> Vec<(String, Running)> {
     RUNNING.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(u, _, _)| u == user).map(|(_, n, r)| (n.clone(), r.clone())).collect()
 }
 
+/// Runs a stop cut off (lyra restarting), to start again when it's back.
+fn resume_path() -> Option<PathBuf> {
+    Some(crate::config::home()?.join("status").join("resume.json"))
+}
+
+pub fn save_resume(runs: &[(String, String)]) {
+    if let Some(p) = resume_path() {
+        let _ = crate::store::write_json(&p, &runs.to_vec());
+    }
+}
+
+/// The runs to start again (once: the list goes).
+pub fn take_resume() -> Vec<(String, String)> {
+    let Some(p) = resume_path() else { return Vec::new() };
+    let runs: Vec<(String, String)> = crate::store::read_json::<Option<Vec<(String, String)>>>(&p).unwrap_or_default();
+    let _ = std::fs::remove_file(&p);
+    runs
+}
+
 /// Routines asked to run now (`/routine run`), whose and which, for `lyra serve` to pick up.
 static WANTED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
@@ -441,6 +475,11 @@ pub fn request_run(name: &str) {
 
 pub fn has_requests() -> bool {
     !WANTED.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+}
+
+/// Ask for a run as someone (a run a restart cut off).
+pub fn request_run_for(user: &str, name: &str) {
+    WANTED.lock().unwrap_or_else(|e| e.into_inner()).push((user.to_string(), name.to_string()));
 }
 
 pub fn take_requests() -> Vec<(String, String)> {
@@ -461,8 +500,104 @@ pub fn due(now: DateTime<Local>) -> Vec<Routine> {
         .collect()
 }
 
-/// The message a run sends: the prompt, marked as a routine so the reply is a report.
+/// The message a run sends: the prompt, marked as a routine so the reply is a
+/// report, with its last results when it remembers them.
 pub fn message(r: &Routine) -> String {
+    let mut text = base_message(r);
+    if r.remember {
+        let past: Vec<(String, String)> = results(&r.name).into_iter().take(REMEMBER).filter_map(|(at, _)| result(&r.name, &at).ok().map(|t| (at, t))).collect();
+        if !past.is_empty() {
+            text += "\n\nYour previous results, newest first: build on them. Don't repeat what they already covered unless something new happened; say what changed since.";
+            for (at, t) in past {
+                let when = parse_stamp(&at).map_or(at.clone(), |d| d.with_timezone(&Local).format("%a %Y-%m-%d %H:%M").to_string());
+                let cut: String = t.chars().take(PAST_CHARS).collect();
+                text += &format!("\n\n--- result from {when} ---\n{cut}{}", if t.chars().count() > PAST_CHARS { "\n(…cut)" } else { "" });
+            }
+        }
+    }
+    text
+}
+
+/// How many past results a run sees, and how much of each.
+const REMEMBER: usize = 2;
+const PAST_CHARS: usize = 8_000;
+/// Results kept per routine.
+const KEEP_RESULTS: usize = 90;
+
+fn results_dir(name: &str) -> Option<PathBuf> {
+    Some(dir()?.join("results").join(slug(name)))
+}
+
+fn parse_stamp(at: &str) -> Option<DateTime<Utc>> {
+    chrono::NaiveDateTime::parse_from_str(at, "%Y%m%d-%H%M%S").ok().map(|n| n.and_utc())
+}
+
+/// Keep a run's whole result (the oldest past `KEEP_RESULTS` go).
+pub fn save_result(name: &str, at: DateTime<Utc>, text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Ok(());
+    }
+    let d = results_dir(name).ok_or("no lyra home")?;
+    crate::store::write_text(&d.join(format!("{}.md", at.format("%Y%m%d-%H%M%S"))), text)?;
+    for (old, _) in results(name).into_iter().skip(KEEP_RESULTS) {
+        let _ = std::fs::remove_file(d.join(format!("{old}.md")));
+    }
+    Ok(())
+}
+
+/// A routine's kept results, newest first: (stamp, size).
+pub fn results(name: &str) -> Vec<(String, u64)> {
+    let Some(d) = results_dir(name) else { return Vec::new() };
+    let mut out: Vec<(String, u64)> = std::fs::read_dir(d)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            let stamp = n.strip_suffix(".md")?.to_string();
+            parse_stamp(&stamp)?;
+            Some((stamp, e.metadata().map(|m| m.len()).unwrap_or(0)))
+        })
+        .collect();
+    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out
+}
+
+pub fn result(name: &str, at: &str) -> Result<String, String> {
+    parse_stamp(at).ok_or("no such result")?;
+    std::fs::read_to_string(results_dir(name).ok_or("no lyra home")?.join(format!("{at}.md"))).map_err(|_| format!("no result {at} for {name}"))
+}
+
+/// For the app's past results: every routine's (or one's), newest first,
+/// only those with every word of `query`.
+pub fn results_page(only: Option<&str>, query: &str) -> serde_json::Value {
+    let words: Vec<String> = query.to_lowercase().split_whitespace().map(str::to_string).collect();
+    let mut all: Vec<(String, String, String, String)> = Vec::new();
+    for r in list().iter().filter(|r| only.is_none_or(|o| slug(o) == r.name)) {
+        for (at, _) in results(&r.name) {
+            let Ok(text) = result(&r.name, &at) else { continue };
+            let lower = text.to_lowercase();
+            if !words.iter().all(|w| lower.contains(w.as_str())) {
+                continue;
+            }
+            let title = text.lines().map(|l| l.trim().trim_start_matches('#').trim().trim_matches('*').trim()).find(|l| !l.is_empty()).unwrap_or("").chars().take(120).collect();
+            // Where a search word is: a little around it.
+            let around = words.first().and_then(|w| lower.find(w.as_str())).map(|i| {
+                let before: Vec<usize> = text.char_indices().map(|(j, _)| j).take_while(|j| *j <= i).collect();
+                let start = before.len().checked_sub(81).map_or(0, |k| before[k]);
+                text[start..].chars().take(220).collect::<String>().replace('\n', " ")
+            });
+            let preview = around.unwrap_or_else(|| text.chars().take(220).collect::<String>().replace('\n', " "));
+            all.push((at, r.name.clone(), title, preview));
+        }
+    }
+    all.sort_by(|a, b| b.0.cmp(&a.0));
+    serde_json::json!(all.iter().take(200).map(|(at, name, title, preview)| serde_json::json!({
+        "name": name, "at": at, "when": parse_stamp(at).map(|d| d.to_rfc3339()), "title": title, "preview": preview,
+    })).collect::<Vec<_>>())
+}
+
+fn base_message(r: &Routine) -> String {
     format!(
         "[routine \"{}\", {}] {}\n\n(This runs on a schedule with nobody watching: do it now, then report briefly. Start with a one-line verdict: all clear, or what's wrong.{}{})",
         r.name,

@@ -53,6 +53,7 @@ import {
   Target,
   WifiOff,
   Search,
+  Timer,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ComponentType, type FormEvent, type ReactNode } from "react";
 import { ChatPage } from "./lyra/chat";
@@ -114,6 +115,7 @@ const TasksPage = page(() => import("./lyra/tasks"), "TasksPage");
 const NotesPage = page(() => import("./lyra/notes"), "NotesPage");
 const UsersPage = page(() => import("./lyra/users"), "UsersPage");
 const UsagePage = page(() => import("./lyra/usage"), "UsagePage");
+const RunningPage = page(() => import("./lyra/running"), "RunningPage");
 const SettingsPage = page(() => import("./lyra/settings"), "SettingsPage");
 const MeetingsPage = page(() => import("./lyra/meetings"), "MeetingsPage");
 const DocumentsPage = page(() => import("./lyra/documents"), "DocumentsPage");
@@ -133,8 +135,8 @@ function Loading() {
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "documents" | "me";
-const manage: Manage[] = ["me", "documents", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings"];
+type Manage = "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "documents" | "me" | "running";
+const manage: Manage[] = ["me", "documents", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings", "running"];
 /** What a member (not an admin) has: their chats, tasks, status, activity, skills. */
 const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage", "meetings", "documents", "me"];
 
@@ -150,7 +152,7 @@ const railGroups: Tab[][] = [
   ["chat", "status", "activity"],
   ["tasks", "meetings", "notes", "documents", "projects", "routines", "goals"],
   ["memory", "skills", "coding", "model"],
-  ["machines", "devices", "users", "usage"],
+  ["machines", "devices", "users", "usage", "running"],
 ];
 
 /** The rail's pages: scrolls when they don't all fit, with a fade and an
@@ -460,6 +462,7 @@ function Shell() {
     { id: "goals", label: "Goals", icon: Target },
     { id: "model", label: "Model", icon: Cpu },
     { id: "usage", label: "Usage", icon: Gauge },
+    { id: "running", label: "Running now", icon: Timer },
     { id: "users", label: "Users", icon: Users, badge: status.users_waiting ?? 0 },
     { id: "settings", label: "Settings", icon: SettingsIcon },
     { id: "me", label: "About me", icon: UserRound },
@@ -564,6 +567,7 @@ function Shell() {
           {tab === "goals" && <GoalsPage onBack={toMore} />}
           {tab === "model" && <ModelsPage onBack={toMore} />}
           {tab === "usage" && <UsagePage onBack={toMore} />}
+          {tab === "running" && <RunningPage onBack={toMore} />}
           {tab === "users" && <UsersPage onBack={toMore} />}
           {tab === "settings" && <SettingsPage onBack={toMore} />}
           {tab === "meetings" && <MeetingsPage onBack={toMore} />}
@@ -590,9 +594,16 @@ function Pair({ onPaired, message }: { onPaired: (token: string) => void; messag
   // How this server lets people in: a username and password (no Microsoft
   // needed), Microsoft sign-in when it's set up, and a pairing code always.
   const [ways, setWays] = useState<{ entra: boolean; passwords: boolean }>({ entra: false, passwords: false });
-  const [mode, setMode] = useState<"password" | "microsoft" | "code" | null>(() => (new URLSearchParams(location.search).has("pair") ? "code" : null));
+  // A reset link from the email: choose the new password here.
+  const [reset] = useState(() => new URLSearchParams(location.search).get("reset") ?? "");
+  const [mode, setMode] = useState<"password" | "microsoft" | "code" | "forgot" | "reset" | null>(() => (reset ? "reset" : new URLSearchParams(location.search).has("pair") ? "code" : null));
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [again, setAgain] = useState("");
+  const [told, setTold] = useState("");
+  useEffect(() => {
+    if (reset) history.replaceState(null, "", "/");
+  }, [reset]);
   useEffect(() => {
     void fetch("/api/auth")
       .then((r) => r.json())
@@ -627,13 +638,28 @@ function Pair({ onPaired, message }: { onPaired: (token: string) => void; messag
     e.preventDefault();
     void send("/api/auth/password", { username, password, device: name });
   };
+  const forgot = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    const r = await fetch("/api/auth/password/forgot", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }) }).catch(() => null);
+    const b = r ? await r.json().catch(() => ({})) : { error: "Couldn't reach lyra." };
+    setBusy(false);
+    if (r?.ok) setTold(b.text ?? "Check your email.");
+    else setError(b.error || "That didn't work");
+  };
+  const choose = (e: FormEvent) => {
+    e.preventDefault();
+    if (password !== again) return setError("Those two don't match.");
+    void send("/api/auth/password/reset", { token: reset, new: password, device: name });
+  };
   const other = (label: string, to: "password" | "microsoft" | "code") => (
     <button key={to} type="button" onClick={() => (to === "microsoft" ? microsoft() : (setMode(to), setError("")))} className="w-full text-center text-muted-foreground text-sm hover:text-foreground">
       {label}
     </button>
   );
   const others = [
-    mode !== "password" && ways.passwords && other("Sign in with a username instead", "password"),
+    mode !== "password" && (ways.passwords || mode === "forgot" || mode === "reset") && other(mode === "forgot" || mode === "reset" ? "Back to signing in" : "Sign in with a username instead", "password"),
     mode !== "microsoft" && ways.entra && other("Sign in with Microsoft instead", "microsoft"),
     mode !== "code" && other("Pair with a code instead", "code"),
   ].filter(Boolean);
@@ -643,9 +669,13 @@ function Pair({ onPaired, message }: { onPaired: (token: string) => void; messag
       <Card className="m-auto w-full max-w-sm">
         <CardHeader className="items-center text-center">
           <img src="/icon-192.png" alt="" className="mx-auto mb-2 size-16 rounded-2xl" />
-          <CardTitle className="text-xl">{mode === "code" ? "Pair this device" : "Sign in to lyra"}</CardTitle>
+          <CardTitle className="text-xl">{mode === "code" ? "Pair this device" : mode === "forgot" ? "Forgot your password?" : mode === "reset" ? "Choose a new password" : "Sign in to lyra"}</CardTitle>
           <CardDescription>
-            {mode === "password" ? (
+            {mode === "forgot" ? (
+              "Type your username: lyra emails a link to the address on your account."
+            ) : mode === "reset" ? (
+              "At least 10 characters (a few words together is easy to remember). Then you're signed in."
+            ) : mode === "password" ? (
               "With the username and password your admin gave you."
             ) : mode === "microsoft" ? (
               "Use your organization's Microsoft account."
@@ -664,6 +694,29 @@ function Pair({ onPaired, message }: { onPaired: (token: string) => void; messag
               <Input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="Password" autoComplete="current-password" className="h-11" required aria-label="Password" />
               <Button type="submit" disabled={busy} className="h-11 w-full">
                 {busy ? "Signing in…" : "Sign in"}
+              </Button>
+              <button type="button" onClick={() => (setMode("forgot"), setError(""), setTold(""))} className="w-full text-center text-muted-foreground text-xs hover:text-foreground">
+                Forgot your password?
+              </button>
+            </form>
+          )}
+          {mode === "forgot" &&
+            (told ? (
+              <p className="text-center text-sm text-teal-300">{told}</p>
+            ) : (
+              <form onSubmit={(e) => void forgot(e)} className="space-y-3">
+                <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Username" autoCapitalize="none" autoCorrect="off" spellCheck={false} autoComplete="username" className="h-11" required aria-label="Username" />
+                <Button type="submit" disabled={busy} className="h-11 w-full">
+                  {busy ? "Sending…" : "Email me a link"}
+                </Button>
+              </form>
+            ))}
+          {mode === "reset" && (
+            <form onSubmit={choose} className="space-y-3">
+              <Input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="New password" autoComplete="new-password" className="h-11" required minLength={10} aria-label="New password" />
+              <Input value={again} onChange={(e) => setAgain(e.target.value)} type="password" placeholder="Once more" autoComplete="new-password" className="h-11" required aria-label="New password again" />
+              <Button type="submit" disabled={busy} className="h-11 w-full">
+                Save and sign in
               </Button>
             </form>
           )}
@@ -791,6 +844,7 @@ async function redeem(code: string): Promise<{ token?: string; error?: string }>
 
 export default function App() {
   const [token, setToken] = useState<string | null>(() => loadToken());
+  const [resetting, setResetting] = useState(() => new URLSearchParams(location.search).has("reset"));
   const [why, setWhy] = useState<string | undefined>(signIn.error);
   const [waiting, setWaiting] = useState(false);
   const [finishing, setFinishing] = useState(!!signIn.code);
@@ -839,7 +893,8 @@ export default function App() {
       />
     );
   if (finishing) return <div className="flex h-full items-center justify-center bg-background text-muted-foreground text-sm">Signing you in…</div>;
-  if (!token) return <Pair onPaired={setToken} message={why} />;
+  // A reset link opens the sign-in page even on a browser already signed in.
+  if (!token || resetting) return <Pair onPaired={(t) => (setResetting(false), setToken(t))} message={why} />;
   if (mustChange) return <ChoosePassword token={token} onDone={() => setMustChange(false)} />;
   return (
     <LyraProvider token={token} onUnpaired={unpaired}>

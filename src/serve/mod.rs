@@ -108,6 +108,28 @@ impl crate::caps::Remote for HubRemote {
     }
 }
 
+/// lyra was asked to stop (SIGTERM, Ctrl-C): nothing new starts while what's
+/// running finishes (up to [`drain`]); runs still going start again after.
+pub(crate) static STOPPING: std::sync::LazyLock<std::sync::Arc<std::sync::atomic::AtomicBool>> = std::sync::LazyLock::new(Default::default);
+
+/// How long a stop waits for work in progress: 75 s (systemd's own limit is
+/// 90 s), or `LYRA_DRAIN_SECONDS`.
+pub(crate) fn drain() -> Duration {
+    Duration::from_secs(std::env::var("LYRA_DRAIN_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(75))
+}
+
+pub(crate) fn stopping() -> bool {
+    STOPPING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Catch SIGTERM and SIGINT (a second one stops at once).
+pub(crate) fn catch_stop() {
+    for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
+        let _ = signal_hook::flag::register_conditional_shutdown(sig, 1, STOPPING.clone());
+        let _ = signal_hook::flag::register(sig, STOPPING.clone());
+    }
+}
+
 /// The status line, pending approvals, agents and connected machines.
 fn status(app: &App, machines: &[String]) -> Value {
     let active = app.agents.as_ref().map(|a| a.active.lock().map(|v| v.clone()).unwrap_or_default()).unwrap_or_default();

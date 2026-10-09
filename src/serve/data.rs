@@ -16,6 +16,12 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
         "routines" => crate::acting::run(&app.owner, || crate::routines::view(10)),
         // A routine made or changed on the Routines page (its prompt as written).
         "routine_save" => page(crate::acting::run(&app.owner, || crate::routines::put(arg))),
+        // Past results: every routine's, or one's, searchable; and one in full.
+        "routine_results" => crate::acting::run(&app.owner, || crate::routines::results_page(arg["name"].as_str().filter(|n| !n.is_empty()), arg["q"].as_str().unwrap_or(""))),
+        "routine_result" => crate::acting::run(&app.owner, || match crate::routines::result(arg["name"].as_str().unwrap_or(""), arg["at"].as_str().unwrap_or("")) {
+            Ok(text) => json!({ "text": text }),
+            Err(e) => json!({ "error": e }),
+        }),
         "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
         "recap" => crate::recap::last_for(&app.owner).map_or(Value::Null, |r| json!(r)),
         // A page of releases at a time, newest first.

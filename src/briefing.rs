@@ -551,7 +551,7 @@ mod tests {
     use serde_json::json;
 
     fn run(at: DateTime<Utc>, outcome: &str, needs_user: bool, summary: &str) -> Run {
-        Run { at, seconds: 5, needs_user, outcome: outcome.into(), summary: summary.into(), session: "s".into(), decided_by: String::new(), emailed: String::new() }
+        Run { at, seconds: 5, needs_user, outcome: outcome.into(), summary: summary.into(), session: "s".into(), decided_by: String::new(), emailed: String::new(), calls: 0, tokens_in: 0, tokens_out: 0, cost: 0.0 }
     }
 
     fn row(id: &str, name: &str, state: State, uptime: Option<f64>) -> Row {

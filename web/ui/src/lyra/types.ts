@@ -301,6 +301,11 @@ export interface RoutineRun {
   decided_by: string;
   /** How it was emailed, or "not emailed: why". */
   emailed?: string;
+  /** What it took: model calls, tokens, cost. */
+  calls?: number;
+  tokens_in?: number;
+  tokens_out?: number;
+  cost?: number;
 }
 
 export interface Routine {
@@ -313,6 +318,10 @@ export interface Routine {
   changes: boolean;
   /** Each result is emailed to its person. */
   email?: boolean;
+  /** Each run sees its last results. */
+  remember?: boolean;
+  /** How many whole results are kept (Past results). */
+  results?: number;
   valid: boolean;
   next: string | null;
   running: boolean;

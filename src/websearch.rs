@@ -18,11 +18,14 @@ pub struct Settings {
     pub max_results: usize,
     /// Most characters of a page handed back.
     pub fetch_max_chars: usize,
+    /// Long pages are condensed (the facts and links that matter) by the
+    /// background model before they reach the conversation.
+    pub reader: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { enabled: true, searxng_url: "http://127.0.0.1:8080".into(), max_results: 8, fetch_max_chars: 20_000 }
+        Self { enabled: true, searxng_url: "http://127.0.0.1:8080".into(), max_results: 8, fetch_max_chars: 20_000, reader: true }
     }
 }
 
@@ -46,9 +49,11 @@ pub fn capabilities() -> Vec<Capability> {
         ),
         tool(
             "web_fetch",
-            "Read a web page (http/https) as plain text, to answer from it. Cite it as a Markdown link.",
+            "Read a web page (http/https), to answer from it. A long page comes back condensed to what matters for `focus` (facts, dates, numbers, links); ask for `full` only when you need the page word for word. Cite it as a Markdown link.",
             json!({ "type": "object", "properties": {
                 "url": { "type": "string", "description": "The page's URL." },
+                "focus": { "type": "string", "description": "What you're looking for on it, e.g. \"release date, parameter count, license\"." },
+                "full": { "type": "boolean", "description": "The whole page as text, not condensed (default false)." },
             }, "required": ["url"] }),
         ),
     ]
@@ -132,7 +137,32 @@ fn fetch(s: &Settings, args: &Value) -> Result<Value, String> {
         .and_then(|i| body[i..].find('>').map(|j| i + j + 1))
         .and_then(|i| body[i..].find("</title>").map(|j| body[i..i + j].trim().to_string()))
         .unwrap_or_default();
+    // A long page: what matters, not the whole thing (the conversation stays small).
+    if s.reader && args["full"] != true && text.chars().count() > READ_OVER
+        && let Some(short) = read(&final_url, &title, &text, args["focus"].as_str().unwrap_or(""))
+    {
+        return Ok(json!({ "url": final_url, "title": title, "condensed": short, "note": format!("condensed from {} characters; web_fetch with full: true for the whole page", text.chars().count()) }));
+    }
     Ok(json!({ "url": final_url, "title": title, "text": text }))
+}
+
+/// Pages longer than this are condensed.
+const READ_OVER: usize = 4_000;
+
+/// What the reader is told.
+const READER: &str = "You condense a web page for a researcher. Keep what it is and who published it, every date (published, announced, released), the facts, \
+     numbers, versions, names and short quotes that matter, and the links worth following as [text](url) (take URLs from the page's link list). \
+     Drop navigation, ads, cookie notices and boilerplate. Plain Markdown, at most about 350 words. If the page has nothing on what they're looking for, \
+     say so in one line. Never add anything that isn't on the page.";
+
+/// The page condensed by the background model (the fallback when it takes
+/// background jobs); `None` when that didn't work (the page goes as it is).
+fn read(url: &str, title: &str, text: &str, focus: &str) -> Option<String> {
+    let (chat_url, model) = crate::learn::chat()?;
+    let input = format!("Looking for: {}\nPage: {title}\nURL: {url}\n\n{text}", if focus.trim().is_empty() { "the main points" } else { focus.trim() });
+    let (out, _) = crate::learn::complete_light(&chat_url, &model, READER, &input).ok()?;
+    let out = out.rsplit_once("</think>").map_or(out.as_str(), |(_, a)| a).trim().to_string();
+    (!out.is_empty()).then_some(out)
 }
 
 pub fn call(s: &Settings, name: &str, args: &Value) -> Result<Value, String> {

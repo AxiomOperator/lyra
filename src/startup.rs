@@ -77,6 +77,7 @@ pub(crate) fn configure(config: &Config) {
     recap::configure(config.recap.clone());
     mailout::configure(config.email.clone());
     feedback::configure(&config.url, &config.model);
+    learn::set_chat(&config.url, &config.model);
 }
 
 pub(crate) fn prices(config: &Config) -> usage::Prices {

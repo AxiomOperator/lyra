@@ -245,6 +245,7 @@ impl App {
             Ok(())
         });
         self.model = name.to_string();
+        learn::set_chat(&self.base_url, name);
         self.log(Level::Info, format!("model: {name}"));
         Ok(match saved {
             Ok(_) => format!("now using {name} (saved to config.toml)"),

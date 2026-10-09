@@ -121,9 +121,11 @@ impl App {
         // Their own tool-call limit, else the shared one (evolved, or behavior.toml).
         let max_rounds = limits::tool_rounds(&owner, self.evolution.as_ref().map(|e| e.behavior().max_tool_rounds)) as usize;
         self.can_continue = false;
+        let job = self.session_id.clone();
         thread::spawn(move || {
-            // This turn works in its person's PMI account.
+            // This turn works in its person's PMI account; its calls count for this conversation.
             pmi::set_user(&owner);
+            usage::set_job(Some(job));
             let mut history = history;
             // Pictures and scans the chat model can't see: the vision model reads
             // them first, and what it saw goes with the message.
@@ -188,9 +190,8 @@ impl App {
                 }
             }
             let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref().filter(|_| !chatting), &content, how, max_rounds, run, &tx, &cancel, viewer.as_deref(), member) {
-                Ok((stats, limited, answered)) => {
-                    // The turn's own model calls (agents' and lyra's count separately), as the model that answered.
-                    usage::record("chat", &answered, stats.input, stats.cached, stats.output, stats.elapsed.as_millis() as u64);
+                Ok((stats, limited, _answered)) => {
+                    // The turn's model calls were recorded round by round (agents' and lyra's separately).
                     let _ = tx.send(StreamEvent::Done(stats));
                     if limited {
                         let _ = tx.send(StreamEvent::Limit(max_rounds));
@@ -599,6 +600,8 @@ pub(crate) fn converse(
             }
             Err(e) => return Err(e),
         };
+        // Each round as the model that answered it (the fallback may take over part way).
+        usage::record("chat", &current.1, round.stats.input, round.stats.cached, round.stats.output, round.stats.elapsed.as_millis() as u64);
         match &mut total {
             Some(total) => total.absorb(round.stats),
             None => total = Some(round.stats),
@@ -624,6 +627,33 @@ pub(crate) fn converse(
         } else {
             Vec::new()
         };
+        // Searches and page reads in one round go side by side (each as this
+        // thread's person, counted for this conversation).
+        let mut ready: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let side_by_side: Vec<&ToolCall> = round.tool_calls.iter().filter(|c| matches!(c.function.name.as_str(), "web_search" | "web_fetch") && !skipped.contains(&c.id)).collect();
+        if side_by_side.len() > 1 && !stopped(cancel) {
+            let (user, job) = (crate::acting::current(), crate::usage::job());
+            std::thread::scope(|s| {
+                let handles: Vec<_> = side_by_side
+                    .iter()
+                    .map(|c| {
+                        let (user, job) = (user.clone(), job.clone());
+                        s.spawn(move || {
+                            crate::acting::run(&user, || {
+                                crate::usage::set_job(job);
+                                let ctx = CallContext { member, read_scopes: scopes, write_scopes: scopes, ..CallContext::new(Some(run), &c.id) };
+                                (c.id.clone(), caps.invoke(&c.function.name, &c.function.arguments, ctx, false, true))
+                            })
+                        })
+                    })
+                    .collect();
+                for h in handles {
+                    if let Ok((id, out)) = h.join() {
+                        ready.insert(id, out);
+                    }
+                }
+            });
+        }
         for (k, call) in round.tool_calls.iter().enumerate() {
             // Stopped: the calls not made yet answer so (the history stays well-formed).
             if stopped(cancel) {
@@ -650,7 +680,9 @@ pub(crate) fn converse(
                 }
             }
             let arguments = filled.as_deref().unwrap_or(&call.function.arguments);
-            let content = if skipped.contains(&call.id) {
+            let content = if let Some(out) = ready.remove(&call.id) {
+                out
+            } else if skipped.contains(&call.id) {
                 json!({ "error": "the user skipped this step", "hint": "carry on without it, and say what was skipped" }).to_string()
             } else if refused.contains(name) {
                 json!({ "error": format!("the user already said no to {name} in this conversation turn: don't try it again; answer them") }).to_string()
@@ -688,6 +720,7 @@ pub(crate) fn converse(
         let _ = tx.send(StreamEvent::Log("tool-call limit: writing the answer from what was found".into()));
         let body = json!({ "model": current.1, "messages": history, "stream": true, "stream_options": { "include_usage": true } });
         let round = stream(&current.0, &body, tx, cancel)?;
+        usage::record("chat", &current.1, round.stats.input, round.stats.cached, round.stats.output, round.stats.elapsed.as_millis() as u64);
         match &mut total {
             Some(total) => total.absorb(round.stats),
             None => total = Some(round.stats),

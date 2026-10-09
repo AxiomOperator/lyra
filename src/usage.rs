@@ -28,6 +28,33 @@ pub struct Call {
     pub output: u64,
     #[serde(default)]
     pub ms: u64,
+    /// The conversation it was for (a routine's run is one): what a run cost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+}
+
+thread_local! {
+    /// The conversation this thread's calls are for.
+    static JOB: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// This thread's calls are for that conversation (its turn thread, a fetch, a check).
+pub fn set_job(job: Option<String>) {
+    JOB.with(|j| *j.borrow_mut() = job);
+}
+
+pub fn job() -> Option<String> {
+    JOB.with(|j| j.borrow().clone())
+}
+
+/// What one conversation's calls cost since `since`: tokens, time, money.
+pub fn spent(job: &str, since: DateTime<Utc>) -> Total {
+    let p = prices();
+    let mut t = Total::default();
+    for c in self::since(since).iter().filter(|c| c.job.as_deref() == Some(job)) {
+        t.add(c, &p);
+    }
+    t
 }
 
 /// Prices per million tokens (`input_cost_per_mtok` …), for an estimate:
@@ -102,7 +129,7 @@ pub fn record(kind: &str, model: &str, input: u64, cached: u64, output: u64, ms:
     if input == 0 && output == 0 || cfg!(test) {
         return;
     }
-    let c = Call { at: Utc::now(), user: crate::acting::current(), kind: kind.into(), model: model.into(), input, cached, output, ms };
+    let c = Call { at: Utc::now(), user: crate::acting::current(), kind: kind.into(), model: model.into(), input, cached, output, ms, job: job() };
     let Some(d) = dir() else { return };
     let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let _ = std::fs::create_dir_all(&d);
@@ -258,7 +285,7 @@ mod tests {
     fn totals_add_up_and_cost_uses_the_cache_price() {
         let mut p = Prices { input: 1.0, cached: 0.1, output: 2.0, currency: "USD".into(), ..Default::default() };
         let mut t = Total::default();
-        let c = Call { at: Utc::now(), user: "u".into(), kind: "chat".into(), model: "m".into(), input: 1_000_000, cached: 500_000, output: 1_000_000, ms: 10 };
+        let c = Call { at: Utc::now(), user: "u".into(), kind: "chat".into(), model: "m".into(), input: 1_000_000, cached: 500_000, output: 1_000_000, ms: 10, job: None };
         t.add(&c, &p);
         t.add(&c, &p);
         assert_eq!((t.calls, t.input, t.cached, t.output), (2, 2_000_000, 1_000_000, 2_000_000));

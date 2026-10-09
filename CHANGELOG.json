@@ -1,5 +1,21 @@
 [
   {
+    "version": "0.48.0.186",
+    "date": "2026-10-09",
+    "title": "Routines that remember, research that's lighter",
+    "new": [
+      "Routines remember: each run sees its last two results, so a daily brief builds on yesterday's instead of repeating it. You can turn this off for a routine.",
+      "Past results: every run's whole result is kept. Read and search them on the Routines page (Past results, or a routine's Results).",
+      "Each routine run shows what it took: model calls, tokens in and out, and the cost when prices are set.",
+      "Forgot your password? On the sign-in page, lyra emails a one-time link to the address on your account (it works for 30 minutes).",
+      "Running now (admins): everything lyra is working on, for everyone. It shows how long each has run, what it's doing, what it has cost so far, and a Stop button."
+    ],
+    "improved": [
+      "Lighter web research: long pages are condensed to the facts, dates and links that matter by the background model before the chat model reads them, and a round's searches and page reads run side by side.",
+      "Restarting lyra waits up to 75 seconds for running routines, replies and write-ups to finish. A routine still running after that starts again by itself when lyra is back."
+    ]
+  },
+  {
     "version": "0.47.3.185",
     "date": "2026-10-09",
     "title": "Long routines finish",
