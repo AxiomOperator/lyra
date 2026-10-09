@@ -119,7 +119,7 @@ function Editor({ id, onSaved, onGone }: { id: string; onSaved: () => void; onGo
             <MessageResponse>{text || "_Nothing yet._"}</MessageResponse>
           </div>
         ) : (
-          <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={22} className="font-mono text-sm" placeholder={"# Title\n\nWrite here, or ask lyra to draft it →"} aria-label="Document" />
+          <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={22} className="max-h-[70dvh] font-mono text-sm" placeholder={"# Title\n\nWrite here, or ask lyra to draft it →"} aria-label="Document" />
         )}
         <div className="flex flex-wrap items-center gap-2">
           <Input value={to} onChange={(e) => setTo(e.target.value)} placeholder="To (optional): dana@fbcad.org" className="max-w-xs" aria-label="Mail it to" />

@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.46.1.181",
+    "date": "2026-10-09",
+    "title": "Long text in dialogs",
+    "fixed": [
+      "Pasting a long text into a box no longer pushes a dialog off the screen. The box scrolls once it's tall, the dialog stays inside the window (above the keyboard on phones), and its buttons stay in view."
+    ]
+  },
+  {
     "version": "0.46.0.180",
     "date": "2026-10-09",
     "title": "More than one email service",
