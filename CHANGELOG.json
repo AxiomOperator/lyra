@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.39.0.173",
+    "date": "2026-10-09",
+    "title": "Fallback model for background jobs",
+    "new": [
+      "The fallback model can take lyra's small background jobs while the main chat model is up: remembering things from your chats, skill reviews, mail triage, briefing notes, routine checks and feedback analysis. The main model is left to answer you. Turn it on in Settings (Fallback does background jobs) or with background = true under [fallback_model]. If the fallback can't do a job, the main model does it."
+    ]
+  },
+  {
     "version": "0.38.0.172",
     "date": "2026-10-09",
     "title": "Sign in without Microsoft",

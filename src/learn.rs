@@ -135,7 +135,7 @@ impl Learning {
             Ok(p) => p,
             Err(e) => return Review { outcome: Err(e), usage: None },
         };
-        let (reply, usage) = match complete(url, model, evaluator::SYSTEM_PROMPT, &prompt) {
+        let (reply, usage) = match complete_light(url, model, evaluator::SYSTEM_PROMPT, &prompt) {
             Ok(r) => r,
             Err(e) => return Review { outcome: Err(e), usage: None },
         };
@@ -167,7 +167,7 @@ impl Learning {
             return Review { outcome: done.map(|n| [notes, n].concat()), usage: None };
         }
         let prompt = curator::prompt(&skills, &report.duplicates);
-        let (reply, usage) = match complete(url, model, curator::SYSTEM_PROMPT, &prompt) {
+        let (reply, usage) = match complete_light(url, model, curator::SYSTEM_PROMPT, &prompt) {
             Ok(r) => r,
             Err(e) => return Review { outcome: Err(e), usage: None },
         };
@@ -462,6 +462,29 @@ pub(crate) fn complete(
     system: &str,
     user: &str,
 ) -> Result<(String, Option<Usage>), String> {
+    call(url, model, system, user, false)
+}
+
+/// A small background job (memory capture, a skill review, mail triage…):
+/// the fallback model does it first when it takes them (`[fallback_model]
+/// background = true`) and the main model is up, so the main one is left to
+/// the chats; if the fallback fails, the main model does it after all.
+pub(crate) fn complete_light(
+    url: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+) -> Result<(String, Option<Usage>), String> {
+    call(url, model, system, user, true)
+}
+
+fn call(
+    url: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    light: bool,
+) -> Result<(String, Option<Usage>), String> {
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(600))
@@ -496,7 +519,21 @@ pub(crate) fn complete(
     }
     let fallback = crate::fallback::target().filter(|(u, _)| u != url);
     let mut used = model.to_string();
+    let first = light.then(crate::fallback::light).flatten().filter(|(u, _)| u != url);
     let reply = match &fallback {
+        Some((fb_url, fb_model)) if first.is_some() => {
+            body["model"] = json!(fb_model);
+            match send(fb_url, &body) {
+                Ok(r) => {
+                    used = fb_model.clone();
+                    r
+                }
+                Err(_) => {
+                    body["model"] = json!(model);
+                    send(url, &body)?
+                }
+            }
+        }
         Some((fb_url, fb_model)) if crate::fallback::skip_main() => {
             body["model"] = json!(fb_model);
             used = fb_model.clone();

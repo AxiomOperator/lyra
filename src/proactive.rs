@@ -212,7 +212,7 @@ pub fn triage_mail(seen: &mut Seen, url: &str, model: &str) -> Vec<String> {
             Some(st) => format!("{TRIAGE}\n\n{st}"),
             None => TRIAGE.to_string(),
         };
-        let Some(t) = crate::learn::complete(url, model, &system, &text).ok().and_then(|(r, _)| parse_triage(&r)) else { continue };
+        let Some(t) = crate::learn::complete_light(url, model, &system, &text).ok().and_then(|(r, _)| parse_triage(&r)) else { continue };
         if !t.needs_user {
             continue;
         }

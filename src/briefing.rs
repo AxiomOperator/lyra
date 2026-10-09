@@ -421,7 +421,7 @@ if nothing needs attention, say so plainly. Use only the facts given.";
 
 /// One sentence from the chat model, or none (it's optional).
 pub fn takeaway(url: &str, model: &str, b: &Briefing) -> Option<String> {
-    let (reply, _) = crate::learn::complete(url, model, TAKEAWAY, &facts(b)).ok()?;
+    let (reply, _) = crate::learn::complete_light(url, model, TAKEAWAY, &facts(b)).ok()?;
     let reply = reply.rsplit_once("</think>").map_or(reply.as_str(), |(_, after)| after);
     let line = first_line(reply, 300).trim_matches('"').to_string();
     (!line.is_empty()).then_some(line)

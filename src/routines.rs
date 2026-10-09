@@ -381,7 +381,7 @@ pub fn needs_user(url: &str, model: &str, r: &Routine, reply: &str) -> (bool, St
         return (yes, crate::decide::model().unwrap_or_else(|| "decision model".into()));
     }
     let system = format!("{NEEDS_USER} Answer with only yes or no.");
-    match crate::learn::complete(url, model, &system, &state) {
+    match crate::learn::complete_light(url, model, &system, &state) {
         Ok((text, _)) => {
             let text = text.rsplit_once("</think>").map_or(text.as_str(), |(_, a)| a).trim().to_lowercase();
             (text.starts_with("yes"), "chat model".into())

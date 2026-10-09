@@ -4,6 +4,11 @@
 //! says so. After a failure the main model is left alone for a couple of
 //! minutes (every turn would otherwise wait for it to time out first), then
 //! tried again.
+//!
+//! With `background = true` it also takes lyra's small background jobs while
+//! it isn't standing in for the main model (memory capture, skill reviews,
+//! mail triage, briefing takeaways, routine checks, feedback analysis), so the
+//! main model is left to the chats. A failure there goes back to the main one.
 
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -15,6 +20,9 @@ pub struct Settings {
     /// Its OpenAI-compatible base URL, e.g. `http://gpu2:8080/v1`.
     pub url: String,
     pub model: String,
+    /// Also does lyra's small background jobs while the main model is up.
+    #[serde(default)]
+    pub background: bool,
     /// Its prices (`input_cost_per_mtok` …), for AI usage.
     #[serde(flatten, default)]
     pub price: crate::usage::Price,
@@ -38,6 +46,14 @@ pub fn settings() -> Option<Settings> {
 /// The fallback's chat completions URL and model, if one is set up (and not marked down).
 pub fn target() -> Option<(String, String)> {
     settings().filter(|_| !crate::known_down::is_down("fallback")).map(|s| (format!("{}/chat/completions", s.url.trim_end_matches('/')), s.model))
+}
+
+/// Where a small background job goes first: the fallback, when it takes
+/// them (`background = true`), isn't marked down, and the main model is up
+/// (while it stands in, it's the only model anyway).
+pub fn light() -> Option<(String, String)> {
+    settings().filter(|s| s.background)?;
+    target().filter(|_| !skip_main())
 }
 
 /// Skip the main model for now (marked known down, or it failed a moment
@@ -84,12 +100,18 @@ mod tests {
         assert!(unreachable("503 Service Unavailable: loading model"));
         assert!(unreachable("operation timed out"));
         assert!(!unreachable("400 Bad Request: context length exceeded"), "the fallback would refuse it too");
-        configure(Some(Settings { url: "http://gpu2:8080/v1/".into(), model: "gemma".into(), price: Default::default() }));
+        configure(Some(Settings { url: "http://gpu2:8080/v1/".into(), model: "gemma".into(), background: false, price: Default::default() }));
         assert_eq!(target(), Some(("http://gpu2:8080/v1/chat/completions".into(), "gemma".into())));
+        assert_eq!(light(), None, "background jobs stay on the main model unless asked");
         main_failed();
         assert!(skip_main());
         main_ok();
         assert!(!skip_main());
+        configure(Some(Settings { url: "http://gpu2:8080/v1/".into(), model: "gemma".into(), background: true, price: Default::default() }));
+        assert_eq!(light(), Some(("http://gpu2:8080/v1/chat/completions".into(), "gemma".into())));
+        main_failed();
+        assert_eq!(light(), None, "standing in for the main model: the ordinary path");
+        main_ok();
         configure(None);
         main_failed();
         assert!(!skip_main(), "no fallback: always the main model");

@@ -170,7 +170,7 @@ fn analyze_now(item: &Item, seen: &[String]) -> Analysis {
         prompt += &format!("\nThe conversation since:\n{}\n", replies.join("\n"));
     }
     prompt += &format!("\nlyra's documentation (the most related parts):\n### {}", background(&format!("{} {}", item.title, item.details)));
-    let reply = crate::learn::complete(&url, &model, ANALYST, &prompt).map(|(r, _)| r);
+    let reply = crate::learn::complete_light(&url, &model, ANALYST, &prompt).map(|(r, _)| r);
     let parsed = reply.and_then(|r| {
         let start = r.find('{').ok_or("no answer")?;
         let end = r.rfind('}').ok_or("no answer")?;

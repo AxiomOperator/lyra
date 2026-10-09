@@ -90,6 +90,7 @@ pub const FIELDS: &[Field] = &[
     Field { key: "currency", group: "models", label: "Currency", help: "Shown before prices.", kind: Kind::Text, get: |c, _| s(&c.currency) },
     Field { key: "fallback_model.url", group: "models", label: "Fallback server", help: "Answers in the chat model's place while it can't be reached. Empty: none.", kind: Kind::Url, get: |c, _| s(c.fallback_model.as_ref().map_or("", |f| f.url.as_str())) },
     Field { key: "fallback_model.model", group: "models", label: "Fallback model", help: "Its name on that server.", kind: Kind::Model, get: |c, _| s(c.fallback_model.as_ref().map_or("", |f| f.model.as_str())) },
+    Field { key: "fallback_model.background", group: "models", label: "Fallback does background jobs", help: "While the chat model is up, the fallback does lyra's small background jobs (memory, skill reviews, mail triage, briefing notes, routine checks), leaving the chat model to the chats.", kind: Kind::Bool, get: |c, _| json!(c.fallback_model.as_ref().is_some_and(|f| f.background)) },
     Field { key: "vision_model.url", group: "models", label: "Vision server", help: "Reads pictures and scanned PDFs for a chat model that can't. Empty: not set up.", kind: Kind::Url, get: |c, _| s(c.vision_model.as_ref().map_or("", |v| v.url.as_str())) },
     Field { key: "vision_model.model", group: "models", label: "Vision model", help: "Its name on that server.", kind: Kind::Model, get: |c, _| s(c.vision_model.as_ref().map_or("", |v| v.model.as_str())) },
     Field { key: "decide.url", group: "models", label: "Decision server", help: "The small model that routes and classifies (llama-server). Empty: not set up.", kind: Kind::Url, get: |c, _| s(c.decide.as_ref().map_or("", |d| d.url.as_str())) },
@@ -280,6 +281,10 @@ fn set_in(path: &std::path::Path, changes: &Value) -> Result<Vec<String>, String
         if !same(&as_value(&item), &(f.get)(&now, &behavior)) {
             writes.push((f, item));
         }
+    }
+    // Background jobs on a fallback that isn't set up: there's nothing to send them to.
+    if writes.iter().any(|(f, _)| f.key == "fallback_model.background") && now.fallback_model.is_none() && !writes.iter().any(|(f, _)| f.key == "fallback_model.url") {
+        return Err("set up the fallback model (its server and name) first".into());
     }
     // A helper model set up for the first time needs both its server and its name.
     for section in ["vision_model", "decide", "fallback_model"] {

@@ -13,7 +13,7 @@ use lyra_memory::{
 };
 use tokio::runtime::Handle;
 
-use crate::learn::{Review, complete};
+use crate::learn::{Review, complete_light as complete};
 use crate::retrieval::{self, Endpoint};
 
 /// What the memory panel shows.
