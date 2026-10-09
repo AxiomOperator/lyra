@@ -428,6 +428,11 @@ export interface UserRow {
   /** Their own limit on tool calls in one reply; the shared default when null. */
   tool_rounds?: number | null;
   default_rounds?: number;
+  /** What they sign in with when there's no Microsoft account. */
+  username?: string;
+  /** They have a password; it's a one-time one they haven't changed yet. */
+  password?: boolean;
+  must_change?: boolean;
 }
 
 /** An Outlook calendar event as lyra shows it. */

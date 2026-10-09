@@ -587,45 +587,67 @@ function Pair({ onPaired, message }: { onPaired: (token: string) => void; messag
   const [name, setName] = useState(/iphone/i.test(ua) ? "iPhone" : /ipad/i.test(ua) ? "iPad" : /android/i.test(ua) ? "Android" : "Browser");
   const [error, setError] = useState(message ?? "");
   const [busy, setBusy] = useState(false);
-  // Microsoft sign-in, when the server has it: then pairing codes are the other way in.
-  const [entra, setEntra] = useState(false);
-  const [withCode, setWithCode] = useState(() => new URLSearchParams(location.search).has("pair"));
+  // How this server lets people in: a username and password (no Microsoft
+  // needed), Microsoft sign-in when it's set up, and a pairing code always.
+  const [ways, setWays] = useState<{ entra: boolean; passwords: boolean }>({ entra: false, passwords: false });
+  const [mode, setMode] = useState<"password" | "microsoft" | "code" | null>(() => (new URLSearchParams(location.search).has("pair") ? "code" : null));
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   useEffect(() => {
     void fetch("/api/auth")
       .then((r) => r.json())
-      .then((b) => setEntra(!!b.entra))
-      .catch(() => {});
+      .then((b) => {
+        const w = { entra: !!b.entra, passwords: !!b.passwords };
+        setWays(w);
+        setMode((m) => m ?? (w.passwords ? "password" : w.entra ? "microsoft" : "code"));
+      })
+      .catch(() => setMode((m) => m ?? "code"));
   }, []);
   const microsoft = () => {
     location.href = `/auth/login?device=${encodeURIComponent(name)}`;
   };
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
+  const send = async (url: string, body: object) => {
     setBusy(true);
     setError("");
-    const r = await fetch("/api/pair", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, name }),
-    });
-    const body = await r.json().catch(() => ({}));
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => null);
+    const b = r ? await r.json().catch(() => ({})) : { error: "Couldn't reach lyra." };
     setBusy(false);
-    if (!r.ok) {
-      setError(body.error || "Pairing failed");
+    if (!r?.ok || !b.token) {
+      setError(b.error || "That didn't work");
       return;
     }
-    saveToken(body.token);
-    onPaired(body.token);
+    saveToken(b.token);
+    onPaired(b.token);
   };
+  const pair = (e: FormEvent) => {
+    e.preventDefault();
+    void send("/api/pair", { code, name });
+  };
+  const signIn = (e: FormEvent) => {
+    e.preventDefault();
+    void send("/api/auth/password", { username, password, device: name });
+  };
+  const other = (label: string, to: "password" | "microsoft" | "code") => (
+    <button key={to} type="button" onClick={() => (to === "microsoft" ? microsoft() : (setMode(to), setError("")))} className="w-full text-center text-muted-foreground text-sm hover:text-foreground">
+      {label}
+    </button>
+  );
+  const others = [
+    mode !== "password" && ways.passwords && other("Sign in with a username instead", "password"),
+    mode !== "microsoft" && ways.entra && other("Sign in with Microsoft instead", "microsoft"),
+    mode !== "code" && other("Pair with a code instead", "code"),
+  ].filter(Boolean);
   return (
     // The page itself doesn't scroll (index.css): this screen does, centred while it fits.
     <div className="flex h-full flex-col overflow-y-auto bg-background p-5 pt-[max(1.25rem,env(safe-area-inset-top))] pb-[max(1.25rem,env(safe-area-inset-bottom))] text-foreground">
       <Card className="m-auto w-full max-w-sm">
         <CardHeader className="items-center text-center">
           <img src="/icon-192.png" alt="" className="mx-auto mb-2 size-16 rounded-2xl" />
-          <CardTitle className="text-xl">{entra && !withCode ? "Sign in to lyra" : "Pair this device"}</CardTitle>
+          <CardTitle className="text-xl">{mode === "code" ? "Pair this device" : "Sign in to lyra"}</CardTitle>
           <CardDescription>
-            {entra && !withCode ? (
+            {mode === "password" ? (
+              "With the username and password your admin gave you."
+            ) : mode === "microsoft" ? (
               "Use your organization's Microsoft account."
             ) : (
               <>
@@ -635,32 +657,77 @@ function Pair({ onPaired, message }: { onPaired: (token: string) => void; messag
             )}
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          {entra && !withCode && (
-            <div className="space-y-3">
-              <Button onClick={microsoft} className="h-11 w-full">
-                Sign in with Microsoft
+        <CardContent className="space-y-3">
+          {mode === "password" && (
+            <form onSubmit={signIn} className="space-y-3">
+              <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Username" autoCapitalize="none" autoCorrect="off" spellCheck={false} autoComplete="username" className="h-11" required aria-label="Username" />
+              <Input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="Password" autoComplete="current-password" className="h-11" required aria-label="Password" />
+              <Button type="submit" disabled={busy} className="h-11 w-full">
+                {busy ? "Signing in…" : "Sign in"}
               </Button>
-              <button type="button" onClick={() => setWithCode(true)} className="w-full text-center text-muted-foreground text-sm hover:text-foreground">
-                Pair with a code instead
-              </button>
-              {error && <p className="text-center text-red-400 text-sm">{error}</p>}
-            </div>
+            </form>
           )}
-          <form onSubmit={submit} className={cn("space-y-3", entra && !withCode && "hidden")}>
-            <Input
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              placeholder="Pairing code"
-              autoCapitalize="characters"
-              spellCheck={false}
-              autoComplete="one-time-code"
-              className="h-12 text-center font-mono text-lg tracking-[0.2em]"
-              required
-            />
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Device name" className="h-11 text-center" />
+          {mode === "microsoft" && (
+            <Button onClick={microsoft} className="h-11 w-full">
+              Sign in with Microsoft
+            </Button>
+          )}
+          {mode === "code" && (
+            <form onSubmit={pair} className="space-y-3">
+              <Input
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="Pairing code"
+                autoCapitalize="characters"
+                spellCheck={false}
+                autoComplete="one-time-code"
+                className="h-12 text-center font-mono text-lg tracking-[0.2em]"
+                required
+              />
+              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Device name" className="h-11 text-center" />
+              <Button type="submit" disabled={busy} className="h-11 w-full">
+                Pair
+              </Button>
+            </form>
+          )}
+          {error && <p className="text-center text-red-400 text-sm">{error}</p>}
+          {mode && others}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+/** Signed in with a one-time password (a new account, or a reset one): choose your own first. */
+function ChoosePassword({ token, onDone }: { token: string; onDone: () => void }) {
+  const [password, setPassword] = useState("");
+  const [again, setAgain] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    if (password !== again) return setError("Those two don't match.");
+    setBusy(true);
+    const r = await fetch("/api/auth/password/change", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ new: password }) }).catch(() => null);
+    const b = r ? await r.json().catch(() => ({})) : { error: "Couldn't reach lyra." };
+    setBusy(false);
+    if (r?.ok) onDone();
+    else setError(b.error || "That didn't work");
+  };
+  return (
+    <div className="flex h-full flex-col overflow-y-auto bg-background p-5 pt-[max(1.25rem,env(safe-area-inset-top))] pb-[max(1.25rem,env(safe-area-inset-bottom))] text-foreground">
+      <Card className="m-auto w-full max-w-sm">
+        <CardHeader className="items-center text-center">
+          <img src="/icon-192.png" alt="" className="mx-auto mb-2 size-16 rounded-2xl" />
+          <CardTitle className="text-xl">Choose your password</CardTitle>
+          <CardDescription>The one you were given works once. Pick your own: at least 10 characters (a few words together is easy to remember).</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={(e) => void save(e)} className="space-y-3">
+            <Input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="New password" autoComplete="new-password" className="h-11" required minLength={10} aria-label="New password" />
+            <Input value={again} onChange={(e) => setAgain(e.target.value)} type="password" placeholder="Once more" autoComplete="new-password" className="h-11" required aria-label="New password again" />
             <Button type="submit" disabled={busy} className="h-11 w-full">
-              Pair
+              Save and continue
             </Button>
             {error && <p className="text-center text-red-400 text-sm">{error}</p>}
           </form>
@@ -727,6 +794,15 @@ export default function App() {
   const [why, setWhy] = useState<string | undefined>(signIn.error);
   const [waiting, setWaiting] = useState(false);
   const [finishing, setFinishing] = useState(!!signIn.code);
+  // Signed in with a one-time password: they choose their own before anything else.
+  const [mustChange, setMustChange] = useState(false);
+  useEffect(() => {
+    if (!token) return;
+    void fetch("/api/me", { headers: { Authorization: "Bearer " + token } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b) => setMustChange(!!b?.must_change))
+      .catch(() => {});
+  }, [token]);
   useEffect(() => {
     if (!signIn.code) return;
     const code = signIn.code;
@@ -764,6 +840,7 @@ export default function App() {
     );
   if (finishing) return <div className="flex h-full items-center justify-center bg-background text-muted-foreground text-sm">Signing you in…</div>;
   if (!token) return <Pair onPaired={setToken} message={why} />;
+  if (mustChange) return <ChoosePassword token={token} onDone={() => setMustChange(false)} />;
   return (
     <LyraProvider token={token} onUnpaired={unpaired}>
       <TooltipProvider>

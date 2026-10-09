@@ -115,6 +115,7 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
             json!(hub.users().list().iter().map(|u| json!({
                 "id": u.id, "name": u.name, "email": u.email, "role": u.role, "status": u.status,
                 "created": u.created, "last_seen": u.last_seen, "microsoft": !u.oid.is_empty(), "tool_rounds": u.tool_rounds, "default_rounds": shared,
+                "username": u.username, "password": !u.password.is_empty(), "must_change": u.must_change,
                 "devices": devices.iter().filter(|d| d.user.as_deref() == Some(u.id.as_str())).map(|d| json!({ "name": d.name, "last_seen": d.last_seen })).collect::<Vec<_>>(),
             })).collect::<Vec<_>>())
         }
@@ -131,6 +132,25 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
             }
             v
         }
+        // An account for someone without Microsoft (admins): its one-time password comes back once.
+        "user_add" => {
+            let role = if arg["admin"] == true { lyra_web::Role::Admin } else { lyra_web::Role::Member };
+            match hub.users().create_local(arg["username"].as_str().unwrap_or(""), arg["name"].as_str().unwrap_or(""), role) {
+                Ok((u, temp)) => {
+                    app.log(Level::Agent, format!("account made for {} (signs in as {})", u.name, u.username));
+                    json!({ "ok": true, "name": u.name, "username": u.username, "password": temp })
+                }
+                Err(e) => json!({ "error": e }),
+            }
+        }
+        // A new one-time password (forgotten, or a first username for someone): admins.
+        "user_password" => match hub.users().reset_password(arg["id"].as_str().unwrap_or(""), arg["username"].as_str().filter(|n| !n.trim().is_empty())) {
+            Ok((u, temp)) => {
+                app.log(Level::Agent, format!("password reset for {} ({})", u.name, u.username));
+                json!({ "ok": true, "name": u.name, "username": u.username, "password": temp })
+            }
+            Err(e) => json!({ "error": e }),
+        },
         // Mark a model known down (or clear it): admins (the gate is in the loop).
         "known_down_set" => {
             let by = hub.users().get(&app.owner).map_or_else(|| app.owner.clone(), |u| u.name.split_whitespace().next().unwrap_or(&u.name).to_string());
@@ -388,6 +408,7 @@ fn about_me(app: &App, hub: &Hub, export: bool) -> Value {
     let devices: Vec<Value> = theirs.iter().map(|d| json!({ "name": d.name, "last_seen": d.last_seen })).collect();
     let mut v = json!({
         "name": u.as_ref().map(|u| u.name.clone()), "email": u.as_ref().map(|u| u.email.clone()), "admin": app.admin,
+        "username": u.as_ref().map(|u| u.username.clone()).filter(|n| !n.is_empty()),
         "memories": memories,
         "style": crate::style::read(&user),
         "accounts": {

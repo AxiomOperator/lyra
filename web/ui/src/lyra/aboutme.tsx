@@ -7,8 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { Brain, Check, ChevronDown, ChevronRight, Download, HelpCircle, Link2, PenLine, Smartphone, Trash2, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { Brain, Check, ChevronDown, ChevronRight, Download, HelpCircle, KeyRound, Link2, PenLine, Smartphone, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Back, Failed, Page, useAction, useConfirm } from "./parts";
 import { ago } from "./push";
 import { useLyra } from "./store";
@@ -35,6 +35,8 @@ interface Me {
   name?: string | null;
   email?: string | null;
   admin: boolean;
+  /** They sign in with a username and password (not only Microsoft). */
+  username?: string | null;
   memories: Memory[] | null;
   style: string | null;
   accounts: { microsoft: { connected: boolean; what?: string | null; granted?: string[] | null }; pmi: { connected: boolean } };
@@ -112,6 +114,53 @@ function MemoryRow({ m, act, busy }: { m: Memory; act: (c: string) => Promise<bo
         </div>
       )}
     </div>
+  );
+}
+
+/** Change your own password: the current one, then the new one twice. */
+function PasswordCard({ username }: { username: string }) {
+  const { token } = useLyra();
+  const [old, setOld] = useState("");
+  const [password, setPassword] = useState("");
+  const [again, setAgain] = useState("");
+  const [said, setSaid] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    if (password !== again) return setSaid({ ok: false, text: "Those two don't match." });
+    setBusy(true);
+    const r = await fetch("/api/auth/password/change", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ old, new: password }) }).catch(() => null);
+    const b = r ? await r.json().catch(() => ({})) : { error: "Couldn't reach lyra." };
+    setBusy(false);
+    if (r?.ok) {
+      setOld("");
+      setPassword("");
+      setAgain("");
+      setSaid({ ok: true, text: "Changed. Use the new one next time you sign in." });
+    } else setSaid({ ok: false, text: b.error || "That didn't work" });
+  };
+  return (
+    <Card className="gap-1 py-4">
+      <CardHeader className="px-4">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <KeyRound className="size-4" /> Your password
+        </CardTitle>
+        <CardDescription>
+          You sign in as <span className="font-mono">{username}</span>. Forgot it? An admin can give you a new one-time password.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="px-4">
+        <form onSubmit={(e) => void save(e)} className="flex flex-wrap gap-2">
+          <Input value={old} onChange={(e) => setOld(e.target.value)} type="password" placeholder="Current password" autoComplete="current-password" className="min-w-40 flex-1" required aria-label="Current password" />
+          <Input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="New password" autoComplete="new-password" className="min-w-40 flex-1" required minLength={10} aria-label="New password" />
+          <Input value={again} onChange={(e) => setAgain(e.target.value)} type="password" placeholder="Once more" autoComplete="new-password" className="min-w-40 flex-1" required aria-label="New password again" />
+          <Button type="submit" size="sm" variant="secondary" disabled={busy} className="h-9">
+            Change it
+          </Button>
+        </form>
+        {said && <p className={cn("mt-2 text-sm", said.ok ? "text-teal-300" : "text-red-300")}>{said.text}</p>}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -225,6 +274,7 @@ export function AboutMePage({ onBack }: { onBack: () => void }) {
           </div>
         </CardContent>
       </Card>
+      {me?.username && <PasswordCard username={me.username} />}
       <Card className="gap-1 py-4">
         <CardHeader className="px-4">
           <CardTitle className="flex items-center gap-2 text-base">

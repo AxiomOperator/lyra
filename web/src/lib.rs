@@ -254,6 +254,8 @@ struct Shared {
     logins: Mutex<HashMap<String, oidc::Pending>>,
     /// Finished sign-ins waiting for their browser: code → (device token, the sign-in's state, when).
     handoffs: Mutex<HashMap<String, (String, String, Instant)>>,
+    /// Wrong passwords by username: (how many, since when), to slow guessing.
+    tries: Mutex<HashMap<String, (u32, Instant)>>,
 }
 
 /// The running server, as the app sees it.
@@ -322,6 +324,7 @@ impl Hub {
             entra: settings.entra.clone(),
             logins: Mutex::new(HashMap::new()),
             handoffs: Mutex::new(HashMap::new()),
+            tries: Mutex::new(HashMap::new()),
         });
         let addr: SocketAddr = settings.listen.parse().map_err(|e| format!("[web] listen {:?}: {e}", settings.listen))?;
         let listener = rt.block_on(tokio::net::TcpListener::bind(addr)).map_err(|e| format!("can't listen on {addr}: {e}"))?;
@@ -660,6 +663,8 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/auth/login", get(auth_login))
         .route("/auth/callback", get(auth_callback))
         .route("/api/auth/redeem", post(auth_redeem))
+        .route("/api/auth/password", post(password_sign_in))
+        .route("/api/auth/password/change", post(password_change))
         .route("/api/connect/calendar", post(connect_calendar))
         .route("/api/vapid", get(vapid_key))
         .route("/api/push", post(set_push))
@@ -796,14 +801,104 @@ async fn pair(State(s): State<Arc<Shared>>, Json(b): Json<PairBody>) -> Response
 
 async fn me(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Response {
     match device(&s, &headers) {
-        Ok((d, who)) => Json(json!({ "id": d.id, "name": d.name, "push": d.push.is_some(), "user": who })).into_response(),
+        Ok((d, who)) => {
+            // Whether they sign in with a password, and must choose one now (a one-time one).
+            let u = s.users.get(&who.user);
+            let (password, must_change) = u.map_or((false, false), |u| (!u.username.is_empty(), u.must_change));
+            Json(json!({ "id": d.id, "name": d.name, "push": d.push.is_some(), "user": who, "password": password, "must_change": must_change })).into_response()
+        }
         Err(r) => *r,
     }
 }
 
-/// How this server lets people in: Microsoft sign-in when it's set up.
+/// How this server lets people in: Microsoft sign-in when it's set up, a
+/// username and password when anyone has one (or there's no Microsoft), and
+/// a pairing code always.
 async fn auth_info(State(s): State<Arc<Shared>>) -> Response {
-    Json(json!({ "entra": s.entra.ready() })).into_response()
+    let passwords = !s.entra.ready() || s.users.list().iter().any(|u| !u.username.is_empty());
+    Json(json!({ "entra": s.entra.ready(), "passwords": passwords })).into_response()
+}
+
+#[derive(Deserialize)]
+struct PasswordBody {
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    password: String,
+    /// What this browser is called (its devices list shows it).
+    #[serde(default)]
+    device: String,
+}
+
+/// After this many wrong passwords for one username, it waits this long.
+const MAX_TRIES: u32 = 5;
+const LOCKED_FOR: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Sign in with a username and password (no Microsoft needed): a device token for this browser.
+async fn password_sign_in(State(s): State<Arc<Shared>>, Json(b): Json<PasswordBody>) -> Response {
+    // Every try takes a moment, right or wrong.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    let key = b.username.trim().to_lowercase();
+    {
+        let mut tries = s.tries.lock().unwrap_or_else(|e| e.into_inner());
+        tries.retain(|_, (_, since)| since.elapsed() < LOCKED_FOR);
+        if tries.get(&key).is_some_and(|(n, _)| *n >= MAX_TRIES) {
+            return error(StatusCode::TOO_MANY_REQUESTS, "too many wrong passwords: wait 15 minutes, or ask an admin to reset it");
+        }
+    }
+    let (users, username, password) = (s.users.clone(), b.username.clone(), b.password.clone());
+    // Argon2 takes a little CPU: off the async threads.
+    let checked = tokio::task::spawn_blocking(move || users.sign_in(&username, &password)).await.unwrap_or_else(|e| Err(e.to_string()));
+    let user = match checked {
+        Ok(u) => {
+            s.tries.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+            u
+        }
+        Err(e) => {
+            if e.contains("don't match") {
+                let mut tries = s.tries.lock().unwrap_or_else(|e| e.into_inner());
+                let t = tries.entry(key).or_insert((0, Instant::now()));
+                t.0 += 1;
+            }
+            return error(StatusCode::FORBIDDEN, &e);
+        }
+    };
+    let device = if b.device.trim().is_empty() { "Browser" } else { b.device.trim() };
+    match s.devices.add(&format!("{} · {device}", user.name), "device", Some(&user.id)) {
+        Ok((d, token)) => {
+            let _ = s.inbound.send(Inbound::DevicesChanged);
+            Json(json!({ "token": token, "device": { "id": d.id, "name": d.name, "kind": d.kind }, "must_change": user.must_change })).into_response()
+        }
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}
+
+#[derive(Deserialize)]
+struct ChangeBody {
+    #[serde(default)]
+    old: String,
+    #[serde(default)]
+    new: String,
+}
+
+/// Change one's own password (the old one first, unless it's a one-time one being replaced).
+async fn password_change(State(s): State<Arc<Shared>>, headers: HeaderMap, Json(b): Json<ChangeBody>) -> Response {
+    let (_, who) = match device(&s, &headers) {
+        Ok(x) => x,
+        Err(r) => return *r,
+    };
+    let Some(user) = s.users.get(&who.user) else { return error(StatusCode::NOT_FOUND, "no such user") };
+    let need_old = !user.must_change;
+    if need_old && b.old.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "type your current password first");
+    }
+    let users = s.users.clone();
+    let id = who.user.clone();
+    let done = tokio::task::spawn_blocking(move || users.change_password(&id, need_old.then_some(b.old.as_str()), &b.new)).await.unwrap_or_else(|e| Err(e.to_string()));
+    match done {
+        Ok(_) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => error(StatusCode::BAD_REQUEST, &e),
+    }
 }
 
 #[derive(Deserialize)]

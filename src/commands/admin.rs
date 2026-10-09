@@ -199,20 +199,42 @@ impl App {
                             "{} {}{} · {} · {n} device{}{}{status}",
                             if u.role == Role::Admin { "★" } else { "·" },
                             u.name,
-                            if u.email.is_empty() { String::new() } else { format!(" <{}>", u.email) },
+                            if u.email.is_empty() { if u.username.is_empty() { String::new() } else { format!(" (signs in as {})", u.username) } } else { format!(" <{}>", u.email) },
                             if u.role == Role::Admin { "admin" } else { "member" },
                             if n == 1 { "" } else { "s" },
                             u.tool_rounds.map_or(String::new(), |r| format!(" · {r} tool rounds"))
                         )
                     })
                     .collect();
-                out.push("/users approve|decline|admin|member|disable|enable <name or email> · /users rounds <who> <1–64 | default>".into());
+                out.push("/users approve|decline|admin|member|disable|enable <name or email> · /users add <username> <name> [admin] · /users password <who> [username] · /users rounds <who> <1–64 | default>".into());
                 Ok(out.join("\n"))
             }
             "approve" | "enable" => change(None, Some(Status::Active), "can use lyra"),
             "decline" | "disable" => change(None, Some(Status::Disabled), "can't use lyra (their devices stop working)"),
             "admin" => change(Some(Role::Admin), None, "is an admin"),
             "member" => change(Some(Role::Member), None, "is a member"),
+            // An account without Microsoft: /users add <username> <name> [admin]; its one-time password, shown once.
+            "add" => {
+                let mut words: Vec<&str> = rest.split_whitespace().collect();
+                let admin = words.last().is_some_and(|w| w.eq_ignore_ascii_case("admin"));
+                if admin {
+                    words.pop();
+                }
+                let (Some(username), name) = (words.first().copied(), words.get(1..).map(|w| w.join(" ")).unwrap_or_default()) else {
+                    return Err("usage: /users add <username> <their name> [admin]".into());
+                };
+                let (u, temp) = users.create_local(username, &name, if admin { Role::Admin } else { Role::Member })?;
+                self.log(Level::Agent, format!("account made for {} (signs in as {})", u.name, u.username));
+                Ok(format!("{} can sign in as {} with the one-time password {temp}\n(shown only now: they choose their own at the first sign-in)", u.name, u.username))
+            }
+            // A new one-time password: /users password <who> [username] (a username for someone who has none).
+            "password" => {
+                let mut words = rest.split_whitespace();
+                let who = words.next().ok_or("usage: /users password <name, email or username> [new username]")?;
+                let (u, temp) = users.reset_password(who, words.next())?;
+                self.log(Level::Agent, format!("password reset for {} ({})", u.name, u.username));
+                Ok(format!("{} can sign in as {} with the one-time password {temp}\n(shown only now: they choose their own at the next sign-in)", u.name, u.username))
+            }
             // Their own tool-call limit: a number, or "default" for the shared one.
             "rounds" => {
                 let (who, n) = rest.rsplit_once(' ').map(|(a, b)| (a.trim(), b.trim())).ok_or("usage: /users rounds <name or email> <1–64 | default>")?;
@@ -228,7 +250,7 @@ impl App {
                     None => format!("{} uses the default limit ({shared} rounds of tool calls)", u.name),
                 })
             }
-            _ => Err("usage: /users [approve|decline|admin|member|disable|enable <name or email>] · /users rounds <who> <1–64 | default>".into()),
+            _ => Err("usage: /users [approve|decline|admin|member|disable|enable <name or email>] · /users add <username> <name> [admin] · /users password <who> [username] · /users rounds <who> <1–64 | default>".into()),
         }
     }
 

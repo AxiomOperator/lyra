@@ -59,7 +59,7 @@ It runs entirely on local models:
 - Coding agents (Claude Code and OpenCode) on the server and on machines.
 
 ### Personal assistant (Microsoft 365 and PMI)
-- Sign in with Microsoft. Users and roles (owner, admin, member), with per-person data everywhere.
+- Sign in with Microsoft, or with a username and password an admin creates (no Microsoft 365 needed; one-time passwords, a lockout after repeated wrong tries). Users and roles (owner, admin, member), with per-person data everywhere.
 - **Outlook:**
   - calendar, including find a time with free/busy and invites after approval;
   - mail: triage, HTML drafts, sending after approval;

@@ -32,6 +32,8 @@ pub(crate) const COMMANDS: &str = "\
 /task add <what> [when] · /task done <n> [comment] · /task snooze <n> [1h|tomorrow]
 /users [approve|admin|member|disable <who>]   the people who use lyra serve (admins)
 /users rounds <who> <n|default>   their own limit on tool calls in one reply (1–64; admins)
+/users add <username> <name> [admin]   an account without Microsoft: a one-time password, shown once (admins)
+/users password <who> [username]   a new one-time password (or a first username) for someone (admins)
 /whoami                      who this conversation belongs to
 /settings [<key> <value>]    the common settings (models, working hours, briefing, recap, notifications); change one (admins)
 /templates                   your saved prompts and the shared ones (save them in the app)

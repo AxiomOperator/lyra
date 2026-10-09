@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.38.0.172",
+    "date": "2026-10-09",
+    "title": "Sign in without Microsoft",
+    "new": [
+      "Accounts with a username and password: admins add a person on the Users page (or /users add) and give them the one-time password shown. They choose their own when they first sign in. No Microsoft 365 account needed; they can still connect Outlook later if they have one.",
+      "Reset password on the Users page (or /users password) gives someone a new one-time password, or a username and password to someone who only had Microsoft sign-in.",
+      "Change your own password on What lyra knows about me."
+    ],
+    "improved": [
+      "The sign-in page offers a username and password, Microsoft or a pairing code, whichever this server has. Repeated wrong passwords lock that username for 15 minutes."
+    ]
+  },
+  {
     "version": "0.37.0.171",
     "date": "2026-10-08",
     "title": "Known down",
