@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.50.1.190",
+    "date": "2026-10-09",
+    "title": "Quicker page summaries",
+    "fixed": [
+      "Web research is quicker: page summaries are kept short (they were up to five times longer than asked, which made each step of a long routine slow), and short pages are read as they are."
+    ]
+  },
+  {
     "version": "0.50.0.189",
     "date": "2026-10-09",
     "title": "A tidier rail",

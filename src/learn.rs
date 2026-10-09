@@ -475,7 +475,7 @@ pub(crate) fn complete(
     system: &str,
     user: &str,
 ) -> Result<(String, Option<Usage>), String> {
-    call(url, model, system, user, false)
+    call(url, model, system, user, false, 0)
 }
 
 /// A small background job (memory capture, a skill review, mail triage…):
@@ -488,7 +488,13 @@ pub(crate) fn complete_light(
     system: &str,
     user: &str,
 ) -> Result<(String, Option<Usage>), String> {
-    call(url, model, system, user, true)
+    call(url, model, system, user, true, 0)
+}
+
+/// A small background job with a short answer: at most `max_tokens` (a
+/// page's summary), so the fallback doesn't hold up the round writing more.
+pub(crate) fn complete_light_short(url: &str, model: &str, system: &str, user: &str, max_tokens: u64) -> Result<(String, Option<Usage>), String> {
+    call(url, model, system, user, true, max_tokens)
 }
 
 fn call(
@@ -497,6 +503,7 @@ fn call(
     system: &str,
     user: &str,
     light: bool,
+    cap: u64,
 ) -> Result<(String, Option<Usage>), String> {
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(10))
@@ -513,6 +520,9 @@ fn call(
     let s = *STRUCTURED.read().unwrap_or_else(|e| e.into_inner());
     if s.max_tokens > 0 {
         body["max_tokens"] = json!(s.max_tokens);
+    }
+    if cap > 0 {
+        body["max_tokens"] = json!(cap);
     }
     if !s.thinking {
         body["chat_template_kwargs"] = json!({ "enable_thinking": false });

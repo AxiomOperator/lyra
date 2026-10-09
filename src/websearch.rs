@@ -146,13 +146,16 @@ fn fetch(s: &Settings, args: &Value) -> Result<Value, String> {
     Ok(json!({ "url": final_url, "title": title, "text": text }))
 }
 
-/// Pages longer than this are condensed.
-const READ_OVER: usize = 4_000;
+/// Pages longer than this are condensed (shorter ones cost less as they are
+/// than a model call to shorten them).
+const READ_OVER: usize = 6_000;
+/// The longest summary (about 350 words): the fallback writes until it's told to stop.
+const READER_TOKENS: u64 = 600;
 
 /// What the reader is told.
 const READER: &str = "You condense a web page for a researcher. Keep what it is and who published it, every date (published, announced, released), the facts, \
      numbers, versions, names and short quotes that matter, and the links worth following as [text](url) (take URLs from the page's link list). \
-     Drop navigation, ads, cookie notices and boilerplate. Plain Markdown, at most about 350 words. If the page has nothing on what they're looking for, \
+     Drop navigation, ads, cookie notices and boilerplate. Plain Markdown, at most about 300 words: be brief, bullet points are fine. If the page has nothing on what they're looking for, \
      say so in one line. Never add anything that isn't on the page.";
 
 /// The page condensed by the background model (the fallback when it takes
@@ -160,7 +163,7 @@ const READER: &str = "You condense a web page for a researcher. Keep what it is 
 fn read(url: &str, title: &str, text: &str, focus: &str) -> Option<String> {
     let (chat_url, model) = crate::learn::chat()?;
     let input = format!("Looking for: {}\nPage: {title}\nURL: {url}\n\n{text}", if focus.trim().is_empty() { "the main points" } else { focus.trim() });
-    let (out, _) = crate::learn::complete_light(&chat_url, &model, READER, &input).ok()?;
+    let (out, _) = crate::learn::complete_light_short(&chat_url, &model, READER, &input, READER_TOKENS).ok()?;
     let out = out.rsplit_once("</think>").map_or(out.as_str(), |(_, a)| a).trim().to_string();
     (!out.is_empty()).then_some(out)
 }
