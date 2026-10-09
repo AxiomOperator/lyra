@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.29.1.154",
+    "date": "2026-10-08",
+    "title": "Your own briefing",
+    "fixed": [
+      "Members can see their own briefing and press Brief me now, instead of being told it's for admins.",
+      "Brief me now makes only your briefing: nobody else gets one pushed because you asked."
+    ]
+  },
+  {
     "version": "0.29.0.153",
     "date": "2026-10-08",
     "title": "Longer jobs, and Continue",

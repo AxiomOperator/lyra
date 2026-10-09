@@ -269,6 +269,8 @@ pub(crate) fn member_may(name: &str, arg: &str) -> bool {
         "/approve" | "/reject" | "/deprecate" => true,
         // Their own PMI account, routines and goals.
         "/pmi" | "/tasks" | "/task" | "/routine" | "/routines" | "/calendar" | "/mail" | "/today" | "/style" | "/notes" | "/note" | "/list" => true,
+        // Their own briefing (made from their own accounts; nobody else's is touched).
+        "/briefing" => true,
         // Looking after their own memories (held to their scope there).
         "/memory" => matches!(arg.split_whitespace().next().unwrap_or(""), "inspect" | "forget" | "archive" | "restore" | "correct"),
         // Goals are tracked and planned, never worked on unattended: no plans,
@@ -315,12 +317,12 @@ mod page_tests {
 mod member_tests {
     #[test]
     fn members_keep_to_their_own() {
-        for ok in ["/help", "/new", "/resume", "/sessions", "/status", "/whoami", "/skills"] {
+        for ok in ["/help", "/new", "/resume", "/sessions", "/status", "/whoami", "/skills", "/briefing"] {
             assert!(super::member_may(ok, ""), "{ok}");
         }
         assert!(super::member_may("/model", "") && !super::member_may("/model", "other-model"), "look, not change");
         assert!(super::member_may("/memory", "forget 1a2b") && !super::member_may("/memory", "curate") && !super::member_may("/memory", "approve 1a2b"));
-        for no in ["/outcome", "/machines", "/devices", "/users", "/backup", "/caps", "/evolve", "/plan", "/agent", "/coding", "/diagnose"] {
+        for no in ["/outcome", "/machines", "/devices", "/users", "/backup", "/caps", "/evolve", "/plan", "/agent", "/coding", "/diagnose", "/settings"] {
             assert!(!super::member_may(no, "x"), "{no}");
         }
         // Their own routines and goals, but no plans or autonomy.

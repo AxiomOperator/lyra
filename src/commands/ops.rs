@@ -89,12 +89,14 @@ impl App {
         if !now && !arg.trim().is_empty() {
             return Err("usage: /briefing [now]".into());
         }
+        // Under lyra serve: this person's own briefing (a member's, or the owner's).
         if self.hub.is_some() {
-            if now || briefing::last().is_none() {
-                briefing::request();
-                return Ok("making a briefing now — it's pushed and shown on the Status page; /briefing in a moment shows it".into());
+            let mine = briefing::last_for(&self.owner);
+            if now || mine.is_none() {
+                briefing::request_for(&self.owner);
+                return Ok("making your briefing now — it's pushed and shown on the Status page; /briefing in a moment shows it".into());
             }
-            return Ok(briefing::last().map(|b| briefing::describe(&b)).unwrap_or_default());
+            return Ok(mine.map(|b| briefing::describe(&b)).unwrap_or_default());
         }
         if !now && let Some(b) = briefing::last() {
             return Ok(briefing::describe(&b));

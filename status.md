@@ -162,7 +162,7 @@ Recurring errors:
 | I-20 | Promoting a question to Q&A isn't atomic, and the same question can be promoted twice. | Check `source` first; link both steps. |
 | I-21 | Feedback: `analyzing` can stick if its thread panics; the badge re-reads the file for every status update; Q&A saves don't bump the refresh counter. | Small fixes in `feedback.rs`, `qa.rs` and `serve/mod.rs` `status()`. |
 | I-22 ✅ | **Fixed in 0.25.3.147.** *Was:* `recap` saves aren't atomic. | Write to a temp file and rename. |
-| I-23 | Members get "that's for admins" for their own **briefing** page (it's missing from the member list). | Add `briefing` to the member list. |
+| I-23 ✅ | **Fixed in 0.29.1.154:** `briefing` is on the members' page list and `/briefing` on their command list. `/briefing` showed the owner's briefing (`briefing::last()`) and is now each person's own (`last_for`); "Brief me now" makes only that person's briefing (`request_for`; the schedule still makes everyone's), and the batch counts what's left instead of waiting for the owner's, so a member-only one can't leave it busy. *Was:* members got "that's for admins" for their own briefing page. | Add `briefing` to the member list. |
 | I-24 | "Search everything" threads keep running after its 8 s cutoff. | One search at a time per person. |
 
 ### Checked and fine

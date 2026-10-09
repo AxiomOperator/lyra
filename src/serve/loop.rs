@@ -46,7 +46,8 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     if let Some(b) = &last_brief {
         brief_views.insert(lyra_web::users::OWNER.to_string(), json!(b));
     }
-    let mut brief_busy = false;
+    // Briefings still being made (the batch is done at 0).
+    let mut brief_left = 0usize;
     let mut last_brief_check = Instant::now() - Duration::from_secs(60);
     // PMI: its live events (a thread), and the view read after each change.
     let (pmi_events_tx, pmi_events) = std::sync::mpsc::channel::<(String, crate::pmi::Event)>();
@@ -202,7 +203,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "watches" | "everything" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze" | "feedback_enhance" | "qa" | "qa_put" | "qa_remove" | "qa_promote") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "briefing" | "watches" | "everything" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze" | "feedback_enhance" | "qa" | "qa_put" | "qa_remove" | "qa_promote") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -827,14 +828,14 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             }
         }
         // The daily briefing: on schedule or asked for, gathered and written off the loop.
-        let wanted = crate::briefing::take_request();
-        if !brief_busy && (wanted || last_brief_check.elapsed() >= Duration::from_secs(20)) {
+        // Asked for while a batch is still being made: kept for the next look.
+        let wanted = if brief_left == 0 { crate::briefing::take_requests() } else { Vec::new() };
+        if brief_left == 0 && (!wanted.is_empty() || last_brief_check.elapsed() >= Duration::from_secs(20)) {
             last_brief_check = Instant::now();
             let s = crate::briefing::settings();
             let now = chrono::Local::now();
             let due = s.enabled && crate::briefing::next(&s.schedule, last_brief.as_ref().map(|b| b.at), now).is_some_and(|t| t <= now);
-            if wanted || due {
-                brief_busy = true;
+            if !wanted.is_empty() || due {
                 let at = chrono::Utc::now();
                 let since = crate::briefing::window_start(last_brief.as_ref().map(|b| b.at), at);
                 let mut inputs = crate::briefing::local_inputs(convs[0].app.goals.as_deref(), at, since);
@@ -843,15 +844,17 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 inputs.pmi = pmi.get(&convs[0].app.owner).filter(|p| p.state.at.is_some()).map(|p| p.state.clone());
                 let (url, model, tx) = (format!("{}/chat/completions", convs[0].app.base_url.trim_end_matches('/')), convs[0].app.model.clone(), brief_tx.clone());
                 let owner = convs[0].app.owner.clone();
-                // Everyone else with PMI: their own, with just their tasks.
-                // Everyone else with PMI or a calendar connected: their own.
+                // On schedule: everyone with PMI or a calendar connected gets their own.
+                // Asked for: only those who asked (whatever they have connected).
+                let asked = |u: &String| wanted.iter().any(|w| w == u);
+                let with_owner = due || asked(&owner);
                 let others: Vec<(String, crate::briefing::Inputs)> = hub
                     .users()
                     .list()
                     .into_iter()
                     .filter(|u| u.status == lyra_web::Status::Active && u.id != owner)
                     .map(|u| u.id)
-                    .filter(|u| pmi.get(u).is_some_and(|p| p.state.at.is_some()) || crate::graph::connected_for(u))
+                    .filter(|u| if due { pmi.get(u).is_some_and(|p| p.state.at.is_some()) || crate::graph::connected_for(u) } else { asked(u) })
                     .map(|u| {
                         let since = crate::briefing::window_start(crate::briefing::last_for(&u).map(|b| b.at), at);
                         // Their tasks, routines and goals.
@@ -861,8 +864,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         (u, crate::briefing::Inputs { now: at, since, pmi, runs, goals, goal_events, ..Default::default() })
                     })
                     .collect();
+                let batch: Vec<(String, crate::briefing::Inputs)> = with_owner.then_some((owner, inputs)).into_iter().chain(others).collect();
+                brief_left = batch.len();
                 std::thread::spawn(move || {
-                    for (user, mut inputs) in std::iter::once((owner, inputs)).chain(others) {
+                    for (user, mut inputs) in batch {
                         // Their calendar today, when they've connected it.
                         if crate::graph::connected_for(&user) {
                             inputs.calendar = crate::acting::run(&user, crate::calendar::today).ok();
@@ -886,8 +891,8 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         while let Ok((user, b)) = brief_rx.try_recv() {
             let owner = user == convs[0].app.owner;
             crate::briefing::save_for(&user, &b);
+            brief_left = brief_left.saturating_sub(1);
             if owner {
-                brief_busy = false;
                 convs[0].app.log(if b.attention > 0 { Level::Error } else { Level::Plan }, format!("briefing: {}{}", b.headline, b.takeaway.as_ref().map(|t| format!(" — {t}")).unwrap_or_default()));
             }
             if crate::briefing::settings().notify {

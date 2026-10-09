@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, Duration, Local, Utc};
 use serde::{Deserialize, Serialize};
@@ -493,15 +492,20 @@ pub fn local_inputs(goals: Option<&crate::goals::Goals>, now: DateTime<Utc>, sin
     }
 }
 
-static WANTED: AtomicBool = AtomicBool::new(false);
+/// Whose briefing was asked for now (`/briefing now`, the Status page's button).
+static WANTED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-/// Make one now (`/briefing now`, the app's button).
-pub fn request() {
-    WANTED.store(true, Ordering::SeqCst);
+/// Make this person's briefing now (theirs only: nobody else is pushed one).
+pub fn request_for(user: &str) {
+    let mut w = WANTED.lock().unwrap_or_else(|e| e.into_inner());
+    if !w.iter().any(|u| u == user) {
+        w.push(user.to_string());
+    }
 }
 
-pub fn take_request() -> bool {
-    WANTED.swap(false, Ordering::SeqCst)
+/// Who asked for one since the last look.
+pub fn take_requests() -> Vec<String> {
+    std::mem::take(&mut *WANTED.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 // ---- storage and timing
