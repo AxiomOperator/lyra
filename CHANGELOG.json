@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.48.1.187",
+    "date": "2026-10-09",
+    "title": "Stop at once",
+    "fixed": [
+      "Stop works at once, even while the model is thinking or not answering. Before, it waited for the model's next words."
+    ]
+  },
+  {
     "version": "0.48.0.186",
     "date": "2026-10-09",
     "title": "Routines that remember, research that's lighter",

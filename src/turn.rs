@@ -748,15 +748,39 @@ pub(crate) fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: 
     let mut chunks = 0;
     let mut content = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
-    let resp = client.post(url).json(body).send().map_err(|e| format!("{UNREACHED}{e}"))?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(format!("{UNREACHED}{status}: {}", resp.text().unwrap_or_default().chars().take(500).collect::<String>()));
-    }
+    // The request and its lines on their own thread, so Stop works even while
+    // the model is silent (thinking, or stuck): this side waits in short steps.
+    let (lines_tx, lines) = std::sync::mpsc::channel::<Result<String, String>>();
+    let (url, body) = (url.to_string(), body.clone());
+    thread::spawn(move || {
+        let resp = match client.post(&url).json(&body).send() {
+            Ok(r) => r,
+            Err(e) => return drop(lines_tx.send(Err(format!("{UNREACHED}{e}")))),
+        };
+        let status = resp.status();
+        if !status.is_success() {
+            let _ = lines_tx.send(Err(format!("{UNREACHED}{status}: {}", resp.text().unwrap_or_default().chars().take(500).collect::<String>())));
+            return;
+        }
+        // Gone (stopped): the response drops, the connection closes, the server stops generating.
+        for line in BufReader::new(resp).lines() {
+            if lines_tx.send(line.map_err(|e| e.to_string())).is_err() {
+                return;
+            }
+        }
+    });
     let mut logged_first = false;
     let mut was_stopped = false;
-    for line in BufReader::new(resp).lines() {
-        // Dropping the response closes the connection, and the server stops generating.
+    loop {
+        let line = match lines.recv_timeout(Duration::from_millis(150)) {
+            Ok(line) => line,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if stopped(cancel) => {
+                was_stopped = true;
+                break;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         if stopped(cancel) {
             was_stopped = true;
             break;
@@ -766,7 +790,7 @@ pub(crate) fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: 
             tx.send(StreamEvent::Log(format!("first token after {}", secs(ttft))))
                 .map_err(|e| e.to_string())?;
         }
-        let line = line.map_err(|e| e.to_string())?;
+        let line = line?;
         let Some(data) = line.strip_prefix("data:") else { continue };
         let data = data.trim();
         if data == "[DONE]" {
