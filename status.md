@@ -265,14 +265,15 @@ See §9 for the ideas in more detail.
 Grouped by who benefits; ⭐ marks the most useful.
 
 **Everyone**
-- ⭐ **Mobile quick actions:** answer approvals and reminders straight from the notification, and an "ask lyra" home-screen shortcut.
+- ⭐ ~~**Mobile quick actions:** answer approvals and reminders straight from the notification, and an "ask lyra" home-screen shortcut.~~ (done: 0.31.0.162)
 - ⭐ **Shared spaces:** share a note, list, folder of conversations or Q&A entry with named coworkers.
 - **Send Teams messages** (after approval) and post meeting follow-ups to the meeting's chat.
 - **Email digests** for people who live in Outlook: the briefing and recap by mail.
-- **Templates:** saved prompts or workflows ("weekly status", "incident write-up") anyone can run.
+- ~~**Templates:** saved prompts or workflows ("weekly status", "incident write-up") anyone can run.~~ (done: saved prompts, 0.32.0.163)
 - **A Deeper look for feedback:** the Coder reads the source code (read-only, on the server) for exact fixes.
-- **A voice conversation mode:** hands-free, combining dictation and read-back in a loop (the AI Elements Transcription and Audio player components fit here).
-- **A document workspace:** draft a Word document or one-pager with lyra and save it to OneDrive (after approval).
+- **A voice conversation mode:** hands-free, combining dictation and read-back in a loop (the AI Elements Transcription and Audio player components fit here). → saved for the next major release (1.0), with a local Whisper model; see §8.
+- ~~**A document workspace:** draft a Word document or one-pager with lyra and save it to OneDrive (after approval).~~ (done: Documents, 0.34.0.165)
+- ~~**Meeting workspace**, **"What lyra knows about me"** and **"Why?" on any action**~~ (done: 0.33.0.164, 0.35.0.166)
 
 **Admins**
 - ⭐ ~~**A Settings page** (D-6)~~ (done) and **an admin dashboard**: errors, restarts, model latency, usage trends and feedback counts on one screen.

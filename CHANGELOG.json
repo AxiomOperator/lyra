@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.35.1.167",
+    "date": "2026-10-08",
+    "title": "Saved prompts on a new chat",
+    "improved": [
+      "A new chat shows your saved prompts with the usual starters: tap one to put it in the message box and finish it."
+    ]
+  },
+  {
     "version": "0.35.0.166",
     "date": "2026-10-08",
     "title": "What lyra knows about me",

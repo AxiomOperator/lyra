@@ -333,7 +333,13 @@ export function ReplyContext({ usage, max, model }: { usage: ReplyUsage; max: nu
 
 /** On an empty chat: a few things to ask, from what this person has connected. */
 export function StarterSuggestions({ admin }: { admin: boolean }) {
-  const { say, status } = useLyra();
+  const { say, status, call, ready } = useLyra();
+  // Their saved prompts (theirs first, then shared) as starters too: a tap puts one in the box to finish.
+  const [saved, setSaved] = useState<{ title: string; prompt: string }[]>([]);
+  useEffect(() => {
+    if (!ready) return;
+    void call<{ mine?: { title: string; prompt: string }[]; shared?: { title: string; prompt: string }[] }>("templates").then((t) => setSaved([...(t?.mine ?? []), ...(t?.shared ?? [])].slice(0, 3)));
+  }, [ready, call]);
   const list = [
     "Plan my day",
     "What's on my calendar today?",
@@ -348,6 +354,9 @@ export function StarterSuggestions({ admin }: { admin: boolean }) {
     <div className="flex max-w-xl flex-wrap justify-center gap-2">
       {list.map((q) => (
         <Suggestion key={q} suggestion={q} onClick={(text) => say(text)} />
+      ))}
+      {saved.map((t) => (
+        <Suggestion key={`saved-${t.title}`} suggestion={t.title} className="border-teal-700/50" onClick={() => window.dispatchEvent(new CustomEvent("lyra-prefill", { detail: t.prompt }))} />
       ))}
     </div>
   );
