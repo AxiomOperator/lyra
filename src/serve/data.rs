@@ -14,6 +14,8 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
         "sessions" => sessions_page(&app.owner, &app.session_id, loaded),
         "search" => search_page(&app.owner, &app.session_id, arg["query"].as_str().unwrap_or("")),
         "routines" => crate::acting::run(&app.owner, || crate::routines::view(&[], 10)),
+        // A routine made or changed on the Routines page (its prompt as written).
+        "routine_save" => page(crate::acting::run(&app.owner, || crate::routines::put(arg))),
         "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
         "recap" => crate::recap::last_for(&app.owner).map_or(Value::Null, |r| json!(r)),
         // A page of releases at a time, newest first.

@@ -2,6 +2,7 @@
 // machine's rules. Pages ask for their data with `call` and change things
 // with lyra's own commands (`run`), so the app does what the terminal does.
 
+import { MessageResponse } from "@/components/ai-elements/message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -553,7 +554,10 @@ function until(iso: string) {
 }
 
 /** A routine's settings, edited in a dialog (new when `routine` is null). */
-function RoutineDialog({ open, routine, onClose, act }: { open: boolean; routine: Routine | null; onClose: () => void; act: (c: string) => Promise<boolean> }) {
+function RoutineDialog({ open, routine, onClose, saved }: { open: boolean; routine: Routine | null; onClose: () => void; saved: () => void }) {
+  const { call } = useLyra();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
   const [name, setName] = useState("");
   const [schedule, setSchedule] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -568,21 +572,17 @@ function RoutineDialog({ open, routine, onClose, act }: { open: boolean; routine
     setPrompt(routine?.prompt ?? "");
     setNotify(routine?.notify ?? "problems");
   }, [routine, open]);
-  // One line each: the command separates fields with "|".
-  const clean = (t: string) => t.replace(/\s+/g, " ").replace(/\|/g, "/").trim();
+  useEffect(() => setError(""), [routine, open]);
+  // The name and schedule are one line; what to do is kept as written (Markdown).
+  const clean = (t: string) => t.replace(/\s+/g, " ").trim();
   const save = async () => {
-    let ok: boolean;
-    if (!routine) {
-      ok = await act(`/routine new ${clean(name)} | ${clean(schedule)} | ${clean(prompt)} | notify ${notify}${changes ? " | changes" : ""}${email ? " | email" : ""}`);
-    } else {
-      ok = true;
-      if (clean(schedule) !== routine.schedule) ok = (await act(`/routine edit ${routine.name} schedule ${clean(schedule)}`)) && ok;
-      if (ok && clean(prompt) !== routine.prompt) ok = (await act(`/routine edit ${routine.name} prompt ${clean(prompt)}`)) && ok;
-      if (ok && notify !== routine.notify) ok = (await act(`/routine notify ${routine.name} ${notify}`)) && ok;
-      if (ok && changes !== routine.changes) ok = (await act(`/routine edit ${routine.name} changes ${changes ? "on" : "off"}`)) && ok;
-      if (ok && email !== !!routine.email) ok = (await act(`/routine edit ${routine.name} email ${email ? "on" : "off"}`)) && ok;
-    }
-    if (ok) onClose();
+    setBusy(true);
+    const r = await call<{ ok?: boolean; error?: string }>("routine_save", { original: routine?.name ?? "", name: clean(name), schedule: clean(schedule), prompt: prompt.trim(), notify, changes, email });
+    setBusy(false);
+    if (r?.ok) {
+      saved();
+      onClose();
+    } else setError(r?.error ?? "lyra didn't answer");
   };
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -603,7 +603,7 @@ function RoutineDialog({ open, routine, onClose, act }: { open: boolean; routine
               ))}
             </div>
           </div>
-          <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} placeholder="What to do, e.g. check disk space, pending updates and failed services on @all" />
+          <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} placeholder="What to do, e.g. check disk space, pending updates and failed services on @all (Markdown works)" />
           <label className="flex items-start gap-2 text-sm">
             <input type="checkbox" className="mt-0.5 size-4 accent-teal-500" checked={changes} onChange={(e) => setChanges(e.target.checked)} />
             <span>
@@ -627,11 +627,12 @@ function RoutineDialog({ open, routine, onClose, act }: { open: boolean; routine
             </select>
           </label>
         </div>
+        {error && <p className="text-red-300 text-sm">{error}</p>}
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button disabled={!clean(prompt) || !clean(schedule) || (!routine && !clean(name))} onClick={save}>
+          <Button disabled={busy || !prompt.trim() || !clean(schedule) || (!routine && !clean(name))} onClick={save}>
             {routine ? "Save" : "Create"}
           </Button>
         </DialogFooter>
@@ -651,7 +652,9 @@ function RunLine({ run, open }: { run: RoutineRun; open: (session: string) => vo
           {ago(run.at)} · {run.seconds}s · {run.decided_by}
         </span>
       </div>
-      <p className={cn("mt-1 whitespace-pre-wrap break-words text-muted-foreground text-xs", !more && "line-clamp-3")}>{run.summary}</p>
+      <div className={cn("mt-1 break-words text-muted-foreground text-xs [&_p]:my-0.5", !more && "line-clamp-3")}>
+        <MessageResponse>{run.summary}</MessageResponse>
+      </div>
       {run.emailed && <p className={cn("mt-1 text-xs", run.emailed.startsWith("not ") ? "text-red-300" : "text-teal-300")}>✉ {run.emailed}</p>}
       <div className="mt-1 flex gap-3 text-xs">
         <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setMore(!more)}>
@@ -718,7 +721,9 @@ export function RoutinesPage({ onBack, toChat }: { onBack: () => void; toChat: (
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-2 px-4">
-              <p className="whitespace-pre-wrap break-words text-sm">{r.prompt}</p>
+              <div className="break-words text-sm [&_h1]:mt-1 [&_h1]:text-base [&_h2]:mt-1 [&_h2]:text-base [&_h3]:mt-1 [&_h3]:text-sm [&_p]:my-1">
+                <MessageResponse>{r.prompt}</MessageResponse>
+              </div>
               {last ? <RunLine run={last} open={open} /> : <p className="text-muted-foreground text-xs">Not run yet.</p>}
               {history === r.name && r.runs.slice(1).map((x) => <RunLine key={x.at} run={x} open={open} />)}
               <div className="flex flex-wrap gap-2">
@@ -750,7 +755,7 @@ export function RoutinesPage({ onBack, toChat }: { onBack: () => void; toChat: (
           </Card>
         );
       })}
-      <RoutineDialog open={!!editing} routine={editing?.routine ?? null} onClose={() => setEditing(null)} act={act} />
+      <RoutineDialog open={!!editing} routine={editing?.routine ?? null} onClose={() => setEditing(null)} saved={reload} />
       {dialog}
     </Page>
   );

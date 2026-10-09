@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.47.0.182",
+    "date": "2026-10-09",
+    "title": "Routines in Markdown",
+    "improved": [
+      "A routine's instructions show as Markdown on the Routines page: headings, lists, bold and links. They're saved exactly as you write them, line breaks and | included.",
+      "Each run's result on the Routines page shows as Markdown too."
+    ]
+  },
+  {
     "version": "0.46.1.181",
     "date": "2026-10-09",
     "title": "Long text in dialogs",

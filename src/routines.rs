@@ -264,6 +264,37 @@ pub fn save(r: &Routine) -> Result<(), String> {
     crate::store::write_text(&dir.join(format!("{}.toml", r.name)), &text)
 }
 
+/// From the Routines page: a new routine (no `original`) or changes to one,
+/// the prompt kept as written (Markdown, lines and all).
+pub fn put(arg: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let text = |k: &str| arg[k].as_str().map(|s| s.trim().to_string());
+    let notify = text("notify").filter(|n| !n.is_empty()).map(|n| Notify::parse(&n)).transpose()?;
+    let r = match text("original").filter(|o| !o.is_empty()) {
+        None => create(&text("name").unwrap_or_default(), &text("schedule").unwrap_or_default(), &text("prompt").unwrap_or_default(), notify.unwrap_or_default(), arg["changes"] == true, arg["email"] == true)?,
+        Some(original) => {
+            let mut r = find(&original)?;
+            if let Some(s) = text("schedule") {
+                r.schedule = s;
+            }
+            if let Some(p) = text("prompt") {
+                r.prompt = p;
+            }
+            if let Some(n) = notify {
+                r.notify = n;
+            }
+            if let Some(c) = arg["changes"].as_bool() {
+                r.changes = c;
+            }
+            if let Some(e) = arg["email"].as_bool() {
+                r.email = e;
+            }
+            save(&r)?;
+            r
+        }
+    };
+    Ok(serde_json::json!({ "ok": true, "name": r.name }))
+}
+
 pub fn delete(name: &str) -> Result<Routine, String> {
     let r = find(name)?;
     let dir = dir().ok_or("no lyra home")?;
