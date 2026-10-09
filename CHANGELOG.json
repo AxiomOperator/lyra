@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.29.4.157",
+    "date": "2026-10-08",
+    "title": "Replace your PMI token",
+    "fixed": [
+      "The PMI connection box stays on the Tasks page once you're connected (at the bottom), so you can paste a new token to replace the old one."
+    ]
+  },
+  {
     "version": "0.29.3.156",
     "date": "2026-10-08",
     "title": "Connect your own PMI",

@@ -86,7 +86,7 @@ function ProjectRow({ p }: { p: PmiProject }) {
 }
 
 /** Connect this person's own PMI account: their token, kept in their own secrets. */
-function ConnectPmi({ act, busy }: { act: (command: string) => Promise<boolean>; busy: boolean }) {
+function ConnectPmi({ act, busy, connected }: { act: (command: string) => Promise<boolean>; busy: boolean; connected?: string }) {
   const [token, setToken] = useState("");
   const connect = async (e: FormEvent) => {
     e.preventDefault();
@@ -97,16 +97,18 @@ function ConnectPmi({ act, busy }: { act: (command: string) => Promise<boolean>;
   return (
     <Card className="gap-2 py-4">
       <CardHeader className="px-4">
-        <CardTitle className="text-base">Connect your PMI account</CardTitle>
+        <CardTitle className="text-base">{connected ? "PMI connection" : "Connect your PMI account"}</CardTitle>
         <CardDescription>
-          In PMI, open Your account → Security and make an access token, then paste it here. It's yours alone: lyra keeps it in your own secrets and works in PMI as you.
+          {connected
+            ? `Connected as ${connected}. Made a new token, or this one stopped working? Paste the new one here to replace it.`
+            : "In PMI, open Your account → Security and make an access token, then paste it here. It's yours alone: lyra keeps it in your own secrets and works in PMI as you."}
         </CardDescription>
       </CardHeader>
       <CardContent className="px-4">
         <form onSubmit={(e) => void connect(e)} className="flex gap-2">
           <Input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} placeholder="PMI access token" disabled={busy} aria-label="PMI access token" />
           <Button type="submit" disabled={busy || !token.trim()}>
-            Connect
+            {connected ? "Replace" : "Connect"}
           </Button>
         </form>
       </CardContent>
@@ -271,6 +273,8 @@ export function TasksPage({ onBack }: { onBack: () => void }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {/* Connected: still here, at the end, to put in a new token. */}
+      {pmi?.at && <ConnectPmi act={act} busy={busy} connected={`${pmi.user} · ${pmi.org}`} />}
     </Page>
   );
 }
