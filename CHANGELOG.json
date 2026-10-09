@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.51.0.193",
+    "date": "2026-10-09",
+    "title": "Groups that stay open",
+    "new": [
+      "Keep rail groups open: on Profile → Layout, switch on Always open for the groups you use most, or tap the pin at the bottom of an open group. They stay unfolded while the others fold one at a time. Remembered on each device."
+    ]
+  },
+  {
     "version": "0.50.3.192",
     "date": "2026-10-09",
     "title": "Quicker research early on",

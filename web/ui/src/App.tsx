@@ -57,7 +57,10 @@ import {
   Briefcase,
   Zap,
   Shield,
+  Pin,
+  PinOff,
 } from "lucide-react";
+import { loadOpen, onOpenChange, setOpen } from "./lyra/rail";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ComponentType, type FormEvent, type ReactNode } from "react";
 import { ChatPage } from "./lyra/chat";
 import { ConversationList } from "./lyra/conversations";
@@ -283,8 +286,12 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
   const holding = railGroups.find((g) => g.pages.includes(tab))?.id ?? null;
   const [unfolded, setUnfolded] = useState<string | null>(holding);
   useEffect(() => setUnfolded(holding), [holding]);
+  // Groups this person keeps open on this device (Profile → Layout, or the pin).
+  const [pinned, setPinned] = useState<string[]>(loadOpen);
+  useEffect(() => onOpenChange(setPinned), []);
   const railGroup = (label: string, Icon: typeof MessageSquare, items: TabItem[], key: string) => {
-    const open = unfolded === key;
+    const kept = pinned.includes(key);
+    const open = kept || unfolded === key;
     const here = items.some((t) => t.id === tab);
     const waiting = items.reduce((n, t) => n + (t.badge ?? 0), 0);
     return (
@@ -293,7 +300,8 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
           type="button"
           aria-label={label}
           aria-expanded={open}
-          onClick={() => setUnfolded(open ? null : key)}
+          title={kept ? `${label} stays open (Profile → Layout)` : undefined}
+          onClick={() => !kept && setUnfolded(open ? null : key)}
           className={cn(
             "relative flex w-14 shrink-0 flex-col items-center justify-center gap-0.5 rounded-md py-1 text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [&>svg]:size-[18px]",
             here && !open && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary",
@@ -302,10 +310,23 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
         >
           <Icon />
           <span className="w-full truncate text-center text-[10px] leading-tight">{label}</span>
-          <ChevronDown className={cn("!size-2.5 absolute top-2 left-0.5 opacity-60 transition-transform", open && "rotate-180")} />
+          {kept ? <Pin className="!size-2.5 absolute top-2 left-0.5 opacity-60" /> : <ChevronDown className={cn("!size-2.5 absolute top-2 left-0.5 opacity-60 transition-transform", open && "rotate-180")} />}
           {waiting > 0 && !open && <span data-badge className="absolute top-0.5 right-2 min-w-4 rounded-full bg-amber-400 px-1 text-center font-semibold text-[10px] text-black leading-4">{waiting}</span>}
         </button>
-        {open && <div className="flex flex-col items-center [&_button]:py-0.5 [&_button>svg]:size-4">{items.map(railItem)}</div>}
+        {open && (
+          <div className="flex flex-col items-center [&_button]:py-0.5 [&_button>svg]:size-4">
+            {items.map(railItem)}
+            <button
+              type="button"
+              aria-label={kept ? `Let ${label} fold` : `Keep ${label} open`}
+              title={kept ? `Let ${label} fold again` : `Keep ${label} open`}
+              onClick={() => setOpen(key, !kept)}
+              className={cn("flex h-4 w-10 items-center justify-center rounded text-sidebar-foreground/40 hover:text-sidebar-foreground", kept && "text-primary/70")}
+            >
+              {kept ? <PinOff className="!size-3" /> : <Pin className="!size-3" />}
+            </button>
+          </div>
+        )}
       </div>
     );
   };

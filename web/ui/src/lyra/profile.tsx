@@ -6,12 +6,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { Bell, Brain, Link2, Mail, ShieldCheck, UserRound } from "lucide-react";
+import { Bell, Brain, LayoutList, Link2, Mail, ShieldCheck, UserRound } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ConnectedAccounts, EmailCard, PasswordCard, YourDevices, type Me } from "./aboutme";
 import { CalendarCard } from "./calendar";
 import { Notifications } from "./pages";
 import { Back, Failed, Page, useAction, useConfirm } from "./parts";
+import { FOLDING, loadOpen, onOpenChange, setOpen } from "./rail";
 import { useLyra } from "./store";
 
 export interface Section {
@@ -51,6 +52,7 @@ const SECTIONS: Section[] = [
   { id: "connections", label: "Connections", icon: <Link2 className="size-4" /> },
   { id: "email", label: "Email", icon: <Mail className="size-4" /> },
   { id: "notifications", label: "Notifications", icon: <Bell className="size-4" /> },
+  { id: "layout", label: "Layout", icon: <LayoutList className="size-4" /> },
   { id: "privacy", label: "Privacy", icon: <ShieldCheck className="size-4" /> },
 ];
 
@@ -62,6 +64,36 @@ function firstSection() {
   } catch {
     return "account";
   }
+}
+
+/** Which of the rail's groups stay open, on this device. */
+function Layout() {
+  const [open, setOpenNow] = useState(loadOpen);
+  useEffect(() => onOpenChange(setOpenNow), []);
+  return (
+    <Card className="gap-1 py-4">
+      <CardHeader className="px-4">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <LayoutList className="size-4" /> The rail
+        </CardTitle>
+        <CardDescription>Groups fold open one at a time. Keep the ones you use most always open (on this device; a phone and a laptop have different room).</CardDescription>
+      </CardHeader>
+      <CardContent className="divide-y px-4 text-sm">
+        {FOLDING.map((g) => (
+          <label key={g.id} className="flex items-center justify-between gap-3 py-2">
+            <span className="min-w-0">
+              <span className="block font-medium">{g.label}</span>
+              <span className="block text-muted-foreground text-xs">{g.pages}</span>
+            </span>
+            <span className="flex shrink-0 items-center gap-2 text-muted-foreground text-xs">
+              Always open
+              <input type="checkbox" className="size-4 accent-teal-500" checked={open.includes(g.id)} onChange={(e) => setOpen(g.id, e.target.checked)} aria-label={`Keep ${g.label} always open`} />
+            </span>
+          </label>
+        ))}
+      </CardContent>
+    </Card>
+  );
 }
 
 export function ProfilePage({ onBack, toAboutMe }: { onBack: () => void; toAboutMe: () => void }) {
@@ -114,6 +146,7 @@ export function ProfilePage({ onBack, toAboutMe }: { onBack: () => void; toAbout
         )}
         {tab === "email" && <EmailCard />}
         {tab === "notifications" && <Notifications />}
+        {tab === "layout" && <Layout />}
         {tab === "privacy" && (
           <Card className="gap-1 py-4">
             <CardHeader className="px-4">
