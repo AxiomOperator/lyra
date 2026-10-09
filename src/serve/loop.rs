@@ -535,6 +535,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     convs[0].app.fork_for(&who)
                 };
                 app.input = crate::routines::message(&r);
+                app.unattended = true;
                 app.send();
                 crate::routines::running_start(&user, &r.name, &app.session_id);
                 if mine {
@@ -992,6 +993,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 let session = app.session_id.clone();
                 if let Some(next) = crate::diagnose::start_next(|_| session.clone()) {
                     app.input = crate::diagnose::message(&next);
+                    app.unattended = true;
                     app.send();
                     convs[0].app.log(Level::Agent, format!("🔎 looking into {}: {}", next.machine, next.problem));
                     let mut c = Conv::new(app);

@@ -117,7 +117,7 @@ impl App {
         let last_reply: String = self.messages.iter().rev().skip(1).find(|m| m.role == "assistant").map(|m| m.content.chars().take(400).collect()).unwrap_or_default();
         let looks = std::mem::take(&mut self.attach_looks);
         // Cards in the chat (forms, steps) need someone looking at the app.
-        let (chat_only, steps_wait, interactive) = (self.chat_only, self.steps_wait, self.hub.is_some());
+        let (chat_only, steps_wait, interactive, unattended) = (self.chat_only, self.steps_wait, self.hub.is_some() && !self.unattended, self.unattended);
         // Their own tool-call limit, else the shared one (evolved, or behavior.toml).
         let max_rounds = limits::tool_rounds(&owner, self.evolution.as_ref().map(|e| e.behavior().max_tool_rounds)) as usize;
         self.can_continue = false;
@@ -174,7 +174,7 @@ impl App {
                 Offer::All
             };
             let chatting = offer != Offer::All;
-            let how = How { offer, asks: interactive, steps: interactive && steps_wait };
+            let how = How { offer, asks: interactive, steps: interactive && steps_wait, finish: unattended };
             // What this turn's changes come from (for "What lyra knows about me" → Why?).
             crate::actions::because(crate::actions::Why { source: "chat".into(), detail: content.chars().take(300).collect(), skills });
             // A specialist may take it first; the main agent checks and presents
@@ -408,6 +408,41 @@ pub(crate) struct How {
     pub asks: bool,
     /// A round of several calls shows its steps first, to skip any.
     pub steps: bool,
+    /// At the tool-call limit, one more reply without tools: the answer from
+    /// what was found (nobody is there to press Continue).
+    pub finish: bool,
+}
+
+/// Room for the conversation, in characters: most of the model's context
+/// (about 3.5 characters a token), leaving space for the reply.
+fn room() -> usize {
+    let window = crate::stats::CONTEXT_WINDOW.load(std::sync::atomic::Ordering::Relaxed) as usize;
+    let tokens = if window == 0 { 32_768 } else { window };
+    tokens * 7 / 2 * 6 / 10
+}
+
+/// Older tool results shortened when the conversation outgrows the model's
+/// context (long research: dozens of fetched pages). The newest few stay whole.
+fn fit(history: &mut [Value], room: usize) -> usize {
+    let size = |h: &[Value]| h.iter().map(|m| m["content"].as_str().map_or(0, str::len) + m["tool_calls"].to_string().len()).sum::<usize>();
+    if size(history) <= room {
+        return 0;
+    }
+    let tools: Vec<usize> = history.iter().enumerate().filter(|(_, m)| m["role"] == "tool").map(|(i, _)| i).collect();
+    let keep = tools.len().saturating_sub(6);
+    let mut cut = 0;
+    for &i in &tools[..keep] {
+        if size(history) <= room {
+            break;
+        }
+        let text = history[i]["content"].as_str().unwrap_or("").to_string();
+        if text.len() > 1500 {
+            let start: String = text.chars().take(1200).collect();
+            history[i]["content"] = json!(format!("{start}\n… (shortened to fit the conversation: {} characters left out)", text.len() - start.len()));
+            cut += 1;
+        }
+    }
+    cut
 }
 
 /// Said to the model when the conversation is set to chat only.
@@ -499,6 +534,10 @@ pub(crate) fn converse(
     // Tools the user said no to in this turn: not asked about again.
     let mut refused: std::collections::HashSet<String> = std::collections::HashSet::new();
     for round in 1..=max_rounds.max(1) {
+        let shortened = fit(&mut history, room());
+        if shortened > 0 {
+            let _ = tx.send(StreamEvent::Log(format!("shortened {shortened} older tool result{} to fit the model's context", if shortened == 1 { "" } else { "s" })));
+        }
         let n = history.len();
         let note = format!("round {round} · sending {n} message{}", if n == 1 { "" } else { "s" });
         tx.send(StreamEvent::Log(note)).map_err(|e| e.to_string())?;
@@ -642,6 +681,19 @@ pub(crate) fn converse(
             tx.send(StreamEvent::ToolResult { id, name, content }).map_err(|e| e.to_string())?;
         }
     }
+    // Nobody to press Continue (a routine): one last reply, no tools, from what was found.
+    if how.finish && !stopped(cancel) {
+        fit(&mut history, room());
+        history.push(json!({ "role": "user", "content": "You've used all your tool calls for this run. Don't call any more tools: write the complete answer now from what you found, and say what you couldn't get to." }));
+        let _ = tx.send(StreamEvent::Log("tool-call limit: writing the answer from what was found".into()));
+        let body = json!({ "model": current.1, "messages": history, "stream": true, "stream_options": { "include_usage": true } });
+        let round = stream(&current.0, &body, tx, cancel)?;
+        match &mut total {
+            Some(total) => total.absorb(round.stats),
+            None => total = Some(round.stats),
+        }
+        return Ok((finish(total), false, current.1.clone()));
+    }
     // The limit: what was done so far stays in the conversation, to continue from.
     Ok((finish(total), true, current.1.clone()))
 }
@@ -745,7 +797,24 @@ pub(crate) fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: 
 
 #[cfg(test)]
 mod tests {
-    use super::small_talk;
+    use super::{fit, small_talk};
+    use serde_json::json;
+
+    #[test]
+    fn long_research_is_shortened_to_fit_oldest_first() {
+        let page = "x".repeat(20_000);
+        let mut h = vec![json!({ "role": "user", "content": "brief me" })];
+        for i in 0..10 {
+            h.push(json!({ "role": "assistant", "content": "", "tool_calls": [{ "id": format!("c{i}") }] }));
+            h.push(json!({ "role": "tool", "tool_call_id": format!("c{i}"), "content": page }));
+        }
+        assert_eq!(fit(&mut h, 1_000_000), 0, "it fits: nothing changes");
+        let cut = fit(&mut h, 130_000);
+        assert!(cut > 0 && cut <= 4, "{cut}");
+        assert!(h[2]["content"].as_str().unwrap().contains("shortened to fit"), "the oldest first");
+        assert_eq!(h[20]["content"].as_str().unwrap().len(), 20_000, "the newest stay whole");
+        assert_eq!(h[0]["content"], "brief me");
+    }
 
     #[test]
     fn small_talk_is_only_talk() {

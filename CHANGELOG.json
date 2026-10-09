@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.47.3.185",
+    "date": "2026-10-09",
+    "title": "Long routines finish",
+    "fixed": [
+      "A routine that reaches its tool-call limit still writes its report from what it found. Before, it stopped with nothing to email.",
+      "Routines and problem write-ups no longer pause for questions or a 5-second steps preview nobody is there to see.",
+      "Long research no longer runs out of room: when a conversation outgrows the model's context, older fetched pages are shortened (the newest stay whole)."
+    ]
+  },
+  {
     "version": "0.47.2.184",
     "date": "2026-10-09",
     "title": "Routines you can follow",

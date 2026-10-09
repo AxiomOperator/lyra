@@ -408,6 +408,9 @@ struct App {
     steps_wait: bool,
     /// The next reply comes from this model (`/retry other`): base URL and name.
     next_model: Option<(String, String)>,
+    /// Nobody watches this conversation (a routine's run, a diagnosis): no
+    /// questions in the chat, and it ends with an answer even at its limit.
+    unattended: bool,
     show_reasoning: bool,
     /// Side panels (Ctrl-B); hidden automatically on narrow terminals.
     show_panels: bool,
@@ -590,6 +593,7 @@ impl App {
             chat_only: false,
             steps_wait: true,
             next_model: None,
+            unattended: false,
             show_reasoning: true,
             show_panels: true,
             activity: Vec::new(),
