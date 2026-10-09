@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.30.0.160",
+    "date": "2026-10-08",
+    "title": "Every page in reach",
+    "improved": [
+      "On a phone or a short laptop screen the page icons on the left are more compact, and when some don't fit, an arrow at the bottom says how many more there are (or that something is waiting there). Tap it to see them."
+    ]
+  },
+  {
     "version": "0.29.6.159",
     "date": "2026-10-08",
     "title": "Fits your phone's screen",

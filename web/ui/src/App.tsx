@@ -23,6 +23,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "@/lib/utils";
 import {
   Activity,
+  ChevronDown,
+  ChevronUp,
   Code2,
   AlarmClock,
   ListTodo,
@@ -49,7 +51,7 @@ import {
   WifiOff,
   Search,
 } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useState, type ComponentType, type FormEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ComponentType, type FormEvent, type ReactNode } from "react";
 import { ChatPage } from "./lyra/chat";
 import { ConversationList } from "./lyra/conversations";
 import { EverythingSearch } from "./lyra/everything";
@@ -144,6 +146,56 @@ const railGroups: Tab[][] = [
   ["machines", "devices", "users", "usage"],
 ];
 
+/** The rail's pages: scrolls when they don't all fit, with a fade and an
+ *  arrow at the edge that has more (and how many pages, and anything
+ *  waiting, are down there). */
+function RailScroll({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ up: false, down: 0, waiting: 0 });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const look = () => {
+      const bottom = el.scrollTop + el.clientHeight;
+      const below = [...el.querySelectorAll<HTMLElement>("button[aria-label]")].filter((b) => b.offsetTop + b.offsetHeight / 2 > bottom);
+      const waiting = below.reduce((n, b) => n + (Number(b.querySelector("[data-badge]")?.textContent) || 0), 0);
+      setEdges({ up: el.scrollTop > 4, down: below.length, waiting });
+    };
+    look();
+    el.addEventListener("scroll", look, { passive: true });
+    const seen = new ResizeObserver(look);
+    seen.observe(el);
+    return () => {
+      el.removeEventListener("scroll", look);
+      seen.disconnect();
+    };
+  }, []);
+  const page = (dir: 1 | -1) => ref.current?.scrollBy({ top: dir * (ref.current.clientHeight - 48), behavior: "smooth" });
+  return (
+    <div className="relative flex min-h-0 w-full flex-1 flex-col">
+      <div ref={ref} className="relative flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-x-hidden overflow-y-auto pt-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {children}
+      </div>
+      {edges.up && (
+        <button type="button" aria-label="More pages above" onClick={() => page(-1)} className="absolute inset-x-0 top-0 flex h-7 items-start justify-center bg-gradient-to-b from-sidebar to-transparent text-sidebar-foreground/70">
+          <ChevronUp className="size-4" />
+        </button>
+      )}
+      {edges.down > 0 && (
+        <button
+          type="button"
+          aria-label={`${edges.down} more pages below`}
+          onClick={() => page(1)}
+          className="absolute inset-x-0 bottom-0 flex h-9 flex-col items-center justify-end bg-gradient-to-t from-sidebar via-sidebar/90 to-transparent pb-0.5 text-sidebar-foreground/80"
+        >
+          <ChevronDown className="size-4" />
+          <span className={cn("text-[10px] leading-none", edges.waiting > 0 && "font-semibold text-amber-400")}>{edges.waiting > 0 ? `${edges.waiting} waiting` : `${edges.down} more`}</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** The sidebar (dashboard-01's inset style): an icon rail of lyra's pages
  *  on the left, the conversations beside it, this device at the bottom of
  *  the rail. A sheet on a phone. */
@@ -195,12 +247,14 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
           // A phone has no hover: each icon says what it is.
           // Each icon says what it is, on a phone and on a desktop.
           "w-14 flex-col gap-0.5 py-1",
+          // A short screen (a phone, a laptop): tighter, so more of them show.
+          "[@media(max-height:820px)]:gap-0 [@media(max-height:820px)]:py-0.5 [@media(max-height:820px)]:[&>svg]:size-4",
           tab === t.id && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary",
         )}
       >
         <t.icon />
         <span className="w-full truncate text-center text-[10px] leading-tight">{t.label}</span>
-        {!!t.badge && <span className="absolute top-0.5 right-2 min-w-4 rounded-full bg-amber-400 px-1 text-center font-semibold text-[10px] text-black leading-4">{t.badge}</span>}
+        {!!t.badge && <span data-badge className="absolute top-0.5 right-2 min-w-4 rounded-full bg-amber-400 px-1 text-center font-semibold text-[10px] text-black leading-4">{t.badge}</span>}
       </button>,
       t.id,
     );
@@ -217,14 +271,14 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
               <span className={cn("absolute right-0.5 bottom-0.5 size-2 rounded-full ring-2 ring-sidebar", connected ? "bg-emerald-500" : "bg-red-500")} />
             </button>,
           )}
-          {/* Scrolls on a short screen, never sideways, without a bar. */}
-          <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-x-hidden overflow-y-auto pt-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {/* Scrolls on a short screen, never sideways, without a bar; says when there's more. */}
+          <RailScroll>
             {groups.map((g, i) => (
-              <div key={i} className={cn("flex flex-col items-center", i > 0 && "mt-0.5 border-sidebar-border border-t pt-1")}>
+              <div key={i} className={cn("flex flex-col items-center", i > 0 && "mt-0.5 border-sidebar-border border-t pt-1 [@media(max-height:820px)]:mt-0 [@media(max-height:820px)]:pt-0.5")}>
                 {g.map(railItem)}
               </div>
             ))}
-          </div>
+          </RailScroll>
           {/* What's new: at the foot of the rail, just above you. */}
           {(["qa", "feedback", "whatsnew"] as Tab[]).map((id) => all.find((t) => t.id === id)).filter((t): t is TabItem => !!t).map(railItem)}
           <DropdownMenu>
