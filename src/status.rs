@@ -243,6 +243,17 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
             vec![check("chat", "Models", "Chat model", &target, move || crate::models(&url).map(|offered| chat_state(&model, &offered)))]
         }),
     );
+    // The fallback, so it's known to work before it's needed.
+    if let Some(fb) = crate::fallback::settings() {
+        spawn(
+            &mut jobs,
+            Box::new(move || {
+                let target = host(&fb.url);
+                let (url, model) = (fb.url.clone(), fb.model.clone());
+                vec![check("fallback", "Models", "Fallback chat model", &target, move || crate::models(&url).map(|offered| chat_state(&model, &offered)))]
+            }),
+        );
+    }
     match i.embedding.clone() {
         Some(ep) => spawn(
             &mut jobs,
@@ -471,7 +482,7 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
     }
     let order = ["Models", "Tools & APIs", "lyra", "Machines"];
     // Groups in order; the fixed checks in this order of the fixed checks within a group.
-    let fixed = ["chat", "embedding", "reranker", "decide", "search", "lyra", "public", "push", "storage", "backup", "routines"];
+    let fixed = ["chat", "fallback", "embedding", "reranker", "decide", "search", "lyra", "public", "push", "storage", "backup", "routines"];
     out.sort_by_key(|p| (order.iter().position(|g| *g == p.group).unwrap_or(9), fixed.iter().position(|f| *f == p.id).unwrap_or(fixed.len()), p.id != "machine:server", p.id.clone()));
     out
 }

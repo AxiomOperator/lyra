@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.36.0.168",
+    "date": "2026-10-08",
+    "title": "A fallback chat model",
+    "new": [
+      "A fallback chat model: when lyra's main model can't be reached, another one answers instead, and the chat tells you so. lyra goes back to the main model on its own once it's answering again. Admins set it on the Settings page (Models), and the Status page checks it."
+    ]
+  },
+  {
     "version": "0.35.1.167",
     "date": "2026-10-08",
     "title": "Saved prompts on a new chat",

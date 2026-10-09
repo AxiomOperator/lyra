@@ -252,6 +252,9 @@ Recurring errors:
 5. ✅ **"What lyra knows about me"** (0.35.0.166): the About me page (the menu under your initials, and More): what lyra remembers (correct or forget each), how you write (learn again, or `/style forget`), connected accounts (Microsoft 365, PMI: disconnect), your devices, and what lyra did for you; **Export** downloads all of it as JSON (with notes, documents, saved prompts and every action).
 6. ✅ **"Why?" on any action** (0.35.0.166): every change a tool makes is kept per person with why (`src/actions.rs`, `actions/<YYYY-MM>.jsonl` in their files): the chat message that asked (with the skills in play), mail triage (the email, and the setting that let it), plan my day, a plan; whether they said yes, and which agent did it. On the About me page each action opens to its Why?; the record can be cleared (what was done stays done).
 
+### Done since
+- ✅ **A fallback chat model** (0.36.0.168, `[fallback_model]`, `src/fallback.rs`): when the main chat model can't be reached or answers with a server error before it says anything, the turn (and lyra's background work: triage, follow-ups, documents) goes to the fallback, and the chat says so; the main model is skipped for two minutes after a failure, then tried again. On the Settings page (Models) and the Status page ("Fallback chat model"); usage records the model that answered.
+
 ### Next major release (1.0)
 - **Voice conversation mode:** hands-free back-and-forth (driving, walking between offices), best with a local Whisper model for speech to text (and a small TTS model for the voice).
 

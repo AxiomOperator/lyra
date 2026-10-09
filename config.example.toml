@@ -55,6 +55,16 @@ currency = "$"
 # cached_input_cost_per_mtok = 0.0
 # output_cost_per_mtok = 0.0
 
+# A fallback for the chat model: when the main one (url / model at the top)
+# can't be reached or answers with a server error before it says anything, a
+# turn (and lyra's own background work) goes here instead, and the chat says
+# so. After a failure the main model is skipped for two minutes, then tried again.
+# [fallback_model]
+# url = "http://gpu2:8080/v1"
+# model = "gemma4-v2-Q8_0.gguf"
+# input_cost_per_mtok = 0.0      # its own prices, for AI usage
+# output_cost_per_mtok = 0.0
+
 # Memory (see README): facts, episodes and working memory, with automatic
 # capture, superseding, hybrid recall (keywords + [embedding] vectors) and a
 # context compiler that adds the relevant few memories to each prompt.

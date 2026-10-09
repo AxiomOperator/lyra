@@ -482,14 +482,37 @@ pub(crate) fn complete(
         body["chat_template_kwargs"] = json!({ "enable_thinking": false });
     }
     let started = std::time::Instant::now();
-    let resp = client.post(url).json(&body).send().map_err(|e| e.to_string())?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(format!("{status}: {}", resp.text().unwrap_or_default()));
-    }
-    let reply: Value = resp.json().map_err(|e| e.to_string())?;
+    let send = |url: &str, body: &Value| -> Result<Value, String> {
+        let resp = client.post(url).json(body).send().map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("{status}: {}", resp.text().unwrap_or_default().chars().take(500).collect::<String>()));
+        }
+        resp.json().map_err(|e| e.to_string())
+    };
+    // The main chat model down (or failing just now): the fallback does it.
+    let fallback = crate::fallback::target().filter(|(u, _)| u != url);
+    let mut used = model.to_string();
+    let reply = match &fallback {
+        Some((fb_url, fb_model)) if crate::fallback::skip_main() => {
+            body["model"] = json!(fb_model);
+            used = fb_model.clone();
+            send(fb_url, &body)?
+        }
+        _ => match send(url, &body) {
+            Ok(r) => r,
+            Err(e) if crate::fallback::unreachable(&e) && fallback.is_some() => {
+                let (fb_url, fb_model) = fallback.clone().unwrap_or_default();
+                crate::fallback::main_failed();
+                body["model"] = json!(fb_model);
+                used = fb_model;
+                send(&fb_url, &body)?
+            }
+            Err(e) => return Err(e),
+        },
+    };
     // lyra's own work for whoever this thread works for (capture, triage, briefings, reviews…).
-    crate::usage::record_usage("background", model, &reply["usage"], started.elapsed().as_millis() as u64);
+    crate::usage::record_usage("background", &used, &reply["usage"], started.elapsed().as_millis() as u64);
     let text = reply["choices"][0]["message"]["content"]
         .as_str()
         .ok_or("model returned no content")?

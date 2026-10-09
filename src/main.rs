@@ -21,6 +21,7 @@ mod docx;
 mod documents;
 mod evolve;
 mod feedback;
+mod fallback;
 mod files;
 mod projects;
 mod goals;

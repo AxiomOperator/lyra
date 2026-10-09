@@ -72,6 +72,7 @@ pub(crate) fn configure(config: &Config) {
     planner::configure(config.planner.clone());
     usage::configure(prices(config));
     vision::configure(config.vision_model.clone());
+    fallback::configure(config.fallback_model.clone());
     proactive::configure(config.proactive.clone());
     recap::configure(config.recap.clone());
     feedback::configure(&config.url, &config.model);

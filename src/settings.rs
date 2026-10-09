@@ -88,6 +88,8 @@ pub const FIELDS: &[Field] = &[
     Field { key: "input_cost_per_mtok", group: "models", label: "Input price", help: "Per million prompt tokens, for AI usage (0 for a local model).", kind: Kind::Real { min: 0.0, max: 1000.0 }, get: |c, _| json!(c.input_cost_per_mtok) },
     Field { key: "output_cost_per_mtok", group: "models", label: "Output price", help: "Per million reply tokens.", kind: Kind::Real { min: 0.0, max: 1000.0 }, get: |c, _| json!(c.output_cost_per_mtok) },
     Field { key: "currency", group: "models", label: "Currency", help: "Shown before prices.", kind: Kind::Text, get: |c, _| s(&c.currency) },
+    Field { key: "fallback_model.url", group: "models", label: "Fallback server", help: "Answers in the chat model's place while it can't be reached. Empty: none.", kind: Kind::Url, get: |c, _| s(c.fallback_model.as_ref().map_or("", |f| f.url.as_str())) },
+    Field { key: "fallback_model.model", group: "models", label: "Fallback model", help: "Its name on that server.", kind: Kind::Model, get: |c, _| s(c.fallback_model.as_ref().map_or("", |f| f.model.as_str())) },
     Field { key: "vision_model.url", group: "models", label: "Vision server", help: "Reads pictures and scanned PDFs for a chat model that can't. Empty: not set up.", kind: Kind::Url, get: |c, _| s(c.vision_model.as_ref().map_or("", |v| v.url.as_str())) },
     Field { key: "vision_model.model", group: "models", label: "Vision model", help: "Its name on that server.", kind: Kind::Model, get: |c, _| s(c.vision_model.as_ref().map_or("", |v| v.model.as_str())) },
     Field { key: "decide.url", group: "models", label: "Decision server", help: "The small model that routes and classifies (llama-server). Empty: not set up.", kind: Kind::Url, get: |c, _| s(c.decide.as_ref().map_or("", |d| d.url.as_str())) },
@@ -267,7 +269,7 @@ fn set_in(path: &std::path::Path, changes: &Value) -> Result<Vec<String>, String
     for (key, value) in changes {
         let f = field(key).ok_or_else(|| format!("{key} isn't a setting the app changes (it's in config.toml)"))?;
         // An optional model left empty and not set up yet: nothing to do.
-        let optional = f.key.starts_with("vision_model.") || f.key.starts_with("decide.");
+        let optional = f.key.starts_with("vision_model.") || f.key.starts_with("decide.") || f.key.starts_with("fallback_model.");
         if optional && value.as_str().is_some_and(|t| t.trim().is_empty()) {
             if (f.get)(&now, &behavior).as_str().is_some_and(str::is_empty) {
                 continue;
@@ -280,11 +282,15 @@ fn set_in(path: &std::path::Path, changes: &Value) -> Result<Vec<String>, String
         }
     }
     // A helper model set up for the first time needs both its server and its name.
-    for section in ["vision_model", "decide"] {
+    for section in ["vision_model", "decide", "fallback_model"] {
         let missing = |k: &str| (field(&format!("{section}.{k}")).map(|f| (f.get)(&now, &behavior))).is_some_and(|v| v.as_str().is_some_and(str::is_empty));
         let setting = |k: &str| writes.iter().any(|(f, _)| f.key == format!("{section}.{k}"));
         if (setting("url") && missing("model") && !setting("model")) || (setting("model") && missing("url") && !setting("url")) {
-            let label = if section == "decide" { "decision" } else { "vision" };
+            let label = match section {
+                "decide" => "decision",
+                "fallback_model" => "fallback",
+                _ => "vision",
+            };
             return Err(format!("give the {label} model's server and its name together"));
         }
     }

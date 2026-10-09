@@ -148,9 +148,9 @@ impl App {
                 }
             }
             let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref(), &content, max_rounds, run, &tx, &cancel, viewer.as_deref(), member) {
-                Ok((stats, limited)) => {
-                    // The turn's own model calls (agents' and lyra's count separately).
-                    usage::record("chat", &model, stats.input, stats.cached, stats.output, stats.elapsed.as_millis() as u64);
+                Ok((stats, limited, answered)) => {
+                    // The turn's own model calls (agents' and lyra's count separately), as the model that answered.
+                    usage::record("chat", &answered, stats.input, stats.cached, stats.output, stats.elapsed.as_millis() as u64);
                     let _ = tx.send(StreamEvent::Done(stats));
                     if limited {
                         let _ = tx.send(StreamEvent::Limit(max_rounds));
@@ -284,8 +284,21 @@ pub(crate) fn converse(
     cancel: &Cancel,
     viewer: Option<&str>,
     member: bool,
-) -> Result<(Stats, bool), String> {
+) -> Result<(Stats, bool, String), String> {
     let start = Instant::now();
+    // The model answering: the main one, or the fallback while it's down.
+    let fallback = crate::fallback::target();
+    let mut current = (url.to_string(), model.to_string());
+    let mut told = false;
+    let switch = |current: &mut (String, String), told: &mut bool, why: &str| {
+        if let Some(fb) = &fallback {
+            *current = fb.clone();
+            if !*told {
+                *told = true;
+                let _ = tx.send(StreamEvent::Notice(format!("The chat model isn't answering ({why}): {} answered instead.", fb.1)));
+            }
+        }
+    };
     // A member's calls: their own memory scope only, and no admin tools.
     let mine = viewer.map(|v| format!("user:{v}"));
     let mine_scopes: Vec<&str> = mine.iter().map(String::as_str).collect();
@@ -322,15 +335,35 @@ pub(crate) fn converse(
             }
         }
         if stopped(cancel) {
-            return Ok((finish(total), false));
+            return Ok((finish(total), false, current.1.clone()));
         }
-        let round = stream(url, &body, tx, cancel)?;
+        if current.0 == url && crate::fallback::skip_main() {
+            switch(&mut current, &mut told, "it failed a moment ago");
+        }
+        body["model"] = json!(current.1);
+        let round = match stream(&current.0, &body, tx, cancel) {
+            Ok(r) => {
+                if current.0 == url {
+                    crate::fallback::main_ok();
+                }
+                r
+            }
+            // Not there (before saying anything): the fallback takes this round and the rest.
+            Err(e) if current.0 == url && fallback.is_some() && e.starts_with(UNREACHED) && crate::fallback::unreachable(&e) => {
+                crate::fallback::main_failed();
+                let _ = tx.send(StreamEvent::Log(format!("chat model failed: {e}")));
+                switch(&mut current, &mut told, e.trim_start_matches(UNREACHED).chars().take(80).collect::<String>().as_str());
+                body["model"] = json!(current.1);
+                stream(&current.0, &body, tx, cancel)?
+            }
+            Err(e) => return Err(e),
+        };
         match &mut total {
             Some(total) => total.absorb(round.stats),
             None => total = Some(round.stats),
         }
         let Some(caps) = caps.filter(|_| !round.tool_calls.is_empty() && !round.stopped) else {
-            return Ok((finish(total), false));
+            return Ok((finish(total), false, current.1.clone()));
         };
 
         tx.send(StreamEvent::ToolCalls(round.tool_calls.clone())).map_err(|e| e.to_string())?;
@@ -369,8 +402,11 @@ pub(crate) fn converse(
         }
     }
     // The limit: what was done so far stays in the conversation, to continue from.
-    Ok((finish(total), true))
+    Ok((finish(total), true, current.1.clone()))
 }
+
+/// How a failure before the model said anything starts (the fallback may take over then).
+pub(crate) const UNREACHED: &str = "couldn't reach the chat model: ";
 
 /// POST the request, forward each delta as it arrives, and measure the reply.
 pub(crate) fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: &Cancel) -> Result<Round, String> {
@@ -386,10 +422,10 @@ pub(crate) fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: 
     let mut chunks = 0;
     let mut content = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
-    let resp = client.post(url).json(body).send().map_err(|e| e.to_string())?;
+    let resp = client.post(url).json(body).send().map_err(|e| format!("{UNREACHED}{e}"))?;
     let status = resp.status();
     if !status.is_success() {
-        return Err(format!("{status}: {}", resp.text().unwrap_or_default()));
+        return Err(format!("{UNREACHED}{status}: {}", resp.text().unwrap_or_default().chars().take(500).collect::<String>()));
     }
     let mut logged_first = false;
     let mut was_stopped = false;
