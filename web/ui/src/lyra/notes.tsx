@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { CheckSquare, Plus, Square, Trash2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
+import { takeIntent } from "./intent";
 import { Back, Failed, Page, useAction, useConfirm } from "./parts";
 import { useData } from "./store";
 
@@ -23,6 +24,8 @@ export function NotesPage({ onBack }: { onBack: () => void }) {
   const { act, busy, note } = useAction(reload);
   const [confirm, dialog] = useConfirm();
   const [text, setText] = useState("");
+  // Opened from the Quick note shortcut: straight into the box.
+  const [addFocus] = useState(() => takeIntent("add"));
   const notes = Array.isArray(data) ? data : [];
   // "groceries: milk, eggs" adds to a list; "title: text" notes; plain text is a dated note.
   const add = async (e: FormEvent) => {
@@ -40,7 +43,7 @@ export function NotesPage({ onBack }: { onBack: () => void }) {
       {data && !Array.isArray(data) && <Failed error={data.error} />}
       {note}
       <form onSubmit={add} className="flex gap-2">
-        <Input value={text} onChange={(e) => setText(e.target.value)} placeholder="ideas: new laptop policy  ·  groceries: milk, eggs" disabled={busy} />
+        <Input value={text} onChange={(e) => setText(e.target.value)} placeholder="ideas: new laptop policy  ·  groceries: milk, eggs" disabled={busy} autoFocus={addFocus} />
         <Button type="submit" disabled={busy || !text.trim()}>
           <Plus /> Add
         </Button>

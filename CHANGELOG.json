@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.31.0.162",
+    "date": "2026-10-08",
+    "title": "Home-screen shortcuts",
+    "new": [
+      "Long-press the lyra icon on your phone's home screen for New chat, Add task and Quick note: each opens straight where you need it, ready to type."
+    ]
+  },
+  {
     "version": "0.30.1.161",
     "date": "2026-10-08",
     "title": "Smoother when it's busy",

@@ -61,6 +61,7 @@ import { SearchBox, SearchHits, useConversationSearch } from "./lyra/search";
 import { APP_VERSION, LyraProvider, useData, useLyra } from "./lyra/store";
 import type { Session } from "./lyra/types";
 import { loadToken, saveToken, takeShared } from "./lyra/token";
+import { takeIntent } from "./lyra/intent";
 
 // Pages other than the chat load when first opened, so a phone's first load
 // is only the chat (D-5). Each module becomes its own chunk.
@@ -371,7 +372,7 @@ async function updateApp() {
 }
 
 function Shell() {
-  const { status, connected, banner, serverVersion, ready, user } = useLyra();
+  const { status, connected, banner, serverVersion, ready, user, say } = useLyra();
   const admin = user?.admin ?? true;
   // Opened from Android's share sheet: hand what was shared to the composer.
   useEffect(() => {
@@ -403,11 +404,20 @@ function Shell() {
     if (asked) {
       history.replaceState(null, "", "/");
       go(asked);
+    } else if (location.search.includes("do=")) {
+      history.replaceState(null, "", "/");
     }
     const onMessage = (e: MessageEvent) => go(e.data?.page ?? null);
     navigator.serviceWorker?.addEventListener("message", onMessage);
     return () => navigator.serviceWorker?.removeEventListener("message", onMessage);
   }, []);
+  // The New chat shortcut: a new conversation once lyra is there.
+  useEffect(() => {
+    if (ready && takeIntent("new")) {
+      say("/new");
+      setTab("chat");
+    }
+  }, [ready, say]);
   const pairing = status.pairing?.length ?? 0;
   const updates = (status.machines_detail ?? []).filter((m) => m.update_available).length;
   // Machines (and the server) with a health problem.

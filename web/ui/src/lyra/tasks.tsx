@@ -12,6 +12,7 @@ import { AlarmClock, Check, Circle, Plus, Radio } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { InboxCard, TodayCard } from "./calendar";
 import { Back, Failed, Page, useAction } from "./parts";
+import { takeIntent } from "./intent";
 import { ago } from "./push";
 import { useLyra } from "./store";
 import type { PmiProject, PmiTask } from "./types";
@@ -122,6 +123,8 @@ export function TasksPage({ onBack }: { onBack: () => void }) {
   // The view updates by itself; commands just show their answer.
   const { act, busy, note } = useAction(() => {});
   const [text, setText] = useState("");
+  // Opened from the Add task shortcut: straight into the box.
+  const [addFocus] = useState(() => takeIntent("add"));
   const [finishing, setFinishing] = useState<PmiTask | null>(null);
   const [comment, setComment] = useState("");
   const [tab, setTab] = useState<"tasks" | "projects">("tasks");
@@ -166,7 +169,7 @@ export function TasksPage({ onBack }: { onBack: () => void }) {
       <Failed error={pmi?.error ?? undefined} />
       {note}
       <form onSubmit={add} className="flex gap-2">
-        <Input value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a task: call the vendor friday 3pm" disabled={busy} />
+        <Input value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a task: call the vendor friday 3pm" disabled={busy} autoFocus={addFocus} />
         <Button type="submit" disabled={busy || !text.trim()}>
           <Plus /> Add
         </Button>

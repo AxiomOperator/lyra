@@ -244,6 +244,17 @@ Recurring errors:
 6. **G-10:** turn on meeting transcripts once the permissions are granted.
 7. **I-14:** trim the chat prompt (faster and cheaper replies).
 
+### Now: user features (asked for 2026-10-08)
+1. ✅ **Home-screen shortcuts and notification buttons** (0.31.0.162): long-press the icon for New chat, Add task, Quick note (manifest `shortcuts`, `lyra/intent.ts`). Approvals (Allow / Deny) and reminders (Done / In 1 hour / Tomorrow) were already answerable from the notification.
+2. **Saved prompts (templates):** one-tap starters; each person's own, plus shared ones an admin publishes.
+3. **Meeting workspace:** a page per meeting: prep before, notes during, the follow-up after (summary, decisions, your action items as tasks, a draft email to attendees).
+4. **Document workspace:** draft a letter, memo or one-pager side by side with lyra; save it to OneDrive or attach it to an email.
+5. **"What lyra knows about me":** memories, writing style, connected accounts and recent actions on one page, each correctable, deletable or exportable.
+6. **"Why?" on any action:** what prompted it and which rule or skill applied.
+
+### Next major release (1.0)
+- **Voice conversation mode:** hands-free back-and-forth (driving, walking between offices), best with a local Whisper model for speech to text (and a small TTS model for the voice).
+
 ### Later: grow
 See §9 for the ideas in more detail.
 
