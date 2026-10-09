@@ -34,6 +34,8 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let (routine_tx, routine_rx) = std::sync::mpsc::channel::<(String, crate::routines::Routine, crate::routines::Run)>();
     // Each person's routines, for their devices.
     let mut routines_views: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    // A routine's run started, ended or did something: its page looks again.
+    let mut running_seen = 0u64;
     // Diagnoses: when they were last looked at, and what the panels show.
     crate::diagnose::requeue_running();
     let mut last_diag = Instant::now() - Duration::from_secs(60);
@@ -420,6 +422,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 }
                 // A routine's run: judged and told by its own rules, not "lyra replied".
                 if let Some((r, started)) = c.routine.clone() {
+                    crate::routines::running_doing(&c.app.owner, &r.name, &crate::ui::doing_text(&c.app));
                     let may_change = r.changes;
                     // One that only looks: anything asking to change something is refused at once.
                     if !r.changes {
@@ -431,6 +434,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     }
                     if done && !c.app.waiting {
                         c.routine = None;
+                        crate::routines::running_end(&c.app.owner, &r.name);
                         let reply = c.app.messages.iter().rev().find(|m| matches!(m.role.as_str(), "assistant" | "error")).map(|m| (m.role.clone(), m.content.clone()));
                         let outcome = match &reply {
                             Some((role, _)) if role == "error" => "error",
@@ -532,6 +536,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 };
                 app.input = crate::routines::message(&r);
                 app.send();
+                crate::routines::running_start(&user, &r.name, &app.session_id);
                 if mine {
                     convs[0].app.log(Level::Plan, format!("routine {} started", r.name));
                 }
@@ -1001,10 +1006,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             }
         }
         // What the panels show: each routine's next run, last result, running now.
-        if last_routines.elapsed() < Duration::from_millis(50) || everyone {
+        if last_routines.elapsed() < Duration::from_millis(50) || everyone || crate::routines::running_rev() != running_seen {
+            running_seen = crate::routines::running_rev();
             for user in crate::routines::people() {
-                let running: Vec<String> = convs.iter().filter(|c| c.app.owner == user).filter_map(|c| c.routine.as_ref().map(|(r, _)| r.name.clone())).collect();
-                let now = crate::acting::run(&user, || crate::routines::view(&running, 1));
+                let now = crate::acting::run(&user, || crate::routines::view(1));
                 if routines_views.get(&user) != Some(&now) {
                     routines_views.insert(user, now);
                     everyone = true;
@@ -1120,6 +1125,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 c.mirror.extra = for_viewer(&extra_now, &c.app);
                 c.mirror.extra["pmi"] = pmi.get(&c.app.owner).map_or(Value::Null, |p| p.view.clone());
                 c.mirror.extra["briefing"] = brief_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
+                c.mirror.extra["routines"] = routines_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
                 for u in c.mirror.updates(&mut c.app) {
                     hub.publish(Some(&c.app.session_id), u);
                 }

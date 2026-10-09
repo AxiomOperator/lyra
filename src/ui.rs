@@ -882,6 +882,19 @@ pub(crate) fn phase_text(app: &App) -> String {
     }
 }
 
+/// What it's doing, in words and without a clock (a routine's progress on the app's page).
+pub(crate) fn doing_text(app: &App) -> String {
+    match &app.phase {
+        Phase::Idle => "finishing".into(),
+        Phase::Waiting => "waiting for the model".into(),
+        Phase::Thinking => "thinking".into(),
+        Phase::Streaming => "writing".into(),
+        Phase::Tools(names) => format!("using {names}"),
+        Phase::Delegating(agent) => format!("{agent} is working on it"),
+        Phase::Approval(agent) => format!("{agent} is waiting for a yes or no"),
+    }
+}
+
 /// Compact session totals for the status line when panels are hidden.
 fn session_line(app: &App) -> String {
     let t = &app.totals;

@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.47.2.184",
+    "date": "2026-10-09",
+    "title": "Routines you can follow",
+    "fixed": [
+      "A routine you start with Run now shows as Running on the Routines page: since when, what it's doing now, and a link to watch it. Its result shows when it's done.",
+      "A run cut off by a restart says so (interrupted) instead of vanishing.",
+      "Routines are run by lyra itself, not handed to a specialist agent because of words in them. A research brief that mentions \"repository\" no longer goes to the Coder. @machine and @all still go to the Operator."
+    ]
+  },
+  {
     "version": "0.47.1.183",
     "date": "2026-10-09",
     "title": "Long routines fold",

@@ -743,6 +743,9 @@ pub fn auto_delegate(env: &Env, message: &str, run: Uuid, history: &mut Vec<Valu
         (Some(m), _) if operator => RoutingDecision { agent: "operator".into(), confidence: 1.0, reason: format!("@{m}"), method: RouteMethod::Explicit },
         // A folder the person lends from their browser: the main agent has its tools.
         _ if crate::projects::about_a_folder(env.caps.as_ref().and_then(|c| c.remote()).as_deref(), &crate::acting::current(), message) => return None,
+        // A routine runs as written, by lyra (its words would only steer a guess:
+        // a research brief that mentions "repository" isn't coding work).
+        _ if message.starts_with("[routine \"") => return None,
         _ => env.agents.route(env, message)?,
     };
     let profile = env.agents.registry.get(&d.agent)?;

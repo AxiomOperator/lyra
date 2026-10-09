@@ -721,7 +721,9 @@ export function RoutinesPage({ onBack, toChat }: { onBack: () => void; toChat: (
         </p>
       )}
       {routines.map((r) => {
-        const last = r.runs[0];
+        // The run in progress shows above; its placeholder isn't a result.
+        const finished = r.runs.filter((x) => x.outcome !== "running");
+        const last = finished[0];
         return (
           <Card key={r.name} className={cn("gap-2 py-3", !r.enabled && "opacity-70")}>
             <CardHeader className="px-4">
@@ -741,8 +743,20 @@ export function RoutinesPage({ onBack, toChat }: { onBack: () => void; toChat: (
             </CardHeader>
             <CardContent className="space-y-2 px-4">
               <RoutinePrompt text={r.prompt} />
-              {last ? <RunLine run={last} open={open} /> : <p className="text-muted-foreground text-xs">Not run yet.</p>}
-              {history === r.name && r.runs.slice(1).map((x) => <RunLine key={x.at} run={x} open={open} />)}
+              {r.run_now && (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border border-sky-800/60 bg-sky-950/20 px-3 py-2 text-sm">
+                  <RefreshCw className="size-3.5 animate-spin text-sky-300" />
+                  <span className="font-medium text-sky-200">Running</span>
+                  <span className="text-muted-foreground text-xs">
+                    started {ago(r.run_now.started)} · now: {r.run_now.doing}
+                  </span>
+                  <button type="button" className="ml-auto text-teal-300 text-xs hover:text-teal-200" onClick={() => open(r.run_now!.session)}>
+                    watch it
+                  </button>
+                </div>
+              )}
+              {last ? <RunLine run={last} open={open} /> : !r.run_now && <p className="text-muted-foreground text-xs">Not run yet.</p>}
+              {history === r.name && finished.slice(1).map((x) => <RunLine key={x.at} run={x} open={open} />)}
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="secondary" disabled={busy || r.running} onClick={() => act(`/routine run ${r.name}`)}>
                   <Play /> Run now
@@ -753,9 +767,9 @@ export function RoutinesPage({ onBack, toChat }: { onBack: () => void; toChat: (
                 <Button size="sm" variant="ghost" disabled={busy} onClick={() => setEditing({ routine: r })}>
                   <Pencil /> Edit
                 </Button>
-                {r.runs.length > 1 && (
+                {finished.length > 1 && (
                   <Button size="sm" variant="ghost" onClick={() => setHistory(history === r.name ? null : r.name)}>
-                    <ChevronDown className={cn(history === r.name && "rotate-180")} /> {r.runs.length - 1} earlier
+                    <ChevronDown className={cn(history === r.name && "rotate-180")} /> {finished.length - 1} earlier
                   </Button>
                 )}
                 <Button

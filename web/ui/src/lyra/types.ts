@@ -316,6 +316,8 @@ export interface Routine {
   valid: boolean;
   next: string | null;
   running: boolean;
+  /** The run in progress: since when, its conversation, what it's doing now. */
+  run_now?: { started: string; session: string; doing: string } | null;
   runs: RoutineRun[];
 }
 

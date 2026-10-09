@@ -323,7 +323,16 @@ pub fn create(name: &str, schedule: &str, prompt: &str, notify: Notify, changes:
 static RUNS_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn runs() -> HashMap<String, Vec<Run>> {
-    dir().map(|d| crate::store::read_json(&d.join("runs.json"))).unwrap_or_default()
+    let mut all: HashMap<String, Vec<Run>> = dir().map(|d| crate::store::read_json(&d.join("runs.json"))).unwrap_or_default();
+    // "running" with nothing running it: lyra stopped (a restart) part way.
+    let live: Vec<String> = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, _, r)| r.session.clone()).collect();
+    for x in all.values_mut().flatten() {
+        if x.outcome == "running" && !live.contains(&x.session) {
+            x.outcome = "interrupted".into();
+            x.summary = "lyra stopped (restarted) before this run finished".into();
+        }
+    }
+    all
 }
 
 fn save_runs(runs: &HashMap<String, Vec<Run>>) {
@@ -337,14 +346,20 @@ pub fn record(name: &str, run: Run) {
     let _guard = RUNS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut all = runs();
     let list = all.entry(name.to_string()).or_default();
+    // The finished run takes the place of its "running" entry (read as
+    // "interrupted" once it's no longer running, a moment before this).
+    list.retain(|x| !(x.session == run.session && x.seconds == 0 && matches!(x.outcome.as_str(), "running" | "interrupted")));
     list.insert(0, run);
     list.truncate(KEEP_RUNS);
     save_runs(&all);
 }
 
-/// Every routine with its next run and recent runs, for the app (`running`:
-/// the ones running now).
-pub fn view(running: &[String], recent: usize) -> serde_json::Value {
+/// Every routine with its next run and recent runs, for the app (with the
+/// one running now: since when, what it's doing, its conversation).
+pub fn view(recent: usize) -> serde_json::Value {
+    let user = crate::acting::current();
+    let now_running = running_for(&user);
+    let running: Vec<String> = now_running.iter().map(|(n, _)| n.clone()).collect();
     let runs = runs();
     serde_json::json!(list()
         .iter()
@@ -355,6 +370,7 @@ pub fn view(running: &[String], recent: usize) -> serde_json::Value {
                 "valid": parse_schedule(&r.schedule).is_ok(),
                 "next": if r.enabled { next_run(r, mine.first().map(|x| x.at)).map(|n| n.to_rfc3339()) } else { None },
                 "running": running.contains(&r.name),
+                "run_now": now_running.iter().find(|(n, _)| *n == r.name).map(|(_, x)| serde_json::json!({ "started": x.started, "session": x.session, "doing": x.doing })),
                 "runs": mine.iter().take(recent).collect::<Vec<_>>(),
             })
         })
@@ -362,6 +378,59 @@ pub fn view(running: &[String], recent: usize) -> serde_json::Value {
 }
 
 // ---- running (lyra serve)
+
+/// A run in progress: since when, its conversation, what it's doing now.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Running {
+    pub started: DateTime<Utc>,
+    pub session: String,
+    pub doing: String,
+}
+
+/// Runs in progress, whose and which (lost with a restart: their runs.json entry then says so).
+static RUNNING: Mutex<Vec<(String, String, Running)>> = Mutex::new(Vec::new());
+/// Moves when a run starts, ends or does something else: the app's page looks again.
+static RUNNING_REV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn running_rev() -> u64 {
+    RUNNING_REV.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn bump() {
+    RUNNING_REV.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A run started: kept here, and in runs.json as "running" (so a restart
+/// leaves "interrupted", not nothing).
+pub fn running_start(user: &str, name: &str, session: &str) {
+    let r = Running { started: Utc::now(), session: session.to_string(), doing: "starting".into() };
+    let mut all = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+    all.retain(|(u, n, _)| !(u == user && n == name));
+    all.push((user.to_string(), name.to_string(), r));
+    drop(all);
+    bump();
+    crate::acting::run(user, || record(name, Run { at: Utc::now(), seconds: 0, needs_user: false, outcome: "running".into(), summary: String::new(), session: session.to_string(), decided_by: String::new(), emailed: String::new() }));
+}
+
+/// What it's doing now ("searching the web", "Coder: writing…").
+pub fn running_doing(user: &str, name: &str, doing: &str) {
+    if let Some((_, _, r)) = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).iter_mut().find(|(u, n, _)| u == user && n == name)
+        && r.doing != doing
+    {
+        r.doing = doing.to_string();
+        bump();
+    }
+}
+
+pub fn running_end(user: &str, name: &str) {
+    RUNNING.lock().unwrap_or_else(|e| e.into_inner()).retain(|(u, n, _)| !(u == user && n == name));
+    bump();
+}
+
+/// This person's runs in progress.
+pub fn running_for(user: &str) -> Vec<(String, Running)> {
+    RUNNING.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(u, _, _)| u == user).map(|(_, n, r)| (n.clone(), r.clone())).collect()
+}
 
 /// Routines asked to run now (`/routine run`), whose and which, for `lyra serve` to pick up.
 static WANTED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
