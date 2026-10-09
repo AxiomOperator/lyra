@@ -55,7 +55,7 @@ pub fn list(user: &str) -> Value {
         Some((modified, json!({ "id": id, "title": title_of(&text), "words": text.split_whitespace().count(), "updated": chrono::DateTime::<chrono::Utc>::from(modified).to_rfc3339() })))
     })
     .collect();
-    rows.sort_by(|a, b| b.0.cmp(&a.0));
+    rows.sort_by_key(|r| std::cmp::Reverse(r.0));
     json!(rows.into_iter().map(|r| r.1).collect::<Vec<_>>())
 }
 

@@ -26,6 +26,7 @@ import {
   CalendarDays,
   ChevronDown,
   FileText,
+  UserRound,
   ChevronUp,
   Code2,
   AlarmClock,
@@ -116,6 +117,7 @@ const UsagePage = page(() => import("./lyra/usage"), "UsagePage");
 const SettingsPage = page(() => import("./lyra/settings"), "SettingsPage");
 const MeetingsPage = page(() => import("./lyra/meetings"), "MeetingsPage");
 const DocumentsPage = page(() => import("./lyra/documents"), "DocumentsPage");
+const AboutMePage = page(() => import("./lyra/aboutme"), "AboutMePage");
 const ProjectsPage = page(() => import("./lyra/projects"), "ProjectsPage");
 const StatusPage = page(() => import("./lyra/status"), "StatusPage");
 const ActivityPage = page(() => import("./lyra/pages"), "ActivityPage");
@@ -131,10 +133,10 @@ function Loading() {
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "documents";
-const manage: Manage[] = ["documents", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings"];
+type Manage = "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "documents" | "me";
+const manage: Manage[] = ["me", "documents", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings"];
 /** What a member (not an admin) has: their chats, tasks, status, activity, skills. */
-const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage", "meetings", "documents"];
+const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage", "meetings", "documents", "me"];
 
 type TabItem = {
   id: Tab;
@@ -315,6 +317,9 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
               <DropdownMenuItem onClick={() => go("whatsnew")}>
                 <Sparkles /> What's new
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => go("me")}>
+                <UserRound /> What lyra knows about me
+              </DropdownMenuItem>
               {/* Settings live here, not on the rail (it's full on a laptop screen). */}
               {(user?.admin ?? true) && (
                 <DropdownMenuItem onClick={() => go("settings")}>
@@ -457,6 +462,7 @@ function Shell() {
     { id: "usage", label: "Usage", icon: Gauge },
     { id: "users", label: "Users", icon: Users, badge: status.users_waiting ?? 0 },
     { id: "settings", label: "Settings", icon: SettingsIcon },
+    { id: "me", label: "About me", icon: UserRound },
   ] as TabItem[]).filter((t) => admin || forMembers.includes(t.id));
   const toMore = () => setTab("more");
   const tabs: TabItem[] = ([
@@ -562,6 +568,7 @@ function Shell() {
           {tab === "settings" && <SettingsPage onBack={toMore} />}
           {tab === "meetings" && <MeetingsPage onBack={toMore} />}
           {tab === "documents" && <DocumentsPage onBack={toMore} />}
+          {tab === "me" && <AboutMePage onBack={toMore} />}
           </Suspense>
         </div>
 

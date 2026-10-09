@@ -134,9 +134,9 @@ impl App {
                 let mine = viewer.as_ref().map(|v| format!("user:{v}"));
                 apply_memories(&tools.mem, &content, run, &mut history, &tx, mine.as_deref());
             }
-            if let Some(learning) = learning {
-                apply_skills(&learning, &content, run, &mut history, &tx);
-            }
+            let skills = learning.map(|l| apply_skills(&l, &content, run, &mut history, &tx)).unwrap_or_default();
+            // What this turn's changes come from (for "What lyra knows about me" → Why?).
+            crate::actions::because(crate::actions::Why { source: "chat".into(), detail: content.chars().take(300).collect(), skills });
             // A specialist may take it first; the main agent checks and presents
             // its result (A6, A11).
             if let Some(env) = &agent_env {
@@ -172,7 +172,7 @@ pub(crate) fn apply_skills(
     run: Uuid,
     history: &mut Vec<Value>,
     tx: &Sender<StreamEvent>,
-) {
+) -> Vec<String> {
     match learning.relevant(message) {
         Ok(skills) if !skills.is_empty() => {
             let section = learn::prompt_section(&skills);
@@ -180,17 +180,19 @@ pub(crate) fn apply_skills(
             if let Err(e) = learning.record_usage(run, &ids) {
                 let _ = tx.send(StreamEvent::Log(format!("recording skill use failed: {e}")));
             }
-            let names = skills
+            let names: Vec<String> = skills
                 .into_iter()
                 .map(|r| if r.trial { format!("{} (trial)", r.skill.name) } else { r.skill.name })
                 .collect();
             let tokens = learn::approx_tokens(&section);
-            let _ = tx.send(StreamEvent::SkillsApplied { names, tokens });
+            let _ = tx.send(StreamEvent::SkillsApplied { names: names.clone(), tokens });
             add_to_system(history, &section);
+            names
         }
-        Ok(_) => {}
+        Ok(_) => Vec::new(),
         Err(e) => {
             let _ = tx.send(StreamEvent::Log(format!("skill search failed: {e}")));
+            Vec::new()
         }
     }
 }

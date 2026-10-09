@@ -146,6 +146,10 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
             let mine = app.personal().map(|u| format!("user:{u}"));
             page(app.mem().ok_or("memory is off".to_string()).and_then(|m| m.page(arg["query"].as_str().unwrap_or(""), arg["scope"].as_str().unwrap_or(""), mine.as_deref())))
         }
+        // "What lyra knows about me": everything kept about them, on one page.
+        "me" => about_me(app, hub, false),
+        "me_export" => about_me(app, hub, true),
+        "me_clear_actions" => crate::actions::clear(&app.owner).map_or_else(|e| json!({ "error": e }), |()| json!({ "ok": true })),
         // Saved prompts: theirs and the shared ones; changes return the list again.
         "templates" => crate::templates::page(&app.owner, app.admin),
         "template_put" => match crate::templates::put(&app.owner, app.admin, arg["shared"] == true, arg["id"].as_str().unwrap_or(""), arg["title"].as_str().unwrap_or(""), arg["prompt"].as_str().unwrap_or("")) {
@@ -350,4 +354,38 @@ fn calendar_page(owner: &str) -> Value {
 /// Their PMI: tasks, projects, what waits.
 fn pmi_page(owner: &str) -> Value {
     crate::pmi::as_user(owner, crate::pmi::snapshot).map_or_else(|e| json!({ "error": e }), |s| json!(s))
+}
+
+/// What lyra keeps about the person this conversation is for: memories, how
+/// they write, connected accounts, their devices, what lyra did and why.
+/// `export`: everything (notes, documents, saved prompts and every action too).
+fn about_me(app: &App, hub: &Hub, export: bool) -> Value {
+    let user = app.owner.clone();
+    let u = hub.users().get(&user);
+    let mine = app.personal().map(|u| format!("user:{u}"));
+    let memories = app.mem().map_or(Value::Null, |m| m.page("", "", mine.as_deref()).map_or(Value::Null, |p| p["memories"].clone()));
+    let pmi = crate::pmi::configured_for(&user);
+    let microsoft = crate::graph::connected_for(&user);
+    let mut theirs: Vec<_> = hub.devices().list().into_iter().filter(|d| d.user.as_deref().unwrap_or(lyra_web::users::OWNER) == user && d.kind == "device").collect();
+    theirs.sort_by_key(|d| std::cmp::Reverse(d.last_seen));
+    let devices: Vec<Value> = theirs.iter().map(|d| json!({ "name": d.name, "last_seen": d.last_seen })).collect();
+    let mut v = json!({
+        "name": u.as_ref().map(|u| u.name.clone()), "email": u.as_ref().map(|u| u.email.clone()), "admin": app.admin,
+        "memories": memories,
+        "style": crate::style::read(&user),
+        "accounts": {
+            "microsoft": { "connected": microsoft, "what": microsoft.then(|| crate::graph::granted_text(&user)), "granted": microsoft.then(|| crate::graph::granted(&user)) },
+            "pmi": { "connected": pmi },
+        },
+        "devices": devices,
+        "actions": crate::actions::recent(&user, 100).iter().map(crate::actions::view).collect::<Vec<_>>(),
+    });
+    if export {
+        v["exported"] = json!(chrono::Utc::now().to_rfc3339());
+        v["actions"] = json!(crate::actions::all(&user));
+        v["notes"] = crate::acting::run(&user, crate::notes::page);
+        v["documents"] = json!(crate::documents::list(&user).as_array().into_iter().flatten().filter_map(|d| crate::documents::read(&user, d["id"].as_str()?).ok()).collect::<Vec<_>>());
+        v["templates"] = crate::templates::page(&user, false)["mine"].clone();
+    }
+    v
 }

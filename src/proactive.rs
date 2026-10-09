@@ -228,20 +228,29 @@ pub fn triage_mail(seen: &mut Seen, url: &str, model: &str) -> Vec<String> {
             }
             if crate::pmi::call("pmi_add_task", &args).is_ok() {
                 did.push(format!("task from {who}'s email: {task}{}", t.due.as_deref().map(|d| format!(" (due {d})")).unwrap_or_default()));
+                crate::actions::record("pmi_add_task", &format!("a task: {task}"), triage_why(&who, &subject));
             }
         }
         if s.flag && crate::mail::call("mail_tidy", &json!({ "id": id, "action": "flag" })).is_ok() {
             did.push(format!("flagged {who}'s \"{subject}\""));
+            crate::actions::record("mail_tidy", &format!("flagged {who}'s \"{subject}\""), triage_why(&who, &subject));
         }
         if s.drafts
             && let Some(draft) = t.draft.as_deref().filter(|d| !d.trim().is_empty())
             && crate::mail::call("mail_draft", &json!({ "reply_to": id, "body": draft })).is_ok()
         {
             did.push(format!("drafted a reply to {who} (in Drafts, not sent)"));
+            crate::actions::record("mail_draft", &format!("drafted a reply to {who} (in Drafts, not sent)"), triage_why(&who, &subject));
         }
     }
     seen.mail_since = Some(newest);
     did
+}
+
+/// Why mail triage did something: the email, and the rule that let it
+/// ([proactive] mail_tasks / flag / drafts, on the Settings page).
+fn triage_why(who: &str, subject: &str) -> crate::actions::Why {
+    crate::actions::Why { source: "mail triage".into(), detail: format!("{who}'s email \"{subject}\" asks something of you (Settings → Notifications: meeting prep and mail triage)"), skills: vec![] }
 }
 
 // ---- follow-ups

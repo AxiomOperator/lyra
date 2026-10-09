@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.35.0.166",
+    "date": "2026-10-08",
+    "title": "What lyra knows about me",
+    "new": [
+      "\"What lyra knows about me\" (in the menu under your initials): everything lyra keeps about you on one page: what it remembers (correct or forget each one), how you write, your connected accounts (disconnect any), your devices, and what it did for you. Export takes a copy of all of it.",
+      "Why? on everything lyra does: each change it made for you (a task created, an email flagged, a meeting moved, a file written) opens to what prompted it (your message, or the email mail triage looked at), the skills in play, and whether you said yes first."
+    ]
+  },
+  {
     "version": "0.34.0.165",
     "date": "2026-10-08",
     "title": "Documents",

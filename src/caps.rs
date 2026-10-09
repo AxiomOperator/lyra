@@ -967,6 +967,10 @@ impl Caps {
             Ok(v) => v,
             Err(e) => return json!({ "error": e }).to_string(),
         };
+        // A change made for someone: kept with why, for their "What lyra knows about me".
+        if c.risk != RiskLevel::ReadOnly && !matches!(c.name.as_str(), "working_memory") {
+            crate::actions::record_tool(&c.name, &args, approved, ctx.agent);
+        }
         if verify
             && c.risk != RiskLevel::ReadOnly
             && let Some(rule) = &c.metadata.verification

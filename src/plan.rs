@@ -76,6 +76,7 @@ impl LyraRuntime {
         let write_refs: Option<Vec<&str>> = write.as_ref().map(|w| w.iter().map(String::as_str).collect());
         let read_refs: Option<Vec<&str>> = read.as_ref().map(|r| r.iter().map(String::as_str).collect());
         let ctx = CallContext { run: None, call_id, write_scopes: write_refs.as_deref(), read_scopes: read_refs.as_deref(), agent, member: false };
+        crate::actions::because_if_unset(crate::actions::Why { source: "a plan".into(), ..Default::default() });
         match (&self.caps, &self.tools) {
             (Some(caps), _) => caps.invoke(name, arguments, ctx, approved, verify),
             (None, Some(tools)) => tools.run(name, arguments, ctx),

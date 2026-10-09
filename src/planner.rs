@@ -317,6 +317,7 @@ pub fn run() -> Result<Vec<String>, String> {
     let tasks = tasks_from(&crate::pmi::call("pmi_tasks", &json!({ "due": "week" }))?);
     let changes = plan(&s, date, now.with_timezone(&Utc), &meetings_in(&events), &tasks, &blocks_in(&events));
     let mut said = Vec::new();
+    let why = || crate::actions::Why { source: "plan my day".into(), detail: "your tasks due this week and the free time in your working day (Settings → Working hours)".into(), skills: vec![] };
     for c in changes {
         match c {
             Change::Create(b) => {
@@ -332,15 +333,18 @@ pub fn run() -> Result<Vec<String>, String> {
                 });
                 crate::graph::graph(reqwest::Method::POST, "/me/events", Some(&body))?;
                 said.push(format!("focus block {}–{} for {}", local_hm(b.start), local_hm(b.end), b.title));
+                crate::actions::record("calendar_create", said.last().map_or("", |s| s.as_str()), why());
             }
             Change::Move { event, title, start, end } => {
                 let body = json!({ "start": crate::graph::graph_time(start), "end": crate::graph::graph_time(end) });
                 crate::graph::graph(reqwest::Method::PATCH, &format!("/me/events/{}", lyra_web::oidc::encode(&event)), Some(&body))?;
                 said.push(format!("moved the focus block for {title} to {}–{} (a meeting took its time)", local_hm(start), local_hm(end)));
+                crate::actions::record("calendar_move", said.last().map_or("", |s| s.as_str()), why());
             }
             Change::Remove { event, title, why } => {
                 crate::graph::graph(reqwest::Method::DELETE, &format!("/me/events/{}", lyra_web::oidc::encode(&event)), None)?;
                 said.push(format!("removed the focus block for {title}: {why}"));
+                crate::actions::record("calendar_delete", said.last().map_or("", |s| s.as_str()), crate::actions::Why { source: "plan my day".into(), detail: why.to_string(), skills: vec![] });
             }
         }
     }

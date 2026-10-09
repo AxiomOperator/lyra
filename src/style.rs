@@ -124,7 +124,15 @@ pub fn command(arg: &str, url: &str, model: &str) -> Result<String, String> {
             write(&user, &learned, "", learned_at(&current))?;
             Ok("your style notes are cleared".into())
         }
-        _ => Err("usage: /style [learn | note <how you write> | clear notes]".into()),
+        // All of it: what was learned from their mail, and their notes.
+        ("forget", _) => {
+            match path(&user) {
+                Some(p) if p.exists() => std::fs::remove_file(p).map_err(|e| e.to_string())?,
+                _ => {}
+            }
+            Ok("lyra forgot how you write (/style learn learns it again)".into())
+        }
+        _ => Err("usage: /style [learn | note <how you write> | clear notes | forget]".into()),
     }
 }
 
