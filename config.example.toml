@@ -398,15 +398,18 @@ currency = "$"
 
 # Email from lyra, only ever to the person it works for: routine results
 # (/routine edit <name> email on), the briefing and recap (/email briefing on),
-# and "email me this" in a chat. It goes through lyra's own mailbox (an email
-# service with an API key, set on the Settings page and kept in secrets.toml
-# under the service's name), or each person's own Outlook when they pick it (About me).
-# Accounts without Microsoft need an address first: /users email <who> <address>.
+# and "email me this" in a chat. It goes through lyra's own mailbox, or each
+# person's own Outlook when they pick it (About me). lyra's mailbox is the email
+# services an admin adds on the Settings page (Postmark, Resend, SendGrid: as
+# many as you like, tried in order, the next taking over when one fails), kept
+# in email/providers.json with their keys in secrets.toml. Accounts without
+# Microsoft need an address first: /users email <who> <address>.
+# The older way to name one service (below) is read once into the list.
 # [email]
-# provider = "postmark"     # the service; empty: people's own Outlook only
-# from = "lyra <lyra@example.org>"   # an address the service lets you send from
-# stream = "outbound"       # Postmark's message stream
-# api_url = ""              # the service's API address, if not its usual one (a proxy)
+# provider = "postmark"
+# from = "lyra <lyra@example.org>"
+# stream = "outbound"
+# api_url = ""
 
 # Proactive help (see README): meeting prep, mail triage and follow-ups, for each
 # person with Outlook connected. Drafts are only ever drafts: nothing is sent.

@@ -169,24 +169,17 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
         // Email from lyra, to this person: how it's set up, and their choices.
         "email" => crate::mailout::view(&app.owner),
         "email_set" => page(crate::mailout::set(&app.owner, arg)),
-        // lyra's mailbox (admins): the service, who it's from, whether its key is set.
-        "email_admin" => {
-            let s = crate::mailout::settings();
-            let provider = if s.provider.trim().is_empty() { "postmark".to_string() } else { s.provider.trim().to_lowercase() };
-            json!({ "provider": s.provider, "from": s.from, "stream": s.stream, "key_set": crate::secrets::token(&provider).is_some(),
-                "providers": crate::mailout::PROVIDERS.iter().map(|(id, what)| json!({ "id": id, "what": what })).collect::<Vec<_>>() })
-        }
-        // Its key goes straight into secrets.toml (never shown again; empty removes it).
-        "email_key" => {
-            let provider = arg["provider"].as_str().filter(|p| crate::mailout::PROVIDERS.iter().any(|(id, _)| id == p)).unwrap_or("postmark");
-            match crate::secrets::set_token(provider, arg["key"].as_str().unwrap_or("").trim()) {
-                Ok(()) => {
-                    app.log(Level::Agent, format!("{provider}'s key {}", if arg["key"].as_str().unwrap_or("").trim().is_empty() { "removed" } else { "saved" }));
-                    json!({ "ok": true })
-                }
-                Err(e) => json!({ "error": e }),
+        // lyra's mailbox (admins): the services, in the order they're tried.
+        "email_providers" => crate::mailout::providers_view(),
+        "email_provider_put" => {
+            let r = crate::mailout::put(arg);
+            if r.is_ok() {
+                app.log(Level::Agent, format!("email service {} saved", arg["name"].as_str().or(arg["id"].as_str()).unwrap_or("")));
             }
+            page(r)
         }
+        "email_provider_remove" => page(crate::mailout::remove(arg["id"].as_str().unwrap_or(""))),
+        "email_provider_move" => page(crate::mailout::move_one(arg["id"].as_str().unwrap_or(""), arg["up"] == true)),
         // Mark a model known down (or clear it): admins (the gate is in the loop).
         "known_down_set" => {
             let by = hub.users().get(&app.owner).map_or_else(|| app.owner.clone(), |u| u.name.split_whitespace().next().unwrap_or(&u.name).to_string());
@@ -282,6 +275,14 @@ pub(crate) fn slow(app: &App, what: &str, arg: &Value, loaded: &Loaded) -> Optio
             Box::new(move || search_page(&owner, &current, &query))
         }
         "mail" => Box::new(move || mail_page(&owner)),
+        // A test through one service, to the admin trying it (off the loop).
+        "email_provider_test" => {
+            let id = arg["id"].as_str().unwrap_or("").to_string();
+            Box::new(move || match crate::mailout::test_one(&owner, &id) {
+                Ok(text) => json!({ "ok": true, "text": text }),
+                Err(e) => json!({ "error": e }),
+            })
+        }
         // A test email, to them (it goes out over the network: off the loop).
         "email_test" => Box::new(move || match crate::mailout::send_to_me(&owner, "A test from lyra", "This is a test email from **lyra**. If you can read it, lyra can email you: routine results, your briefing and your recap.", "test") {
             Ok(text) => json!({ "ok": true, "text": text }),

@@ -1,12 +1,15 @@
-//! Email from lyra (`[email]`), only ever to the person it works for: a
-//! routine's result ("every morning: the news about X, with links"), the
-//! morning briefing, the end-of-day recap, or "email me this" in a chat.
+//! Email from lyra, only ever to the person it works for: a routine's result
+//! ("every morning: the news about X, with links"), the morning briefing, the
+//! end-of-day recap, or "email me this" in a chat.
 //!
-//! Two ways out: lyra's own mailbox through an email service with an API key
-//! (`provider`, Postmark first; its key in `secrets.toml` under the
-//! provider's name), or the person's own connected Outlook (sent as them, to
-//! themselves). Each person picks (`via`), else lyra's mailbox when it's set
-//! up, else their Outlook. Another service is one more [`Provider`].
+//! Two ways out: lyra's own mailbox, through the email services an admin
+//! adds (Settings → Email: as many as they like, each a [`Account`] of a known
+//! [`KINDS`] with its own sender, kept in `email/providers.json`, its key in
+//! `secrets.toml` as `email-<id>`), tried in order so the next takes over when
+//! one fails; or the person's own connected Outlook (sent as them, to
+//! themselves). Each person picks (`via`), else lyra's mailbox when there is
+//! one, else their Outlook. Another kind of service is one more arm in
+//! [`Service::send`] and one more [`KINDS`] entry.
 //!
 //! Where it goes: the person's own address only (their Microsoft sign-in's,
 //! or the one an admin set for an account without Microsoft). Nothing here
@@ -21,17 +24,14 @@ use lyra_capabilities::model::{Capability, CapabilityKind, RiskLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// `[email]`.
+/// `[email]`: the first setup's one service (before providers were a list).
+/// Read once into `email/providers.json`; providers are added in Settings now.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
-    /// The email service lyra's own mailbox sends through: "postmark" (empty: none).
     pub provider: String,
-    /// Who it's from, e.g. `lyra <lyra@example.org>` (an address the service lets you send from).
     pub from: String,
-    /// Postmark's message stream (default "outbound").
     pub stream: String,
-    /// The service's API address, when not its usual one (a proxy, a test).
     pub api_url: String,
 }
 
@@ -45,8 +45,52 @@ pub fn settings() -> Settings {
     SETTINGS.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default()
 }
 
-/// The services lyra's mailbox can send through, and what each needs.
-pub const PROVIDERS: &[(&str, &str)] = &[("postmark", "Postmark (a Server API token)")];
+/// A kind of email service lyra can send through.
+pub struct Kind {
+    pub id: &'static str,
+    pub label: &'static str,
+    /// What its key is called there.
+    pub key: &'static str,
+    /// Its API, unless an account says otherwise.
+    pub api: &'static str,
+    /// Where the key comes from, and what the sender must be.
+    pub help: &'static str,
+}
+
+pub const KINDS: &[Kind] = &[
+    Kind { id: "postmark", label: "Postmark", key: "Server API token", api: "https://api.postmarkapp.com", help: "A server's API Tokens tab. The From address must be a sender signature, or on a verified domain." },
+    Kind { id: "resend", label: "Resend", key: "API key", api: "https://api.resend.com", help: "API Keys, with sending access. The From address must be on a verified domain." },
+    Kind { id: "sendgrid", label: "SendGrid", key: "API key", api: "https://api.sendgrid.com", help: "Settings → API Keys, with Mail Send. The From address must be a verified sender or on an authenticated domain." },
+];
+
+pub fn kind(id: &str) -> Option<&'static Kind> {
+    KINDS.iter().find(|k| k.id == id)
+}
+
+/// One email service an admin added: which kind, who it sends as. Its key is
+/// in secrets.toml, never here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Account {
+    pub id: String,
+    pub kind: String,
+    /// What people see ("Postmark", "Resend (backup)").
+    pub name: String,
+    /// `lyra <lyra@example.org>`.
+    pub from: String,
+    /// Postmark's message stream (empty: outbound).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stream: String,
+    /// Its API, when not the kind's usual one (a proxy, a test).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub api_url: String,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    pub added: DateTime<Utc>,
+}
+
+fn yes() -> bool {
+    true
+}
 
 /// One email to the person: Markdown, sent as HTML with the text alongside.
 #[derive(Debug, Clone)]
@@ -66,45 +110,79 @@ pub trait Provider {
     fn send(&self, m: &Outgoing) -> Result<String, String>;
 }
 
-/// Postmark's email API (`POST /email`, the server token in a header).
-pub struct Postmark {
-    pub token: String,
-    pub from: String,
-    pub stream: String,
-    /// `https://api.postmarkapp.com` (a test points it elsewhere).
-    pub base: String,
+/// An added service, with its key.
+pub struct Service {
+    pub account: Account,
+    pub key: String,
 }
 
-impl Provider for Postmark {
+/// `lyra <lyra@example.org>` as its name and address.
+fn split_from(from: &str) -> (String, String) {
+    match from.rsplit_once('<') {
+        Some((name, rest)) => (name.trim().trim_matches('"').to_string(), rest.trim_end_matches('>').trim().to_string()),
+        None => (String::new(), from.trim().to_string()),
+    }
+}
+
+impl Provider for Service {
     fn name(&self) -> String {
-        "Postmark".into()
+        self.account.name.clone()
     }
 
     fn send(&self, m: &Outgoing) -> Result<String, String> {
+        let a = &self.account;
+        let k = kind(&a.kind).ok_or_else(|| format!("lyra doesn't know the email service {:?}", a.kind))?;
+        let base = if a.api_url.trim().is_empty() { k.api } else { a.api_url.trim() }.trim_end_matches('/').to_string();
         let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(30)).build().map_err(|e| e.to_string())?;
-        let body = json!({
-            "From": self.from,
-            "To": m.to,
-            "Subject": m.subject,
-            "HtmlBody": crate::mail::html(&m.markdown),
-            "TextBody": m.markdown,
-            "MessageStream": if self.stream.trim().is_empty() { "outbound" } else { self.stream.trim() },
-            "Tag": m.kind,
-        });
-        let resp = client
-            .post(format!("{}/email", self.base.trim_end_matches('/')))
-            .header("Accept", "application/json")
-            .header("X-Postmark-Server-Token", &self.token)
-            .json(&body)
-            .send()
-            .map_err(|e| format!("couldn't reach Postmark: {e}"))?;
-        let status = resp.status();
-        let v: Value = resp.json().unwrap_or_default();
-        // Postmark says what went wrong in Message (ErrorCode 0 is success).
-        if !status.is_success() || v["ErrorCode"].as_i64().unwrap_or(0) != 0 {
-            return Err(format!("Postmark refused it ({status}): {}", v["Message"].as_str().unwrap_or("no reason given")));
+        let html = crate::mail::html(&m.markdown);
+        let reach = |e: reqwest::Error| format!("couldn't reach {}: {e}", a.name);
+        match a.kind.as_str() {
+            "postmark" => {
+                let body = json!({
+                    "From": a.from, "To": m.to, "Subject": m.subject, "HtmlBody": html, "TextBody": m.markdown,
+                    "MessageStream": if a.stream.trim().is_empty() { "outbound" } else { a.stream.trim() }, "Tag": m.kind,
+                });
+                let resp = client.post(format!("{base}/email")).header("Accept", "application/json").header("X-Postmark-Server-Token", &self.key).json(&body).send().map_err(reach)?;
+                let status = resp.status();
+                let v: Value = resp.json().unwrap_or_default();
+                // Postmark says what went wrong in Message (ErrorCode 0 is success).
+                if !status.is_success() || v["ErrorCode"].as_i64().unwrap_or(0) != 0 {
+                    return Err(format!("{} refused it ({status}): {}", a.name, v["Message"].as_str().unwrap_or("no reason given")));
+                }
+                Ok(v["MessageID"].as_str().unwrap_or("").to_string())
+            }
+            "resend" => {
+                let body = json!({ "from": a.from, "to": [m.to], "subject": m.subject, "html": html, "text": m.markdown, "tags": [{ "name": "kind", "value": m.kind }] });
+                let resp = client.post(format!("{base}/emails")).bearer_auth(&self.key).json(&body).send().map_err(reach)?;
+                let status = resp.status();
+                let v: Value = resp.json().unwrap_or_default();
+                if !status.is_success() {
+                    return Err(format!("{} refused it ({status}): {}", a.name, v["message"].as_str().unwrap_or("no reason given")));
+                }
+                Ok(v["id"].as_str().unwrap_or("").to_string())
+            }
+            "sendgrid" => {
+                let (name, address) = split_from(&a.from);
+                let mut from = json!({ "email": address });
+                if !name.is_empty() {
+                    from["name"] = json!(name);
+                }
+                let body = json!({
+                    "personalizations": [{ "to": [{ "email": m.to }] }], "from": from, "subject": m.subject,
+                    "content": [{ "type": "text/plain", "value": m.markdown }, { "type": "text/html", "value": html }], "categories": [m.kind],
+                });
+                let resp = client.post(format!("{base}/v3/mail/send")).bearer_auth(&self.key).json(&body).send().map_err(reach)?;
+                let status = resp.status();
+                let id = resp.headers().get("x-message-id").and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
+                if !status.is_success() {
+                    let v: Value = resp.json().unwrap_or_default();
+                    let why = v["errors"].as_array().map(|e| e.iter().filter_map(|x| x["message"].as_str()).collect::<Vec<_>>().join("; ")).filter(|w| !w.is_empty());
+                    return Err(format!("{} refused it ({status}): {}", a.name, why.as_deref().unwrap_or("no reason given")));
+                }
+                Ok(id)
+            }
+            other => Err(format!("lyra doesn't know the email service {other:?}")),
         }
-        Ok(v["MessageID"].as_str().unwrap_or("").to_string())
     }
 }
 
@@ -129,6 +207,74 @@ impl Provider for Outlook {
         });
         crate::acting::run(&self.user, || crate::graph::graph(reqwest::Method::POST, "/me/sendMail", Some(&msg)))?;
         Ok(String::new())
+    }
+}
+
+// ---- the services an admin added
+
+fn accounts_path() -> Option<PathBuf> {
+    Some(crate::config::home()?.join("email").join("providers.json"))
+}
+
+fn secret(id: &str) -> String {
+    format!("email-{id}")
+}
+
+/// Every service added, in the order they're tried. A first setup's `[email]`
+/// (one Postmark) becomes the first, once.
+pub fn accounts() -> Vec<Account> {
+    let Some(path) = accounts_path() else { return Vec::new() };
+    if path.exists() {
+        return crate::store::read_json::<Option<Vec<Account>>>(&path).unwrap_or_default();
+    }
+    let s = settings();
+    if s.provider.trim().is_empty() || cfg!(test) {
+        return Vec::new();
+    }
+    let kind = s.provider.trim().to_lowercase();
+    let a = Account { id: kind.clone(), kind: kind.clone(), name: crate::mailout::kind(&kind).map_or(kind.clone(), |k| k.label.to_string()), from: s.from, stream: s.stream, api_url: s.api_url, enabled: true, added: Utc::now() };
+    if let Some(key) = crate::secrets::token(&kind) {
+        let _ = crate::secrets::set_token(&secret(&a.id), &key);
+    }
+    let _ = crate::store::write_json(&path, &vec![a.clone()]);
+    vec![a]
+}
+
+fn save_accounts(f: impl FnOnce(&mut Vec<Account>) -> Result<(), String>) -> Result<(), String> {
+    let mut all = accounts();
+    f(&mut all)?;
+    crate::store::write_json(&accounts_path().ok_or("no lyra home")?, &all)
+}
+
+/// One added service, ready to send (its key read now).
+fn service(a: &Account) -> Result<Service, String> {
+    let key = crate::secrets::token(&secret(&a.id)).ok_or_else(|| format!("{}'s key isn't set (Settings → Email)", a.name))?;
+    Ok(Service { account: a.clone(), key })
+}
+
+/// lyra's own mailbox: the services that can send, in order.
+fn lyra_mailbox() -> Result<Vec<Box<dyn Provider>>, String> {
+    let all: Vec<Account> = accounts().into_iter().filter(|a| a.enabled).collect();
+    if all.is_empty() {
+        return Err("lyra's mailbox isn't set up (Settings → Email)".into());
+    }
+    let (ok, bad): (Vec<_>, Vec<_>) = all.iter().map(service).partition(Result::is_ok);
+    if ok.is_empty() {
+        return Err(bad.into_iter().filter_map(Result::err).collect::<Vec<_>>().join("; "));
+    }
+    Ok(ok.into_iter().filter_map(Result::ok).map(|s| Box::new(s) as Box<dyn Provider>).collect())
+}
+
+/// How this person's email would go out now (the first, then the ones that
+/// take over), or why it can't.
+pub fn providers_for(user: &str) -> Result<Vec<Box<dyn Provider>>, String> {
+    let outlook = || -> Result<Vec<Box<dyn Provider>>, String> {
+        if crate::graph::connected_for(user) { Ok(vec![Box::new(Outlook { user: user.to_string() })]) } else { Err("your Outlook isn't connected (More → Outlook)".into()) }
+    };
+    match prefs(user).via.as_str() {
+        "outlook" => outlook(),
+        "lyra" => lyra_mailbox(),
+        _ => lyra_mailbox().or_else(|lyra| outlook().map_err(|o| format!("{lyra}; and {o}"))),
     }
 }
 
@@ -177,42 +323,29 @@ pub fn address(user: &str) -> Option<String> {
     lyra_web::Users::open(&dir).get(user).map(|u| u.email).filter(|e| e.contains('@'))
 }
 
-/// lyra's own mailbox, when an admin set it up (the service, who it's from, its key).
-fn lyra_mailbox() -> Result<Box<dyn Provider>, String> {
-    let s = settings();
-    match s.provider.trim().to_lowercase().as_str() {
-        "" => Err("lyra's mailbox isn't set up (Settings → Email)".into()),
-        "postmark" => {
-            let token = crate::secrets::token("postmark").ok_or("Postmark's key isn't set (Settings → Email)")?;
-            if !s.from.contains('@') {
-                return Err("[email] from isn't set: who lyra's emails come from".into());
-            }
-            Ok(Box::new(Postmark { token, from: s.from.clone(), stream: s.stream.clone(), base: if s.api_url.trim().is_empty() { "https://api.postmarkapp.com".into() } else { s.api_url.trim().to_string() } }))
+/// Send with each in turn until one takes it: (who sent it, or every reason).
+fn send_with(providers: &[Box<dyn Provider>], m: &Outgoing) -> (String, Result<(), String>) {
+    let mut why = Vec::new();
+    for p in providers {
+        match p.send(m) {
+            Ok(_) => return (p.name(), Ok(())),
+            Err(e) => why.push(e),
         }
-        other => Err(format!("lyra doesn't know the email service {other:?} (it knows {})", PROVIDERS.iter().map(|p| p.0).collect::<Vec<_>>().join(", "))),
     }
+    (providers.first().map(|p| p.name()).unwrap_or_default(), Err(why.join("; ")))
 }
 
-/// How this person's email would go out now, or why it can't.
-pub fn provider_for(user: &str) -> Result<Box<dyn Provider>, String> {
-    let outlook = || -> Result<Box<dyn Provider>, String> {
-        if crate::graph::connected_for(user) { Ok(Box::new(Outlook { user: user.to_string() })) } else { Err("your Outlook isn't connected (More → Outlook)".into()) }
-    };
-    match prefs(user).via.as_str() {
-        "outlook" => outlook(),
-        "lyra" => lyra_mailbox(),
-        _ => lyra_mailbox().or_else(|lyra| outlook().map_err(|o| format!("{lyra}; and {o}"))),
-    }
-}
-
-/// Email the person themselves. Every try is kept in their recent list.
-pub fn send_to_me(user: &str, subject: &str, markdown: &str, kind: &str) -> Result<String, String> {
+/// Email the person themselves (through `only` when given: a test of one
+/// service). Every try is kept in their recent list.
+fn send(user: &str, subject: &str, markdown: &str, kind: &str, only: Option<&Account>) -> Result<String, String> {
     let to = address(user).ok_or("there's no email address on your account: an admin can add one (Users)")?;
-    let provider = provider_for(user)?;
+    let providers: Vec<Box<dyn Provider>> = match only {
+        Some(a) => vec![Box::new(service(a)?)],
+        None => providers_for(user)?,
+    };
     let subject: String = subject.trim().chars().take(200).collect();
     let m = Outgoing { to: to.clone(), subject: if subject.is_empty() { "From lyra".into() } else { subject }, markdown: markdown.to_string(), kind: kind.to_string() };
-    let result = provider.send(&m);
-    let via = provider.name();
+    let (via, result) = send_with(&providers, &m);
     let _ = save_prefs(user, |p| {
         p.recent.insert(0, Sent { at: Utc::now(), subject: m.subject.clone(), kind: kind.to_string(), via: via.clone(), error: result.as_ref().err().cloned().unwrap_or_default() });
         p.recent.truncate(20);
@@ -220,14 +353,19 @@ pub fn send_to_me(user: &str, subject: &str, markdown: &str, kind: &str) -> Resu
     result.map(|_| format!("sent to {to} with {via}"))
 }
 
+/// Email the person themselves, the way they send.
+pub fn send_to_me(user: &str, subject: &str, markdown: &str, kind: &str) -> Result<String, String> {
+    send(user, subject, markdown, kind, None)
+}
+
 /// For the About me page: their address, how it would go, the choices, what was sent.
 pub fn view(user: &str) -> Value {
     let p = prefs(user);
-    let how = provider_for(user);
+    let how = providers_for(user);
     json!({
         "address": address(user),
         "via": p.via,
-        "sends_with": how.as_ref().ok().map(|h| h.name()),
+        "sends_with": how.as_ref().ok().map(|h| h.iter().map(|x| x.name()).collect::<Vec<_>>().join(", then ")),
         "problem": how.err(),
         "lyra_mailbox": lyra_mailbox().is_ok(),
         "outlook": crate::graph::connected_for(user),
@@ -235,6 +373,114 @@ pub fn view(user: &str) -> Value {
         "recap": p.recap,
         "recent": p.recent,
     })
+}
+
+// ---- adding, changing and removing services (admins: Settings → Email)
+
+/// For the Settings page: the services, in order, and the kinds to add.
+pub fn providers_view() -> Value {
+    json!({
+        "providers": accounts().iter().map(|a| json!({
+            "id": a.id, "kind": a.kind, "kind_label": kind(&a.kind).map_or(a.kind.as_str(), |k| k.label), "name": a.name, "from": a.from,
+            "stream": a.stream, "api_url": a.api_url, "enabled": a.enabled, "key_set": crate::secrets::token(&secret(&a.id)).is_some(),
+        })).collect::<Vec<_>>(),
+        "kinds": KINDS.iter().map(|k| json!({ "id": k.id, "label": k.label, "key": k.key, "help": k.help, "api": k.api })).collect::<Vec<_>>(),
+    })
+}
+
+/// Add a service (no `id`) or change one: kind, name, from, stream, api_url,
+/// enabled, and its key when one is given (a new one needs it).
+pub fn put(arg: &Value) -> Result<Value, String> {
+    let s = |k: &str| arg[k].as_str().unwrap_or("").trim().to_string();
+    let id = s("id");
+    let key = s("key");
+    let mut all = accounts();
+    let at = all.iter().position(|a| a.id == id);
+    if !id.is_empty() && at.is_none() {
+        return Err(format!("no email service {id:?}"));
+    }
+    let mut a = match at {
+        Some(i) => all[i].clone(),
+        None => Account { id: String::new(), kind: s("kind"), name: String::new(), from: String::new(), stream: String::new(), api_url: String::new(), enabled: true, added: Utc::now() },
+    };
+    if at.is_none() || !s("kind").is_empty() {
+        a.kind = s("kind").to_lowercase();
+    }
+    let k = kind(&a.kind).ok_or_else(|| format!("lyra knows these email services: {}", KINDS.iter().map(|k| k.label).collect::<Vec<_>>().join(", ")))?;
+    for (field, slot) in [("name", &mut a.name), ("from", &mut a.from), ("stream", &mut a.stream), ("api_url", &mut a.api_url)] {
+        if arg.get(field).is_some() {
+            *slot = s(field);
+        }
+    }
+    if let Some(on) = arg["enabled"].as_bool() {
+        a.enabled = on;
+    }
+    if a.name.is_empty() {
+        a.name = k.label.to_string();
+    }
+    let (_, address) = split_from(&a.from);
+    if !(address.contains('@') && address.split('@').nth(1).is_some_and(|d| d.contains('.'))) {
+        return Err("who it's from needs an email address, e.g. lyra <lyra@example.org>".into());
+    }
+    if !a.api_url.is_empty() && !a.api_url.starts_with("http") {
+        return Err("the API address starts with https://".into());
+    }
+    if at.is_none() {
+        if key.is_empty() {
+            return Err(format!("{} needs its {}", k.label, k.key));
+        }
+        let base: String = a.name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect::<String>().split('-').filter(|w| !w.is_empty()).collect::<Vec<_>>().join("-");
+        let base = if base.is_empty() { a.kind.clone() } else { base };
+        let mut id = base.clone();
+        let mut n = 2;
+        while all.iter().any(|x| x.id == id) {
+            id = format!("{base}-{n}");
+            n += 1;
+        }
+        a.id = id;
+    }
+    if !key.is_empty() {
+        crate::secrets::set_token(&secret(&a.id), &key)?;
+    }
+    match at {
+        Some(i) => all[i] = a.clone(),
+        None => all.push(a.clone()),
+    }
+    save_accounts(|v| {
+        *v = all;
+        Ok(())
+    })?;
+    Ok(json!({ "ok": true, "id": a.id }))
+}
+
+/// Remove a service, and its key.
+pub fn remove(id: &str) -> Result<Value, String> {
+    save_accounts(|all| {
+        let before = all.len();
+        all.retain(|a| a.id != id);
+        if all.len() == before { Err(format!("no email service {id:?}")) } else { Ok(()) }
+    })?;
+    let _ = crate::secrets::set_token(&secret(id), "");
+    Ok(json!({ "ok": true }))
+}
+
+/// Try a service sooner (`up`) or later.
+pub fn move_one(id: &str, up: bool) -> Result<Value, String> {
+    save_accounts(|all| {
+        let i = all.iter().position(|a| a.id == id).ok_or_else(|| format!("no email service {id:?}"))?;
+        let j = if up { i.checked_sub(1) } else { Some(i + 1).filter(|j| *j < all.len()) };
+        if let Some(j) = j {
+            all.swap(i, j);
+        }
+        Ok(())
+    })?;
+    Ok(json!({ "ok": true }))
+}
+
+/// A test email through one service, to the admin trying it.
+pub fn test_one(user: &str, id: &str) -> Result<String, String> {
+    let a = accounts().into_iter().find(|a| a.id == id).ok_or_else(|| format!("no email service {id:?}"))?;
+    send(user, &format!("A test from lyra, through {}", a.name), &format!("This is a test email from **lyra**, sent through **{}**. If you can read it, it works.", a.name), "test", Some(&a))
 }
 
 /// A change from the About me page: `via`, `briefing`, `recap`.
@@ -290,8 +536,8 @@ pub fn command(user: &str, arg: &str) -> Result<String, String> {
                 _ => return Err("/email via lyra|outlook|auto".into()),
             };
             set(user, &json!({ "via": via }))?;
-            Ok(match provider_for(user) {
-                Ok(p) => format!("Your email goes with {}.", p.name()),
+            Ok(match providers_for(user) {
+                Ok(p) => format!("Your email goes with {}.", p.iter().map(|x| x.name()).collect::<Vec<_>>().join(", then ")),
                 Err(e) => format!("Saved, but it can't send yet: {e}"),
             })
         }
@@ -361,27 +607,65 @@ mod tests {
         (base, t)
     }
 
+    fn svc(kind: &str, base: &str) -> Service {
+        Service { account: Account { id: kind.into(), kind: kind.into(), name: format!("{kind} main"), from: "lyra <lyra@example.org>".into(), stream: String::new(), api_url: base.into(), enabled: true, added: Utc::now() }, key: "the-key".into() }
+    }
+
+    fn mail() -> Outgoing {
+        Outgoing { to: "dana@example.org".into(), subject: "AI news".into(), markdown: "- [One](https://a.example)".into(), kind: "routine".into() }
+    }
+
+    fn body_of(req: &str) -> Value {
+        serde_json::from_str(&req[req.find("\r\n\r\n").unwrap() + 4..]).unwrap()
+    }
+
     #[test]
     fn postmark_gets_the_email_and_its_token() {
         let (base, t) = fake(200, json!({ "ErrorCode": 0, "Message": "OK", "MessageID": "m-1" }));
-        let p = Postmark { token: "server-token".into(), from: "lyra <lyra@example.org>".into(), stream: String::new(), base };
-        let m = Outgoing { to: "dana@example.org".into(), subject: "AI news".into(), markdown: "- [One](https://a.example)".into(), kind: "routine".into() };
-        assert_eq!(p.send(&m).unwrap(), "m-1");
+        assert_eq!(svc("postmark", &base).send(&mail()).unwrap(), "m-1");
         let req = t.join().unwrap();
         assert!(req.starts_with("POST /email "));
-        assert!(req.to_lowercase().contains("x-postmark-server-token: server-token"));
-        let body: Value = serde_json::from_str(&req[req.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert!(req.to_lowercase().contains("x-postmark-server-token: the-key"));
+        let body = body_of(&req);
         assert_eq!((body["To"].as_str(), body["From"].as_str(), body["MessageStream"].as_str(), body["Tag"].as_str()), (Some("dana@example.org"), Some("lyra <lyra@example.org>"), Some("outbound"), Some("routine")));
         assert!(body["HtmlBody"].as_str().unwrap().contains("<a href=\"https://a.example\">One</a>"));
     }
 
     #[test]
-    fn postmark_says_why_it_refused() {
-        let (base, t) = fake(422, json!({ "ErrorCode": 400, "Message": "The 'From' address you supplied is not a Sender Signature." }));
-        let p = Postmark { token: "t".into(), from: "x@example.org".into(), stream: "outbound".into(), base };
-        let e = p.send(&Outgoing { to: "a@b.org".into(), subject: "s".into(), markdown: "b".into(), kind: "test".into() }).unwrap_err();
-        t.join().unwrap();
-        assert!(e.contains("Sender Signature"), "{e}");
+    fn resend_and_sendgrid_get_theirs() {
+        let (base, t) = fake(200, json!({ "id": "r-1" }));
+        assert_eq!(svc("resend", &base).send(&mail()).unwrap(), "r-1");
+        let req = t.join().unwrap();
+        assert!(req.starts_with("POST /emails ") && req.to_lowercase().contains("authorization: bearer the-key"));
+        assert_eq!(body_of(&req)["to"], json!(["dana@example.org"]));
+        let (base, t) = fake(202, json!({}));
+        svc("sendgrid", &base).send(&mail()).unwrap();
+        let req = t.join().unwrap();
+        assert!(req.starts_with("POST /v3/mail/send "));
+        let body = body_of(&req);
+        assert_eq!(body["personalizations"][0]["to"][0]["email"], "dana@example.org");
+        assert_eq!(body["from"], json!({ "email": "lyra@example.org", "name": "lyra" }));
+        assert_eq!(body["content"][1]["type"], "text/html");
+    }
+
+    #[test]
+    fn the_next_service_takes_over_when_one_fails() {
+        let (first, t1) = fake(422, json!({ "ErrorCode": 400, "Message": "The 'From' address you supplied is not a Sender Signature." }));
+        let (second, t2) = fake(200, json!({ "id": "r-2" }));
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(svc("postmark", &first)), Box::new(svc("resend", &second))];
+        let (via, result) = send_with(&providers, &mail());
+        assert_eq!((via.as_str(), result), ("resend main", Ok(())));
+        t1.join().unwrap();
+        t2.join().unwrap();
+        // Both refusing: every reason.
+        let (a, t1) = fake(422, json!({ "ErrorCode": 400, "Message": "not a Sender Signature" }));
+        let (b, t2) = fake(403, json!({ "message": "domain not verified" }));
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(svc("postmark", &a)), Box::new(svc("resend", &b))];
+        let e = send_with(&providers, &mail()).1.unwrap_err();
+        t1.join().unwrap();
+        t2.join().unwrap();
+        assert!(e.contains("Sender Signature") && e.contains("domain not verified"), "{e}");
+        assert_eq!(split_from("\"lyra\" <lyra@example.org>"), ("lyra".into(), "lyra@example.org".into()));
     }
 
     #[test]

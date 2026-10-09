@@ -85,42 +85,197 @@ function Editor({ f, value, set, models }: { f: Field; value: Value; set: (v: Va
   }
 }
 
-/** lyra's mailbox key: typed once, saved straight into secrets.toml, never shown again. */
-function EmailKey() {
-  const { call, ready } = useLyra();
-  const [info, setInfo] = useState<{ provider: string; key_set: boolean } | null>(null);
+interface EmailKind {
+  id: string;
+  label: string;
+  key: string;
+  help: string;
+  api: string;
+}
+interface EmailService {
+  id: string;
+  kind: string;
+  kind_label: string;
+  name: string;
+  from: string;
+  stream: string;
+  api_url: string;
+  enabled: boolean;
+  key_set: boolean;
+}
+
+/** One service's form: new (no `s`) or changing one. The key is typed, saved into secrets.toml, never shown. */
+function ServiceForm({ kinds, s, done }: { kinds: EmailKind[]; s?: EmailService; done: (saved: boolean) => void }) {
+  const { call } = useLyra();
+  const [kind, setKind] = useState(s?.kind ?? kinds[0]?.id ?? "postmark");
+  const [name, setName] = useState(s?.name ?? "");
+  const [from, setFrom] = useState(s?.from ?? "");
   const [key, setKey] = useState("");
-  const [said, setSaid] = useState("");
-  const load = useCallback(() => void call<{ provider: string; key_set: boolean }>("email_admin").then(setInfo), [call]);
+  const [stream, setStream] = useState(s?.stream ?? "");
+  const [api, setApi] = useState(s?.api_url ?? "");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const k = kinds.find((x) => x.id === kind);
+  const save = async () => {
+    setBusy(true);
+    const r = await call<{ ok?: boolean; error?: string }>("email_provider_put", { id: s?.id ?? "", kind, name, from, key, stream, api_url: api });
+    setBusy(false);
+    if (r?.ok) done(true);
+    else setError(r?.error ?? "lyra didn't answer");
+  };
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="space-y-1 text-xs">
+          <span className="text-muted-foreground">Service</span>
+          <select value={kind} disabled={!!s} onChange={(e) => setKind(e.target.value)} className="block h-9 w-full rounded-md border bg-background px-2 text-sm" aria-label="Email service">
+            {kinds.map((x) => (
+              <option key={x.id} value={x.id}>
+                {x.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="space-y-1 text-xs">
+          <span className="text-muted-foreground">Name</span>
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={k ? `${k.label}` : ""} aria-label="Service name" />
+        </label>
+        <label className="space-y-1 text-xs sm:col-span-2">
+          <span className="text-muted-foreground">From</span>
+          <Input value={from} onChange={(e) => setFrom(e.target.value)} placeholder="lyra <lyra@example.org>" aria-label="From address" />
+        </label>
+        <label className="space-y-1 text-xs sm:col-span-2">
+          <span className="text-muted-foreground">
+            {k?.key ?? "Key"}
+            {s?.key_set ? " (set: leave empty to keep it)" : ""}
+          </span>
+          <Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={s?.key_set ? "••••••••" : "Paste it"} autoComplete="off" aria-label="Service key" />
+        </label>
+        {kind === "postmark" && (
+          <label className="space-y-1 text-xs">
+            <span className="text-muted-foreground">Message stream</span>
+            <Input value={stream} onChange={(e) => setStream(e.target.value)} placeholder="outbound" aria-label="Message stream" />
+          </label>
+        )}
+        <label className="space-y-1 text-xs">
+          <span className="text-muted-foreground">API address (if not the usual)</span>
+          <Input value={api} onChange={(e) => setApi(e.target.value)} placeholder={k?.api} aria-label="API address" />
+        </label>
+      </div>
+      {k && <p className="text-muted-foreground text-xs">{k.help}</p>}
+      {error && <p className="text-red-300 text-xs">{error}</p>}
+      <div className="flex gap-2">
+        <Button size="sm" disabled={busy || !from.trim() || (!s && !key.trim())} onClick={() => void save()}>
+          {s ? "Save" : "Add"}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => done(false)}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** lyra's mailbox: the email services, tried in this order (the next takes over when one fails). */
+function EmailServices() {
+  const { call, ready } = useLyra();
+  const [data, setData] = useState<{ providers: EmailService[]; kinds: EmailKind[] } | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [said, setSaid] = useState<{ ok: boolean; text: string } | null>(null);
+  const [testing, setTesting] = useState("");
+  const load = useCallback(() => void call<{ providers: EmailService[]; kinds: EmailKind[] }>("email_providers").then((d) => d && Array.isArray(d.providers) && setData(d)), [call]);
   useEffect(() => {
     if (ready) load();
   }, [ready, load]);
-  const provider = info?.provider?.trim() || "postmark";
-  const save = async (value: string) => {
-    const r = await call<{ ok?: boolean; error?: string }>("email_key", { provider, key: value });
-    setSaid(r?.ok ? (value ? "Saved. Try it: About me → Email from lyra → Send a test." : "Removed.") : (r?.error ?? "lyra didn't answer"));
-    setKey("");
+  const act = async (what: string, arg: Record<string, unknown>) => {
+    const r = await call<{ ok?: boolean; error?: string }>(what, arg);
+    if (!r?.ok) setSaid({ ok: false, text: r?.error ?? "lyra didn't answer" });
     load();
   };
+  const test = async (id: string) => {
+    setTesting(id);
+    const r = await call<{ ok?: boolean; text?: string; error?: string }>("email_provider_test", { id });
+    setTesting("");
+    setSaid(r?.ok ? { ok: true, text: `${(r.text ?? "sent").replace(/^sent/, "Sent")}. Check your inbox.` } : { ok: false, text: r?.error ?? "lyra didn't answer" });
+  };
+  if (!data) return null;
+  const list = data.providers;
   return (
-    <div className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between">
-      <div className="min-w-0">
-        <div className="font-medium text-sm">{provider === "postmark" ? "Postmark Server API token" : `${provider} key`}</div>
-        <div className="text-muted-foreground text-xs">{info?.key_set ? "Set. It's kept in secrets.toml and never shown; paste a new one to replace it." : "Not set yet. From your Postmark server's API Tokens tab."}</div>
-        {said && <div className="text-teal-300 text-xs">{said}</div>}
-      </div>
-      <div className="flex items-center gap-2">
-        <Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={info?.key_set ? "••••••••" : "Paste the key"} autoComplete="off" className="w-56" aria-label="Email service key" />
-        <Button size="sm" disabled={!key.trim()} onClick={() => void save(key.trim())}>
-          Save key
-        </Button>
-        {info?.key_set && (
-          <Button size="sm" variant="ghost" onClick={() => void save("")}>
-            Remove
+    <Card className="gap-3 py-4">
+      <CardHeader className="px-4">
+        <CardTitle className="text-base">Email</CardTitle>
+        <CardDescription>
+          lyra's own mailbox, for emailing people their routine results, briefing and recap (only ever to themselves). Add one or more services; they're tried in this order, and the next takes over when one fails. Keys go into secrets.toml and are never shown.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2 px-4">
+        {said && <p className={cn("text-xs", said.ok ? "text-teal-300" : "text-red-300")}>{said.text}</p>}
+        {!list.length && editing !== "new" && <p className="text-muted-foreground text-sm">No services yet: people with Outlook connected can still send with it (About me).</p>}
+        {list.map((s, i) =>
+          editing === s.id ? (
+            <ServiceForm
+              key={s.id}
+              kinds={data.kinds}
+              s={s}
+              done={(saved) => {
+                setEditing(null);
+                if (saved) load();
+              }}
+            />
+          ) : (
+            <div key={s.id} className={cn("flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-sm", !s.enabled && "opacity-60")}>
+              <span className="w-5 text-muted-foreground text-xs">{i + 1}</span>
+              <div className="min-w-0 flex-1">
+                <div className="font-medium">
+                  {s.name} <span className="font-normal text-muted-foreground text-xs">· {s.kind_label}</span>
+                  {!s.enabled && <span className="text-muted-foreground text-xs"> · off</span>}
+                </div>
+                <div className="truncate text-muted-foreground text-xs">
+                  {s.from} · {s.key_set ? "key set" : <span className="text-amber-300">no key</span>}
+                </div>
+              </div>
+              <Button size="sm" variant="ghost" disabled={!!testing || !s.key_set} onClick={() => void test(s.id)}>
+                {testing === s.id ? "Sending…" : "Test"}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setEditing(s.id)}>
+                Edit
+              </Button>
+              <Button size="sm" variant="ghost" disabled={i === 0} aria-label={`Try ${s.name} sooner`} onClick={() => void act("email_provider_move", { id: s.id, up: true })}>
+                ↑
+              </Button>
+              <Button size="sm" variant="ghost" disabled={i === list.length - 1} aria-label={`Try ${s.name} later`} onClick={() => void act("email_provider_move", { id: s.id, up: false })}>
+                ↓
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => void act("email_provider_put", { id: s.id, enabled: !s.enabled })}>
+                {s.enabled ? "Turn off" : "Turn on"}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  if (confirm(`Remove ${s.name}? Its key is removed too.`)) void act("email_provider_remove", { id: s.id });
+                }}
+              >
+                Remove
+              </Button>
+            </div>
+          ),
+        )}
+        {editing === "new" ? (
+          <ServiceForm
+            kinds={data.kinds}
+            done={(saved) => {
+              setEditing(null);
+              if (saved) load();
+            }}
+          />
+        ) : (
+          <Button size="sm" variant="secondary" onClick={() => setEditing("new")}>
+            Add an email service
           </Button>
         )}
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -194,10 +349,10 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                 </div>
               );
             })}
-            {g.id === "email" && <EmailKey />}
           </CardContent>
         </Card>
       ))}
+      <EmailServices />
       {data?.path && <p className="text-muted-foreground text-xs">Everything else is in {data.path} (see config.example.toml).</p>}
       {count > 0 && (
         <div className="sticky bottom-0 flex items-center justify-end gap-2 border-t bg-background/95 py-3 backdrop-blur">

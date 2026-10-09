@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.46.0.180",
+    "date": "2026-10-09",
+    "title": "More than one email service",
+    "new": [
+      "Admins can add as many email services as they like in Settings → Email: Postmark, Resend or SendGrid, each with its own name, sender and key. They're tried in order, so if one fails the next sends instead. Test each one, change the order, turn one off or remove it.",
+      "About me shows which services your email goes through, in order."
+    ],
+    "improved": [
+      "A setup with one email service from before carries over as the first in the list, key and all."
+    ]
+  },
+  {
     "version": "0.45.0.179",
     "date": "2026-10-09",
     "title": "Email from lyra",
