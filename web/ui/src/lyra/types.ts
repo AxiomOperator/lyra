@@ -25,6 +25,11 @@ export interface ChatMessage {
   usage?: { input: number; cached: number; output: number; ms: number; estimated: boolean; cost: number; currency: string } | null;
 }
 
+/** Something lyra asks in the chat: a missing piece as a form, or a round's steps to skip. */
+export type ChatAsk =
+  | { id: number; call_id: string; kind: "fill"; tool: string; what: string; fields: { name: string; label: string; hint: string; list: boolean }[] }
+  | { id: number; call_id: string; kind: "steps"; seconds: number; steps: { call_id: string; name: string; summary: string }[] };
+
 export interface Approval {
   id: number;
   agent: string;
@@ -89,8 +94,17 @@ export interface Status {
   plan?: unknown;
   phase?: string;
   waiting?: boolean;
-  /** The last reply stopped at its tool-call limit: Continue picks it up. */
+  /** The last reply stopped at its tool-call limit, or on an error: Continue picks it up. */
   can_continue?: boolean;
+  /** limit: Continue; error: Keep going (work was done); retry: Try again (nothing was). */
+  continue_kind?: "limit" | "error" | "retry";
+  /** This conversation is chat only: no tools. */
+  chat_only?: boolean;
+  /** Several steps at once show first, to skip any. */
+  steps_wait?: boolean;
+  /** The other model a reply can come from (the fallback). */
+  other_model?: string | null;
+  asks?: ChatAsk[];
   model?: string;
   session?: string;
   title?: string | null;

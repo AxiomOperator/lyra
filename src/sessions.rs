@@ -41,6 +41,9 @@ pub struct Session {
     /// Whose conversation it is (`users.json`); earlier ones are the owner's.
     #[serde(default = "owner")]
     pub owner: String,
+    /// Just talk: no tools in this conversation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chat_only: bool,
     pub messages: Vec<SavedMessage>,
 }
 
@@ -74,6 +77,7 @@ impl Session {
             cwd: cwd(),
             title,
             owner: owner(),
+            chat_only: false,
             messages: messages
                 .iter()
                 .map(|m| SavedMessage {
@@ -289,7 +293,7 @@ mod tests {
                 agents: vec![],
             })
             .collect();
-        Session { id: id.into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: lines[0].1.into(), owner: owner(), messages }
+        Session { id: id.into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: lines[0].1.into(), owner: owner(), chat_only: false, messages }
     }
 
     #[test]
@@ -450,7 +454,7 @@ mod keep_tests {
     fn pins_folders_and_archive_are_kept_apart_and_only_for_the_owner() {
         let dir = std::env::temp_dir().join(format!("lyra-sessions-meta-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut s = Session { id: "20261008-090000-abc123".into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: "Firewall rules".into(), owner: "dana".into(), messages: vec![] };
+        let mut s = Session { id: "20261008-090000-abc123".into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: "Firewall rules".into(), owner: "dana".into(), chat_only: false, messages: vec![] };
         s.messages.push(SavedMessage { role: "user".into(), content: "Firewall rules".into(), tool_calls: vec![], tool_call_id: None, reasoning: String::new(), memories: vec![], skills: vec![], agents: vec![] });
         save(&dir, &s).unwrap();
         assert!(keep_command(&dir, "dana", "folder abc123 Network").unwrap().contains("moved to Network"));

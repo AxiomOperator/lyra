@@ -47,6 +47,26 @@ pub struct Caps {
     remote: std::sync::OnceLock<Arc<dyn Remote>>,
 }
 
+/// What's wrong with a call ([`Caps::problem`]), and what the user could fill in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Problem {
+    pub text: String,
+    pub fill: Vec<crate::asks::Field>,
+}
+
+/// A form field for an argument the user can type (text, or a list of text),
+/// not an id.
+pub fn field_for(schema: &Value, name: &str) -> Option<crate::asks::Field> {
+    let p = &schema["properties"][name];
+    let list = p["type"] == "array" && p["items"]["type"] == "string";
+    if !(p["type"] == "string" || list) || name == "id" || name.ends_with("_id") || p.get("enum").is_some() {
+        return None;
+    }
+    let label = name.replace('_', " ");
+    let label = label[..1].to_uppercase() + &label[1..];
+    Some(crate::asks::Field { name: name.to_string(), label, hint: p["description"].as_str().unwrap_or("").to_string(), list })
+}
+
 /// What a call needs the user's approval for.
 #[derive(Debug, Clone)]
 pub struct Ask {
@@ -786,20 +806,22 @@ impl Caps {
 
     /// What's wrong with a call before anything runs or anyone is asked:
     /// arguments that aren't JSON, a required one missing or empty, or (for
-    /// sending mail) a draft that isn't there. The model gets this back and
-    /// should ask the user rather than guess.
-    pub fn problem(&self, name: &str, arguments: &str) -> Option<String> {
+    /// mail) a new message with nobody to send it to, a draft that isn't there.
+    /// What only the user knows (`fill`) is asked for in a small form; the rest
+    /// goes back to the model, which should ask rather than guess.
+    pub fn problem(&self, name: &str, arguments: &str) -> Option<Problem> {
         let c = self.manager.get(name)?;
+        let plain = |text: String| Some(Problem { text, fill: Vec::new() });
         let args: Value = if arguments.trim().is_empty() {
             json!({})
         } else {
             match serde_json::from_str(arguments) {
                 Ok(v) => v,
-                Err(e) => return Some(format!("{name}'s arguments aren't valid JSON ({e})")),
+                Err(e) => return plain(format!("{name}'s arguments aren't valid JSON ({e})")),
             }
         };
         if !args.is_object() {
-            return Some(format!("{name} takes an object of arguments"));
+            return plain(format!("{name} takes an object of arguments"));
         }
         let missing: Vec<&str> = c.input_schema["required"]
             .as_array()
@@ -814,7 +836,10 @@ impl Caps {
             })
             .collect();
         if !missing.is_empty() {
-            return Some(format!("{name} needs {}", missing.join(", ")));
+            // Words or addresses the user can type; ids and the like they can't.
+            let fill = missing.iter().filter_map(|k| field_for(&c.input_schema, k)).collect::<Vec<_>>();
+            let fill = if fill.len() == missing.len() { fill } else { Vec::new() };
+            return Some(Problem { text: format!("{name} needs {}", missing.join(", ")), fill });
         }
         if c.source == "mail" {
             return crate::mail::problem(&c.name, &args);
@@ -1253,9 +1278,12 @@ mod tests {
     #[test]
     fn a_call_missing_what_it_needs_is_refused_before_anyone_is_asked() {
         let (_rt, caps) = caps();
-        assert_eq!(caps.problem("memory_remember", "{}").as_deref(), Some("memory_remember needs content"));
-        assert_eq!(caps.problem("memory_remember", r#"{"content":"  "}"#).as_deref(), Some("memory_remember needs content"));
-        assert!(caps.problem("memory_remember", "{not json").unwrap().contains("aren't valid JSON"));
+        let p = caps.problem("memory_remember", "{}").unwrap();
+        assert_eq!(p.text, "memory_remember needs content");
+        assert_eq!(p.fill.iter().map(|f| f.label.as_str()).collect::<Vec<_>>(), ["Content"], "something the user can type");
+        assert_eq!(caps.problem("memory_remember", r#"{"content":"  "}"#).unwrap().text, "memory_remember needs content");
+        assert!(caps.problem("memory_remember", "{not json").unwrap().text.contains("aren't valid JSON"));
+        assert!(caps.problem("memory_forget", "{}").is_none_or(|p| p.fill.is_empty()), "an id isn't asked for");
         assert_eq!(caps.problem("memory_remember", r#"{"content":"likes tea"}"#), None);
         assert_eq!(caps.problem("no_such_tool", "{}"), None, "unknown tools are refused by invoke");
         // A turn that's just talk: only the search tool.

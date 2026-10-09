@@ -337,6 +337,9 @@ fn session_panel(app: &App, width: usize) -> Vec<Line<'static>> {
         Line::from(vec![label("model"), Span::raw(truncate(&app.model, width.saturating_sub(8)))]),
         Line::from(vec![label("server"), Span::raw(truncate(&host(&app.base_url), width.saturating_sub(8)))]),
     ];
+    if app.chat_only {
+        lines.push(Line::from(vec![label("tools"), Span::styled("off: chat only (/chat-only)", Style::default().fg(Color::LightBlue))]));
+    }
     if let Some(board) = crate::status::latest() {
         let color = match board.overall {
             crate::status::State::Down => Color::Red,

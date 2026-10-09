@@ -16,6 +16,10 @@ pub(crate) const COMMANDS: &str = "\
 /forget-skill <id>           delete a skill's file (its history is kept)
 /stop                        stop the reply being written (also Ctrl-X)
 /new                         start a new conversation (this one is saved)
+/retry [other]               send your last message again (other: the other model answers); its reply is replaced
+/edit <text>                 change your last message and send it again; its reply is replaced
+/chat-only [on|off]          just talk in this conversation: no tools (nothing looked up, sent or changed)
+/steps [on|off]              when lyra does several things at once, show them first to skip any (in the app)
 /machines [update|remove <name>]  machines lyra works on (lyra-node): online, version, update, remove
 /machines health [name|server]  disks, memory, load, failed units and updates (alerts: [health])
 /machines rules <name|server> [on|off | allow|write|deny|ssh add|remove <value>]  what runs without asking there

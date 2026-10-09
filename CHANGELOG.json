@@ -1,5 +1,22 @@
 [
   {
+    "version": "0.41.0.175",
+    "date": "2026-10-09",
+    "title": "A better chat",
+    "new": [
+      "lyra asks for what's missing in a small form right in the chat, like who an email goes to, instead of guessing or asking in a long reply. Fill it in and it carries on.",
+      "Before lyra does several things at once, it shows the steps for a few seconds so you can skip any. Tap Skip to pause it, then Go. You can turn this off for a conversation.",
+      "Chat only: a switch in the message box turns tools off for the whole conversation, for when you just want to talk.",
+      "Edit your last message and send it again, or Retry a reply. Ask the other model (the fallback) to answer instead with one tap.",
+      "Keep going: when a reply breaks off on an error, it says what was already done, and Keep going picks up from there. Try again resends your message when nothing was done yet."
+    ],
+    "improved": [
+      "The same tool failing again and again is folded into one line, like \"mail_send · tried 3 times: no draft\", so replies aren't buried under cards. Tap it to see them.",
+      "Steps you skip or say no to show as Denied, not as errors.",
+      "In the terminal client (lyra connect), you can answer lyra's forms and steps by typing."
+    ]
+  },
+  {
     "version": "0.40.0.174",
     "date": "2026-10-09",
     "title": "Just chatting",

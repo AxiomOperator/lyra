@@ -63,6 +63,9 @@ pub enum Inbound {
     Stop { device: String, who: Who, session: String },
     /// An answer to an approval (`y`, `n`, `a`).
     Approve { id: u64, answer: String, device: String, who: Who },
+    /// An answer to something lyra asked in the chat: a form's values, or
+    /// which steps to skip (`"go"`, `{"skip": […]}`, `"cancel"`).
+    Answer { id: u64, value: Value, device: String, who: Who },
     /// A notification's button (`action`) about `reference` (a PMI task).
     Action { action: String, reference: String, device: String, who: Who },
     /// The whole current state of a conversation ("" = the device's usual
@@ -1417,6 +1420,9 @@ async fn connection(s: Arc<Shared>, d: Device, mut who: Who, session: String, mu
                             device: d.name.clone(),
                             who: who.clone(),
                         });
+                    }
+                    "answer" => {
+                        let _ = s.inbound.send(Inbound::Answer { id: v["id"].as_u64().unwrap_or(0), value: v["value"].clone(), device: d.name.clone(), who: who.clone() });
                     }
                     "visible" => {
                         let at = (v["visible"] == true).then(Instant::now);

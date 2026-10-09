@@ -115,6 +115,17 @@ fn status(app: &App, machines: &[String]) -> Value {
         "phase": crate::ui::phase_text(app),
         "waiting": app.waiting,
         "can_continue": app.can_continue && !app.waiting,
+        // Keep going (after an error, with work done), Try again (nothing done), Continue (the limit).
+        "continue_kind": match (app.continue_after_error, app.done_so_far().is_some()) {
+            (false, _) => "limit",
+            (true, true) => "error",
+            (true, false) => "retry",
+        },
+        "chat_only": app.chat_only,
+        "steps_wait": app.steps_wait,
+        // The other model a reply can be asked again from.
+        "other_model": app.other_model().map(|(_, m)| m),
+        "asks": app.asks.iter().map(crate::asks::view).collect::<Vec<_>>(),
         "model": app.model,
         "session": app.session_id,
         "title": title(app),

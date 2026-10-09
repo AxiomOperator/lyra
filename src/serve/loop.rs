@@ -123,6 +123,15 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         c.changed = true;
                     }
                 }
+                Inbound::Answer { id, value, device, who } => {
+                    sync_role(&mut convs, &who);
+                    // Only in the user's own conversations.
+                    if let Some(c) = convs.iter_mut().find(|c| c.app.owner == who.user && c.app.asks.iter().any(|r| r.id == id)) {
+                        c.app.log(Level::Agent, format!("{device} answered in the chat ({id})"));
+                        c.app.answer_ask(id, &value);
+                        c.changed = true;
+                    }
+                }
                 Inbound::Action { action, reference, device, who } => {
                     if who.user == convs[0].app.owner {
                         convs[0].app.log(Level::Info, format!("{device} pressed {action} on a reminder"));

@@ -236,6 +236,11 @@ impl Screen {
         self.view.status["approvals"].as_array().and_then(|a| a.first())
     }
 
+    /// Something lyra asks in the chat (a form, steps), when no approval is open.
+    fn asking(&self) -> Option<&Value> {
+        self.approval().is_none().then(|| self.view.status["asks"].as_array().and_then(|a| a.first())).flatten()
+    }
+
     /// The word being typed starts with `@`: the machines to pick from.
     fn mentioning(&self) -> Option<&str> {
         let word = self.input.rsplit(' ').next().unwrap_or("");
@@ -316,6 +321,8 @@ impl Screen {
             && matches!(text.to_lowercase().as_str(), "y" | "yes" | "n" | "no" | "a" | "always")
         {
             self.send(json!({ "type": "approve", "id": id, "answer": text }));
+        } else if let Some((id, value)) = self.asking().filter(|_| !text.starts_with('/')).and_then(|a| Some((a["id"].as_u64()?, ask_answer(a, &text)?))) {
+            self.send(json!({ "type": "answer", "id": id, "value": value }));
         } else {
             let files: Vec<&str> = self.files.iter().map(|f| f.0.as_str()).collect();
             self.send(json!({ "type": "send", "text": text, "files": files }));
@@ -378,7 +385,7 @@ fn role_label(role: &str) -> (&'static str, Color) {
 }
 
 fn draw(f: &mut Frame, s: &mut Screen) {
-    let approval = approval_box(s);
+    let approval = approval_box(s).or_else(|| ask_box(s));
     let approval_height = approval.as_ref().map_or(0, |p| p.line_count(f.area().width) as u16).min(f.area().height / 2);
     let [header, middle, approval_area, input_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(approval_height), Constraint::Length(3)]).areas(f.area());
@@ -720,6 +727,54 @@ fn diagnosis_lines(all: &Value, machine: &str, width: usize, lines: &mut Vec<Lin
 }
 
 /// The open approval, in full: who, what kind of thing, exactly what, why, keys.
+/// What's typed, as the answer to a form or steps: a form's values (one, or
+/// several with ` | ` between, in order), `skip 2 3` / `go` for steps,
+/// `cancel` for either.
+fn ask_answer(a: &Value, text: &str) -> Option<Value> {
+    let t = text.trim();
+    if matches!(t.to_lowercase().as_str(), "cancel" | "not now") {
+        return Some(json!("cancel"));
+    }
+    if a["kind"] == "steps" {
+        let lower = t.to_lowercase();
+        if matches!(lower.as_str(), "go" | "ok" | "y" | "yes") {
+            return Some(json!("go"));
+        }
+        let picked: Vec<usize> = lower.strip_prefix("skip")?.split([' ', ',']).filter_map(|n| n.trim().parse::<usize>().ok()).collect();
+        let steps = a["steps"].as_array()?;
+        let skip: Vec<Value> = picked.iter().filter_map(|n| steps.get(n.checked_sub(1)?)).map(|s| s["call_id"].clone()).collect();
+        return Some(json!({ "skip": skip }));
+    }
+    let fields = a["fields"].as_array()?;
+    let parts: Vec<&str> = if fields.len() == 1 { vec![t] } else { t.split(" | ").collect() };
+    Some(Value::Object(fields.iter().zip(parts).filter_map(|(f, v)| Some((f["name"].as_str()?.to_string(), json!(v.trim())))).collect()))
+}
+
+/// The question lyra asks in the chat, above the input.
+fn ask_box(s: &Screen) -> Option<Paragraph<'static>> {
+    let a = s.asking()?;
+    let bold = Style::default().bold();
+    let mut lines = Vec::new();
+    let (title, help) = if a["kind"] == "steps" {
+        for (i, st) in a["steps"].as_array().into_iter().flatten().enumerate() {
+            let about = str_of(&st["summary"]);
+            lines.push(Line::from(vec![Span::raw(format!(" {}  ", i + 1)), Span::styled(str_of(&st["name"]), Style::default().fg(Color::Cyan)), Span::raw(if about.is_empty() { String::new() } else { format!(" · {about}") })]));
+        }
+        (" lyra is about to do these ", "Enter: go now · skip 2 3: not those · they start by themselves in a few seconds")
+    } else {
+        lines.push(Line::styled(format!("{} needs:", str_of(&a["tool"])), bold));
+        for f in a["fields"].as_array().into_iter().flatten() {
+            let hint = str_of(&f["hint"]);
+            lines.push(Line::from(vec![Span::styled(format!("  {}", str_of(&f["label"])), Style::default().fg(Color::Cyan)), Span::styled(if hint.is_empty() { String::new() } else { format!("  ({hint})") }, Style::default().fg(Color::DarkGray))]));
+        }
+        let many = a["fields"].as_array().map_or(0, Vec::len) > 1;
+        (" lyra needs a little more ", if many { "type them in order with \" | \" between, then Enter · cancel: not now" } else { "type it, then Enter · cancel: not now" })
+    };
+    lines.push(Line::default());
+    lines.push(Line::styled(help.to_string(), Style::default().fg(Color::DarkGray)));
+    Some(Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }).block(Block::bordered().title(Line::from(Span::styled(title, bold.fg(Color::LightBlue)))).border_style(Style::default().fg(Color::LightBlue))))
+}
+
 fn approval_box(s: &Screen) -> Option<Paragraph<'static>> {
     let a = s.approval()?;
     let dangerous = a["dangerous"] == true;
@@ -861,6 +916,12 @@ fn ui_loop(terminal: &mut DefaultTerminal, s: &mut Screen, incoming: mpsc::Recei
             KeyCode::Down => s.scroll = s.scroll.map(|t| t + 1).filter(|&t| t < s.max_scroll),
             KeyCode::PageUp => s.scroll = Some(s.scroll.unwrap_or(s.max_scroll).saturating_sub(s.page)),
             KeyCode::PageDown => s.scroll = s.scroll.map(|t| t + s.page).filter(|&t| t < s.max_scroll),
+            // Steps showing and nothing typed: go now.
+            KeyCode::Enter if s.input.trim().is_empty() && s.asking().is_some_and(|a| a["kind"] == "steps") => {
+                if let Some(id) = s.asking().and_then(|a| a["id"].as_u64()) {
+                    s.send(json!({ "type": "answer", "id": id, "value": "go" }));
+                }
+            }
             KeyCode::Enter => s.submit(),
             KeyCode::Backspace => {
                 s.input.pop();
@@ -994,6 +1055,18 @@ pub fn run(config: RemoteConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_answers_to_forms_and_steps() {
+        let form = json!({ "kind": "fill", "fields": [{ "name": "to" }, { "name": "subject" }] });
+        assert_eq!(ask_answer(&form, "a@x.org | Lunch"), Some(json!({ "to": "a@x.org", "subject": "Lunch" })));
+        assert_eq!(ask_answer(&json!({ "kind": "fill", "fields": [{ "name": "content" }] }), "likes tea | really"), Some(json!({ "content": "likes tea | really" })));
+        let steps = json!({ "kind": "steps", "steps": [{ "call_id": "c1" }, { "call_id": "c2" }] });
+        assert_eq!(ask_answer(&steps, "skip 2"), Some(json!({ "skip": ["c2"] })));
+        assert_eq!(ask_answer(&steps, "go"), Some(json!("go")));
+        assert_eq!(ask_answer(&steps, "what?"), None, "not an answer: sent as a message");
+        assert_eq!(ask_answer(&form, "cancel"), Some(json!("cancel")));
+    }
 
     #[test]
     fn attach_uploads_with_the_device_token() {

@@ -14,12 +14,13 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { AtSign, Clock, CloudOff, Link2, Paperclip, Pencil, Play, ShieldAlert, ShieldCheck, ShieldX, Slash, TriangleAlert, X } from "lucide-react";
+import { AtSign, Clock, CloudOff, Link2, Paperclip, Pencil, Play, RefreshCw, ShieldAlert, ShieldCheck, ShieldX, Slash, TriangleAlert, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { loadDraft, saveDraft, type Queued } from "./outbox";
 import { TemplatesButton } from "./templates";
 import { useLyra } from "./store";
-import type { Approval, ChatMessage, PairRequest } from "./types";
+import type { Approval, ChatAsk, ChatMessage, PairRequest } from "./types";
+import { AskCard, ChatOnlyButton, EditButton, EditLast, FoldedTries, RetryButtons, foldFailures } from "./chat-asks";
 import { ComposerModel, PlanCard, ToolFileContent, ToolFileTree, ToolTerminal, type PlanView } from "./chat-parts2";
 import { SpeakButton, VoiceButton, useAutoRead } from "./voice";
 import { AgentTask, ApprovalAt, ApprovalDetail, ComposerAttachments, ReplyContext, ReplySources, SentAttachments, StarterSuggestions, approvalCall, splitAttached, webSources } from "./chat-parts";
@@ -80,13 +81,16 @@ function ToolCallView({ name, args, result }: { name: string; args: string; resu
   const output = result === undefined ? undefined : parse(result);
   const obj = output && typeof output === "object" ? (output as Record<string, unknown>) : null;
   const error = obj && "error" in obj ? String(obj.error) : undefined;
-  const state = result === undefined ? "input-available" : error ? "output-error" : "output-available";
+  // Skipped, or the user said no: not a failure.
+  const skipped = error === "the user skipped this step";
+  const denied = skipped || !!error?.startsWith("the user declined") || !!error?.startsWith("the user already said no");
+  const state = result === undefined ? "input-available" : denied ? "output-denied" : error ? "output-error" : "output-available";
   // What it's about, at a glance: the command, path or URL.
   const subject = [input?.command, input?.path, input?.url, input?.query].find((v) => typeof v === "string") as string | undefined;
   const where = typeof input?.machine === "string" && input.machine !== "server" ? ` @${input.machine}` : typeof input?.machines === "string" ? ` @${input.machines}` : "";
   // One run on several machines: a card per machine.
   const fleet = obj && Array.isArray(obj.results) ? (obj.results as FleetResult[]) : null;
-  const title = `${name}${where}${subject ? ` · ${subject.length > 70 ? subject.slice(0, 69) + "…" : subject}` : ""}`;
+  const title = `${name}${where}${subject ? ` · ${subject.length > 70 ? subject.slice(0, 69) + "…" : subject}` : ""}${skipped ? " · skipped" : ""}`;
   const text = (v: unknown) => (typeof v === "string" ? v : "");
   const listing = !!obj && Array.isArray(obj.entries) && (name === "file_list" || name === "project_list");
   const fileText = obj && (name === "file_read" || name === "project_read") ? (typeof obj.content === "string" ? obj.content : typeof obj.text === "string" ? obj.text : null) : null;
@@ -124,11 +128,12 @@ function ToolCallView({ name, args, result }: { name: string; args: string; resu
   );
 }
 
-function Footer({ m, max, model, id }: { m: ChatMessage; max: number; model?: string; id: string }) {
+function Footer({ m, max, model, id, retry }: { m: ChatMessage; max: number; model?: string; id: string; retry?: boolean }) {
   if (!m.stats && !m.agents?.length && !m.skills?.length && !m.content.trim()) return null;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
       <SpeakButton id={id} text={m.content} />
+      {retry && <RetryButtons />}
       {m.usage && <ReplyContext usage={m.usage} max={max} model={model} />}
       {m.stats && <span>{m.stats}</span>}
       {m.agents?.length > 0 && <span className="text-sky-400">handled with {m.agents.join(", ")}</span>}
@@ -137,24 +142,38 @@ function Footer({ m, max, model, id }: { m: ChatMessage; max: number; model?: st
   );
 }
 
-function MessageView({ m, results, streaming, asking, max, model, turn, id }: { m: ChatMessage; results: Map<string, string>; streaming: boolean; asking: Asking; max: number; model?: string; turn?: ChatMessage[]; id: string }) {
-  // A call, and the approval it waits for when it's this one.
-  const call = (c: ChatMessage["calls"][number]) => (
-    <div key={c.id} className="space-y-2">
-      <ToolCallView name={c.name} args={c.arguments} result={results.get(c.id)} />
-      {asking?.callId === c.id && <ApprovalAt a={asking.a} more={asking.more} />}
-    </div>
+/** Your message; the last one can be changed and sent again. */
+function UserMessage({ m, editable }: { m: ChatMessage; editable?: boolean }) {
+  const [editing, setEditing] = useState(false);
+  const { text, files } = splitAttached(m.content);
+  return (
+    <Message from="user">
+      <SentAttachments files={files} />
+      {editing ? (
+        <EditLast text={text} onDone={() => setEditing(false)} />
+      ) : (
+        text.trim() && <MessageContent className="whitespace-pre-wrap group-[.is-user]:bg-primary/15 group-[.is-user]:ring-1 group-[.is-user]:ring-primary/25">{text}</MessageContent>
+      )}
+      {editable && !editing && text.trim() && <EditButton onEdit={() => setEditing(true)} />}
+    </Message>
   );
+}
+
+function MessageView({ m, results, streaming, asking, asks, max, model, turn, id, editable, retry }: { m: ChatMessage; results: Map<string, string>; streaming: boolean; asking: Asking; asks: ChatAsk[]; max: number; model?: string; turn?: ChatMessage[]; id: string; editable?: boolean; retry?: boolean }) {
+  // A call, and the approval (or question) it waits for when it's this one.
+  const call = (c: ChatMessage["calls"][number]) => {
+    const ask = asks.find((a) => a.call_id === c.id);
+    return (
+      <div key={c.id} className="space-y-2">
+        <ToolCallView name={c.name} args={c.arguments} result={results.get(c.id)} />
+        {asking?.callId === c.id && <ApprovalAt a={asking.a} more={asking.more} />}
+        {ask && <AskCard a={ask} />}
+      </div>
+    );
+  };
   switch (m.role) {
-    case "user": {
-      const { text, files } = splitAttached(m.content);
-      return (
-        <Message from="user">
-          <SentAttachments files={files} />
-          {text.trim() && <MessageContent className="whitespace-pre-wrap group-[.is-user]:bg-primary/15 group-[.is-user]:ring-1 group-[.is-user]:ring-primary/25">{text}</MessageContent>}
-        </Message>
-      );
-    }
+    case "user":
+      return <UserMessage m={m} editable={editable} />;
     case "assistant":
       return (
         <Message from="assistant">
@@ -169,7 +188,7 @@ function MessageView({ m, results, streaming, asking, max, model, turn, id }: { 
             {m.calls?.map(call)}
             {/* The turn's sources, under its answer. */}
             {!streaming && turn && <ReplySources web={webSources(turn, results)} memories={m.memory_notes ?? []} />}
-            {!streaming && <Footer m={m} max={max} model={model} id={id} />}
+            {!streaming && <Footer m={m} max={max} model={model} id={id} retry={retry} />}
           </MessageContent>
         </Message>
       );
@@ -505,7 +524,7 @@ function Composer() {
               setHidden(false);
             }}
             onKeyDown={onKeyDown}
-            placeholder="Message lyra…  ( / commands · @ machines )"
+            placeholder={status.chat_only ? "Message lyra…  (chat only: no tools)" : "Message lyra…  ( / commands · @ machines )"}
           />
         </PromptInputBody>
         <PromptInputFooter>
@@ -523,6 +542,7 @@ function Composer() {
             )}
             <VoiceButton />
             <TemplatesButton text={text} use={(prompt) => setText(prompt)} />
+            <ChatOnlyButton />
             <ComposerModel admin={user?.admin ?? true} />
           </PromptInputTools>
           {/* While a reply is being written the button stops it. */}
@@ -535,15 +555,29 @@ function Composer() {
 
 // ---- a reply that stopped at its tool-call limit
 
-/** Continue: the next turn sees everything done so far and carries on. */
+/** Continue (the limit) or Keep going (an error, with work done): the next turn
+ * sees everything done so far and carries on. Try again: nothing was done, the
+ * message goes again. */
 function ContinueButton() {
-  const { status, outbox, queue } = useLyra();
+  const { status, outbox, queue, say } = useLyra();
   if (!status.can_continue || status.waiting || outbox.length) return null;
+  const kind = status.continue_kind ?? "limit";
   return (
-    <div className="flex justify-start">
-      <Button size="sm" variant="secondary" onClick={() => queue("Continue where you left off.")}>
-        <Play /> Continue
-      </Button>
+    <div className="flex justify-start gap-2">
+      {kind === "retry" ? (
+        <Button size="sm" variant="secondary" onClick={() => say("/retry")}>
+          <RefreshCw /> Try again
+        </Button>
+      ) : (
+        <Button size="sm" variant="secondary" onClick={() => queue("Continue where you left off.")}>
+          <Play /> {kind === "error" ? "Keep going" : "Continue"}
+        </Button>
+      )}
+      {kind !== "limit" && status.other_model && (
+        <Button size="sm" variant="ghost" onClick={() => say("/retry other")}>
+          Ask {status.other_model.replace(/\.gguf$/i, "")} instead
+        </Button>
+      )}
     </div>
   );
 }
@@ -629,6 +663,22 @@ export function ChatPage() {
     return out;
   }, [messages]);
   const pairing = status.pairing ?? [];
+  const asks = status.asks ?? [];
+  // A question with no call here to show at: above the composer.
+  const loose = asks.filter((a) => !attached.has(a.call_id));
+  // The same tool failing again and again: one line.
+  const folds = useMemo(() => foldFailures(messages, results), [messages, results]);
+  const hidden = useMemo(() => {
+    const set = new Set<number>();
+    for (const f of folds.values()) for (let j = f.start + 1; j <= f.end; j++) set.add(j);
+    return set;
+  }, [folds]);
+  const lastUser = messages.map((m) => m.role).lastIndexOf("user");
+  const lastAnswer = (() => {
+    for (let i = messages.length - 1; i > lastUser; i--) if (messages[i].role === "assistant" && messages[i].content.trim()) return i;
+    return -1;
+  })();
+  const idle = !status.waiting && !approvals.length && !asks.length;
   const last = messages[messages.length - 1];
   // An agent's card shows its own progress; this is for lyra itself.
   const thinking = status.waiting && (!last || ["user", "tool", "approval"].includes(last.role)) && !status.phase?.startsWith("↪");
@@ -643,11 +693,38 @@ export function ChatPage() {
               <StarterSuggestions admin={user?.admin ?? true} />
             </div>
           )}
-          {messages.map((m, i) =>
-            (m.role === "tool" || m.role === "agent_tool") && m.tool_call_id && attached.has(m.tool_call_id) ? null : (
-              <MessageView key={i} m={m} results={results} streaming={!!status.waiting && i === messages.length - 1} asking={asking} max={max} model={status.model} turn={turns.get(i)} id={`${status.session ?? ""}-${i}`} />
-            ),
-          )}
+          {messages.map((m, i) => {
+            if ((m.role === "tool" || m.role === "agent_tool") && m.tool_call_id && attached.has(m.tool_call_id)) return null;
+            if (hidden.has(i)) return null;
+            const view = (j: number) => (
+              <MessageView
+                key={j}
+                m={messages[j]}
+                results={results}
+                streaming={!!status.waiting && j === messages.length - 1}
+                asking={asking}
+                asks={asks}
+                max={max}
+                model={status.model}
+                turn={turns.get(j)}
+                id={`${status.session ?? ""}-${j}`}
+                editable={idle && j === lastUser}
+                retry={idle && j === lastAnswer}
+              />
+            );
+            const fold = folds.get(i);
+            if (!fold) return view(i);
+            const inside: number[] = [];
+            for (let j = fold.start; j <= fold.end; j++) {
+              const x = messages[j];
+              if (!((x.role === "tool" || x.role === "agent_tool") && x.tool_call_id && attached.has(x.tool_call_id))) inside.push(j);
+            }
+            return (
+              <FoldedTries key={i} f={fold}>
+                {inside.map(view)}
+              </FoldedTries>
+            );
+          })}
           {thinking && <Shimmer className="text-sm">Thinking…</Shimmer>}
           <ContinueButton />
           <QueuedMessages />
@@ -661,6 +738,11 @@ export function ChatPage() {
         ))}
         {!!status.plan && (user?.admin ?? true) && <PlanCard plan={status.plan as PlanView} />}
         {approvals[0] && !asking && <ApprovalCard a={approvals[0]} more={approvals.length - 1} />}
+        {loose.map((a) => (
+          <div key={a.id} className="mx-3 mb-2">
+            <AskCard a={a} />
+          </div>
+        ))}
         <Composer />
       </div>
     </div>

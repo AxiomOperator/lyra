@@ -142,6 +142,25 @@ impl App {
             }),
             "/resume" => self.resume(arg),
             "/new" => self.new_session(),
+            "/chat-only" => {
+                self.chat_only = match arg.trim() {
+                    "" => !self.chat_only,
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err("/chat-only [on|off]".into()),
+                };
+                self.save_session();
+                Ok(if self.chat_only { "Chat only: on. lyra answers in words here, with no tools (nothing is looked up, sent or changed).".into() } else { "Chat only: off. lyra uses tools again when a message needs them.".into() })
+            }
+            "/steps" => {
+                self.steps_wait = match arg.trim() {
+                    "" => !self.steps_wait,
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err("/steps [on|off]".into()),
+                };
+                Ok(if self.steps_wait { format!("Steps first: on. When lyra is about to do several things at once, they show for {}s, to skip any.", crate::asks::STEPS_WAIT) } else { "Steps first: off in this conversation. lyra goes ahead without showing them.".into() })
+            }
             "/machines" => self.machines_command(arg),
             "/devices" => self.devices_command(arg),
             "/users" => self.users_command(arg),
@@ -286,7 +305,7 @@ pub(crate) const PAGE_COMMANDS: &[&str] = &[
 /// tools, coding, devices, backups, agents and skills' approval stay admins'.
 pub(crate) fn member_may(name: &str, arg: &str) -> bool {
     match name {
-        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" | "/feedback" | "/templates" => true,
+        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" | "/feedback" | "/templates" | "/chat-only" | "/steps" | "/retry" | "/edit" => true,
         // Their own skills (the commands check whose each one is).
         "/approve" | "/reject" | "/deprecate" => true,
         // Their own PMI account, routines and goals.

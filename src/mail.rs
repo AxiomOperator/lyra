@@ -200,18 +200,33 @@ pub fn capabilities() -> Vec<Capability> {
 }
 
 /// Sending needs the person's yes: everything else is theirs alone.
-/// A send whose draft can't be read: refused before the user is asked about
-/// an email with no recipients or subject.
-pub fn problem(name: &str, args: &Value) -> Option<String> {
+/// A new email with nobody to send it to (asked for in a form), or a send
+/// whose draft can't be read: refused before the user is asked about an email
+/// with no recipients or subject.
+pub fn problem(name: &str, args: &Value) -> Option<crate::caps::Problem> {
+    let plain = |text: String| Some(crate::caps::Problem { text, fill: Vec::new() });
+    if name == "mail_draft" {
+        let reply = args["reply_to"].as_str().is_some_and(|s| !s.trim().is_empty());
+        let to = args["to"].as_array().is_some_and(|a| a.iter().any(|t| t.as_str().is_some_and(|t| t.contains('@'))));
+        if reply || to {
+            return None;
+        }
+        let field = |name: &str, label: &str, hint: &str, list: bool| crate::asks::Field { name: name.into(), label: label.into(), hint: hint.into(), list };
+        let mut fill = vec![field("to", "To", "Email addresses, with commas between", true)];
+        if args["subject"].as_str().is_none_or(|s| s.trim().is_empty()) {
+            fill.push(field("subject", "Subject", "", false));
+        }
+        return Some(crate::caps::Problem { text: "a new email needs who it goes to (to), or reply_to for a reply".into(), fill });
+    }
     if name != "mail_send" {
         return None;
     }
     let id = args["id"].as_str().unwrap_or("");
     let d = graph_with(reqwest::Method::GET, &format!("/me/messages/{}?$select=toRecipients,isDraft", enc(id)), None, TEXT);
     match d {
-        Err(e) => Some(format!("there's no draft {id} to send ({}): make one with mail_draft first", e.chars().take(120).collect::<String>())),
-        Ok(d) if d["isDraft"] == false => Some("that message isn't a draft (it was sent already)".into()),
-        Ok(d) if d["toRecipients"].as_array().is_none_or(|a| a.is_empty()) => Some("that draft has nobody to send it to".into()),
+        Err(e) => plain(format!("there's no draft {id} to send ({}): make one with mail_draft first", e.chars().take(120).collect::<String>())),
+        Ok(d) if d["isDraft"] == false => plain("that message isn't a draft (it was sent already)".into()),
+        Ok(d) if d["toRecipients"].as_array().is_none_or(|a| a.is_empty()) => plain("that draft has nobody to send it to".into()),
         Ok(_) => None,
     }
 }

@@ -1,6 +1,7 @@
 mod acting;
 mod actions;
 mod alerts;
+mod asks;
 mod agents;
 mod backup;
 mod briefing;
@@ -235,6 +236,12 @@ enum StreamEvent {
     Agent(agents::AgentEvent),
     /// An agent waits for the user's approval before changing something.
     Approval(agents::ApprovalRequest),
+    /// lyra asks in the chat: a missing piece as a form, or a round's steps.
+    Ask(asks::Request),
+    /// That question was answered, or timed out: its card goes.
+    AskDone(u64),
+    /// A call's arguments after the user filled in what was missing.
+    ToolArgs { id: String, arguments: String },
     Reasoning(String),
     /// The model asked to run these tools.
     ToolCalls(Vec<ToolCall>),
@@ -387,8 +394,19 @@ struct App {
     messages: Vec<Message>,
     input: String,
     waiting: bool,
-    /// The last reply stopped at its tool-call limit: Continue picks it up.
+    /// The last reply stopped at its tool-call limit, or on an error: Continue
+    /// (or Try again, when nothing was done) picks it up.
     can_continue: bool,
+    /// It stopped on an error, not at the limit.
+    continue_after_error: bool,
+    /// What lyra asks in the chat, waiting for an answer (forms, steps).
+    asks: Vec<asks::Request>,
+    /// This conversation is just talk: no tools at all (the app's switch, `/chat-only`).
+    chat_only: bool,
+    /// A round of several calls shows its steps first (off: "don't wait next time").
+    steps_wait: bool,
+    /// The next reply comes from this model (`/retry other`): base URL and name.
+    next_model: Option<(String, String)>,
     show_reasoning: bool,
     /// Side panels (Ctrl-B); hidden automatically on narrow terminals.
     show_panels: bool,
@@ -566,6 +584,11 @@ impl App {
             input: String::new(),
             waiting: false,
             can_continue: false,
+            continue_after_error: false,
+            asks: Vec::new(),
+            chat_only: false,
+            steps_wait: true,
+            next_model: None,
             show_reasoning: true,
             show_panels: true,
             activity: Vec::new(),
@@ -652,6 +675,23 @@ impl App {
         match event {
             StreamEvent::Agent(e) => self.agent_event(e),
             StreamEvent::Approval(r) => self.approval_requested(r),
+            StreamEvent::Ask(r) => {
+                let what = match &r.kind {
+                    asks::Kind::Fill { tool, fields, .. } => format!("{tool} needs {}: asking", fields.iter().map(|f| f.label.to_lowercase()).collect::<Vec<_>>().join(", ")),
+                    asks::Kind::Steps { steps, .. } => format!("{} steps first: {}", steps.len(), steps.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")),
+                };
+                self.log(Level::Agent, what);
+                self.asks.push(r);
+            }
+            StreamEvent::AskDone(id) => self.asks.retain(|r| r.id != id),
+            StreamEvent::ToolArgs { id, arguments } => {
+                if let Some(i) = self.messages.iter().rposition(|m| m.tool_calls.iter().any(|c| c.id == id)) {
+                    if let Some(c) = self.messages[i].tool_calls.iter_mut().find(|c| c.id == id) {
+                        c.function.arguments = arguments;
+                    }
+                    self.touch(i);
+                }
+            }
             StreamEvent::AgentBuilt(built) => self.agent_built(built),
             StreamEvent::Token(t) => {
                 self.set_phase(Phase::Streaming);
@@ -728,8 +768,10 @@ impl App {
             StreamEvent::Limit(rounds) => {
                 let own = limits::own_tool_rounds(&self.owner).is_some();
                 self.log(Level::Agent, format!("stopped at the tool-call limit ({rounds} rounds{}): it can be continued", if own { ", this person's own" } else { "" }));
-                self.messages.push(Message::new("info", limits::stopped_note(rounds, own, self.admin)));
+                let done = self.done_so_far().map(|d| format!("\n{d}")).unwrap_or_default();
+                self.messages.push(Message::new("info", format!("{}{done}", limits::stopped_note(rounds, own, self.admin))));
                 self.can_continue = true;
+                self.continue_after_error = false;
                 self.save_session();
             }
             StreamEvent::Error(e) => {
@@ -748,7 +790,11 @@ impl App {
                 self.last_run = None;
                 self.set_phase(Phase::Idle);
                 self.log(Level::Error, e.clone());
-                self.messages.push(Message::new("error", e));
+                // What was done before it broke stays: Keep going picks it up (or Try again).
+                let done = self.done_so_far().map(|d| format!("\n\n{d}")).unwrap_or_default();
+                self.messages.push(Message::new("error", format!("{e}{done}")));
+                self.can_continue = self.messages.iter().any(|m| m.role == "user");
+                self.continue_after_error = true;
                 self.save_session();
             }
             StreamEvent::Log(text) => self.log(Level::Info, text),
@@ -1874,6 +1920,7 @@ impl App {
         let Some(dir) = sessions::dir() else { return };
         let mut s = sessions::Session::from_messages(&self.session_id, self.session_started, &self.messages);
         s.owner = self.owner.clone();
+        s.chat_only = self.chat_only;
         if let Err(e) = sessions::save(&dir, &s) {
             self.log(Level::Error, format!("couldn't save the session: {e}"));
         }
@@ -1884,6 +1931,7 @@ impl App {
         let (id, turns, when) = (s.id.clone(), s.user_turns(), s.updated.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string());
         self.session_id = id.clone();
         self.session_started = s.started;
+        self.chat_only = s.chat_only;
         self.messages = s.into_messages();
         self.agent_cards.clear();
         self.messages.push(Message::new("info", format!("resumed session {id} · {turns} turns · last active {when}")));
@@ -1960,12 +2008,47 @@ impl App {
         app
     }
 
+    /// What this turn did before it stopped: the tools that ran, and those that
+    /// failed (`None`: nothing yet).
+    fn done_so_far(&self) -> Option<String> {
+        let start = self.messages.iter().rposition(|m| m.role == "user")?;
+        let turn = &self.messages[start + 1..];
+        let failed = |id: &str| {
+            turn.iter().find(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some(id)).is_none_or(|m| serde_json::from_str::<Value>(&m.content).is_ok_and(|v| v.get("error").is_some()))
+        };
+        let (mut ok, mut bad): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+        for c in turn.iter().flat_map(|m| m.tool_calls.iter()) {
+            if failed(&c.id) { bad.push(c.function.name.clone()) } else { ok.push(c.function.name.clone()) }
+        }
+        if ok.is_empty() && bad.is_empty() {
+            return None;
+        }
+        let counted = |names: &[String]| {
+            let mut seen: Vec<(String, usize)> = Vec::new();
+            for n in names {
+                match seen.iter_mut().find(|(s, _)| s == n) {
+                    Some((_, k)) => *k += 1,
+                    None => seen.push((n.clone(), 1)),
+                }
+            }
+            seen.iter().map(|(n, k)| if *k > 1 { format!("{n} ×{k}") } else { n.clone() }).collect::<Vec<_>>().join(", ")
+        };
+        let mut out = String::from("Done before it stopped: ");
+        out += &if ok.is_empty() { "nothing yet".to_string() } else { counted(&ok) };
+        if !bad.is_empty() {
+            out += &format!("; didn't work: {}", counted(&bad));
+        }
+        Some(out)
+    }
+
     /// Stop the reply being written (and any agent working for it).
     pub(crate) fn stop(&mut self) -> Result<String, String> {
         if !self.waiting {
             return Err("nothing is running".into());
         }
         self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        // A question waiting in the chat is dropped: the run carries on to its stop.
+        self.asks.clear();
         // An agent waiting for a yes gets a no, so it can stop too.
         let pending: Vec<u64> = self.approvals.iter().map(|r| r.id).collect();
         for id in pending {

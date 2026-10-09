@@ -25,11 +25,28 @@ impl App {
             self.messages.push(Message::new("info", format!("> /stop\n{text}")));
             return;
         }
+        // "Don't show steps" from a steps card, while the reply runs: no echo
+        // (it would split the reply being written).
+        if self.waiting && matches!(content.as_str(), "/steps off" | "/steps on") {
+            self.input.clear();
+            self.steps_wait = content == "/steps on";
+            self.log(Level::Info, format!("steps first: {}", if self.steps_wait { "on" } else { "off" }));
+            return;
+        }
         if content.is_empty() || self.waiting {
             return;
         }
         self.input.clear();
         self.scroll = None;
+        // The last message again (another model), or changed: its reply goes.
+        if let Some(which) = content.strip_prefix("/retry").filter(|r| r.is_empty() || r.starts_with(' ')) {
+            self.redo(None, which.trim());
+            return;
+        }
+        if let Some(text) = content.strip_prefix("/edit ").map(str::trim).filter(|t| !t.is_empty()) {
+            self.redo(Some(text.to_string()), "");
+            return;
+        }
         if content.starts_with('/') {
             self.command(&content);
             if let Some(next) = self.pending_input.take() {
@@ -58,7 +75,9 @@ impl App {
         self.started = Some(Instant::now());
         self.set_phase(Phase::Waiting);
 
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        // `/retry other`: this reply from the other model.
+        let (base, model) = self.next_model.take().unwrap_or_else(|| (self.base_url.clone(), self.model.clone()));
+        let url = format!("{}/chat/completions", base.trim_end_matches('/'));
         let system = self.system_prompt.clone().map(|p| Message::new("system", p));
         let history: Vec<Value> = system
             .iter()
@@ -74,7 +93,7 @@ impl App {
                 v
             })
             .collect();
-        let (model, tools, tx) = (self.model.clone(), self.tools.clone(), self.tx.clone());
+        let (tools, tx) = (self.tools.clone(), self.tx.clone());
         self.cancel = Cancel::default();
         let cancel = self.cancel.clone();
         let (learning, evolution, caps) = (self.learning.clone(), self.evolution.clone(), self.caps.clone());
@@ -97,6 +116,8 @@ impl App {
         // What lyra said last, so "yes, do it" reads as the go-ahead it is.
         let last_reply: String = self.messages.iter().rev().skip(1).find(|m| m.role == "assistant").map(|m| m.content.chars().take(400).collect()).unwrap_or_default();
         let looks = std::mem::take(&mut self.attach_looks);
+        // Cards in the chat (forms, steps) need someone looking at the app.
+        let (chat_only, steps_wait, interactive) = (self.chat_only, self.steps_wait, self.hub.is_some());
         // Their own tool-call limit, else the shared one (evolved, or behavior.toml).
         let max_rounds = limits::tool_rounds(&owner, self.evolution.as_ref().map(|e| e.behavior().max_tool_rounds)) as usize;
         self.can_continue = false;
@@ -139,13 +160,21 @@ impl App {
             let skills = learning.map(|l| apply_skills(&l, &content, run, &mut history, &tx)).unwrap_or_default();
             // Just talking (a greeting, a thank-you, "test"): no tools offered but
             // the search for one, so nothing gets sent or changed by a guess.
-            let chatting = looks.is_empty() && chatting(&content, &last_reply);
-            if chatting {
+            let offer = if chat_only {
+                add_to_system(&mut history, CHAT_ONLY);
+                Offer::Nothing
+            } else if looks.is_empty() && chatting(&content, &last_reply) {
                 let _ = tx.send(StreamEvent::Log("just chatting: no tools offered".into()));
                 add_to_system(&mut history, CHATTING);
-            } else if caps.is_some() {
-                add_to_system(&mut history, TOOL_RULES);
-            }
+                Offer::Search
+            } else {
+                if caps.is_some() {
+                    add_to_system(&mut history, TOOL_RULES);
+                }
+                Offer::All
+            };
+            let chatting = offer != Offer::All;
+            let how = How { offer, asks: interactive, steps: interactive && steps_wait };
             // What this turn's changes come from (for "What lyra knows about me" → Why?).
             crate::actions::because(crate::actions::Why { source: "chat".into(), detail: content.chars().take(300).collect(), skills });
             // A specialist may take it first; the main agent checks and presents
@@ -158,7 +187,7 @@ impl App {
                     add_to_system(&mut history, agents::MAIN_NOTE);
                 }
             }
-            let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref().filter(|_| !chatting), &content, chatting, max_rounds, run, &tx, &cancel, viewer.as_deref(), member) {
+            let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref().filter(|_| !chatting), &content, how, max_rounds, run, &tx, &cancel, viewer.as_deref(), member) {
                 Ok((stats, limited, answered)) => {
                     // The turn's own model calls (agents' and lyra's count separately), as the model that answered.
                     usage::record("chat", &answered, stats.input, stats.cached, stats.output, stats.elapsed.as_millis() as u64);
@@ -172,6 +201,85 @@ impl App {
             };
             let _ = tx.send(event);
         });
+    }
+}
+
+impl App {
+    /// `/retry [other]` and `/edit <text>`: the last message is sent again (as
+    /// it was, or changed), and everything after it goes; `other` has the other
+    /// model answer (the fallback, or the main one when the fallback answered).
+    pub(crate) fn redo(&mut self, edit: Option<String>, which: &str) {
+        let Some(i) = self.messages.iter().rposition(|m| m.role == "user") else {
+            self.messages.push(Message::new("info", "Nothing to send again yet.".into()));
+            return;
+        };
+        let other = match which {
+            "" | "main" => None,
+            "other" | "fallback" => {
+                let Some(other) = self.other_model() else {
+                    self.messages.push(Message::new("error", "> /retry other\nthere's no other model: set up [fallback_model]".into()));
+                    return;
+                };
+                Some(other)
+            }
+            _ => {
+                self.messages.push(Message::new("error", format!("> /retry {which}\nuse /retry, or /retry other for the other model")));
+                return;
+            }
+        };
+        let original = std::mem::take(&mut self.messages[i].content);
+        let images = std::mem::take(&mut self.messages[i].images);
+        let text = match edit {
+            // What was attached stays with it.
+            Some(t) => match original.find("\n\n**Attached: ") {
+                Some(at) => format!("{t}{}", &original[at..]),
+                None => t,
+            },
+            None => original,
+        };
+        self.messages.truncate(i);
+        self.can_continue = false;
+        // Not a correction of the last run (it's gone).
+        self.last_run = None;
+        self.log(Level::Info, match (&other, which) {
+            (Some((_, m)), _) => format!("sending the last message again, to {m}"),
+            (None, _) => "sending the last message again".to_string(),
+        });
+        self.next_model = other;
+        self.input = text;
+        self.attach_images = images;
+        self.send();
+        self.attach_images.clear();
+    }
+
+    /// The other model the last reply can come from: the fallback, or the main
+    /// one when the fallback answered it (base URL and name).
+    pub(crate) fn other_model(&self) -> Option<(String, String)> {
+        // Either one marked down: there's only one model to ask.
+        let fb = crate::fallback::settings().filter(|_| !crate::known_down::is_down("fallback") && !crate::known_down::is_down("chat"))?;
+        let start = self.messages.iter().rposition(|m| m.role == "user").unwrap_or(0);
+        let by_fallback = self.messages[start..].iter().any(|m| m.role == "info" && m.content.contains(&format!(": {} answered instead", fb.model)));
+        Some(if by_fallback { (self.base_url.clone(), self.model.clone()) } else { (fb.url, fb.model) })
+    }
+
+    /// A device's answer to a question lyra asked in the chat (a form, steps).
+    pub(crate) fn answer_ask(&mut self, id: u64, value: &Value) {
+        let Some(i) = self.asks.iter().position(|r| r.id == id) else { return };
+        let Some(answer) = crate::asks::read(&self.asks[i].kind, value) else { return };
+        // Choosing what to skip: the steps wait, the card stays.
+        if answer == crate::asks::Answer::Hold {
+            let _ = self.asks[i].reply.send(answer);
+            return;
+        }
+        let r = self.asks.remove(i);
+        let said = match &answer {
+            crate::asks::Answer::Filled(m) => format!("filled in {}", m.keys().cloned().collect::<Vec<_>>().join(", ")),
+            crate::asks::Answer::Go { skip } if skip.is_empty() => "go".to_string(),
+            crate::asks::Answer::Go { skip } => format!("skip {} step{}", skip.len(), if skip.len() == 1 { "" } else { "s" }),
+            crate::asks::Answer::Cancel | crate::asks::Answer::Hold => "dismissed".to_string(),
+        };
+        self.log(Level::Agent, format!("answered in the chat: {said}"));
+        let _ = r.reply.send(answer);
     }
 }
 
@@ -281,6 +389,30 @@ pub(crate) fn system_prompt(context: &Context, memory: bool) -> Option<String> {
 /// One user turn: stream a reply; if the model calls tools, run them, add the
 /// results to the history and stream again. Stats cover the whole turn; the
 /// flag says it stopped at `max_rounds` with the work unfinished.
+/// Which tools a turn is offered.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Offer {
+    /// Those that fit the request (the usual).
+    All,
+    /// Just talk: only the search for one.
+    Search,
+    /// Chat only (the conversation's switch): none.
+    Nothing,
+}
+
+/// How a turn goes about tools.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct How {
+    pub offer: Offer,
+    /// It may ask the user in the chat for a missing piece (someone's looking at the app).
+    pub asks: bool,
+    /// A round of several calls shows its steps first, to skip any.
+    pub steps: bool,
+}
+
+/// Said to the model when the conversation is set to chat only.
+const CHAT_ONLY: &str = "Tools are off in this conversation (the user set it to chat only): answer in words. If they ask for something that needs a tool (mail, calendar, tasks, files, machines), say you can do it once they turn Chat only off.";
+
 /// Said to the model on a turn that's just conversation.
 const CHATTING: &str = "This message is conversation, not a request to do something: answer it in words. Don't send, change or look up anything unless the user plainly asks; if they do, find the tool with capability_search.";
 
@@ -330,7 +462,7 @@ pub(crate) fn converse(
     caps: Option<&Caps>,
     agents: Option<&agents::Env>,
     request: &str,
-    chatting: bool,
+    how: How,
     max_rounds: usize,
     run: Uuid,
     tx: &Sender<StreamEvent>,
@@ -377,7 +509,11 @@ pub(crate) fn converse(
             "stream_options": { "include_usage": true },
         });
         if let Some(caps) = caps {
-            let mut definitions = if chatting { caps.chat_definitions(&found) } else { caps.definitions(request, &found) };
+            let mut definitions = match how.offer {
+                Offer::All => caps.definitions(request, &found),
+                Offer::Search => caps.chat_definitions(&found),
+                Offer::Nothing => Vec::new(),
+            };
             // The main agent can hand work to a specialist itself.
             if let Some(env) = agents {
                 let enabled = env.agents.registry.enabled();
@@ -433,12 +569,23 @@ pub(crate) fn converse(
         };
 
         tx.send(StreamEvent::ToolCalls(round.tool_calls.clone())).map_err(|e| e.to_string())?;
+        let at = history.len();
         history.push(json!({
             "role": "assistant",
             "content": round.content,
             "tool_calls": round.tool_calls,
         }));
-        for call in &round.tool_calls {
+        // Several steps at once: shown first, a few seconds to skip any.
+        let skipped: Vec<String> = if how.steps && round.tool_calls.iter().filter(|c| c.function.name != caps::SEARCH_TOOL).count() >= 2 {
+            let steps = round.tool_calls.iter().map(|c| crate::asks::Step { call_id: c.id.clone(), name: c.function.name.clone(), summary: crate::asks::summary(&c.function.arguments) }).collect();
+            match crate::asks::ask(tx, &round.tool_calls[0].id, crate::asks::Kind::Steps { steps, seconds: crate::asks::STEPS_WAIT }) {
+                crate::asks::Answer::Go { skip } => skip,
+                _ => round.tool_calls.iter().map(|c| c.id.clone()).collect(),
+            }
+        } else {
+            Vec::new()
+        };
+        for (k, call) in round.tool_calls.iter().enumerate() {
             // Stopped: the calls not made yet answer so (the history stays well-formed).
             if stopped(cancel) {
                 history.push(json!({ "role": "tool", "tool_call_id": call.id, "content": "{\"error\":\"stopped by the user\"}" }));
@@ -447,21 +594,40 @@ pub(crate) fn converse(
             let ctx = CallContext { member, read_scopes: scopes, write_scopes: scopes, ..CallContext::new(Some(run), &call.id) };
             // Policy, usage tracking and verification happen in there.
             let name = call.function.name.as_str();
-            let content = if refused.contains(name) {
+            let mut problem = caps.problem(name, &call.function.arguments);
+            // Something only the user knows (who it goes to): a small form in the chat.
+            let mut filled = None;
+            if let Some(p) = problem.as_ref().filter(|p| how.asks && !p.fill.is_empty() && !refused.contains(name) && !skipped.contains(&call.id)) {
+                let what = caps.manager.get(name).map(|c| c.description.split(['.', ':']).next().unwrap_or("").trim().to_string()).unwrap_or_default();
+                match crate::asks::ask(tx, &call.id, crate::asks::Kind::Fill { tool: name.to_string(), what, fields: p.fill.clone() }) {
+                    crate::asks::Answer::Filled(values) if !values.is_empty() => {
+                        let arguments = crate::asks::merge(&call.function.arguments, &values);
+                        history[at]["tool_calls"][k]["function"]["arguments"] = json!(arguments);
+                        let _ = tx.send(StreamEvent::ToolArgs { id: call.id.clone(), arguments: arguments.clone() });
+                        problem = caps.problem(name, &arguments);
+                        filled = Some(arguments);
+                    }
+                    _ => problem = Some(crate::caps::Problem { text: "the user dismissed the form asking for it".into(), fill: Vec::new() }),
+                }
+            }
+            let arguments = filled.as_deref().unwrap_or(&call.function.arguments);
+            let content = if skipped.contains(&call.id) {
+                json!({ "error": "the user skipped this step", "hint": "carry on without it, and say what was skipped" }).to_string()
+            } else if refused.contains(name) {
                 json!({ "error": format!("the user already said no to {name} in this conversation turn: don't try it again; answer them") }).to_string()
-            } else if let Some(problem) = caps.problem(name, &call.function.arguments) {
-                // Nothing to ask the user about: the model is told what's missing.
-                json!({ "error": problem, "hint": "don't guess: ask the user for what's missing" }).to_string()
+            } else if let Some(problem) = problem {
+                // Nothing (more) to ask the user here: the model is told what's missing.
+                json!({ "error": problem.text, "hint": "don't guess: ask the user for what's missing" }).to_string()
             } else if let (Some(env), "delegate") = (agents, name) {
-                agents::delegate_call(env, &call.function.arguments, run)
+                agents::delegate_call(env, arguments, run)
             } else if call.function.name == caps::SEARCH_TOOL {
-                let (text, names) = caps.search(&call.function.arguments);
+                let (text, names) = caps.search(arguments);
                 found.extend(names);
                 text
-            } else if let Some(ask) = caps.manager.get(&call.function.name).filter(|c| matches!(c.source.as_str(), "calendar" | "mail" | "projects")).and_then(|_| caps.approval(&call.function.name, &call.function.arguments)) {
+            } else if let Some(ask) = caps.manager.get(&call.function.name).filter(|c| matches!(c.source.as_str(), "calendar" | "mail" | "projects")).and_then(|_| caps.approval(&call.function.name, arguments)) {
                 // Changes others see, and files on their PC: the person approves them right here.
                 match agents.map(|env| agents::approve(env, &agents::main_profile(), &call.function.name, ask)) {
-                    Some(Ok(())) => caps.invoke(&call.function.name, &call.function.arguments, ctx, true, true),
+                    Some(Ok(())) => caps.invoke(&call.function.name, arguments, ctx, true, true),
                     Some(Err(why)) => {
                         refused.insert(call.function.name.clone());
                         json!({ "error": why, "hint": "the user said no: don't try this again; tell them what you would have done, or ask what they'd like" }).to_string()
@@ -469,7 +635,7 @@ pub(crate) fn converse(
                     None => json!({ "error": "that needs the user's approval, and approvals need agents on ([agents] enabled)" }).to_string(),
                 }
             } else {
-                caps.invoke(&call.function.name, &call.function.arguments, ctx, false, true)
+                caps.invoke(&call.function.name, arguments, ctx, false, true)
             };
             history.push(json!({ "role": "tool", "tool_call_id": call.id, "content": content }));
             let (id, name) = (call.id.clone(), call.function.name.clone());
