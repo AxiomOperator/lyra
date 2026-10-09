@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.29.6.159",
+    "date": "2026-10-08",
+    "title": "Fits your phone's screen",
+    "fixed": [
+      "On a phone the app stays put: typing no longer pushes the top (and the logo) off the screen or leaves a black gap at the bottom, and the message box sits right above the keyboard.",
+      "The menu on a phone keeps clear of the status bar and the home bar, so the logo and your initials are fully visible."
+    ]
+  },
+  {
     "version": "0.29.5.158",
     "date": "2026-10-08",
     "title": "Your folders and skills stay yours",

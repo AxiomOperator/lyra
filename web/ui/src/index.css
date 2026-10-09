@@ -129,6 +129,21 @@
   html {
     @apply font-sans;
     }
+  /* The page never scrolls or bounces (only what's inside it does), so a
+     phone can't push the app off the screen (see lyra/viewport.ts). */
+  html,
+  body {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+    }
+  body {
+    position: fixed;
+    inset: 0;
+    }
+  #root {
+    height: 100%;
+    }
 }
 
 /* The Shimmer text sweep (components/ai-elements/shimmer.tsx). */

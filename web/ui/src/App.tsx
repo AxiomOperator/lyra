@@ -206,7 +206,8 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
     );
   return (
     <Sidebar collapsible="offcanvas" variant="inset">
-      <div className="flex h-full min-h-0">
+      {/* On a phone it's a sheet over the whole screen: clear of the status bar and the home bar. */}
+      <div className="flex h-full min-h-0 max-md:pt-[env(safe-area-inset-top)] max-md:pb-[env(safe-area-inset-bottom)]">
         {/* The rail: lyra's pages, with what waits on each. */}
         <nav className="flex w-16 shrink-0 flex-col items-center gap-1 py-2">
           {tip(
@@ -405,11 +406,11 @@ function Shell() {
   const title = [...tabs, ...more].find((t) => t.id === tab)?.label ?? "lyra";
   return (
     <SidebarProvider
-      className="h-dvh min-h-0 bg-sidebar text-foreground"
+      className="h-(--app-height,100dvh) min-h-0 bg-sidebar text-foreground"
       style={{ "--sidebar-width": "calc(var(--spacing) * 88)", "--header-height": "calc(var(--spacing) * 12)" } as React.CSSProperties}
     >
       <AppSidebar tabs={tabs} more={more} tab={tab} setTab={setTab} update={updateApp} />
-      <SidebarInset className="min-h-0 min-w-0 overflow-hidden pb-[env(safe-area-inset-bottom)] md:pb-0">
+      <SidebarInset className="min-h-0 min-w-0 overflow-hidden pb-[env(safe-area-inset-bottom)] md:pb-0 [html[data-keyboard]_&]:pb-0">
         {/* dashboard-01's site header: the sidebar toggle, the page, what lyra is doing. */}
         <header className="flex shrink-0 items-center gap-2 border-b pt-[env(safe-area-inset-top)] md:h-(--header-height) md:pt-0">
           <div className="flex w-full items-center gap-1 px-4 py-2 md:py-0 lg:gap-2 lg:px-6">
@@ -538,8 +539,9 @@ function Pair({ onPaired, message }: { onPaired: (token: string) => void; messag
     onPaired(body.token);
   };
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-background p-5 text-foreground">
-      <Card className="w-full max-w-sm">
+    // The page itself doesn't scroll (index.css): this screen does, centred while it fits.
+    <div className="flex h-full flex-col overflow-y-auto bg-background p-5 pt-[max(1.25rem,env(safe-area-inset-top))] pb-[max(1.25rem,env(safe-area-inset-bottom))] text-foreground">
+      <Card className="m-auto w-full max-w-sm">
         <CardHeader className="items-center text-center">
           <img src="/icon-192.png" alt="" className="mx-auto mb-2 size-16 rounded-2xl" />
           <CardTitle className="text-xl">{entra && !withCode ? "Sign in to lyra" : "Pair this device"}</CardTitle>
@@ -600,8 +602,8 @@ function Waiting({ onIn, onOther }: { onIn: () => void; onOther: () => void }) {
     return () => window.clearInterval(t);
   }, [onIn]);
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-background p-5 text-foreground">
-      <Card className="w-full max-w-sm text-center">
+    <div className="flex h-full flex-col overflow-y-auto bg-background p-5 pt-[max(1.25rem,env(safe-area-inset-top))] pb-[max(1.25rem,env(safe-area-inset-bottom))] text-foreground">
+      <Card className="m-auto w-full max-w-sm text-center">
         <CardHeader className="items-center">
           <img src="/icon-192.png" alt="" className="mx-auto mb-2 size-16 rounded-2xl" />
           <CardTitle className="text-xl">Almost there</CardTitle>
@@ -681,7 +683,7 @@ export default function App() {
         }}
       />
     );
-  if (finishing) return <div className="flex min-h-dvh items-center justify-center bg-background text-muted-foreground text-sm">Signing you in…</div>;
+  if (finishing) return <div className="flex h-full items-center justify-center bg-background text-muted-foreground text-sm">Signing you in…</div>;
   if (!token) return <Pair onPaired={setToken} message={why} />;
   return (
     <LyraProvider token={token} onUnpaired={unpaired}>
