@@ -160,6 +160,11 @@ pub fn parse(body: &Value) -> Result<HashMap<String, Answer>, String> {
 /// (the caller then asks the chat model); `what` names the decision in notes.
 pub fn ask(what: &str, state: &str, questions: &[(String, Question)]) -> Option<HashMap<String, Answer>> {
     let settings = SETTINGS.read().unwrap_or_else(|e| e.into_inner()).clone()?;
+    // Marked known down on the Status page: the chat model decides, nothing waits for it.
+    if crate::known_down::is_down("decide") {
+        FALLBACKS.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
     {
         let mut down = DOWN_UNTIL.lock().unwrap_or_else(|e| e.into_inner());
         match *down {

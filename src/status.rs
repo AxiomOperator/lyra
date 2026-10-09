@@ -483,6 +483,13 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
     let order = ["Models", "Tools & APIs", "lyra", "Machines"];
     // Groups in order; the fixed checks in this order of the fixed checks within a group.
     let fixed = ["chat", "fallback", "embedding", "reranker", "decide", "search", "lyra", "public", "push", "storage", "backup", "routines"];
+    // Marked known down: say so; and say when one answers again (only a person clears it).
+    let marks = crate::known_down::all();
+    for p in out.iter_mut() {
+        if let Some(m) = marks.get(&p.id) {
+            p.detail = if p.state == State::Up { format!("answers again: {} (clear the mark once it's fixed)", crate::known_down::describe(m)) } else { format!("{} · {}", crate::known_down::describe(m), p.detail) };
+        }
+    }
     out.sort_by_key(|p| (order.iter().position(|g| *g == p.group).unwrap_or(9), fixed.iter().position(|f| *f == p.id).unwrap_or(fixed.len()), p.id != "machine:server", p.id.clone()));
     out
 }
@@ -753,7 +760,8 @@ pub fn alerts(a: &mut Alerts, board: &Board, s: &Settings) -> Vec<(String, bool,
     for r in &board.rows {
         let p = &r.probe;
         // Machines are reported by their health alerts already.
-        if p.group == "Machines" || s.mute.iter().any(|m| m.eq_ignore_ascii_case(&p.name) || m.eq_ignore_ascii_case(&p.id)) {
+        // Known down (marked on the Status page): nobody needs telling again.
+        if p.group == "Machines" || s.mute.iter().any(|m| m.eq_ignore_ascii_case(&p.name) || m.eq_ignore_ascii_case(&p.id)) || crate::known_down::is_down(&p.id) {
             continue;
         }
         if p.state == State::Down {

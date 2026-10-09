@@ -54,7 +54,54 @@ function pct(v: number | null) {
   return v >= 99.95 ? "100%" : `${v.toFixed(1)}%`;
 }
 
-function CheckRow({ r, toChat }: { r: StatusRow; toChat: () => void }) {
+/** The models lyra calls, which an admin can mark known down. */
+const MARKABLE = ["chat", "fallback", "decide", "vision"];
+
+/** Mark a model known down (lyra stops trying it), or say it's back. */
+function KnownDown({ id, known }: { id: string; known?: { text: string } }) {
+  const { call } = useLyra();
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const set = async (down: boolean) => {
+    setBusy(true);
+    const r = await call<{ ok?: boolean; error?: string }>("known_down_set", { id, down, note });
+    setBusy(false);
+    setError(r?.error ?? "");
+    if (r?.ok) setNote("");
+  };
+  return (
+    <div className="space-y-1.5 rounded-md border px-3 py-2">
+      {known ? (
+        <>
+          <p className="text-foreground/90">lyra isn't trying this model: {known.text}.</p>
+          <Button size="sm" variant="secondary" onClick={() => void set(false)} disabled={busy}>
+            <CircleCheck /> It's back: try it again
+          </Button>
+        </>
+      ) : (
+        <>
+          <p>Already know it's down? Mark it, and lyra stops trying it {id === "chat" ? "(the fallback answers)" : id === "decide" ? "(the chat model decides)" : ""} and stops telling everyone.</p>
+          <div className="flex flex-wrap gap-2">
+            <input
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="What's going on (optional): GPU box out until Monday"
+              className="h-8 min-w-0 flex-1 rounded-md border bg-transparent px-2 text-sm"
+              aria-label="Why it's down"
+            />
+            <Button size="sm" variant="secondary" onClick={() => void set(true)} disabled={busy}>
+              <Moon /> Mark known down
+            </Button>
+          </div>
+        </>
+      )}
+      {error && <p className="text-red-300">{error}</p>}
+    </div>
+  );
+}
+
+function CheckRow({ r, toChat, known, admin }: { r: StatusRow; toChat: () => void; known?: { text: string }; admin: boolean }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="border-b last:border-0">
@@ -63,6 +110,11 @@ function CheckRow({ r, toChat }: { r: StatusRow; toChat: () => void }) {
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-baseline gap-x-2">
             <span className="font-medium text-sm">{r.name}</span>
+            {known && (
+              <Badge variant="outline" className="border-amber-700/60 text-amber-300">
+                known down
+              </Badge>
+            )}
             {r.target && <span className="truncate text-muted-foreground text-xs">{r.target}</span>}
           </span>
           <span className={cn("block break-words text-xs", r.state === "down" ? "text-red-300" : r.state === "degraded" ? "text-amber-300" : "text-muted-foreground")}>{r.detail}</span>
@@ -77,7 +129,7 @@ function CheckRow({ r, toChat }: { r: StatusRow; toChat: () => void }) {
         <ChevronDown className={cn("mt-1 size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
       </button>
       {/* Something lyra needs is down: what it found when it looked into it. Machines have theirs on their page. */}
-      {r.state === "down" && r.group !== "Machines" && (
+      {r.state === "down" && r.group !== "Machines" && !known && (
         <div className="-ml-4 pb-2 pl-5.5">
           <DiagnosisNote machine="server" problem={`${r.name} is down: ${r.detail}`} diagnosisKey={`status:${r.id}`} toChat={toChat} />
         </div>
@@ -88,6 +140,7 @@ function CheckRow({ r, toChat }: { r: StatusRow; toChat: () => void }) {
             <Sparkline values={r.spark} />
             {r.latency_ms !== null && <span>{r.latency_ms} ms</span>}
           </div>
+          {admin && MARKABLE.includes(r.id) && <KnownDown id={r.id} known={known} />}
           <div className="flex flex-wrap gap-x-4 gap-y-1">
             <span>uptime 24 h {pct(r.uptime_24h)}</span>
             <span>7 days {pct(r.uptime_7d)}</span>
@@ -305,12 +358,13 @@ function BriefingCard({ briefing, go }: { briefing: Briefing | null | undefined;
 }
 
 export function StatusPage({ toMachines, toChat, go }: { toMachines: () => void; toChat: () => void; go: (page: string) => void }) {
-  const { status, run } = useLyra();
+  const { status, run, user } = useLyra();
   const [asked, setAsked] = useState(false);
   const board = status.status;
   const rows = board?.rows ?? [];
   const groups = [...new Set(rows.map((r) => r.group))];
-  const down = rows.filter((r) => r.state === "down").length;
+  // Known down (marked): not news, so not counted as down here.
+  const down = rows.filter((r) => r.state === "down" && !board?.known_down?.[r.id]).length;
   const degraded = rows.filter((r) => r.state === "degraded").length;
   const banner = !board
     ? { text: "Checking everything lyra depends on…", cls: "border-border" }
@@ -363,7 +417,7 @@ export function StatusPage({ toMachines, toChat, go }: { toMachines: () => void;
             {rows
               .filter((r) => r.group === g)
               .map((r) => (
-                <CheckRow key={r.id} r={r} toChat={toChat} />
+                <CheckRow key={r.id} r={r} toChat={toChat} known={board?.known_down?.[r.id]} admin={user?.admin ?? true} />
               ))}
           </CardContent>
         </Card>

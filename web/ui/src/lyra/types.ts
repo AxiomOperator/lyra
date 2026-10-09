@@ -322,6 +322,8 @@ export interface StatusBoard {
   at: string;
   overall: CheckState;
   rows: StatusRow[];
+  /** Models an admin marked known down: lyra stops trying them. */
+  known_down?: Record<string, { by: string; at: string; note: string; text: string }>;
 }
 
 export interface Diagnosis {

@@ -337,8 +337,19 @@ pub(crate) fn converse(
         if stopped(cancel) {
             return Ok((finish(total), false, current.1.clone()));
         }
+        if let Some(why) = crate::fallback::blocked() {
+            return Err(why);
+        }
         if current.0 == url && crate::fallback::skip_main() {
-            switch(&mut current, &mut told, "it failed a moment ago");
+            if crate::known_down::is_down("chat") {
+                // Known down: no note in every reply, just where it went.
+                if let Some(fb) = &fallback {
+                    current = fb.clone();
+                    told = true;
+                }
+            } else {
+                switch(&mut current, &mut told, "it failed a moment ago");
+            }
         }
         body["model"] = json!(current.1);
         let round = match stream(&current.0, &body, tx, cancel) {

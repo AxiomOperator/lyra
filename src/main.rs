@@ -33,6 +33,7 @@ mod learn;
 mod mail;
 mod meetings;
 mod limits;
+mod known_down;
 mod lock;
 mod mem;
 mod notes;

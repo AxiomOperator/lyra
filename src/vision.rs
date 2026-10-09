@@ -174,6 +174,9 @@ pub fn pdf_text(bytes: &[u8]) -> Option<String> {
 
 /// What a PDF or an image file shows, as text.
 pub fn read(name: &str, bytes: &[u8], question: Option<&str>) -> Result<String, String> {
+    if let Some(m) = crate::known_down::mark("vision") {
+        return Err(format!("the vision model is {}: pictures and scans can't be read until it's back", crate::known_down::describe(&m)));
+    }
     if name.to_lowercase().ends_with(".pdf") {
         return pdf(bytes, question);
     }

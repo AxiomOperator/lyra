@@ -1020,6 +1020,8 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         }
                     }
                     status_view = json!(board);
+                    // The models marked known down, for the page's buttons.
+                    status_view["known_down"] = crate::known_down::view();
                     everyone = true;
                 }
                 Err(e) => convs[0].app.log(Level::Error, format!("status: {e}")),

@@ -255,6 +255,8 @@ Recurring errors:
 ### Done since
 - ✅ **A fallback chat model** (0.36.0.168, `[fallback_model]`, `src/fallback.rs`): when the main chat model can't be reached or answers with a server error before it says anything, the turn (and agents' and plans' steps, and lyra's background work: triage, follow-ups, documents) goes to the fallback, and the chat says so; the main model is skipped for two minutes after a failure, then tried again. On the Settings page (Models) and the Status page ("Fallback chat model"); usage records the model that answered.
 
+- ✅ **Known down** (0.37.0.171, `src/known_down.rs`, `status/known_down.json`): on the Status page an admin marks a model (chat, fallback, decision, vision) known down with a note; lyra stops trying it: the chat model goes straight to the fallback (no note in every reply; with no fallback a turn fails at once with why), the decision model is skipped, the vision model says so; no "is down" pushes; the check keeps running and says when it answers again; only a person clears the mark ("It's back").
+
 ### Next major release (1.0)
 - **Voice conversation mode:** hands-free back-and-forth (driving, walking between offices), best with a local Whisper model for speech to text (and a small TTS model for the voice).
 

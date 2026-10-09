@@ -491,6 +491,9 @@ pub(crate) fn complete(
         resp.json().map_err(|e| e.to_string())
     };
     // The main chat model down (or failing just now): the fallback does it.
+    if let Some(why) = crate::fallback::blocked() {
+        return Err(why);
+    }
     let fallback = crate::fallback::target().filter(|(u, _)| u != url);
     let mut used = model.to_string();
     let reply = match &fallback {

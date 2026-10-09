@@ -35,14 +35,25 @@ pub fn settings() -> Option<Settings> {
     SETTINGS.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// The fallback's chat completions URL and model, if one is set up.
+/// The fallback's chat completions URL and model, if one is set up (and not marked down).
 pub fn target() -> Option<(String, String)> {
-    settings().map(|s| (format!("{}/chat/completions", s.url.trim_end_matches('/')), s.model))
+    settings().filter(|_| !crate::known_down::is_down("fallback")).map(|s| (format!("{}/chat/completions", s.url.trim_end_matches('/')), s.model))
 }
 
-/// Skip the main model for now (it failed a moment ago), when there's a fallback to use.
+/// Skip the main model for now (marked known down, or it failed a moment
+/// ago), when there's a fallback to use.
 pub fn skip_main() -> bool {
-    settings().is_some() && DOWN.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|t| t.elapsed() < REST)
+    target().is_some() && (crate::known_down::is_down("chat") || DOWN.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|t| t.elapsed() < REST))
+}
+
+/// The main chat model is marked known down and nothing can stand in: why,
+/// at once (rather than waiting for it to time out).
+pub fn blocked() -> Option<String> {
+    let m = crate::known_down::mark("chat")?;
+    if target().is_some() {
+        return None;
+    }
+    Some(format!("the chat model is {}, and there's no fallback to answer instead ([fallback_model]{})", crate::known_down::describe(&m), if crate::known_down::is_down("fallback") { ", also marked down" } else { "" }))
 }
 
 /// The main model failed: the fallback answers for a while.

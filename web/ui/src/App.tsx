@@ -467,7 +467,7 @@ function Shell() {
   const toMore = () => setTab("more");
   const tabs: TabItem[] = ([
     { id: "chat", label: "Chat", icon: MessageSquare, badge: asking ? 1 : 0 },
-    { id: "status", label: "Status", icon: Activity, badge: (status.status?.rows ?? []).filter((r) => r.state === "down" && r.group !== "Machines").length },
+    { id: "status", label: "Status", icon: Activity, badge: (status.status?.rows ?? []).filter((r) => r.state === "down" && r.group !== "Machines" && !status.status?.known_down?.[r.id]).length },
     {
       id: "machines",
       label: "Machines",

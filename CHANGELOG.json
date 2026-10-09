@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.37.0.171",
+    "date": "2026-10-08",
+    "title": "Known down",
+    "new": [
+      "Known down: when you already know a model is down, mark it on the Status page (open its row, add a note if you like). lyra stops trying it until you say it's back: chats go straight to the fallback model without waiting, and nobody gets \"is down\" alerts about it. The Status page still checks it and tells you when it answers again."
+    ]
+  },
+  {
     "version": "0.36.2.170",
     "date": "2026-10-08",
     "title": "Fallback for agents and plans",

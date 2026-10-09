@@ -350,6 +350,9 @@ pub(crate) fn chat_with(url: &str, model: &str, messages: &[Value], tools: &[Val
         resp.json().map_err(|e| e.to_string())
     };
     // The main chat model down: the fallback takes the step (not an agent's own model).
+    if let Some(why) = crate::fallback::blocked() {
+        return Err(why);
+    }
     let fallback = crate::fallback::target().filter(|(u, _)| u != url && crate::fallback::settings().is_some());
     let mut used = model.to_string();
     let reply: Value = match &fallback {

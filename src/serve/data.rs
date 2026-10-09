@@ -126,7 +126,24 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
             {
                 v["rows"] = json!(rows.iter().filter(|r| r["group"] != "Machines").cloned().collect::<Vec<_>>());
             }
+            if let Some(map) = v.as_object_mut() {
+                map.insert("known_down".into(), crate::known_down::view());
+            }
             v
+        }
+        // Mark a model known down (or clear it): admins (the gate is in the loop).
+        "known_down_set" => {
+            let by = hub.users().get(&app.owner).map_or_else(|| app.owner.clone(), |u| u.name.split_whitespace().next().unwrap_or(&u.name).to_string());
+            let id = arg["id"].as_str().unwrap_or("");
+            match crate::known_down::set(id, arg["down"] == true, &by, arg["note"].as_str().unwrap_or("")) {
+                Ok(()) => {
+                    let what = crate::known_down::MARKABLE.iter().find(|(m, _)| *m == id).map_or(id, |(_, n)| *n);
+                    app.log(Level::Agent, if arg["down"] == true { format!("{what} marked known down by {by}: lyra stops trying it") } else { format!("{what}: the known-down mark was cleared by {by}") });
+                    crate::status::request();
+                    json!({ "ok": true, "known_down": crate::known_down::view() })
+                }
+                Err(e) => json!({ "error": e }),
+            }
         }
         "devices" => {
             let online: Vec<String> = hub.online_devices().into_iter().map(|(id, _)| id).collect();
