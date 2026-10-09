@@ -196,27 +196,42 @@ impl App {
                             Status::Disabled => " · disabled",
                         };
                         format!(
-                            "{} {}{} · {} · {n} device{}{status}",
+                            "{} {}{} · {} · {n} device{}{}{status}",
                             if u.role == Role::Admin { "★" } else { "·" },
                             u.name,
                             if u.email.is_empty() { String::new() } else { format!(" <{}>", u.email) },
                             if u.role == Role::Admin { "admin" } else { "member" },
-                            if n == 1 { "" } else { "s" }
+                            if n == 1 { "" } else { "s" },
+                            u.tool_rounds.map_or(String::new(), |r| format!(" · {r} tool rounds"))
                         )
                     })
                     .collect();
-                out.push("/users approve|decline|admin|member|disable|enable <name or email>".into());
+                out.push("/users approve|decline|admin|member|disable|enable <name or email> · /users rounds <who> <1–64 | default>".into());
                 Ok(out.join("\n"))
             }
             "approve" | "enable" => change(None, Some(Status::Active), "can use lyra"),
             "decline" | "disable" => change(None, Some(Status::Disabled), "can't use lyra (their devices stop working)"),
             "admin" => change(Some(Role::Admin), None, "is an admin"),
             "member" => change(Some(Role::Member), None, "is a member"),
-            _ => Err("usage: /users [approve|decline|admin|member|disable|enable <name or email>]".into()),
+            // Their own tool-call limit: a number, or "default" for the shared one.
+            "rounds" => {
+                let (who, n) = rest.rsplit_once(' ').map(|(a, b)| (a.trim(), b.trim())).ok_or("usage: /users rounds <name or email> <1–64 | default>")?;
+                let rounds = match n {
+                    "default" | "off" | "-" => None,
+                    n => Some(n.parse::<u32>().ok().filter(|n| (1..=crate::limits::MAX_TOOL_ROUNDS).contains(n)).ok_or(format!("rounds: a number from 1 to {}, or default", crate::limits::MAX_TOOL_ROUNDS))?),
+                };
+                let u = users.set_tool_rounds(who, rounds)?;
+                let shared = crate::limits::default_tool_rounds(self.evolution.as_ref().map(|e| e.behavior().max_tool_rounds));
+                self.log(Level::Agent, format!("tool-call limit for {}: {}", u.name, rounds.map_or(format!("the default ({shared})"), |n| n.to_string())));
+                Ok(match rounds {
+                    Some(n) => format!("{}'s replies may take {n} rounds of tool calls (the default is {shared})", u.name),
+                    None => format!("{} uses the default limit ({shared} rounds of tool calls)", u.name),
+                })
+            }
+            _ => Err("usage: /users [approve|decline|admin|member|disable|enable <name or email>] · /users rounds <who> <1–64 | default>".into()),
         }
     }
 
-    /// `/usage [days]`: everyone's and each person's for admins, one's own for members.
     /// `/settings [<key> <value>]`: the common settings; a change reloads lyra.
     pub(crate) fn settings_command(&mut self, arg: &str) -> Result<String, String> {
         let text = crate::settings::command(arg)?;
@@ -227,6 +242,7 @@ impl App {
         Ok(text)
     }
 
+    /// `/usage [days]`: everyone's and each person's for admins, one's own for members.
     pub(crate) fn usage_command(&mut self, arg: &str) -> Result<String, String> {
         let days = arg.trim().parse::<i64>().unwrap_or(7);
         let users = self.hub.as_ref().map(|h| h.users().list()).unwrap_or_default();

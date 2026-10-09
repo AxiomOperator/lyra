@@ -106,6 +106,7 @@ fn status(app: &App, machines: &[String]) -> Value {
     json!({
         "phase": crate::ui::phase_text(app),
         "waiting": app.waiting,
+        "can_continue": app.can_continue && !app.waiting,
         "model": app.model,
         "session": app.session_id,
         "title": title(app),

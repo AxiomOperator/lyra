@@ -7,6 +7,8 @@
 
 use serde_json::{Value, json};
 
+use lyra_evolution::Behavior;
+
 use crate::config::Config;
 
 /// What a value is, and how it's checked.
@@ -57,8 +59,8 @@ pub struct Field {
     pub label: &'static str,
     pub help: &'static str,
     pub kind: Kind,
-    /// Its current value, from the loaded config.
-    pub get: fn(&Config) -> Value,
+    /// Its current value, from the loaded config (or behavior.toml, for `behavior.` keys).
+    pub get: fn(&Config, &Behavior) -> Value,
 }
 
 pub struct Group {
@@ -69,6 +71,7 @@ pub struct Group {
 
 pub const GROUPS: &[Group] = &[
     Group { id: "models", title: "Models", help: "The chat model and the helper models lyra calls. Embedding and reranker models stay in config.toml (changing them means re-embedding memory)." },
+    Group { id: "replies", title: "Replies", help: "How far lyra goes in one reply before it stops and asks to continue. A person can have their own limit (Users)." },
     Group { id: "hours", title: "Working hours", help: "Your working day: Plan my day puts focus blocks inside it, and the recap comes at its end." },
     Group { id: "briefing", title: "Briefing and recap", help: "The morning briefing and the end-of-day recap." },
     Group { id: "notify", title: "Notifications", help: "What lyra pushes to paired phones and browsers, and what it does by itself." },
@@ -80,40 +83,42 @@ fn s(v: &str) -> Value {
 
 pub const FIELDS: &[Field] = &[
     // ---- models
-    Field { key: "model", group: "models", label: "Chat model", help: "The model that answers in the chat (its name on the server below).", kind: Kind::Model, get: |c| s(&c.model) },
-    Field { key: "url", group: "models", label: "Chat server", help: "Its OpenAI-compatible base URL, e.g. http://gpu:8080/v1.", kind: Kind::Url, get: |c| s(&c.url) },
-    Field { key: "input_cost_per_mtok", group: "models", label: "Input price", help: "Per million prompt tokens, for AI usage (0 for a local model).", kind: Kind::Real { min: 0.0, max: 1000.0 }, get: |c| json!(c.input_cost_per_mtok) },
-    Field { key: "output_cost_per_mtok", group: "models", label: "Output price", help: "Per million reply tokens.", kind: Kind::Real { min: 0.0, max: 1000.0 }, get: |c| json!(c.output_cost_per_mtok) },
-    Field { key: "currency", group: "models", label: "Currency", help: "Shown before prices.", kind: Kind::Text, get: |c| s(&c.currency) },
-    Field { key: "vision_model.url", group: "models", label: "Vision server", help: "Reads pictures and scanned PDFs for a chat model that can't. Empty: not set up.", kind: Kind::Url, get: |c| s(c.vision_model.as_ref().map_or("", |v| v.url.as_str())) },
-    Field { key: "vision_model.model", group: "models", label: "Vision model", help: "Its name on that server.", kind: Kind::Model, get: |c| s(c.vision_model.as_ref().map_or("", |v| v.model.as_str())) },
-    Field { key: "decide.url", group: "models", label: "Decision server", help: "The small model that routes and classifies (llama-server). Empty: not set up.", kind: Kind::Url, get: |c| s(c.decide.as_ref().map_or("", |d| d.url.as_str())) },
-    Field { key: "decide.model", group: "models", label: "Decision model", help: "Its name on that server.", kind: Kind::Model, get: |c| s(c.decide.as_ref().map_or("", |d| d.model.as_str())) },
+    Field { key: "model", group: "models", label: "Chat model", help: "The model that answers in the chat (its name on the server below).", kind: Kind::Model, get: |c, _| s(&c.model) },
+    Field { key: "url", group: "models", label: "Chat server", help: "Its OpenAI-compatible base URL, e.g. http://gpu:8080/v1.", kind: Kind::Url, get: |c, _| s(&c.url) },
+    Field { key: "input_cost_per_mtok", group: "models", label: "Input price", help: "Per million prompt tokens, for AI usage (0 for a local model).", kind: Kind::Real { min: 0.0, max: 1000.0 }, get: |c, _| json!(c.input_cost_per_mtok) },
+    Field { key: "output_cost_per_mtok", group: "models", label: "Output price", help: "Per million reply tokens.", kind: Kind::Real { min: 0.0, max: 1000.0 }, get: |c, _| json!(c.output_cost_per_mtok) },
+    Field { key: "currency", group: "models", label: "Currency", help: "Shown before prices.", kind: Kind::Text, get: |c, _| s(&c.currency) },
+    Field { key: "vision_model.url", group: "models", label: "Vision server", help: "Reads pictures and scanned PDFs for a chat model that can't. Empty: not set up.", kind: Kind::Url, get: |c, _| s(c.vision_model.as_ref().map_or("", |v| v.url.as_str())) },
+    Field { key: "vision_model.model", group: "models", label: "Vision model", help: "Its name on that server.", kind: Kind::Model, get: |c, _| s(c.vision_model.as_ref().map_or("", |v| v.model.as_str())) },
+    Field { key: "decide.url", group: "models", label: "Decision server", help: "The small model that routes and classifies (llama-server). Empty: not set up.", kind: Kind::Url, get: |c, _| s(c.decide.as_ref().map_or("", |d| d.url.as_str())) },
+    Field { key: "decide.model", group: "models", label: "Decision model", help: "Its name on that server.", kind: Kind::Model, get: |c, _| s(c.decide.as_ref().map_or("", |d| d.model.as_str())) },
+    // ---- replies (behavior.toml: evolution may tune it too)
+    Field { key: "behavior.max_tool_rounds", group: "replies", label: "Tool calls per reply", help: "Rounds of tool calls before lyra stops and offers Continue. Long jobs (an audit of a big codebase) need more; each round is a model call.", kind: Kind::Int { min: 1, max: crate::limits::MAX_TOOL_ROUNDS as i64 }, get: |_, b| json!(b.max_tool_rounds) },
     // ---- working hours
-    Field { key: "planner.day_start", group: "hours", label: "Day starts", help: "", kind: Kind::Time, get: |c| s(&c.planner.day_start) },
-    Field { key: "planner.day_end", group: "hours", label: "Day ends", help: "", kind: Kind::Time, get: |c| s(&c.planner.day_end) },
-    Field { key: "planner.lunch_start", group: "hours", label: "Lunch from", help: "Kept free.", kind: Kind::Time, get: |c| s(&c.planner.lunch_start) },
-    Field { key: "planner.lunch_end", group: "hours", label: "Lunch until", help: "", kind: Kind::Time, get: |c| s(&c.planner.lunch_end) },
-    Field { key: "planner.days", group: "hours", label: "Working days", help: "weekdays, every day, or names: mon tue wed thu fri.", kind: Kind::Days, get: |c| s(&c.planner.days) },
-    Field { key: "planner.enabled", group: "hours", label: "Plan my day", help: "Focus blocks for tasks in your calendar.", kind: Kind::Bool, get: |c| json!(c.planner.enabled) },
-    Field { key: "planner.max_blocks", group: "hours", label: "Focus blocks a day", help: "At most.", kind: Kind::Int { min: 0, max: 12 }, get: |c| json!(c.planner.max_blocks) },
+    Field { key: "planner.day_start", group: "hours", label: "Day starts", help: "", kind: Kind::Time, get: |c, _| s(&c.planner.day_start) },
+    Field { key: "planner.day_end", group: "hours", label: "Day ends", help: "", kind: Kind::Time, get: |c, _| s(&c.planner.day_end) },
+    Field { key: "planner.lunch_start", group: "hours", label: "Lunch from", help: "Kept free.", kind: Kind::Time, get: |c, _| s(&c.planner.lunch_start) },
+    Field { key: "planner.lunch_end", group: "hours", label: "Lunch until", help: "", kind: Kind::Time, get: |c, _| s(&c.planner.lunch_end) },
+    Field { key: "planner.days", group: "hours", label: "Working days", help: "weekdays, every day, or names: mon tue wed thu fri.", kind: Kind::Days, get: |c, _| s(&c.planner.days) },
+    Field { key: "planner.enabled", group: "hours", label: "Plan my day", help: "Focus blocks for tasks in your calendar.", kind: Kind::Bool, get: |c, _| json!(c.planner.enabled) },
+    Field { key: "planner.max_blocks", group: "hours", label: "Focus blocks a day", help: "At most.", kind: Kind::Int { min: 0, max: 12 }, get: |c, _| json!(c.planner.max_blocks) },
     // ---- briefing and recap
-    Field { key: "briefing.enabled", group: "briefing", label: "Morning briefing", help: "Your day: meetings, tasks, mail, machines.", kind: Kind::Bool, get: |c| json!(c.briefing.enabled) },
-    Field { key: "briefing.schedule", group: "briefing", label: "Briefing comes", help: "In words: every day at 07:30, weekdays at 8.", kind: Kind::Schedule, get: |c| s(&c.briefing.schedule) },
-    Field { key: "briefing.notify", group: "briefing", label: "Push the briefing", help: "", kind: Kind::Bool, get: |c| json!(c.briefing.notify) },
-    Field { key: "recap.enabled", group: "briefing", label: "End-of-day recap", help: "What got done, what's open, tomorrow's first meeting.", kind: Kind::Bool, get: |c| json!(c.recap.enabled) },
-    Field { key: "recap.at", group: "briefing", label: "Recap comes at", help: "Empty: when your working day ends.", kind: Kind::TimeOrEmpty, get: |c| s(&c.recap.at) },
-    Field { key: "recap.notify", group: "briefing", label: "Push the recap", help: "", kind: Kind::Bool, get: |c| json!(c.recap.notify) },
+    Field { key: "briefing.enabled", group: "briefing", label: "Morning briefing", help: "Your day: meetings, tasks, mail, machines.", kind: Kind::Bool, get: |c, _| json!(c.briefing.enabled) },
+    Field { key: "briefing.schedule", group: "briefing", label: "Briefing comes", help: "In words: every day at 07:30, weekdays at 8.", kind: Kind::Schedule, get: |c, _| s(&c.briefing.schedule) },
+    Field { key: "briefing.notify", group: "briefing", label: "Push the briefing", help: "", kind: Kind::Bool, get: |c, _| json!(c.briefing.notify) },
+    Field { key: "recap.enabled", group: "briefing", label: "End-of-day recap", help: "What got done, what's open, tomorrow's first meeting.", kind: Kind::Bool, get: |c, _| json!(c.recap.enabled) },
+    Field { key: "recap.at", group: "briefing", label: "Recap comes at", help: "Empty: when your working day ends.", kind: Kind::TimeOrEmpty, get: |c, _| s(&c.recap.at) },
+    Field { key: "recap.notify", group: "briefing", label: "Push the recap", help: "", kind: Kind::Bool, get: |c, _| json!(c.recap.notify) },
     // ---- notifications
-    Field { key: "proactive.enabled", group: "notify", label: "Meeting prep and mail triage", help: "lyra looks ahead by itself: prep before meetings, tasks from mail, follow-ups.", kind: Kind::Bool, get: |c| json!(c.proactive.enabled) },
-    Field { key: "proactive.prep_minutes", group: "notify", label: "Meeting prep, minutes before", help: "", kind: Kind::Int { min: 0, max: 240 }, get: |c| json!(c.proactive.prep_minutes) },
-    Field { key: "proactive.followup_days", group: "notify", label: "Nudge about unanswered mail after (days)", help: "", kind: Kind::Int { min: 1, max: 60 }, get: |c| json!(c.proactive.followup_days) },
-    Field { key: "proactive.drafts", group: "notify", label: "Draft replies to mail", help: "Drafts are never sent without your yes.", kind: Kind::Bool, get: |c| json!(c.proactive.drafts) },
-    Field { key: "health.notify", group: "notify", label: "Machine problems", help: "Push when a machine's disk, memory, load or a service has a problem.", kind: Kind::Bool, get: |c| json!(c.health.notify) },
-    Field { key: "health.disk_percent", group: "notify", label: "A disk is full at (%)", help: "", kind: Kind::Int { min: 50, max: 100 }, get: |c| json!(c.health.disk_percent) },
-    Field { key: "health.offline_minutes", group: "notify", label: "A machine is quiet after (minutes)", help: "0: never tell.", kind: Kind::Int { min: 0, max: 1440 }, get: |c| json!(c.health.offline_minutes) },
-    Field { key: "status.notify", group: "notify", label: "Something is down", help: "Push when the chat model, search, PMI or another check goes down, and when it's back.", kind: Kind::Bool, get: |c| json!(c.status.notify) },
-    Field { key: "status.mute", group: "notify", label: "Never push about", help: "Checks by name, comma-separated (e.g. web search).", kind: Kind::List, get: |c| json!(c.status.mute) },
+    Field { key: "proactive.enabled", group: "notify", label: "Meeting prep and mail triage", help: "lyra looks ahead by itself: prep before meetings, tasks from mail, follow-ups.", kind: Kind::Bool, get: |c, _| json!(c.proactive.enabled) },
+    Field { key: "proactive.prep_minutes", group: "notify", label: "Meeting prep, minutes before", help: "", kind: Kind::Int { min: 0, max: 240 }, get: |c, _| json!(c.proactive.prep_minutes) },
+    Field { key: "proactive.followup_days", group: "notify", label: "Nudge about unanswered mail after (days)", help: "", kind: Kind::Int { min: 1, max: 60 }, get: |c, _| json!(c.proactive.followup_days) },
+    Field { key: "proactive.drafts", group: "notify", label: "Draft replies to mail", help: "Drafts are never sent without your yes.", kind: Kind::Bool, get: |c, _| json!(c.proactive.drafts) },
+    Field { key: "health.notify", group: "notify", label: "Machine problems", help: "Push when a machine's disk, memory, load or a service has a problem.", kind: Kind::Bool, get: |c, _| json!(c.health.notify) },
+    Field { key: "health.disk_percent", group: "notify", label: "A disk is full at (%)", help: "", kind: Kind::Int { min: 50, max: 100 }, get: |c, _| json!(c.health.disk_percent) },
+    Field { key: "health.offline_minutes", group: "notify", label: "A machine is quiet after (minutes)", help: "0: never tell.", kind: Kind::Int { min: 0, max: 1440 }, get: |c, _| json!(c.health.offline_minutes) },
+    Field { key: "status.notify", group: "notify", label: "Something is down", help: "Push when the chat model, search, PMI or another check goes down, and when it's back.", kind: Kind::Bool, get: |c, _| json!(c.status.notify) },
+    Field { key: "status.mute", group: "notify", label: "Never push about", help: "Checks by name, comma-separated (e.g. web search).", kind: Kind::List, get: |c, _| json!(c.status.mute) },
 ];
 
 fn field(key: &str) -> Option<&'static Field> {
@@ -126,6 +131,7 @@ pub fn page() -> Value {
         Ok(c) => c,
         Err(e) => return json!({ "error": format!("config.toml doesn't read, so the page can't show it: {e}") }),
     };
+    let behavior = crate::config::path().map(|p| behavior_at(&p)).unwrap_or_default();
     let groups: Vec<Value> = GROUPS
         .iter()
         .map(|g| {
@@ -133,7 +139,7 @@ pub fn page() -> Value {
                 .iter()
                 .filter(|f| f.group == g.id)
                 .map(|f| {
-                    let mut v = json!({ "key": f.key, "label": f.label, "help": f.help, "kind": f.kind.name(), "value": (f.get)(&config) });
+                    let mut v = json!({ "key": f.key, "label": f.label, "help": f.help, "kind": f.kind.name(), "value": (f.get)(&config, &behavior) });
                     if let Kind::Int { min, max } = f.kind {
                         v["min"] = json!(min);
                         v["max"] = json!(max);
@@ -149,6 +155,15 @@ pub fn page() -> Value {
         })
         .collect();
     json!({ "groups": groups, "path": crate::config::path().map(|p| crate::context::show(&p)) })
+}
+
+/// behavior.toml, next to config.toml (defaults when there's none).
+fn behavior_path(config: &std::path::Path) -> std::path::PathBuf {
+    config.with_file_name("behavior.toml")
+}
+
+fn behavior_at(config: &std::path::Path) -> Behavior {
+    std::fs::read_to_string(behavior_path(config)).ok().and_then(|t| Behavior::parse(&t).ok()).unwrap_or_default()
 }
 
 /// `value` checked for `f`, as it goes into config.toml.
@@ -247,25 +262,26 @@ fn set_in(path: &std::path::Path, changes: &Value) -> Result<Vec<String>, String
     let changes = changes.as_object().ok_or("no changes")?;
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let now: Config = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let behavior = behavior_at(path);
     let mut writes: Vec<(&Field, toml_edit::Item)> = Vec::new();
     for (key, value) in changes {
         let f = field(key).ok_or_else(|| format!("{key} isn't a setting the app changes (it's in config.toml)"))?;
         // An optional model left empty and not set up yet: nothing to do.
         let optional = f.key.starts_with("vision_model.") || f.key.starts_with("decide.");
         if optional && value.as_str().is_some_and(|t| t.trim().is_empty()) {
-            if (f.get)(&now).as_str().is_some_and(str::is_empty) {
+            if (f.get)(&now, &behavior).as_str().is_some_and(str::is_empty) {
                 continue;
             }
             return Err(format!("{} can't be emptied here: remove its section from config.toml to turn it off", f.label));
         }
         let item = check(f, value)?;
-        if !same(&as_value(&item), &(f.get)(&now)) {
+        if !same(&as_value(&item), &(f.get)(&now, &behavior)) {
             writes.push((f, item));
         }
     }
     // A helper model set up for the first time needs both its server and its name.
     for section in ["vision_model", "decide"] {
-        let missing = |k: &str| (field(&format!("{section}.{k}")).map(|f| (f.get)(&now))).is_some_and(|v| v.as_str().is_some_and(str::is_empty));
+        let missing = |k: &str| (field(&format!("{section}.{k}")).map(|f| (f.get)(&now, &behavior))).is_some_and(|v| v.as_str().is_some_and(str::is_empty));
         let setting = |k: &str| writes.iter().any(|(f, _)| f.key == format!("{section}.{k}"));
         if (setting("url") && missing("model") && !setting("model")) || (setting("model") && missing("url") && !setting("url")) {
             let label = if section == "decide" { "decision" } else { "vision" };
@@ -276,6 +292,13 @@ fn set_in(path: &std::path::Path, changes: &Value) -> Result<Vec<String>, String
         return Ok(Vec::new());
     }
     let labels = writes.iter().map(|(f, _)| f.label.to_string()).collect();
+    let (behavior_writes, writes): (Vec<_>, Vec<_>) = writes.into_iter().partition(|(f, _)| f.key.starts_with("behavior."));
+    if !behavior_writes.is_empty() {
+        write_behavior(&behavior_path(path), behavior_writes)?;
+    }
+    if writes.is_empty() {
+        return Ok(labels);
+    }
     crate::config::update_file(path, |doc| {
         for (f, item) in writes {
             match f.key.split_once('.') {
@@ -290,6 +313,19 @@ fn set_in(path: &std::path::Path, changes: &Value) -> Result<Vec<String>, String
         Ok(())
     })?;
     Ok(labels)
+}
+
+/// behavior.toml changed the same way: its other keys and comments kept,
+/// never a file that doesn't read back.
+fn write_behavior(path: &std::path::Path, writes: Vec<(&Field, toml_edit::Item)>) -> Result<(), String> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{} doesn't parse: {e}", path.display()))?;
+    for (f, item) in writes {
+        put(doc.as_table_mut(), f.key.trim_start_matches("behavior."), item);
+    }
+    let out = doc.to_string();
+    Behavior::parse(&out).map_err(|e| format!("the change would break {}: {e}", path.display()))?;
+    crate::store::write_text(path, &out)
 }
 
 /// Set `key`, keeping what's around the old value (a comment after it on its line).
@@ -320,11 +356,12 @@ pub fn command(arg: &str) -> Result<String, String> {
         return Err("/settings, or /settings <key> <value>".into());
     }
     let config = Config::load()?;
+    let behavior = crate::config::path().map(|p| behavior_at(&p)).unwrap_or_default();
     let mut out = Vec::new();
     for g in GROUPS {
         out.push(g.title.to_string());
         for f in FIELDS.iter().filter(|f| f.group == g.id) {
-            let v = (f.get)(&config);
+            let v = (f.get)(&config, &behavior);
             let shown = match &v {
                 Value::Bool(b) => (if *b { "on" } else { "off" }).to_string(),
                 Value::String(t) if t.is_empty() => "—".into(),
@@ -358,7 +395,7 @@ mod tests {
         let c: Config = toml::from_str("").unwrap();
         for f in FIELDS {
             assert!(GROUPS.iter().any(|g| g.id == f.group), "{} has a group", f.key);
-            assert!(!(f.get)(&c).is_null(), "{} reads", f.key);
+            assert!(!(f.get)(&c, &Behavior::default()).is_null(), "{} reads", f.key);
         }
     }
 
@@ -388,6 +425,12 @@ mod tests {
         assert_eq!(set_in(&path, &json!({ "vision_model.url": "http://gpu:8090/v1", "vision_model.model": "qwen-vl" })).unwrap().len(), 2);
         let c: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(c.vision_model.unwrap().model, "qwen-vl");
+        // The tool-call limit goes to behavior.toml (its comments kept), within 1–64.
+        std::fs::write(dir.join("behavior.toml"), "# tuned by evolution\nguidelines = [\"Be brief.\"]\nmax_tool_rounds = 8\n").unwrap();
+        assert!(set_in(&path, &json!({ "behavior.max_tool_rounds": 65 })).is_err());
+        assert_eq!(set_in(&path, &json!({ "behavior.max_tool_rounds": 40, "planner.days": "mon tue" })).unwrap().len(), 2);
+        let b = std::fs::read_to_string(dir.join("behavior.toml")).unwrap();
+        assert!(b.contains("# tuned by evolution") && b.contains("Be brief.") && b.contains("max_tool_rounds = 40"), "{b}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

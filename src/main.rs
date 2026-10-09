@@ -28,6 +28,7 @@ mod mcp_server;
 mod learn;
 mod mail;
 mod meetings;
+mod limits;
 mod lock;
 mod mem;
 mod notes;
@@ -234,6 +235,8 @@ enum StreamEvent {
     /// A tool finished; `content` is what the model will see.
     ToolResult { id: String, name: String, content: String },
     Done(Stats),
+    /// The reply stopped at its tool-call limit (after `Done`): it can be continued.
+    Limit(usize),
     Error(String),
     /// Progress note from the worker for the activity log.
     Log(String),
@@ -378,6 +381,8 @@ struct App {
     messages: Vec<Message>,
     input: String,
     waiting: bool,
+    /// The last reply stopped at its tool-call limit: Continue picks it up.
+    can_continue: bool,
     show_reasoning: bool,
     /// Side panels (Ctrl-B); hidden automatically on narrow terminals.
     show_panels: bool,
@@ -554,6 +559,7 @@ impl App {
             messages: Vec::new(),
             input: String::new(),
             waiting: false,
+            can_continue: false,
             show_reasoning: true,
             show_panels: true,
             activity: Vec::new(),
@@ -712,6 +718,13 @@ impl App {
                 self.save_session();
                 self.review(false);
                 self.capture(false);
+            }
+            StreamEvent::Limit(rounds) => {
+                let own = limits::own_tool_rounds(&self.owner).is_some();
+                self.log(Level::Agent, format!("stopped at the tool-call limit ({rounds} rounds{}): it can be continued", if own { ", this person's own" } else { "" }));
+                self.messages.push(Message::new("info", limits::stopped_note(rounds, own, self.admin)));
+                self.can_continue = true;
+                self.save_session();
             }
             StreamEvent::Error(e) => {
                 let stats = Stats {

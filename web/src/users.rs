@@ -47,6 +47,10 @@ pub struct User {
     pub created: DateTime<Utc>,
     #[serde(default)]
     pub last_seen: Option<DateTime<Utc>>,
+    /// Their own limit on tool calls in one reply (an admin sets it); the
+    /// shared default when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_rounds: Option<u32>,
 }
 
 /// Who a request comes from: what the app loop needs to know.
@@ -113,7 +117,7 @@ impl Users {
         if !all.is_empty() {
             return Ok(false);
         }
-        all.push(User { id: OWNER.into(), name: name.into(), email: String::new(), tenant: String::new(), oid: String::new(), role: Role::Admin, status: Status::Active, created: Utc::now(), last_seen: None });
+        all.push(User { id: OWNER.into(), name: name.into(), email: String::new(), tenant: String::new(), oid: String::new(), role: Role::Admin, status: Status::Active, created: Utc::now(), last_seen: None, tool_rounds: None });
         self.save(&all).map(|_| true)
     }
 
@@ -157,6 +161,16 @@ impl Users {
         Ok(u)
     }
 
+    /// Set (or clear, with `None`) someone's own tool-call limit.
+    pub fn set_tool_rounds(&self, key: &str, rounds: Option<u32>) -> Result<User, String> {
+        let mut all = self.list();
+        let i = index(&all, key).ok_or_else(|| format!("no user {key:?} (or more than one by that name: use their email)"))?;
+        all[i].tool_rounds = rounds;
+        let u = all[i].clone();
+        self.save(&all)?;
+        Ok(u)
+    }
+
     /// Who a device acts as: its user, if they're active.
     pub fn who(&self, user: Option<&str>) -> Option<Who> {
         let u = self.get(user.unwrap_or(OWNER))?;
@@ -174,7 +188,7 @@ impl Users {
             None => match all.iter().position(|u| u.id == OWNER && u.oid.is_empty()).filter(|_| is_owner_email) {
                 Some(i) => i,
                 None => {
-                    all.push(User { id: oid.into(), name: name.into(), email: email.into(), tenant: tenant.into(), oid: oid.into(), role: Role::Member, status: Status::Pending, created: Utc::now(), last_seen: None });
+                    all.push(User { id: oid.into(), name: name.into(), email: email.into(), tenant: tenant.into(), oid: oid.into(), role: Role::Member, status: Status::Pending, created: Utc::now(), last_seen: None, tool_rounds: None });
                     all.len() - 1
                 }
             },
@@ -208,7 +222,7 @@ mod tests {
         assert!(users.ensure_owner("Garrett").unwrap());
         assert!(!users.ensure_owner("again").unwrap());
         assert_eq!(users.who(None).unwrap(), Who { user: OWNER.into(), name: "Garrett".into(), admin: true });
-        let dana = User { id: "oid-d".into(), name: "Dana".into(), email: "dana@fbcad.org".into(), tenant: "t".into(), oid: "oid-d".into(), role: Role::Member, status: Status::Pending, created: Utc::now(), last_seen: None };
+        let dana = User { id: "oid-d".into(), name: "Dana".into(), email: "dana@fbcad.org".into(), tenant: "t".into(), oid: "oid-d".into(), role: Role::Member, status: Status::Pending, created: Utc::now(), last_seen: None, tool_rounds: None };
         users.upsert(dana).unwrap();
         assert!(users.who(Some("oid-d")).is_none(), "pending can't sign in");
         users.update("DANA@fbcad.org", None, Some(Status::Active)).unwrap();

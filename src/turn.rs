@@ -95,6 +95,9 @@ impl App {
         }
         let owner = self.owner.clone();
         let looks = std::mem::take(&mut self.attach_looks);
+        // Their own tool-call limit, else the shared one (evolved, or behavior.toml).
+        let max_rounds = limits::tool_rounds(&owner, self.evolution.as_ref().map(|e| e.behavior().max_tool_rounds)) as usize;
+        self.can_continue = false;
         thread::spawn(move || {
             // This turn works in its person's PMI account.
             pmi::set_user(&owner);
@@ -117,13 +120,9 @@ impl App {
                 }
                 let _ = tx.send(StreamEvent::Seen(seen));
             }
-            // Evolved behavior: guidelines, the matching workflow, the round limit.
-            let mut max_rounds = 8;
-            if let Some(evolution) = &evolution {
-                max_rounds = evolution.behavior().max_tool_rounds as usize;
-                if let Some(section) = evolution.chat_section(&content) {
-                    add_to_system(&mut history, &section);
-                }
+            // Evolved behavior: guidelines and the matching workflow.
+            if let Some(section) = evolution.as_ref().and_then(|e| e.chat_section(&content)) {
+                add_to_system(&mut history, &section);
             }
             if let Some(section) = &goals_section {
                 add_to_system(&mut history, section);
@@ -149,10 +148,14 @@ impl App {
                 }
             }
             let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref(), &content, max_rounds, run, &tx, &cancel, viewer.as_deref(), member) {
-                Ok(stats) => {
+                Ok((stats, limited)) => {
                     // The turn's own model calls (agents' and lyra's count separately).
                     usage::record("chat", &model, stats.input, stats.cached, stats.output, stats.elapsed.as_millis() as u64);
-                    StreamEvent::Done(stats)
+                    let _ = tx.send(StreamEvent::Done(stats));
+                    if limited {
+                        let _ = tx.send(StreamEvent::Limit(max_rounds));
+                    }
+                    return;
                 }
                 Err(e) => StreamEvent::Error(e),
             };
@@ -263,7 +266,8 @@ pub(crate) fn system_prompt(context: &Context, memory: bool) -> Option<String> {
 }
 
 /// One user turn: stream a reply; if the model calls tools, run them, add the
-/// results to the history and stream again. Stats cover the whole turn.
+/// results to the history and stream again. Stats cover the whole turn; the
+/// flag says it stopped at `max_rounds` with the work unfinished.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn converse(
     url: &str,
@@ -278,7 +282,7 @@ pub(crate) fn converse(
     cancel: &Cancel,
     viewer: Option<&str>,
     member: bool,
-) -> Result<Stats, String> {
+) -> Result<(Stats, bool), String> {
     let start = Instant::now();
     // A member's calls: their own memory scope only, and no admin tools.
     let mine = viewer.map(|v| format!("user:{v}"));
@@ -316,7 +320,7 @@ pub(crate) fn converse(
             }
         }
         if stopped(cancel) {
-            return Ok(finish(total));
+            return Ok((finish(total), false));
         }
         let round = stream(url, &body, tx, cancel)?;
         match &mut total {
@@ -324,7 +328,7 @@ pub(crate) fn converse(
             None => total = Some(round.stats),
         }
         let Some(caps) = caps.filter(|_| !round.tool_calls.is_empty() && !round.stopped) else {
-            return Ok(finish(total));
+            return Ok((finish(total), false));
         };
 
         tx.send(StreamEvent::ToolCalls(round.tool_calls.clone())).map_err(|e| e.to_string())?;
@@ -362,7 +366,8 @@ pub(crate) fn converse(
             tx.send(StreamEvent::ToolResult { id, name, content }).map_err(|e| e.to_string())?;
         }
     }
-    Err(format!("stopped after {max_rounds} rounds of tool calls"))
+    // The limit: what was done so far stays in the conversation, to continue from.
+    Ok((finish(total), true))
 }
 
 /// POST the request, forward each delta as it arrives, and measure the reply.

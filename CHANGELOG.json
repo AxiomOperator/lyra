@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.29.0.153",
+    "date": "2026-10-08",
+    "title": "Longer jobs, and Continue",
+    "new": [
+      "When lyra reaches its limit of tool calls in one reply, it keeps the work done so far and offers Continue (or just say \"continue\") instead of ending with an error.",
+      "Admins set how many tool calls a reply may take: for everyone on the Settings page, and for one person on the Users page (or /users rounds <who> <n>), up to 64."
+    ],
+    "fixed": [
+      "A reply that stopped at the tool-call limit now counts toward AI usage."
+    ]
+  },
+  {
     "version": "0.28.0.152",
     "date": "2026-10-08",
     "title": "Works on a bad connection",

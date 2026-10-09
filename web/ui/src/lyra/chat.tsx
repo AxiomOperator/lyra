@@ -14,7 +14,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { AtSign, Clock, CloudOff, Link2, Paperclip, Pencil, ShieldAlert, ShieldCheck, ShieldX, Slash, TriangleAlert, X } from "lucide-react";
+import { AtSign, Clock, CloudOff, Link2, Paperclip, Pencil, Play, ShieldAlert, ShieldCheck, ShieldX, Slash, TriangleAlert, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { loadDraft, saveDraft, type Queued } from "./outbox";
 import { useLyra } from "./store";
@@ -531,6 +531,21 @@ function Composer() {
   );
 }
 
+// ---- a reply that stopped at its tool-call limit
+
+/** Continue: the next turn sees everything done so far and carries on. */
+function ContinueButton() {
+  const { status, outbox, queue } = useLyra();
+  if (!status.can_continue || status.waiting || outbox.length) return null;
+  return (
+    <div className="flex justify-start">
+      <Button size="sm" variant="secondary" onClick={() => queue("Continue where you left off.")}>
+        <Play /> Continue
+      </Button>
+    </div>
+  );
+}
+
 // ---- messages waiting to be sent
 
 /** The outbox, at the end of the conversation: what each is waiting for, and Edit / Cancel. */
@@ -632,6 +647,7 @@ export function ChatPage() {
             ),
           )}
           {thinking && <Shimmer className="text-sm">Thinking…</Shimmer>}
+          <ContinueButton />
           <QueuedMessages />
         </ConversationContent>
         <ConversationScrollButton />

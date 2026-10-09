@@ -89,6 +89,8 @@ export interface Status {
   plan?: unknown;
   phase?: string;
   waiting?: boolean;
+  /** The last reply stopped at its tool-call limit: Continue picks it up. */
+  can_continue?: boolean;
   model?: string;
   session?: string;
   title?: string | null;
@@ -421,6 +423,9 @@ export interface UserRow {
   last_seen: string | null;
   microsoft: boolean;
   devices: { name: string; last_seen: string }[];
+  /** Their own limit on tool calls in one reply; the shared default when null. */
+  tool_rounds?: number | null;
+  default_rounds?: number;
 }
 
 /** An Outlook calendar event as lyra shows it. */

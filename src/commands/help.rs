@@ -31,6 +31,7 @@ pub(crate) const COMMANDS: &str = "\
 /tasks [today|overdue|week|project <name>]   your PMI tasks (personal and assigned), numbered
 /task add <what> [when] · /task done <n> [comment] · /task snooze <n> [1h|tomorrow]
 /users [approve|admin|member|disable <who>]   the people who use lyra serve (admins)
+/users rounds <who> <n|default>   their own limit on tool calls in one reply (1–64; admins)
 /whoami                      who this conversation belongs to
 /settings [<key> <value>]    the common settings (models, working hours, briefing, recap, notifications); change one (admins)
 /usage [days]                AI usage: everyone's and each person's (admins), your own (members)

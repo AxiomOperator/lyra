@@ -178,9 +178,10 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
         // The people who use lyra (admins: the gate is in the loop).
         "users" => {
             let devices = hub.devices().list();
+            let shared = crate::limits::default_tool_rounds(app.evolution.as_ref().map(|e| e.behavior().max_tool_rounds));
             json!(hub.users().list().iter().map(|u| json!({
                 "id": u.id, "name": u.name, "email": u.email, "role": u.role, "status": u.status,
-                "created": u.created, "last_seen": u.last_seen, "microsoft": !u.oid.is_empty(),
+                "created": u.created, "last_seen": u.last_seen, "microsoft": !u.oid.is_empty(), "tool_rounds": u.tool_rounds, "default_rounds": shared,
                 "devices": devices.iter().filter(|d| d.user.as_deref() == Some(u.id.as_str())).map(|d| json!({ "name": d.name, "last_seen": d.last_seen })).collect::<Vec<_>>(),
             })).collect::<Vec<_>>())
         }

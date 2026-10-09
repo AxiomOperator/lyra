@@ -1,5 +1,6 @@
 // Users (admins): who uses lyra, letting new sign-ins in, roles, and turning
-// someone off. Changes go through lyra's own `/users` command.
+// someone off, and each person's own tool-call limit. Changes go through
+// lyra's own `/users` command.
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +11,31 @@ import { Back, Failed, Page, useAction, useConfirm } from "./parts";
 import { ago } from "./push";
 import { useData, useLyra } from "./store";
 import type { UserRow } from "./types";
+
+/** Someone's limit on tool calls in one reply: the default, or their own. */
+function Rounds({ u, busy, set }: { u: UserRow; busy: boolean; set: (v: string) => void }) {
+  const steps = [8, 16, 24, 32, 48, 64];
+  const own = u.tool_rounds ?? null;
+  const options = own && !steps.includes(own) ? [...steps, own].sort((a, b) => a - b) : steps;
+  return (
+    <label className="flex items-center gap-1 text-muted-foreground text-xs" title="Rounds of tool calls in one reply before lyra stops and offers Continue">
+      Tool calls
+      <select
+        className="h-8 rounded-md border bg-transparent px-2 text-foreground text-xs"
+        disabled={busy}
+        value={own === null ? "default" : String(own)}
+        onChange={(e) => set(e.target.value)}
+      >
+        <option value="default">default ({u.default_rounds ?? 8})</option>
+        {options.map((n) => (
+          <option key={n} value={String(n)}>
+            {n}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
 
 export function UsersPage({ onBack }: { onBack: () => void }) {
   const { status, user: me } = useLyra();
@@ -76,6 +102,7 @@ export function UsersPage({ onBack }: { onBack: () => void }) {
                     {u.last_seen && ` · seen ${ago(u.last_seen)}`}
                   </div>
                 </div>
+                {u.status === "active" && <Rounds u={u} busy={busy} set={(v) => void act(`/users rounds ${key(u)} ${v}`)} />}
                 {!self && u.status === "active" && (
                   <Button size="sm" variant="ghost" disabled={busy} onClick={() => void act(`/users ${u.role === "admin" ? "member" : "admin"} ${key(u)}`)}>
                     <ShieldCheck /> {u.role === "admin" ? "Make member" : "Make admin"}
