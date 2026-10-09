@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.29.3.156",
+    "date": "2026-10-08",
+    "title": "Connect your own PMI",
+    "fixed": [
+      "The Tasks page lets each person connect their own PMI account: paste an access token from PMI (Your account → Security) and press Connect. It used to send everyone to a server command that only sets the owner's."
+    ]
+  },
+  {
     "version": "0.29.2.155",
     "date": "2026-10-08",
     "title": "Saved tokens stay saved",

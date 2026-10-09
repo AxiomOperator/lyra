@@ -85,6 +85,35 @@ function ProjectRow({ p }: { p: PmiProject }) {
   );
 }
 
+/** Connect this person's own PMI account: their token, kept in their own secrets. */
+function ConnectPmi({ act, busy }: { act: (command: string) => Promise<boolean>; busy: boolean }) {
+  const [token, setToken] = useState("");
+  const connect = async (e: FormEvent) => {
+    e.preventDefault();
+    const t = token.trim();
+    if (!t) return;
+    if (await act(`/pmi token ${t}`)) setToken("");
+  };
+  return (
+    <Card className="gap-2 py-4">
+      <CardHeader className="px-4">
+        <CardTitle className="text-base">Connect your PMI account</CardTitle>
+        <CardDescription>
+          In PMI, open Your account → Security and make an access token, then paste it here. It's yours alone: lyra keeps it in your own secrets and works in PMI as you.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="px-4">
+        <form onSubmit={(e) => void connect(e)} className="flex gap-2">
+          <Input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} placeholder="PMI access token" disabled={busy} aria-label="PMI access token" />
+          <Button type="submit" disabled={busy || !token.trim()}>
+            Connect
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function TasksPage({ onBack }: { onBack: () => void }) {
   const { status } = useLyra();
   const pmi = status.pmi;
@@ -129,11 +158,7 @@ export function TasksPage({ onBack }: { onBack: () => void }) {
         </div>
       }
     >
-      {!pmi?.at && !pmi?.error && (
-        <p className="text-muted-foreground text-sm">
-          PMI isn't connected yet. Make an access token in PMI (Your account → Security), then on the server run <code>lyra pmi token</code> or send <code>/pmi token &lt;token&gt;</code> here in the chat.
-        </p>
-      )}
+      {!pmi?.at && <ConnectPmi act={act} busy={busy} />}
       <TodayCard />
       <InboxCard />
       <Failed error={pmi?.error ?? undefined} />

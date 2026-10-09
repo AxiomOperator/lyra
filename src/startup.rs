@@ -115,7 +115,7 @@ usage: lyra [command] [options]
   devices [remove <name>] paired devices
   service                 install a systemd user service that runs `lyra serve`
   node [pair|service]     let a lyra server work on this machine (see lyra node --help)
-  pmi [token]             the PMI connection; `lyra pmi token` saves its access token (read from stdin)
+  pmi [token]             the PMI connection; `lyra pmi token` saves the owner's access token (read from stdin; everyone else connects their own on the Tasks page)
   secret <service>        save a secret (read from stdin, not echoed): `lyra secret entra` for Microsoft sign-in
   connect [--pair <code>] the terminal UI for a lyra server (see lyra connect --help);
                           plain `lyra` opens it on a machine that has no lyra of its own
