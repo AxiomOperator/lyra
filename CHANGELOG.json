@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.43.0.177",
+    "date": "2026-10-09",
+    "title": "Search What's new",
+    "new": [
+      "Search What's new: type a word or two (\"calendar\", \"passwords\", a version like 0.38) to see only the releases that mention them, ten at a time."
+    ]
+  },
+  {
     "version": "0.42.0.176",
     "date": "2026-10-09",
     "title": "What's new in pages",

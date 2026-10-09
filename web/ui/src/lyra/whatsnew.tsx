@@ -4,7 +4,8 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { ChevronLeft, ChevronRight, Sparkles, Wrench, X, Zap } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { ChevronLeft, ChevronRight, Search, Sparkles, Wrench, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Back, Page } from "./parts";
 import { useLyra } from "./store";
@@ -35,11 +36,13 @@ interface Changelog {
   pages: number;
   total: number;
   per: number;
+  /** What it was searched for ("" for everything). */
+  q?: string;
 }
 
 /** Newer / Older, and where you are. */
 function Pager({ data, go }: { data: Changelog; go: (page: number) => void }) {
-  if (data.pages <= 1) return null;
+  if (data.pages <= 1) return data.q && data.total ? <p className="text-center text-muted-foreground text-sm">{data.total === 1 ? "1 release matches" : `${data.total} releases match`}</p> : null;
   const first = data.page * data.per + 1;
   const last = Math.min(data.total, first + data.releases.length - 1);
   return (
@@ -48,7 +51,7 @@ function Pager({ data, go }: { data: Changelog; go: (page: number) => void }) {
         <ChevronLeft /> Newer
       </Button>
       <span>
-        {first}–{last} of {data.total} releases
+        {first}–{last} of {data.total} {data.q ? "matching" : "releases"}
       </span>
       <Button size="sm" variant="ghost" disabled={data.page >= data.pages - 1} onClick={() => go(data.page + 1)}>
         Older <ChevronRight />
@@ -62,9 +65,24 @@ export function WhatsNewPage({ onBack }: { onBack: () => void }) {
   const [page, setPage] = useState(0);
   const [data, setData] = useState<Changelog | null>(null);
   const top = useRef<HTMLDivElement>(null);
+  // What's typed, and what's searched (a moment after typing stops).
+  const [typed, setTyped] = useState("");
+  const [q, setQ] = useState("");
   useEffect(() => {
-    if (ready) void call<Changelog>("changelog", { page }).then((d) => d && Array.isArray(d.releases) && setData(d));
-  }, [ready, call, page]);
+    const t = window.setTimeout(() => {
+      setQ(typed.trim());
+      setPage(0);
+    }, 250);
+    return () => window.clearTimeout(t);
+  }, [typed]);
+  useEffect(() => {
+    // An answer for an older search is dropped.
+    let current = true;
+    if (ready) void call<Changelog>("changelog", { page, q }).then((d) => current && d && Array.isArray(d.releases) && setData(d));
+    return () => {
+      current = false;
+    };
+  }, [ready, call, page, q]);
   // Seen now: the update note goes away.
   useEffect(() => {
     if (data?.version) markSeen(data.version);
@@ -76,6 +94,16 @@ export function WhatsNewPage({ onBack }: { onBack: () => void }) {
   return (
     <Page title="What's new" description={data ? `You're on lyra ${data.version}.` : "Every change to lyra, newest first."} action={<Back onBack={onBack} />}>
       <div ref={top} />
+      <div className="relative">
+        <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+        <Input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Search releases (e.g. calendar, passwords, 0.38)" className="pr-9 pl-9" aria-label="Search releases" />
+        {typed && (
+          <button type="button" aria-label="Clear the search" onClick={() => setTyped("")} className="absolute top-1/2 right-3 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+            <X className="size-4" />
+          </button>
+        )}
+      </div>
+      {data?.q && !data.total && <p className="py-6 text-center text-muted-foreground text-sm">No release mentions “{data.q}”.</p>}
       {data && <Pager data={data} go={go} />}
       {(data?.releases ?? []).map((r) => (
         <Card key={r.version} className="gap-3 py-4">
@@ -107,7 +135,7 @@ export function WhatsNewPage({ onBack }: { onBack: () => void }) {
           </CardContent>
         </Card>
       ))}
-      {data && data.releases.length > 3 && <Pager data={data} go={go} />}
+      {data && data.pages > 1 && data.releases.length > 3 && <Pager data={data} go={go} />}
     </Page>
   );
 }

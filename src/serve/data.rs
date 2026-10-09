@@ -19,11 +19,13 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
         // A page of releases at a time, newest first.
         "changelog" => {
             const PER: usize = 10;
-            let all = crate::changelog::all();
+            // Searching: only the releases with every word.
+            let q = arg["q"].as_str().unwrap_or("").trim().to_string();
+            let all: Vec<_> = crate::changelog::all().iter().filter(|r| r.matches(&q)).collect();
             let pages = all.len().div_ceil(PER).max(1);
             let page = (arg["page"].as_u64().unwrap_or(0) as usize).min(pages - 1);
             let releases: Vec<_> = all.iter().skip(page * PER).take(PER).collect();
-            json!({ "version": crate::changelog::version(), "releases": releases, "page": page, "pages": pages, "total": all.len(), "per": PER })
+            json!({ "version": crate::changelog::version(), "releases": releases, "page": page, "pages": pages, "total": all.len(), "per": PER, "q": q })
         }
         // Feedback: everyone sends and follows their own; admins see and move everyone's.
         // Q&A: everyone reads it; admins add, change, remove and promote questions into it.

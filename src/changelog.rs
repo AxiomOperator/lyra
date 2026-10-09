@@ -22,6 +22,14 @@ pub struct Release {
     pub fixed: Vec<String>,
 }
 
+impl Release {
+    /// Every word of `query` is somewhere in it (its version, date, title or lines), ignoring case.
+    pub fn matches(&self, query: &str) -> bool {
+        let text = [&self.version, &self.date, &self.title].into_iter().chain(&self.new).chain(&self.improved).chain(&self.fixed).map(|s| s.to_lowercase()).collect::<Vec<_>>().join("\n");
+        query.to_lowercase().split_whitespace().all(|w| text.contains(w))
+    }
+}
+
 static ALL: LazyLock<Vec<Release>> = LazyLock::new(|| serde_json::from_str(RAW).unwrap_or_default());
 
 /// Every release, newest first.
@@ -37,6 +45,15 @@ pub fn version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_finds_every_word_anywhere() {
+        let r = Release { version: "0.42.0.176".into(), date: "2026-10-09".into(), title: "What's new in pages".into(), new: vec![], improved: vec!["Ten releases at a time, with Newer and Older".into()], fixed: vec![] };
+        assert!(r.matches("older TEN"));
+        assert!(r.matches("0.42"));
+        assert!(r.matches(""));
+        assert!(!r.matches("older calendar"), "every word must be there");
+    }
 
     /// A version's four numbers.
     fn parts(v: &str) -> Option<[u64; 4]> {
