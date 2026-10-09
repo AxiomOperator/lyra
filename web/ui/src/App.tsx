@@ -54,6 +54,9 @@ import {
   WifiOff,
   Search,
   Timer,
+  Briefcase,
+  Zap,
+  Shield,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ComponentType, type FormEvent, type ReactNode } from "react";
 import { ChatPage } from "./lyra/chat";
@@ -148,12 +151,16 @@ type TabItem = {
   badge?: number;
 };
 
-/** The icon rail's pages, in groups (a line between them). */
-const railGroups: Tab[][] = [
-  ["chat", "status", "activity"],
-  ["tasks", "meetings", "notes", "documents", "projects", "routines", "goals"],
-  ["memory", "skills", "coding", "model"],
-  ["machines", "devices", "users", "usage", "running"],
+/** The icon rail: a few groups, each a small menu of its pages (one page
+ *  alone opens at once). Badges add up on the group. */
+const railGroups: { id: string; label: string; icon: typeof MessageSquare; pages: Tab[] }[] = [
+  { id: "chat", label: "Chat", icon: MessageSquare, pages: ["chat"] },
+  { id: "status", label: "Status", icon: Activity, pages: ["status"] },
+  { id: "work", label: "Work", icon: Briefcase, pages: ["tasks", "meetings", "notes", "documents", "projects"] },
+  { id: "knowledge", label: "Knowledge", icon: Brain, pages: ["memory", "skills"] },
+  { id: "automation", label: "Automation", icon: Zap, pages: ["routines", "goals", "coding"] },
+  { id: "system", label: "System", icon: Shield, pages: ["machines", "devices", "users", "usage", "running", "model", "activity", "settings"] },
+  { id: "help", label: "Help", icon: CircleHelp, pages: ["qa", "feedback", "whatsnew"] },
 ];
 
 /** The rail's pages: scrolls when they don't all fit, with a fade and an
@@ -239,7 +246,8 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
   };
   const search = useConversationSearch();
   const all = [...tabs, ...more];
-  const groups = railGroups.map((g) => g.map((id) => all.find((t) => t.id === id)).filter((t): t is TabItem => !!t)).filter((g) => g.length > 0);
+  // Each group with the pages this person has.
+  const groups = railGroups.map((g) => ({ ...g, items: g.pages.map((id) => all.find((t) => t.id === id)).filter((t): t is TabItem => !!t) })).filter((g) => g.items.length > 0);
   // Each is named under its icon: no tooltip needed.
   const plain = (child: React.ReactElement, key: string) => (
     <span key={key} className="contents">
@@ -268,6 +276,39 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
       </button>,
       t.id,
     );
+  // A group: its icon (lit while one of its pages is open, with what waits in
+  // it), and a menu of its pages beside the rail.
+  const railGroup = (label: string, Icon: typeof MessageSquare, items: TabItem[], key: string) => {
+    const here = items.find((t) => t.id === tab);
+    const waiting = items.reduce((n, t) => n + (t.badge ?? 0), 0);
+    return (
+      <DropdownMenu key={key}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label={label}
+            className={cn(
+              "relative flex w-14 shrink-0 flex-col items-center justify-center gap-0.5 rounded-md py-1 text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground data-[state=open]:bg-sidebar-accent [&>svg]:size-[18px]",
+              here && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary",
+            )}
+          >
+            <Icon />
+            <span className="w-full truncate text-center text-[10px] leading-tight">{here ? here.label : label}</span>
+            {waiting > 0 && <span data-badge className="absolute top-0.5 right-2 min-w-4 rounded-full bg-amber-400 px-1 text-center font-semibold text-[10px] text-black leading-4">{waiting}</span>}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="right" align="start" sideOffset={6} className="min-w-48">
+          <DropdownMenuLabel className="text-muted-foreground text-xs">{label}</DropdownMenuLabel>
+          {items.map((t) => (
+            <DropdownMenuItem key={t.id} onClick={() => go(t.id)} className={cn(t.id === tab && "bg-accent")}>
+              <t.icon /> <span className="flex-1">{t.label}</span>
+              {!!t.badge && <span className="min-w-4 rounded-full bg-amber-400 px-1 text-center font-semibold text-[10px] text-black leading-4">{t.badge}</span>}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  };
   return (
     <Sidebar collapsible="offcanvas" variant="inset">
       {/* On a phone it's a sheet over the whole screen: clear of the status bar and the home bar. */}
@@ -281,16 +322,14 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
               <span className={cn("absolute right-0.5 bottom-0.5 size-2 rounded-full ring-2 ring-sidebar", connected ? "bg-emerald-500" : "bg-red-500")} />
             </button>,
           )}
-          {/* Scrolls on a short screen, never sideways, without a bar; says when there's more. */}
+          {/* Scrolls on a very short screen, never sideways, without a bar; says when there's more. */}
           <RailScroll>
             {groups.map((g, i) => (
-              <div key={i} className={cn("flex flex-col items-center", i > 0 && "mt-0.5 border-sidebar-border border-t pt-1 [@media(max-height:820px)]:mt-0 [@media(max-height:820px)]:pt-0.5")}>
-                {g.map(railItem)}
+              <div key={g.id} className={cn("flex flex-col items-center", (i === 2 || g.id === "help") && "mt-0.5 border-sidebar-border border-t pt-1", g.id === "help" && "mt-auto")}>
+                {g.items.length === 1 ? railItem({ ...g.items[0], label: g.items[0].label }) : railGroup(g.label, g.icon, g.items, g.id)}
               </div>
             ))}
           </RailScroll>
-          {/* What's new: at the foot of the rail, just above you. */}
-          {(["qa", "feedback", "whatsnew"] as Tab[]).map((id) => all.find((t) => t.id === id)).filter((t): t is TabItem => !!t).map(railItem)}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button type="button" aria-label="This device" className="mt-1 flex size-9 items-center justify-center rounded-lg bg-sidebar-accent font-semibold text-xs uppercase">

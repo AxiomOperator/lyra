@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.50.0.189",
+    "date": "2026-10-09",
+    "title": "A tidier rail",
+    "improved": [
+      "The left rail shows a few groups instead of every page: Chat, Status, Work, Knowledge, Automation, System and Help. Tap one for a small menu of its pages. A group lights up while you're on one of its pages, shows that page's name, and adds up anything waiting inside it."
+    ]
+  },
+  {
     "version": "0.49.0.188",
     "date": "2026-10-09",
     "title": "Profile and a tidier Settings",
