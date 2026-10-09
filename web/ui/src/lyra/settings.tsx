@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { Check, RotateCcw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Back, Failed, Page } from "./parts";
+import { SectionTabs } from "./profile";
 import { useLyra } from "./store";
 
 type Value = string | number | boolean | string[];
@@ -294,6 +295,26 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   }, [ready, load, call]);
 
   const fields = useMemo(() => (data?.groups ?? []).flatMap((g) => g.fields), [data]);
+  // One section at a time (the last one opened); edits stay when you switch.
+  const [tab, setTab] = useState(() => {
+    try {
+      return localStorage.getItem("lyra-settings-tab") ?? "models";
+    } catch {
+      return "models";
+    }
+  });
+  const pick = (id: string) => {
+    setTab(id);
+    try {
+      localStorage.setItem("lyra-settings-tab", id);
+    } catch {
+      // just not remembered
+    }
+  };
+  const sections = [...(data?.groups ?? []).map((g) => ({ id: g.id, label: changedIn(g.id) ? `${g.title} •` : g.title })), { id: "email", label: "Email services" }];
+  function changedIn(group: string) {
+    return (data?.groups ?? []).find((g) => g.id === group)?.fields.some((f) => edits[f.key] !== undefined && !same(edits[f.key], f.value)) ?? false;
+  }
   // Only what differs from what's in the file now goes to lyra.
   const changes = useMemo(() => {
     const out: Record<string, Value> = {};
@@ -329,7 +350,10 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
           </button>
         </div>
       )}
-      {(data?.groups ?? []).map((g) => (
+      {data && !data.error && (
+      <SectionTabs sections={sections} current={sections.some((x) => x.id === tab) ? tab : "models"} pick={pick}>
+      {tab === "email" && <EmailServices />}
+      {(data?.groups ?? []).filter((g) => g.id === tab || (!sections.some((x) => x.id === tab) && g.id === "models")).map((g) => (
         <Card key={g.id} className="gap-3 py-4">
           <CardHeader className="px-4">
             <CardTitle className="text-base">{g.title}</CardTitle>
@@ -352,7 +376,8 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
           </CardContent>
         </Card>
       ))}
-      <EmailServices />
+      </SectionTabs>
+      )}
       {data?.path && <p className="text-muted-foreground text-xs">Everything else is in {data.path} (see config.example.toml).</p>}
       {count > 0 && (
         <div className="sticky bottom-0 flex items-center justify-end gap-2 border-t bg-background/95 py-3 backdrop-blur">

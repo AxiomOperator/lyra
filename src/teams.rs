@@ -14,10 +14,10 @@ pub fn connected_for(user: &str) -> bool {
 fn ready() -> Result<(), String> {
     let user = crate::acting::current();
     if !crate::graph::connected_for(&user) {
-        return Err("your Microsoft 365 isn't connected: in the app, More → Outlook → Connect".into());
+        return Err("your Microsoft 365 isn't connected: in the app, Profile → Connections → Outlook → Connect".into());
     }
     if !crate::graph::has(&user, "Chat.Read") {
-        return Err("lyra can't see your Teams chats yet: connect again (More → Outlook → Add Teams & files)".into());
+        return Err("lyra can't see your Teams chats yet: connect again (Profile → Connections → Outlook → Add Teams & files)".into());
     }
     Ok(())
 }

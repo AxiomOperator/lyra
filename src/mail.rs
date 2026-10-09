@@ -22,10 +22,10 @@ pub fn connected_for(user: &str) -> bool {
 fn ready() -> Result<(), String> {
     let user = crate::acting::current();
     if !crate::graph::connected_for(&user) {
-        return Err("your Outlook isn't connected: in the app, More → Outlook → Connect".into());
+        return Err("your Outlook isn't connected: in the app, Profile → Connections → Outlook → Connect".into());
     }
     if !crate::graph::has(&user, "Mail.ReadWrite") {
-        return Err("lyra can't see your mail yet: connect Outlook again (More → Outlook) to add mail".into());
+        return Err("lyra can't see your mail yet: connect Outlook again (Profile → Connections → Outlook) to add mail".into());
     }
     Ok(())
 }

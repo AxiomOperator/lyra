@@ -269,7 +269,7 @@ fn lyra_mailbox() -> Result<Vec<Box<dyn Provider>>, String> {
 /// take over), or why it can't.
 pub fn providers_for(user: &str) -> Result<Vec<Box<dyn Provider>>, String> {
     let outlook = || -> Result<Vec<Box<dyn Provider>>, String> {
-        if crate::graph::connected_for(user) { Ok(vec![Box::new(Outlook { user: user.to_string() })]) } else { Err("your Outlook isn't connected (More → Outlook)".into()) }
+        if crate::graph::connected_for(user) { Ok(vec![Box::new(Outlook { user: user.to_string() })]) } else { Err("your Outlook isn't connected (Profile → Connections → Outlook)".into()) }
     };
     match prefs(user).via.as_str() {
         "outlook" => outlook(),

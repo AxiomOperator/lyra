@@ -1125,13 +1125,13 @@ async fn auth_callback(State(s): State<Arc<Shared>>, Query(q): Query<CallbackQue
     // Connecting a calendar: theirs only, then back to the app.
     if let Some((user, oid)) = pending.connect {
         if !oid.is_empty() && oid != person.oid {
-            return redirect(&format!("/?page=more#connect-error={}", oidc::encode("that's a different Microsoft account from the one you sign in to lyra with")));
+            return redirect(&format!("/?page=profile#connect-error={}", oidc::encode("that's a different Microsoft account from the one you sign in to lyra with")));
         }
         if refresh.is_empty() {
-            return redirect(&format!("/?page=more#connect-error={}", oidc::encode("Microsoft didn't allow lasting access (offline_access)")));
+            return redirect(&format!("/?page=profile#connect-error={}", oidc::encode("Microsoft didn't allow lasting access (offline_access)")));
         }
         let _ = s.inbound.send(Inbound::Connected { user, service: "graph".into(), token: refresh, scope: granted });
-        return redirect("/?page=more#connected=calendar");
+        return redirect("/?page=profile#connected=calendar");
     }
     // A guest from another organization never becomes the owner.
     let owner_email = if person.guest { "" } else { s.entra.owner_email.as_str() };

@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { Brain, Check, ChevronDown, ChevronRight, Download, HelpCircle, KeyRound, Link2, Mail, PenLine, Smartphone, Trash2, X } from "lucide-react";
+import { Brain, Check, ChevronDown, ChevronRight, Download, HelpCircle, KeyRound, Link2, Mail, PenLine, Smartphone, Trash2, UserRound, X } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Back, Failed, Page, useAction, useConfirm } from "./parts";
 import { ago } from "./push";
@@ -31,7 +31,7 @@ interface Action {
   approved: boolean;
   agent?: string | null;
 }
-interface Me {
+export interface Me {
   name?: string | null;
   email?: string | null;
   admin: boolean;
@@ -131,7 +131,7 @@ interface EmailView {
 }
 
 /** Email from lyra, to you only: how it goes, the briefing and recap by email, a test. */
-function EmailCard() {
+export function EmailCard() {
   const { call, ready } = useLyra();
   const [v, setV] = useState<EmailView | null>(null);
   const [said, setSaid] = useState<{ ok: boolean; text: string } | null>(null);
@@ -211,7 +211,7 @@ function EmailCard() {
 }
 
 /** Change your own password: the current one, then the new one twice. */
-function PasswordCard({ username }: { username: string }) {
+export function PasswordCard({ username }: { username: string }) {
   const { token } = useLyra();
   const [old, setOld] = useState("");
   const [password, setPassword] = useState("");
@@ -257,7 +257,68 @@ function PasswordCard({ username }: { username: string }) {
   );
 }
 
-export function AboutMePage({ onBack }: { onBack: () => void }) {
+/** What lyra can use as you (Microsoft 365, PMI), and disconnecting it. */
+export function ConnectedAccounts({ me, act, confirm }: { me: Me | null; act: (c: string) => Promise<boolean>; confirm: ReturnType<typeof useConfirm>[0] }) {
+  return (
+    <Card className="gap-1 py-4">
+        <CardHeader className="px-4">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Link2 className="size-4" /> Connected accounts
+          </CardTitle>
+          <CardDescription>What lyra can use on your behalf. Disconnecting stops it at once.</CardDescription>
+        </CardHeader>
+        <CardContent className="divide-y px-4 text-sm">
+          <div className="flex items-center justify-between gap-2 py-2">
+            <div>
+              <div className="font-medium">Microsoft 365</div>
+              <div className="text-muted-foreground text-xs">{me?.accounts.microsoft.connected ? `Your ${me.accounts.microsoft.what}` : "Not connected (Outlook, above)"}</div>
+            </div>
+            {me?.accounts.microsoft.connected && (
+              <Button size="sm" variant="ghost" onClick={() => confirm({ title: "Disconnect Microsoft 365?", text: "lyra stops reading your calendar, mail, Teams and files. Connect again any time.", action: "Disconnect", run: () => void act("/calendar disconnect") })}>
+                Disconnect
+              </Button>
+            )}
+          </div>
+          <div className="flex items-center justify-between gap-2 py-2">
+            <div>
+              <div className="font-medium">PMI</div>
+              <div className="text-muted-foreground text-xs">{me?.accounts.pmi.connected ? "Your tasks and projects (as you)" : "Not connected (Tasks page)"}</div>
+            </div>
+            {me?.accounts.pmi.connected && (
+              <Button size="sm" variant="ghost" onClick={() => confirm({ title: "Disconnect PMI?", text: "Your access token is removed from lyra. Paste a new one on the Tasks page to connect again.", action: "Disconnect", run: () => void act("/pmi token") })}>
+                Disconnect
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+  );
+}
+
+/** Phones and browsers signed in as you. */
+export function YourDevices({ me }: { me: Me | null }) {
+  return (
+      <Card className="gap-1 py-4">
+        <CardHeader className="px-4">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Smartphone className="size-4" /> Your devices
+          </CardTitle>
+          <CardDescription>Phones and browsers signed in as you. An admin can remove one (Devices).</CardDescription>
+        </CardHeader>
+        <CardContent className="divide-y px-4 text-sm">
+          {(me?.devices ?? []).slice(0, 8).map((d, i) => (
+            <div key={`${d.name}-${i}`} className="flex justify-between py-1.5">
+              <span>{d.name}</span>
+              <span className="text-muted-foreground text-xs">{d.last_seen ? `seen ${ago(d.last_seen)}` : ""}</span>
+            </div>
+          ))}
+          {(me?.devices.length ?? 0) > 8 && <p className="py-1.5 text-muted-foreground text-xs">…and {(me?.devices.length ?? 0) - 8} more (the oldest)</p>}
+        </CardContent>
+      </Card>
+  );
+}
+
+export function AboutMePage({ onBack, onProfile }: { onBack: () => void; onProfile?: () => void }) {
   const { call, ready } = useLyra();
   const [me, setMe] = useState<Me | null>(null);
   const load = useCallback(() => void call<Me>("me").then(setMe), [call]);
@@ -335,55 +396,14 @@ export function AboutMePage({ onBack }: { onBack: () => void }) {
           </div>
         </CardContent>
       </Card>
-      <Card className="gap-1 py-4">
-        <CardHeader className="px-4">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Link2 className="size-4" /> Connected accounts
-          </CardTitle>
-          <CardDescription>What lyra can use on your behalf. Disconnecting stops it at once.</CardDescription>
-        </CardHeader>
-        <CardContent className="divide-y px-4 text-sm">
-          <div className="flex items-center justify-between gap-2 py-2">
-            <div>
-              <div className="font-medium">Microsoft 365</div>
-              <div className="text-muted-foreground text-xs">{me?.accounts.microsoft.connected ? `Your ${me.accounts.microsoft.what}` : "Not connected (More → Outlook)"}</div>
-            </div>
-            {me?.accounts.microsoft.connected && (
-              <Button size="sm" variant="ghost" onClick={() => confirm({ title: "Disconnect Microsoft 365?", text: "lyra stops reading your calendar, mail, Teams and files. Connect again any time.", action: "Disconnect", run: () => void act("/calendar disconnect") })}>
-                Disconnect
-              </Button>
-            )}
-          </div>
-          <div className="flex items-center justify-between gap-2 py-2">
-            <div>
-              <div className="font-medium">PMI</div>
-              <div className="text-muted-foreground text-xs">{me?.accounts.pmi.connected ? "Your tasks and projects (as you)" : "Not connected (Tasks page)"}</div>
-            </div>
-            {me?.accounts.pmi.connected && (
-              <Button size="sm" variant="ghost" onClick={() => confirm({ title: "Disconnect PMI?", text: "Your access token is removed from lyra. Paste a new one on the Tasks page to connect again.", action: "Disconnect", run: () => void act("/pmi token") })}>
-                Disconnect
-              </Button>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-      <EmailCard />
-      {me?.username && <PasswordCard username={me.username} />}
-      <Card className="gap-1 py-4">
-        <CardHeader className="px-4">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Smartphone className="size-4" /> Your devices
-          </CardTitle>
-          <CardDescription>Phones and browsers signed in as you. An admin can remove one (Devices).</CardDescription>
-        </CardHeader>
-        <CardContent className="divide-y px-4 text-sm">
-          {(me?.devices ?? []).slice(0, 8).map((d, i) => (
-            <div key={`${d.name}-${i}`} className="flex justify-between py-1.5">
-              <span>{d.name}</span>
-              <span className="text-muted-foreground text-xs">{d.last_seen ? `seen ${ago(d.last_seen)}` : ""}</span>
-            </div>
-          ))}
-          {(me?.devices.length ?? 0) > 8 && <p className="py-1.5 text-muted-foreground text-xs">…and {(me?.devices.length ?? 0) - 8} more (the oldest)</p>}
+      <Card className="gap-1 py-3">
+        <CardContent className="flex flex-wrap items-center justify-between gap-2 px-4 text-sm">
+          <span className="text-muted-foreground">Your accounts, password, devices, email and notifications are on your Profile.</span>
+          {onProfile && (
+            <Button size="sm" variant="secondary" onClick={onProfile}>
+              <UserRound /> Profile
+            </Button>
+          )}
         </CardContent>
       </Card>
       <Card className="gap-1 py-4">

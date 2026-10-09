@@ -137,11 +137,11 @@ mod tests {
         TEST_DIR.with(|d| *d.borrow_mut() = Some(dir.clone()));
         let dana = crate::feedback::Who { user: "dana".into(), name: "Dana".into(), admin: false };
         let admin = crate::feedback::Who { user: "owner".into(), name: "Garrett".into(), admin: true };
-        assert!(put(&dana, 0, "How do I connect Outlook?", "More → Outlook → Connect.", None, None).is_err(), "members read it, admins write it");
-        let e = put(&admin, 0, "How do I connect Outlook?", "More → Outlook → Connect.", Some(4), Some("Dana".into())).unwrap();
+        assert!(put(&dana, 0, "How do I connect Outlook?", "Profile → Connections → Outlook → Connect.", None, None).is_err(), "members read it, admins write it");
+        let e = put(&admin, 0, "How do I connect Outlook?", "Profile → Connections → Outlook → Connect.", Some(4), Some("Dana".into())).unwrap();
         assert_eq!((e.id, e.source, e.approved_by.as_str()), (1, Some(4), "Garrett"));
-        put(&admin, 1, "How do I connect my Outlook calendar?", "In the app: More → Outlook → Connect.", None, None).unwrap();
-        assert_eq!(search("connect outlook calendar", 3)[0].answer, "In the app: More → Outlook → Connect.");
+        put(&admin, 1, "How do I connect my Outlook calendar?", "In the app: Profile → Connections → Outlook → Connect.", None, None).unwrap();
+        assert_eq!(search("connect outlook calendar", 3)[0].answer, "In the app: Profile → Connections → Outlook → Connect.");
         assert!(search("firewall", 3).is_empty());
         assert!(remove(&dana, 1).is_err());
         remove(&admin, 1).unwrap();

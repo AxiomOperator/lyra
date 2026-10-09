@@ -116,6 +116,7 @@ const NotesPage = page(() => import("./lyra/notes"), "NotesPage");
 const UsersPage = page(() => import("./lyra/users"), "UsersPage");
 const UsagePage = page(() => import("./lyra/usage"), "UsagePage");
 const RunningPage = page(() => import("./lyra/running"), "RunningPage");
+const ProfilePage = page(() => import("./lyra/profile"), "ProfilePage");
 const SettingsPage = page(() => import("./lyra/settings"), "SettingsPage");
 const MeetingsPage = page(() => import("./lyra/meetings"), "MeetingsPage");
 const DocumentsPage = page(() => import("./lyra/documents"), "DocumentsPage");
@@ -135,10 +136,10 @@ function Loading() {
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "documents" | "me" | "running";
-const manage: Manage[] = ["me", "documents", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings", "running"];
+type Manage = "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "documents" | "me" | "running" | "profile";
+const manage: Manage[] = ["me", "documents", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings", "running", "profile"];
 /** What a member (not an admin) has: their chats, tasks, status, activity, skills. */
-const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage", "meetings", "documents", "me"];
+const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage", "meetings", "documents", "me", "profile"];
 
 type TabItem = {
   id: Tab;
@@ -319,8 +320,11 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
               <DropdownMenuItem onClick={() => go("whatsnew")}>
                 <Sparkles /> What's new
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => go("profile")}>
+                <UserRound /> Profile
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => go("me")}>
-                <UserRound /> What lyra knows about me
+                <Brain /> What lyra knows about me
               </DropdownMenuItem>
               {/* Settings live here, not on the rail (it's full on a laptop screen). */}
               {(user?.admin ?? true) && (
@@ -465,7 +469,8 @@ function Shell() {
     { id: "running", label: "Running now", icon: Timer },
     { id: "users", label: "Users", icon: Users, badge: status.users_waiting ?? 0 },
     { id: "settings", label: "Settings", icon: SettingsIcon },
-    { id: "me", label: "About me", icon: UserRound },
+    { id: "profile", label: "Profile", icon: UserRound },
+    { id: "me", label: "About me", icon: Brain },
   ] as TabItem[]).filter((t) => admin || forMembers.includes(t.id));
   const toMore = () => setTab("more");
   const tabs: TabItem[] = ([
@@ -572,7 +577,8 @@ function Shell() {
           {tab === "settings" && <SettingsPage onBack={toMore} />}
           {tab === "meetings" && <MeetingsPage onBack={toMore} />}
           {tab === "documents" && <DocumentsPage onBack={toMore} />}
-          {tab === "me" && <AboutMePage onBack={toMore} />}
+          {tab === "me" && <AboutMePage onBack={toMore} onProfile={() => setTab("profile")} />}
+          {tab === "profile" && <ProfilePage onBack={toMore} toAboutMe={() => setTab("me")} />}
           </Suspense>
         </div>
 

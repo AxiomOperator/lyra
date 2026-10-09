@@ -294,7 +294,7 @@ export function MeetingsPage({ onBack }: { onBack: () => void }) {
   return (
     <Page title="Meetings" description="Prepare, take notes, and follow up: one page per meeting." action={<Back onBack={onBack} />}>
       {data?.error && <Failed error={data.error} />}
-      {data?.connected === false && <p className="text-muted-foreground text-sm">Connect your Outlook first: More → Outlook → Connect.</p>}
+      {data?.connected === false && <p className="text-muted-foreground text-sm">Connect your Outlook first: Profile → Connections → Outlook → Connect.</p>}
       <div className="grid gap-4 lg:grid-cols-[18rem_1fr]">
         <div className={cn("space-y-3", open && "max-lg:hidden")}>
           {data?.connected && !rows.length && <p className="text-muted-foreground text-sm">No meetings from yesterday to the next few days.</p>}

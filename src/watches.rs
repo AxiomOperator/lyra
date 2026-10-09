@@ -61,7 +61,7 @@ pub fn add(kind: &str, target: &str, days: i64) -> Result<Watch, String> {
     let (label, state) = match kind {
         "mail_from" => {
             if !crate::mail::connected_for(&user) {
-                return Err("your Outlook isn't connected: in the app, More → Outlook → Connect".into());
+                return Err("your Outlook isn't connected: in the app, Profile → Connections → Outlook → Connect".into());
             }
             (format!("mail from {target}"), Value::Null)
         }
@@ -78,7 +78,7 @@ pub fn add(kind: &str, target: &str, days: i64) -> Result<Watch, String> {
         }
         "teams_from" => {
             if !crate::teams::connected_for(&user) {
-                return Err("lyra can't see your Teams chats yet: connect again (More → Outlook → Add Teams & files)".into());
+                return Err("lyra can't see your Teams chats yet: connect again (Profile → Connections → Outlook → Add Teams & files)".into());
             }
             (format!("a Teams message from {target}"), Value::Null)
         }

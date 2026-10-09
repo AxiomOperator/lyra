@@ -1,5 +1,19 @@
 [
   {
+    "version": "0.49.0.188",
+    "date": "2026-10-09",
+    "title": "Profile and a tidier Settings",
+    "new": [
+      "Profile: your own page, from the menu under your initials. Account (password, devices), Connections (Outlook, PMI), Email from lyra, this device's notifications, and Privacy."
+    ],
+    "improved": [
+      "Settings is split into sections (Models, Replies, Working hours, Briefing and recap, Notifications, Email services) instead of one long page. Changes in several sections are saved together, and a • marks a section with unsaved changes.",
+      "What lyra knows about me keeps to what lyra keeps: your memories, how you write and what it did. Accounts, password, devices and email moved to your Profile.",
+      "The More page is shorter: notifications and Outlook moved to your Profile, which has its own button there.",
+      "Connecting Outlook brings you back to Profile → Connections, and lyra's hints about connecting point there too."
+    ]
+  },
+  {
     "version": "0.48.1.187",
     "date": "2026-10-09",
     "title": "Stop at once",

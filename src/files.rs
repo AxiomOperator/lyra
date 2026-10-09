@@ -17,7 +17,7 @@ const ATTACH_UP_TO: u64 = 3 * 1024 * 1024;
 fn ready() -> Result<(), String> {
     let user = crate::acting::current();
     if !crate::graph::connected_for(&user) || !crate::graph::has(&user, "Files.Read.All") {
-        return Err("lyra can't see your files yet: connect again (More → Outlook → Add Teams & files)".into());
+        return Err("lyra can't see your files yet: connect again (Profile → Connections → Outlook → Add Teams & files)".into());
     }
     Ok(())
 }

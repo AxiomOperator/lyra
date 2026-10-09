@@ -9,7 +9,6 @@ import { cn } from "@/lib/utils";
 import { Activity as ActivityIcon, AlarmClock, Code2, Archive, Bell, BellOff, Bot, Brain, FolderOpen, Gauge, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, CalendarDays, FileText, Settings as SettingsIcon, UserRound, Unplug, Users as UsersIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PairCard } from "./chat";
-import { CalendarCard } from "./calendar";
 import { DiagnosisNote } from "./diagnosis";
 import { RulesDialog } from "./manage";
 import { SearchBox, SearchHits, useConversationSearch } from "./search";
@@ -317,7 +316,7 @@ function sizeText(n: number) {
 
 // ---- more
 
-function Notifications() {
+export function Notifications() {
   const { token, device, setPush } = useLyra();
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -362,7 +361,7 @@ function Notifications() {
   );
 }
 
-export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "devices" | "usage" | "projects" | "users" | "settings" | "meetings" | "documents" | "me") => void; update: () => void }) {
+export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "devices" | "usage" | "projects" | "users" | "settings" | "meetings" | "documents" | "me" | "profile") => void; update: () => void }) {
   const { say, unpaired, token, serverVersion, status, user } = useLyra();
   const admin = user?.admin ?? true;
   const [sessions] = useData<Session[]>("sessions");
@@ -430,10 +429,6 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
         </CardContent>
       </Card>
 
-      <Notifications />
-
-      <CalendarCard />
-
       <Card className="py-4">
         <CardHeader className="px-4">
           <CardTitle className="text-base">Lyra</CardTitle>
@@ -459,8 +454,11 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
           <Button variant="secondary" onClick={() => open("meetings")}>
             <CalendarDays /> Meetings
           </Button>
+          <Button variant="secondary" onClick={() => open("profile")}>
+            <UserRound /> Profile
+          </Button>
           <Button variant="secondary" onClick={() => open("me")}>
-            <UserRound /> About me
+            <Brain /> About me
           </Button>
           <Button variant="secondary" onClick={() => open("documents")}>
             <FileText /> Documents

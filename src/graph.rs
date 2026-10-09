@@ -126,7 +126,7 @@ fn access(user: &str) -> Result<String, String> {
     let body: Value = serde_json::from_str(&resp.text().unwrap_or_default()).unwrap_or(json!({}));
     if !ok {
         if body["error"] == "invalid_grant" {
-            return Err("the calendar connection has expired: connect it again (More → Connect Outlook calendar)".into());
+            return Err("the calendar connection has expired: connect it again (Profile → Connections → Outlook)".into());
         }
         return Err(format!("Microsoft refused: {}", body["error_description"].as_str().unwrap_or("?").lines().next().unwrap_or("")));
     }
@@ -179,7 +179,7 @@ pub(crate) fn graph_put(path: &str, bytes: Vec<u8>, content_type: &str) -> Resul
         return Ok(serde_json::from_str(&text).unwrap_or(Value::Null));
     }
     Err(match status.as_u16() {
-        401 | 403 => "lyra may not save to your OneDrive yet: connect Outlook again (More → Outlook) and allow it".into(),
+        401 | 403 => "lyra may not save to your OneDrive yet: connect Outlook again (Profile → Connections → Outlook) and allow it".into(),
         code => format!("OneDrive {code}: {}", serde_json::from_str::<Value>(&text).ok().and_then(|e| e["error"]["message"].as_str().map(str::to_string)).unwrap_or_default()),
     })
 }
@@ -200,7 +200,7 @@ pub(crate) fn graph_with(method: reqwest::Method, path: &str, body: Option<&Valu
     }
     let e: Value = serde_json::from_str(&text).unwrap_or(json!({}));
     Err(match status.as_u16() {
-        401 => "Microsoft 365 didn't accept the connection: connect again (More → Outlook → Connect)".into(),
+        401 => "Microsoft 365 didn't accept the connection: connect again (Profile → Connections → Outlook → Connect)".into(),
         403 => "Microsoft 365 says lyra may not do that (the connection lacks that permission: connect again, or ask the admin to add it to the app)".into(),
         404 => "Microsoft 365 has no such item (it may have been moved or deleted)".into(),
         code => format!("Microsoft 365 {code}: {}", e["error"]["message"].as_str().unwrap_or("?")),

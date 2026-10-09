@@ -119,7 +119,7 @@ pub fn download(user: &str, id: &str) -> Result<Value, String> {
 /// Save it to their OneDrive as a Word file (in "lyra", replacing one of the same name).
 pub fn to_onedrive(user: &str, id: &str) -> Result<Value, String> {
     if !crate::graph::connected_for(user) {
-        return Err("your Outlook isn't connected: More → Outlook → Connect".into());
+        return Err("your Outlook isn't connected: Profile → Connections → Outlook → Connect".into());
     }
     let text = std::fs::read_to_string(path(user, id)?).map_err(|_| "no such document".to_string())?;
     let name = file_name(&title_of(&text));
@@ -131,7 +131,7 @@ pub fn to_onedrive(user: &str, id: &str) -> Result<Value, String> {
 /// A new mail draft with the Word file attached (and any recipients); nothing is sent.
 pub fn attach_to_mail(user: &str, id: &str, to: &[String]) -> Result<Value, String> {
     if !crate::mail::connected_for(user) {
-        return Err("your Outlook mail isn't connected: More → Outlook → Connect".into());
+        return Err("your Outlook mail isn't connected: Profile → Connections → Outlook → Connect".into());
     }
     let text = std::fs::read_to_string(path(user, id)?).map_err(|_| "no such document".to_string())?;
     let title = title_of(&text);

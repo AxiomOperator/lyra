@@ -107,7 +107,7 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
     }
     let user = crate::acting::current();
     if !crate::graph::connected_for(&user) {
-        return Err("your Outlook isn't connected: in the app, More → Outlook → Connect".into());
+        return Err("your Outlook isn't connected: in the app, Profile → Connections → Outlook → Connect".into());
     }
     let e = find(args["meeting"].as_str().unwrap_or(""))?;
     let people: Vec<Value> = e["attendees"].as_array().into_iter().flatten().map(|a| json!({ "name": a["emailAddress"]["name"], "email": a["emailAddress"]["address"], "response": a["status"]["response"] })).collect();

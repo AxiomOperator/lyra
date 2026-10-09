@@ -151,7 +151,7 @@ pub fn gather(now: DateTime<Utc>) -> Recap {
 /// The recap as text (`/recap`, the push).
 pub fn describe(r: &Recap) -> String {
     if r.parts.is_empty() {
-        return "Nothing to recap: connect Outlook (More → Outlook) or PMI for your day's facts.".into();
+        return "Nothing to recap: connect Outlook (Profile → Connections → Outlook) or PMI for your day's facts.".into();
     }
     let mut out = vec![format!("End of day · {}", r.at.with_timezone(&Local).format("%a %b %-d"))];
     for p in &r.parts {
