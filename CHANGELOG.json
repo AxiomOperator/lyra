@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.44.0.178",
+    "date": "2026-10-09",
+    "title": "Ask lyra what changed",
+    "new": [
+      "Ask lyra about its own history: \"When was password sign-in added?\", \"What changed lately?\" or \"What version is this?\". It looks in What's new and answers with the version and date."
+    ]
+  },
+  {
     "version": "0.43.0.177",
     "date": "2026-10-09",
     "title": "Search What's new",

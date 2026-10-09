@@ -452,7 +452,7 @@ fn chatting(message: &str, last_reply: &str) -> bool {
 }
 
 /// The decision model's question for [`chatting`].
-const CHAT_GATE: &str = "Is the user's latest message only conversation (a greeting, thanks, small talk, a test, an opinion, or a question answered from general knowledge), and not asking lyra to do, find, check, write, send or change anything (mail, calendar, tasks, notes, files, machines, memory, the web), or agreeing to something lyra offered to do?";
+const CHAT_GATE: &str = "Is the user's latest message only conversation (a greeting, thanks, small talk, a test, an opinion, or a question answered from general knowledge), and not asking lyra to do, find, check, write, send or change anything (mail, calendar, tasks, notes, files, machines, memory, the web), not asking about lyra itself (what it can do, when something changed, its version), and not agreeing to something lyra offered to do?";
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn converse(
