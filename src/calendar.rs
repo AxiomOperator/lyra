@@ -83,8 +83,17 @@ pub fn events(from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<Value>, Stri
         lyra_web::oidc::encode(&from.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
         lyra_web::oidc::encode(&to.format("%Y-%m-%dT%H:%M:%SZ").to_string())
     );
+    // Every page of them (Outlook sends 100 at a time): a busy calendar's
+    // later meetings mustn't look like free time (I-9).
+    let mut list = Vec::new();
+    let mut next = Some(path);
+    for _ in 0..20 {
+        let Some(page) = next.take() else { break };
+        let v = get(&page)?;
+        list.extend(v["value"].as_array().cloned().unwrap_or_default());
+        next = v["@odata.nextLink"].as_str().map(str::to_string);
+    }
     // Outlook also returns events that end exactly when the span starts.
-    let list = get(&path)?["value"].as_array().cloned().unwrap_or_default();
     Ok(list.into_iter().filter(|e| utc(&e["end"]).is_none_or(|end| end > from)).collect())
 }
 
@@ -132,7 +141,8 @@ fn days_within(within: &str) -> Vec<chrono::NaiveDate> {
             (0..7).map(|i| monday + Span::days(i)).filter(|d| s.workday(*d)).collect()
         }
         _ => match span(&w) {
-            Ok((from, to)) => from.with_timezone(&Local).date_naive().iter_days().take_while(|d| *d < to.with_timezone(&Local).date_naive().max(from.with_timezone(&Local).date_naive() + Span::days(1))).filter(|d| s.workday(*d)).collect(),
+            // At most three weeks, whatever was asked.
+            Ok((from, to)) => from.with_timezone(&Local).date_naive().iter_days().take(21).take_while(|d| *d < to.with_timezone(&Local).date_naive().max(from.with_timezone(&Local).date_naive() + Span::days(1))).filter(|d| s.workday(*d)).collect(),
             Err(_) => work(today, 5),
         },
     }

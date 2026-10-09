@@ -46,6 +46,11 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     if let Some(b) = &last_brief {
         brief_views.insert(lyra_web::users::OWNER.to_string(), json!(b));
     }
+    // A message whose attachments were read off the loop, back to be sent.
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Ready>();
+    // A model switch from a page, checked with the model server off the loop,
+    // then applied here to every conversation.
+    let (switch_tx, switch_rx) = std::sync::mpsc::channel::<(String, String, tokio::sync::oneshot::Sender<Value>)>();
     // Briefings still being made (the batch is done at 0).
     let mut brief_left = 0usize;
     let mut last_brief_check = Instant::now() - Duration::from_secs(60);
@@ -88,41 +93,18 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             match msg {
                 Inbound::Send { text, device, who, session, conn, files } => {
                     sync_role(&mut convs, &who);
-                    let i = conv_for(&mut convs, &session, &who);
-                    // Attached files: described (or read) in the message itself.
-                    let (about, images, looks) = attachments(hub, &files, convs[i].app.vision, &who);
-                    let text = format!("{text}{about}").trim().to_string();
-                    convs[i].app.attach_images = images;
-                    convs[i].app.attach_looks = looks;
-                    // A new conversation, or another one, for this device only.
-                    if text == "/new" {
-                        let app = convs[0].app.fork_for(&who);
-                        let id = app.session_id.clone();
-                        convs.push(Conv::new(app));
-                        hub.attach(conn, &id);
-                        convs[0].app.log(Level::Info, format!("{device} ({}) started a new conversation", who.name));
-                    } else if let Some(key) = text.strip_prefix("/resume ").map(str::trim).filter(|k| !k.is_empty()) {
-                        let open = convs.iter().position(|c| c.app.owner == who.user && c.app.session_id.starts_with(key));
-                        match open.or_else(|| find_conv(&mut convs, key, &who)) {
-                            Some(j) => {
-                                let id = convs[j].app.session_id.clone();
-                                hub.attach(conn, &id);
-                            }
-                            None => {
-                                convs[i].app.messages.push(Message::new("error", format!("> {text}\nno saved conversation {key:?}")));
-                                convs[i].changed = true;
-                            }
-                        }
+                    if files.is_empty() {
+                        deliver(&mut convs, hub, Ready { text, device, who, session, conn, images: Vec::new(), looks: Vec::new() });
                     } else {
-                        let c = &mut convs[i];
-                        if c.app.waiting && !text.starts_with('/') && c.app.approvals.is_empty() {
-                            c.app.messages.push(Message::new("info", "lyra is still answering here — send it again when the reply is done (or start a new conversation)".into()));
-                        } else {
-                            c.app.log(Level::Info, format!("from {device}: {}", crate::shown(&text).chars().take(80).collect::<String>()));
-                            c.app.input = text;
-                            c.app.send();
-                        }
-                        c.changed = true;
+                        // Attached files are read (PDF text, pictures) off the loop (I-7);
+                        // the message comes back here to be sent, in the order it was written.
+                        let i = conv_for(&mut convs, &session, &who);
+                        let (hub, vision, tx) = (hub.clone(), convs[i].app.vision, ready_tx.clone());
+                        std::thread::spawn(move || {
+                            let (about, images, looks) = attachments(&hub, &files, vision, &who);
+                            let text = format!("{text}{about}").trim().to_string();
+                            let _ = tx.send(Ready { text, device, who, session, conn, images, looks });
+                        });
                     }
                 }
                 Inbound::Stop { device, who, session } => {
@@ -290,6 +272,30 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                             });
                         }
                         // A page's button: memory, skills, goals, model commands, answered to the page.
+                        "do" if convs[i].app.off_loop(arg["command"].as_str().unwrap_or("").trim()).is_some() => {
+                            let line = arg["command"].as_str().unwrap_or("").trim().to_string();
+                            let job = convs[i].app.off_loop(&line).expect("checked above");
+                            convs[i].app.log(Level::Info, format!("from the app: {}", crate::shown(&line)));
+                            std::thread::spawn(move || {
+                                let _ = reply.send(match job() {
+                                    Ok(text) => json!({ "ok": true, "text": text }),
+                                    Err(e) => json!({ "ok": false, "text": e }),
+                                });
+                            });
+                        }
+                        // Switching the model: the server is asked off the loop; the switch comes back here.
+                        "do" if convs[i].app.admin && arg["command"].as_str().unwrap_or("").trim().strip_prefix("/model ").is_some_and(|n| !n.trim().is_empty()) => {
+                            let name = arg["command"].as_str().unwrap_or("").trim().trim_start_matches("/model ").trim().to_string();
+                            let (url, tx) = (convs[i].app.base_url.clone(), switch_tx.clone());
+                            std::thread::spawn(move || match crate::commands::check_model(&url, &name) {
+                                Ok(()) => {
+                                    let _ = tx.send((name, url, reply));
+                                }
+                                Err(e) => {
+                                    let _ = reply.send(json!({ "ok": false, "text": e }));
+                                }
+                            });
+                        }
                         "do" => {
                             let line = arg["command"].as_str().unwrap_or("").trim().to_string();
                             let result = convs[i].app.quiet_command(&line);
@@ -305,6 +311,13 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                             let _ = reply.send(match result {
                                 Ok(text) => json!({ "ok": true, "text": text }),
                                 Err(e) => json!({ "ok": false, "text": e }),
+                            });
+                        }
+                        // Pages that read every conversation or call out: on a thread (I-6).
+                        _ if slow(&convs[i].app, &what, &arg, &loaded).is_some() => {
+                            let job = slow(&convs[i].app, &what, &arg, &loaded).expect("checked above");
+                            std::thread::spawn(move || {
+                                let _ = reply.send(job());
                             });
                         }
                         _ => {
@@ -888,6 +901,20 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 });
             }
         }
+        while let Ok(ready) = ready_rx.try_recv() {
+            deliver(&mut convs, hub, ready);
+        }
+        while let Ok((name, _url, reply)) = switch_rx.try_recv() {
+            let answer = convs[0].app.switch_model(&name);
+            for c in convs.iter_mut() {
+                c.app.model = name.clone();
+                c.changed = true;
+            }
+            let _ = reply.send(match answer {
+                Ok(text) => json!({ "ok": true, "text": text }),
+                Err(e) => json!({ "ok": false, "text": e }),
+            });
+        }
         while let Ok((user, b)) = brief_rx.try_recv() {
             let owner = user == convs[0].app.owner;
             crate::briefing::save_for(&user, &b);
@@ -1080,5 +1107,59 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 i += 1;
             }
         }
+    }
+}
+
+/// A message from a device, ready to go (its attachments read).
+pub(crate) struct Ready {
+    text: String,
+    device: String,
+    who: Who,
+    session: String,
+    conn: u64,
+    images: Vec<String>,
+    looks: Vec<(String, String, std::path::PathBuf)>,
+}
+
+/// Send a device's message: `/new`, `/resume`, or into its conversation. The
+/// attached pictures go with it only when it's sent as a message (never left
+/// behind for the next one, after a command or while lyra is busy).
+fn deliver(convs: &mut Vec<Conv>, hub: &Hub, m: Ready) {
+    let Ready { text, device, who, session, conn, images, looks } = m;
+    let i = conv_for(convs, &session, &who);
+    // A new conversation, or another one, for this device only.
+    if text == "/new" {
+        let app = convs[0].app.fork_for(&who);
+        let id = app.session_id.clone();
+        convs.push(Conv::new(app));
+        hub.attach(conn, &id);
+        convs[0].app.log(Level::Info, format!("{device} ({}) started a new conversation", who.name));
+    } else if let Some(key) = text.strip_prefix("/resume ").map(str::trim).filter(|k| !k.is_empty()) {
+        let open = convs.iter().position(|c| c.app.owner == who.user && c.app.session_id.starts_with(key));
+        match open.or_else(|| find_conv(convs, key, &who)) {
+            Some(j) => {
+                let id = convs[j].app.session_id.clone();
+                hub.attach(conn, &id);
+            }
+            None => {
+                convs[i].app.messages.push(Message::new("error", format!("> {text}\nno saved conversation {key:?}")));
+                convs[i].changed = true;
+            }
+        }
+    } else {
+        let c = &mut convs[i];
+        if c.app.waiting && !text.starts_with('/') && c.app.approvals.is_empty() {
+            c.app.messages.push(Message::new("info", "lyra is still answering here — send it again when the reply is done (or start a new conversation)".into()));
+        } else {
+            c.app.log(Level::Info, format!("from {device}: {}", crate::shown(&text).chars().take(80).collect::<String>()));
+            c.app.input = text;
+            c.app.attach_images = images;
+            c.app.attach_looks = looks;
+            c.app.send();
+            // A command or an approval's answer doesn't take them: they don't wait for the next message.
+            c.app.attach_images.clear();
+            c.app.attach_looks.clear();
+        }
+        c.changed = true;
     }
 }

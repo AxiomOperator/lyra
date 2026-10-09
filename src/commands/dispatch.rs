@@ -35,6 +35,32 @@ impl App {
         result
     }
 
+    /// A page's command that only calls out for this person (Microsoft, PMI,
+    /// the model server) and changes nothing here: run off the serve loop, so
+    /// it doesn't hold up every conversation (I-6). `None`: run it on the loop.
+    pub(crate) fn off_loop(&self, line: &str) -> Option<Box<dyn FnOnce() -> Result<String, String> + Send>> {
+        let (name, arg) = line.split_once(' ').unwrap_or((line, ""));
+        if !PAGE_COMMANDS.contains(&name) || (!self.admin && !member_may(name, arg)) {
+            return None;
+        }
+        let (owner, arg) = (self.owner.clone(), arg.to_string());
+        Some(match name {
+            "/recap" => Box::new(move || recap::command(&owner)),
+            "/calendar" => Box::new(move || calendar::command(&arg, &owner)),
+            "/mail" => Box::new(move || crate::acting::run(&owner, || mail::command(&arg))),
+            "/today" => Box::new(move || crate::acting::run(&owner, || planner::command(&arg))),
+            "/pmi" => Box::new(move || pmi::as_user(&owner, || pmi::command(&arg))),
+            "/tasks" => Box::new(move || pmi::as_user(&owner, || pmi::tasks_text(&arg))),
+            "/task" => Box::new(move || pmi::as_user(&owner, || pmi::task_command(&arg))),
+            // Which model, and which the server offers.
+            "/model" if arg.trim().is_empty() => {
+                let (url, current) = (self.base_url.clone(), self.model.clone());
+                Box::new(move || Ok(model_listing(&url, &current)))
+            }
+            _ => return None,
+        })
+    }
+
     pub(crate) fn command_result(&mut self, line: &str) -> Result<String, String> {
         let (name, arg) = line.split_once(' ').unwrap_or((line, ""));
         if !self.admin && !member_may(name, arg) {
@@ -184,20 +210,15 @@ impl App {
     /// switch to another one (every conversation; saved to config.toml).
     pub(crate) fn model_command(&mut self, arg: &str) -> Result<String, String> {
         let name = arg.trim();
-        let offered = models(&self.base_url);
         if name.is_empty() {
-            return Ok(match offered {
-                Ok(list) if !list.is_empty() => format!("model: {}\navailable: {}\n/model <name> switches", self.model, list.join(", ")),
-                Ok(_) => format!("model: {} (the endpoint lists none)", self.model),
-                Err(e) => format!("model: {} ({e})", self.model),
-            });
+            return Ok(model_listing(&self.base_url, &self.model));
         }
-        if let Ok(list) = &offered
-            && !list.is_empty()
-            && !list.iter().any(|m| m == name)
-        {
-            return Err(format!("{name} isn't one the endpoint offers: {}", list.join(", ")));
-        }
+        check_model(&self.base_url, name)?;
+        self.switch_model(name)
+    }
+
+    /// Use `name` from now on (checked already), saved to config.toml.
+    pub(crate) fn switch_model(&mut self, name: &str) -> Result<String, String> {
         let saved = config::update(|doc| {
             doc["model"] = toml_edit::value(name);
             Ok(())
@@ -330,5 +351,22 @@ mod member_tests {
         for no in ["work 1a2b", "when 1a2b every 1d", "autonomy autonomous"] {
             assert!(!super::member_may("/goal", no) && !super::member_may("/goals", no), "{no}");
         }
+    }
+}
+
+/// `/model`: which model, and which the server offers.
+pub(crate) fn model_listing(url: &str, current: &str) -> String {
+    match models(url) {
+        Ok(list) if !list.is_empty() => format!("model: {current}\navailable: {}\n/model <name> switches", list.join(", ")),
+        Ok(_) => format!("model: {current} (the endpoint lists none)"),
+        Err(e) => format!("model: {current} ({e})"),
+    }
+}
+
+/// `name` is one the server offers (or it lists none, or can't be asked).
+pub(crate) fn check_model(url: &str, name: &str) -> Result<(), String> {
+    match models(url) {
+        Ok(list) if !list.is_empty() && !list.iter().any(|m| m == name) => Err(format!("{name} isn't one the endpoint offers: {}", list.join(", "))),
+        _ => Ok(()),
     }
 }

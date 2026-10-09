@@ -113,18 +113,25 @@ pub fn record_usage(kind: &str, model: &str, usage: &Value, ms: u64) {
     record(kind, model, input, cached, output, ms);
 }
 
-/// Calls since `since` (reading the months it spans).
-pub fn since(since: DateTime<Utc>) -> Vec<Call> {
-    let Some(d) = dir() else { return vec![] };
+/// The month files (`YYYY-MM`, UTC: as `record` names them) from `since` to `now`.
+/// In local months, the last evening of a month in Texas (already the next
+/// month in UTC) was left out (I-10).
+fn months_between(since: DateTime<Utc>, now: DateTime<Utc>) -> Vec<String> {
     let mut months = Vec::new();
-    let start = since.with_timezone(&Local).date_naive();
+    let start = since.date_naive();
     let mut m = start.with_day0(0).unwrap_or(start);
-    let end = Local::now().date_naive();
+    let end = now.date_naive();
     while m <= end {
         months.push(m.format("%Y-%m").to_string());
         m = m.checked_add_months(chrono::Months::new(1)).unwrap_or(end + Duration::days(1));
     }
     months
+}
+
+/// Calls since `since` (reading the months it spans).
+pub fn since(since: DateTime<Utc>) -> Vec<Call> {
+    let Some(d) = dir() else { return vec![] };
+    months_between(since, Utc::now())
         .iter()
         .filter_map(|mo| std::fs::read_to_string(d.join(format!("{mo}.jsonl"))).ok())
         .flat_map(|t| t.lines().filter_map(|l| serde_json::from_str::<Call>(l).ok()).collect::<Vec<_>>())
@@ -231,6 +238,15 @@ pub fn describe(days: i64, only: Option<&str>, name: &dyn Fn(&str) -> String) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn month_files_are_walked_in_utc() {
+        // Oct 31, 7 pm in Texas is already Nov 1 in UTC: November's file counts too.
+        let since: DateTime<Utc> = "2026-10-01T05:00:00Z".parse().unwrap();
+        let now: DateTime<Utc> = "2026-11-01T00:30:00Z".parse().unwrap();
+        assert_eq!(months_between(since, now), ["2026-10", "2026-11"]);
+        assert_eq!(months_between("2026-12-15T00:00:00Z".parse().unwrap(), "2027-01-02T00:00:00Z".parse().unwrap()), ["2026-12", "2027-01"]);
+    }
 
     #[test]
     fn totals_add_up_and_cost_uses_the_cache_price() {

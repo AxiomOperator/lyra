@@ -75,6 +75,16 @@ pub trait Remote: Send + Sync {
         let _ = (user, folder, request, timeout);
         Err("project folders come through lyra's app (lyra serve)".into())
     }
+    /// The same, only to a page where that folder is trusted (a write that didn't ask).
+    fn call_trusted_folder(&self, user: &str, folder: &str, request: Value, timeout: std::time::Duration) -> Result<Value, String> {
+        let _ = (user, folder, request, timeout);
+        Err("project folders come through lyra's app (lyra serve)".into())
+    }
+    /// Whether the page a request for `folder` would go to trusts it.
+    fn folder_trusted(&self, user: &str, folder: &str) -> bool {
+        let _ = (user, folder);
+        false
+    }
     /// Where a file a device sent is on this server.
     fn upload_path(&self, id: &str) -> Option<std::path::PathBuf> {
         let _ = id;
@@ -882,9 +892,11 @@ impl Caps {
                 _ => crate::mail::call(&c.name, &args),
             },
             // Folders on the person's own PC, through their own open page; a write needs their yes.
+            // A write that didn't ask (a trusted folder) goes only to a page that trusts it.
             _ if c.source == "projects" => match crate::projects::approval(self.remote.get().map(|r| r.as_ref()), &c.name, &args) {
                 Some(ask) if !approved => Err(format!("{} needs the user's approval ({})", c.name, ask.what)),
-                _ => crate::projects::call(self.remote.get().map(|r| r.as_ref()), &c.name, &args),
+                Some(_) => crate::projects::call(self.remote.get().map(|r| r.as_ref()), &c.name, &args, false),
+                None => crate::projects::call(self.remote.get().map(|r| r.as_ref()), &c.name, &args, true),
             },
             _ if c.source == "style" => crate::style::call(&c.name, &args),
             // What the person this turn is for asked to be told about.
@@ -1257,6 +1269,18 @@ mod tests {
         fn call_folder(&self, user: &str, folder: &str, req: Value, _: std::time::Duration) -> Result<Value, String> {
             Ok(json!({ "user": user, "folder": folder, "op": req["op"], "path": req["path"] }))
         }
+        fn folder_trusted(&self, user: &str, folder: &str) -> bool {
+            self.folders(user).iter().any(|(_, f)| f.trusted && f.name == folder)
+        }
+        fn call_trusted_folder(&self, user: &str, folder: &str, req: Value, t: std::time::Duration) -> Result<Value, String> {
+            if !self.folder_trusted(user, folder) {
+                return Err("not trusted there".into());
+            }
+            self.call_folder(user, folder, req, t).map(|mut v| {
+                v["trusted_page"] = json!(true);
+                v
+            })
+        }
     }
 
     #[test]
@@ -1283,6 +1307,7 @@ mod tests {
         assert!(crate::acting::run("owner", || caps.approval("project_write", t)).is_some());
         let wrote: Value = crate::acting::run("dana", || serde_json::from_str(&caps.invoke("project_write", t, member, false, true)).unwrap());
         assert_eq!(wrote["op"], "write");
+        assert_eq!(wrote["trusted_page"], true, "an unasked write goes only to a page that trusts the folder");
         // Still no shell for members.
         assert!(caps.invoke("shell_run", r#"{"command":"ls"}"#, CallContext { agent: Some("operator"), member: true, ..CallContext::new(None, "") }, true, true).contains("for admins"));
     }

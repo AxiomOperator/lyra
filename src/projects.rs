@@ -92,7 +92,8 @@ pub fn approval(remote: Option<&dyn Remote>, name: &str, args: &Value) -> Option
     }
     let (folder, path) = (args["folder"].as_str().unwrap_or("?"), args["path"].as_str().unwrap_or("?"));
     let user = crate::acting::current();
-    if remote.is_some_and(|r| r.folders(&user).iter().any(|(_, f)| f.trusted && f.name.eq_ignore_ascii_case(folder))) {
+    // Trusted by the page this write would go to (the same pick as the write itself, I-11).
+    if remote.is_some_and(|r| r.folder_trusted(&user, folder)) {
         return None;
     }
     let append = args["append"] == true;
@@ -126,7 +127,9 @@ pub fn change(old: &str, new: &str) -> String {
 
 const OFFICE: &[&str] = &[".docx", ".xlsx", ".pptx"];
 
-pub fn call(remote: Option<&dyn Remote>, name: &str, args: &Value) -> Result<Value, String> {
+/// `unasked`: it went ahead without the person's yes (a trusted folder), so a
+/// write may go only to a page that trusts that folder.
+pub fn call(remote: Option<&dyn Remote>, name: &str, args: &Value, unasked: bool) -> Result<Value, String> {
     let remote = remote.ok_or("project folders come through lyra's app (lyra serve)")?;
     let user = crate::acting::current();
     if name == "project_folders" {
@@ -177,7 +180,11 @@ pub fn call(remote: Option<&dyn Remote>, name: &str, args: &Value) -> Result<Val
                 return Err("which file?".into());
             }
             let content = args["content"].as_str().unwrap_or("");
-            ask(json!({ "op": "write", "path": path, "content": content, "append": args["append"] == true }), 30)
+            let request = json!({ "op": "write", "path": path, "content": content, "append": args["append"] == true });
+            if unasked {
+                return remote.call_trusted_folder(&user, folder, request, Duration::from_secs(30));
+            }
+            ask(request, 30)
         }
         other => Err(format!("{other} isn't a projects tool")),
     }

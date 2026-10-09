@@ -197,6 +197,11 @@ fn make(home: &Path, settings: &Settings, memory: Memory) -> Made {
     if let Some((path, _)) = memory {
         skip.push(path.to_path_buf());
     }
+    // Indexes rebuilt on every start (capabilities and agent routing, from the
+    // registry and the agent files): a cache, not data. The capabilities one
+    // alone made a night's backup 4× bigger (I-12).
+    skip.push(home.join("capabilities").join("index"));
+    skip.push(home.join("agents").join("index"));
     // Tokens for outside services stay out (everyone's): set them again after a restore.
     skip.push(home.join("config").join("secrets.toml"));
     for person in std::fs::read_dir(home.join("users")).into_iter().flatten().flatten() {
@@ -327,6 +332,11 @@ mod tests {
         std::fs::write(home.join("skills/ledger.db-wal"), "wal").unwrap();
         std::fs::write(home.join("lyra.pid"), "1 lyra serve").unwrap();
         std::fs::write(home.join("memory/lance/data"), "vectors").unwrap();
+        // Indexes rebuilt on every start: left out.
+        for d in ["capabilities/index/capabilities.lance", "agents/index/capabilities.lance"] {
+            std::fs::create_dir_all(home.join(d)).unwrap();
+            std::fs::write(home.join(d).join("big.lance"), "cache").unwrap();
+        }
         // A real SQLite database, copied with VACUUM INTO.
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
@@ -354,6 +364,7 @@ mod tests {
         assert!(!home.join("uploads").exists(), "uploads only when asked for");
         assert!(!home.join("skills/ledger.db-wal").exists(), "no half-written journals");
         assert!(!home.join("lyra.pid").exists(), "not the running lyra's lock");
+        assert!(!home.join("capabilities/index").exists() && !home.join("agents/index").exists(), "rebuildable indexes aren't backed up");
         let kept: String = rt.block_on(async {
             use sqlx::Connection;
             let o = sqlx::sqlite::SqliteConnectOptions::new().filename(home.join("skills/ledger.db"));

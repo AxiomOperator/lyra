@@ -14,6 +14,7 @@ use futures::TryStreamExt;
 use lancedb::index::Index;
 use lancedb::index::scalar::{FtsIndexBuilder, FullTextSearchQuery};
 use lancedb::query::{ExecutableQuery, QueryBase, Select};
+use lancedb::table::{CompactionOptions, OptimizeAction};
 use lancedb::{Connection, DistanceType, Table};
 use tokio::sync::Mutex;
 
@@ -95,6 +96,17 @@ fn batch(schema: &SchemaRef, rows: &[Row], dimensions: usize) -> Result<RecordBa
     )?)
 }
 
+/// Fold the many small writes together and drop old versions: every sync
+/// (each start and reload) made a new version, and kept them all (1,244, 94 MB,
+/// in four days). It's only a cache, so versions older than an hour go.
+async fn tidy(table: &Table) -> Result<()> {
+    table.optimize(OptimizeAction::Compact { options: CompactionOptions::default(), remap_options: None }).await?;
+    table
+        .optimize(OptimizeAction::Prune { older_than: Some(chrono::Duration::hours(1)), delete_unverified: Some(true), error_if_tagged_old_versions: Some(false) })
+        .await?;
+    Ok(())
+}
+
 impl CapabilityIndex {
     pub async fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
@@ -151,6 +163,9 @@ impl CapabilityIndex {
         if !rows.is_empty() && !table.list_indices().await?.iter().any(|i| i.columns.iter().any(|c| c == "text")) {
             table.create_index(&["text"], Index::FTS(FtsIndexBuilder::default())).execute().await?;
         }
+        if !stale.is_empty() || !changed.is_empty() {
+            tidy(&table).await?;
+        }
         Ok(match model {
             Some((name, _)) => rows.into_iter().filter(|r| r.3.as_deref() != Some(name) || r.4.is_none()).map(|r| (r.0, r.1)).collect(),
             None => Vec::new(),
@@ -178,7 +193,7 @@ impl CapabilityIndex {
         m.when_matched_update_all(None).when_not_matched_insert_all();
         let b = batch(&schema, &rows, dims)?;
         m.execute(Box::new(RecordBatchIterator::new(vec![Ok(b)], schema.clone()))).await?;
-        Ok(())
+        tidy(&table).await
     }
 
     /// Full-text matches, `(id, score)`, best first.

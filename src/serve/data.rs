@@ -11,48 +11,8 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
     let text = |r: Result<String, String>| json!({ "text": r.unwrap_or_else(|e| e) });
     let page = |r: Result<Value, String>| r.unwrap_or_else(|e| json!({ "error": e }));
     match what {
-        "sessions" => {
-            let Some(dir) = crate::sessions::dir() else { return json!([]) };
-            let all = crate::sessions::list_for(&dir, &app.owner);
-            let metas = crate::sessions::metas(&dir);
-            let folders = crate::sessions::folders(&dir, &app.owner);
-            // A folder for a few new ones (the decision model, once each, in the background).
-            if !folders.is_empty() && crate::decide::model().is_some() {
-                let todo: Vec<String> = all.iter().filter(|s| s.id != app.session_id && s.updated > chrono::Utc::now() - chrono::Duration::days(14) && metas.get(&s.id).is_none_or(|m| !m.looked && m.folder.is_none() && !m.archived)).take(3).map(|s| s.id.clone()).collect();
-                if !todo.is_empty() {
-                    let (dir, owner) = (dir.clone(), app.owner.clone());
-                    std::thread::spawn(move || {
-                        crate::acting::set(&owner);
-                        for id in todo {
-                            let Ok(s) = crate::sessions::find_for(&dir, &id, &owner) else { continue };
-                            let pick = crate::sessions::suggest_folder(&s, &folders);
-                            let _ = crate::sessions::set_meta(&dir, &id, &owner, |m| {
-                                m.looked = true;
-                                m.suggested = pick;
-                            });
-                        }
-                    });
-                }
-            }
-            // The latest 300, and every pinned or filed one however old.
-            let keep = |s: &crate::sessions::Session| metas.get(&s.id).is_some_and(|m| m.pinned || m.folder.is_some());
-            json!(all.iter().enumerate().filter(|(i, s)| *i < 300 || keep(s)).map(|(_, s)| {
-                let m = metas.get(&s.id).cloned().unwrap_or_default();
-                json!({
-                    "id": s.id, "title": s.title, "turns": s.user_turns(), "updated": s.updated, "current": s.id == app.session_id,
-                    "open": loaded.iter().any(|(id, _)| *id == s.id), "answering": loaded.iter().any(|(id, w)| *id == s.id && *w),
-                    "pinned": m.pinned, "archived": m.archived, "folder": m.folder, "suggested": m.suggested,
-                })
-            }).collect::<Vec<_>>())
-        }
-        "search" => {
-            let query = arg["query"].as_str().unwrap_or("").trim();
-            let all = crate::sessions::dir().map(|d| crate::sessions::list_for(&d, &app.owner)).unwrap_or_default();
-            json!(crate::sessions::search(&all, query, 30).iter().map(|h| json!({
-                "id": h.id, "title": h.title, "updated": h.updated, "role": h.role, "snippet": h.snippet, "score": h.score,
-                "current": h.id == app.session_id,
-            })).collect::<Vec<_>>())
-        }
+        "sessions" => sessions_page(&app.owner, &app.session_id, loaded),
+        "search" => search_page(&app.owner, &app.session_id, arg["query"].as_str().unwrap_or("")),
         "routines" => crate::acting::run(&app.owner, || crate::routines::view(&[], 10)),
         "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
         "recap" => crate::recap::last_for(&app.owner).map_or(Value::Null, |r| json!(r)),
@@ -144,36 +104,9 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
         }
         // Their notes and lists.
         "notes" => crate::acting::run(&app.owner, crate::notes::page),
-        // Their inbox at a glance (the last day).
-        "mail" => match crate::mail::connected_for(&app.owner) {
-            false => json!({ "connected": false }),
-            true => crate::acting::run(&app.owner, || crate::mail::glance(chrono::Utc::now() - chrono::Duration::days(1))).map_or_else(|e| json!({ "connected": true, "error": e }), |mut v| {
-                v["connected"] = json!(true);
-                v
-            }),
-        },
-        // Today's calendar (theirs), or how to connect it.
-        "calendar" => {
-            if !crate::graph::available() {
-                json!({ "available": false })
-            } else if !crate::graph::connected_for(&app.owner) {
-                json!({ "available": true, "connected": false })
-            } else {
-                match crate::acting::run(&app.owner, crate::calendar::today) {
-                    Ok(mut v) => {
-                        v["available"] = json!(true);
-                        v["connected"] = json!(true);
-                        v["mail"] = json!(crate::mail::connected_for(&app.owner));
-                        v["teams"] = json!(crate::teams::connected_for(&app.owner));
-                        v["meetings"] = json!(crate::meetings::ready(&app.owner));
-                        v["meetings_available"] = json!(crate::graph::meetings_enabled());
-                        v
-                    }
-                    Err(e) => json!({ "available": true, "connected": true, "error": e }),
-                }
-            }
-        }
-        "pmi" => crate::pmi::as_user(&app.owner, crate::pmi::snapshot).map_or_else(|e| json!({ "error": e }), |s| json!(s)),
+        "mail" => mail_page(&app.owner),
+        "calendar" => calendar_page(&app.owner),
+        "pmi" => pmi_page(&app.owner),
         "coding" => json!(crate::coding::jobs()),
         // The people who use lyra (admins: the gate is in the loop).
         "users" => {
@@ -245,4 +178,126 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
         .unwrap_or_default(),
         other => json!({ "error": format!("nothing called {other:?}") }),
     }
+}
+
+/// Pages that read every saved conversation or call out (Microsoft, PMI): made
+/// on a thread, so they don't hold up every conversation (I-6). `None`: the
+/// page is quick and answered on the loop by `data`.
+pub(crate) fn slow(app: &App, what: &str, arg: &Value, loaded: &Loaded) -> Option<Box<dyn FnOnce() -> Value + Send>> {
+    let (owner, current) = (app.owner.clone(), app.session_id.clone());
+    Some(match what {
+        "sessions" => {
+            let loaded = loaded.clone();
+            Box::new(move || sessions_page(&owner, &current, &loaded))
+        }
+        "search" => {
+            let query = arg["query"].as_str().unwrap_or("").to_string();
+            Box::new(move || search_page(&owner, &current, &query))
+        }
+        "mail" => Box::new(move || mail_page(&owner)),
+        "calendar" => Box::new(move || calendar_page(&owner)),
+        "pmi" => Box::new(move || pmi_page(&owner)),
+        _ => return None,
+    })
+}
+
+/// Conversations whose folder is being suggested now (so a refresh doesn't start another).
+static SUGGESTING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// The conversation list: the latest 300 and every pinned or filed one.
+fn sessions_page(owner: &str, current: &str, loaded: &Loaded) -> Value {
+    let Some(dir) = crate::sessions::dir() else { return json!([]) };
+    let all = crate::sessions::list_for(&dir, owner);
+    let metas = crate::sessions::metas(&dir);
+    let folders = crate::sessions::folders(&dir, owner);
+    // A folder for a few new ones (the decision model, once each, in the background).
+    if !folders.is_empty() && crate::decide::model().is_some() {
+        // Taken before the thread starts: the next refresh skips them (I-8).
+        let todo: Vec<String> = {
+            let mut busy = SUGGESTING.lock().unwrap_or_else(|e| e.into_inner());
+            let todo: Vec<String> = all
+                .iter()
+                .filter(|s| s.id != current && s.updated > chrono::Utc::now() - chrono::Duration::days(14) && metas.get(&s.id).is_none_or(|m| !m.looked && m.folder.is_none() && !m.archived) && !busy.contains(&s.id))
+                .take(3)
+                .map(|s| s.id.clone())
+                .collect();
+            busy.extend(todo.iter().cloned());
+            todo
+        };
+        if !todo.is_empty() {
+            let (dir, owner) = (dir.clone(), owner.to_string());
+            std::thread::spawn(move || {
+                crate::acting::set(&owner);
+                for id in todo {
+                    if let Ok(s) = crate::sessions::find_for(&dir, &id, &owner) {
+                        let pick = crate::sessions::suggest_folder(&s, &folders);
+                        // Filed or archived meanwhile: no suggestion over their choice.
+                        let _ = crate::sessions::set_meta(&dir, &id, &owner, |m| {
+                            m.looked = true;
+                            if m.folder.is_none() && !m.archived {
+                                m.suggested = pick;
+                            }
+                        });
+                    }
+                    SUGGESTING.lock().unwrap_or_else(|e| e.into_inner()).retain(|x| *x != id);
+                }
+            });
+        }
+    }
+    let keep = |s: &crate::sessions::Session| metas.get(&s.id).is_some_and(|m| m.pinned || m.folder.is_some());
+    json!(all.iter().enumerate().filter(|(i, s)| *i < 300 || keep(s)).map(|(_, s)| {
+        let m = metas.get(&s.id).cloned().unwrap_or_default();
+        json!({
+            "id": s.id, "title": s.title, "turns": s.user_turns(), "updated": s.updated, "current": s.id == current,
+            "open": loaded.iter().any(|(id, _)| *id == s.id), "answering": loaded.iter().any(|(id, w)| *id == s.id && *w),
+            "pinned": m.pinned, "archived": m.archived, "folder": m.folder, "suggested": m.suggested,
+        })
+    }).collect::<Vec<_>>())
+}
+
+/// Search their conversations.
+fn search_page(owner: &str, current: &str, query: &str) -> Value {
+    let all = crate::sessions::dir().map(|d| crate::sessions::list_for(&d, owner)).unwrap_or_default();
+    json!(crate::sessions::search(&all, query.trim(), 30).iter().map(|h| json!({
+        "id": h.id, "title": h.title, "updated": h.updated, "role": h.role, "snippet": h.snippet, "score": h.score,
+        "current": h.id == current,
+    })).collect::<Vec<_>>())
+}
+
+/// Their inbox at a glance (the last day).
+fn mail_page(owner: &str) -> Value {
+    match crate::mail::connected_for(owner) {
+        false => json!({ "connected": false }),
+        true => crate::acting::run(owner, || crate::mail::glance(chrono::Utc::now() - chrono::Duration::days(1))).map_or_else(|e| json!({ "connected": true, "error": e }), |mut v| {
+            v["connected"] = json!(true);
+            v
+        }),
+    }
+}
+
+/// Today's calendar (theirs), or how to connect it.
+fn calendar_page(owner: &str) -> Value {
+    if !crate::graph::available() {
+        return json!({ "available": false });
+    }
+    if !crate::graph::connected_for(owner) {
+        return json!({ "available": true, "connected": false });
+    }
+    match crate::acting::run(owner, crate::calendar::today) {
+        Ok(mut v) => {
+            v["available"] = json!(true);
+            v["connected"] = json!(true);
+            v["mail"] = json!(crate::mail::connected_for(owner));
+            v["teams"] = json!(crate::teams::connected_for(owner));
+            v["meetings"] = json!(crate::meetings::ready(owner));
+            v["meetings_available"] = json!(crate::graph::meetings_enabled());
+            v
+        }
+        Err(e) => json!({ "available": true, "connected": true, "error": e }),
+    }
+}
+
+/// Their PMI: tasks, projects, what waits.
+fn pmi_page(owner: &str) -> Value {
+    crate::pmi::as_user(owner, crate::pmi::snapshot).map_or_else(|e| json!({ "error": e }), |s| json!(s))
 }

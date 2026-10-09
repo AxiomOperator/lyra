@@ -175,8 +175,11 @@ struct Browser {
 /// Which of a person's open pages has `folder` (allowed ones first, then the
 /// one seen on screen most recently). `pages`: (connection, user, folders,
 /// last visible).
-fn pick_page(pages: &[(u64, &str, &[Folder], Option<Instant>)], user: &str, folder: &str) -> Result<u64, String> {
-    let theirs: Vec<_> = pages.iter().filter(|p| p.1 == user && p.2.iter().any(|f| f.name.eq_ignore_ascii_case(folder))).collect();
+/// The page a folder request goes to: `user`'s own, with the folder allowed,
+/// the one seen most recently. `trusted`: only a page where that folder is
+/// trusted (a write going ahead without asking, I-11).
+fn pick_page(pages: &[(u64, &str, &[Folder], Option<Instant>)], user: &str, folder: &str, trusted: bool) -> Result<u64, String> {
+    let theirs: Vec<_> = pages.iter().filter(|p| p.1 == user && p.2.iter().any(|f| f.name.eq_ignore_ascii_case(folder) && (!trusted || f.trusted))).collect();
     if theirs.is_empty() {
         return Err(format!("no open lyra page has the folder {folder:?}: open lyra (Projects) on the PC that has it"));
     }
@@ -494,14 +497,33 @@ impl Hub {
 
     /// Ask `user`'s open page with `folder` to do something in it, and wait
     /// (blocking, like `call_machine`). Never another person's page.
-    pub fn call_folder(&self, user: &str, folder: &str, mut request: Value, timeout: std::time::Duration) -> Result<Value, String> {
+    pub fn call_folder(&self, user: &str, folder: &str, request: Value, timeout: std::time::Duration) -> Result<Value, String> {
+        self.folder_call(user, folder, request, timeout, false)
+    }
+
+    /// The same, only to a page where that folder is trusted (a write that
+    /// didn't ask): never a same-named folder on another PC that isn't.
+    pub fn call_trusted_folder(&self, user: &str, folder: &str, request: Value, timeout: std::time::Duration) -> Result<Value, String> {
+        self.folder_call(user, folder, request, timeout, true)
+    }
+
+    /// Whether the page a request for `folder` would go to trusts it: decided
+    /// by the same pick as the request itself.
+    pub fn folder_trusted(&self, user: &str, folder: &str) -> bool {
+        let browsers = self.shared.browsers.lock().unwrap_or_else(|e| e.into_inner());
+        let visible = self.shared.visible.lock().unwrap_or_else(|e| e.into_inner());
+        let pages: Vec<(u64, &str, &[Folder], Option<Instant>)> = browsers.iter().map(|(c, b)| (*c, b.user.as_str(), b.folders.as_slice(), visible.get(c).and_then(|v| v.1))).collect();
+        pick_page(&pages, user, folder, false).is_ok_and(|conn| browsers[&conn].folders.iter().any(|f| f.trusted && f.name.eq_ignore_ascii_case(folder)))
+    }
+
+    fn folder_call(&self, user: &str, folder: &str, mut request: Value, timeout: std::time::Duration, trusted: bool) -> Result<Value, String> {
         let (tx, rx) = std::sync::mpsc::channel();
         let id = self.shared.next_call.fetch_add(1, Ordering::SeqCst);
         let pending = {
             let browsers = self.shared.browsers.lock().unwrap_or_else(|e| e.into_inner());
             let visible = self.shared.visible.lock().unwrap_or_else(|e| e.into_inner());
             let pages: Vec<(u64, &str, &[Folder], Option<Instant>)> = browsers.iter().map(|(c, b)| (*c, b.user.as_str(), b.folders.as_slice(), visible.get(c).and_then(|v| v.1))).collect();
-            let conn = pick_page(&pages, user, folder)?;
+            let conn = pick_page(&pages, user, folder, trusted).map_err(|e| if trusted { format!("{folder:?} isn't trusted on the PC lyra would use: the change needs your yes") } else { e })?;
             let b = &browsers[&conn];
             b.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(id, tx);
             request["type"] = json!("fs");
@@ -1192,6 +1214,9 @@ async fn connection(s: Arc<Shared>, d: Device, mut who: Who, session: String, mu
     // lyra's requests for this page's folders.
     let (page_tx, mut to_page) = tokio::sync::mpsc::unbounded_channel::<String>();
     let page_pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+    // Answers to the page's requests: each awaited in its own task, so a slow
+    // one (search everything, Enhance, models) doesn't hold up live updates.
+    let (answers_tx, mut answers) = tokio::sync::mpsc::unbounded_channel::<String>();
     s.visible.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, (who.user.clone(), Some(Instant::now())));
     s.online.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, (d.id.clone(), d.name.clone()));
     // Subscribe before asking for the snapshot, so nothing falls in between.
@@ -1234,6 +1259,11 @@ async fn connection(s: Arc<Shared>, d: Device, mut who: Who, session: String, mu
             }
             Some(req) = to_page.recv() => {
                 if socket.send(Message::Text(req.into())).await.is_err() {
+                    break;
+                }
+            }
+            Some(answer) = answers.recv() => {
+                if socket.send(Message::Text(answer.into())).await.is_err() {
                     break;
                 }
             }
@@ -1341,13 +1371,13 @@ async fn connection(s: Arc<Shared>, d: Device, mut who: Who, session: String, mu
                         let what = v["what"].as_str().unwrap_or("").to_string();
                         let (tx, rx) = oneshot::channel();
                         let ask = Inbound::Get { what: what.clone(), arg: v["arg"].clone(), session: session.clone(), who: who.clone(), reply: tx };
-                        if s.inbound.send(ask).is_ok()
-                            && let Ok(data) = rx.await
-                        {
-                            let msg = json!({ "type": "data", "what": what, "arg": v["arg"], "id": v["id"], "data": data });
-                            if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
-                                break;
-                            }
+                        if s.inbound.send(ask).is_ok() {
+                            let (arg, id, answers) = (v["arg"].clone(), v["id"].clone(), answers_tx.clone());
+                            tokio::spawn(async move {
+                                if let Ok(data) = rx.await {
+                                    let _ = answers.send(json!({ "type": "data", "what": what, "arg": arg, "id": id, "data": data }).to_string());
+                                }
+                            });
                         }
                     }
                     _ => {}
@@ -1655,9 +1685,16 @@ mod tests {
         let later = earlier + std::time::Duration::from_secs(5);
         let stale = [f("Firewall", false)];
         let pages = [(1, "dana", &dana[..], Some(earlier)), (2, "owner", &admin[..], Some(later)), (3, "dana", &stale[..], Some(later))];
-        assert_eq!(pick_page(&pages, "dana", "firewall"), Ok(1), "Dana's allowed page, not the owner's newer one");
-        assert_eq!(pick_page(&pages, "owner", "Firewall"), Ok(2));
-        assert!(pick_page(&pages, "dana", "Budget").unwrap_err().contains("no open lyra page"), "never someone else's folder");
-        assert!(pick_page(&pages[2..], "dana", "Firewall").unwrap_err().contains("needs your OK"));
+        assert_eq!(pick_page(&pages, "dana", "firewall", false), Ok(1), "Dana's allowed page, not the owner's newer one");
+        assert_eq!(pick_page(&pages, "owner", "Firewall", false), Ok(2));
+        assert!(pick_page(&pages, "dana", "Budget", false).unwrap_err().contains("no open lyra page"), "never someone else's folder");
+        assert!(pick_page(&pages[2..], "dana", "Firewall", false).unwrap_err().contains("needs your OK"));
+        // Trusted on one PC, not on the newer one: a write that didn't ask goes only to the trusting PC (I-11).
+        let trusting = [Folder { trusted: true, ..f("Firewall", true) }];
+        let other = [f("Firewall", true)];
+        let two = [(1, "dana", &trusting[..], Some(earlier)), (2, "dana", &other[..], Some(later))];
+        assert_eq!(pick_page(&two, "dana", "Firewall", false), Ok(2), "the newest page answers requests");
+        assert_eq!(pick_page(&two, "dana", "Firewall", true), Ok(1), "an unasked write: only where it's trusted");
+        assert!(pick_page(&two[1..], "dana", "Firewall", true).is_err(), "nowhere trusted: it has to ask");
     }
 }

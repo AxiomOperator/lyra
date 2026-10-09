@@ -1,5 +1,19 @@
 [
   {
+    "version": "0.30.1.161",
+    "date": "2026-10-08",
+    "title": "Smoother when it's busy",
+    "fixed": [
+      "Opening Mail, Calendar, Tasks or the conversation list, searching, or pressing a button that asks Outlook or PMI no longer makes everyone else's chat wait, and a slow page no longer freezes the rest of your app.",
+      "A file attached to a message is read without holding anyone up, and a picture can no longer end up attached to your next message by mistake.",
+      "Find a time sees every meeting on a busy calendar, so it doesn't offer time you're already booked.",
+      "AI usage counts the last evening of each month.",
+      "A folder you trust on one PC no longer lets lyra change a same-named folder on another PC without asking.",
+      "Conversation folder suggestions are made once each, and never over a folder you picked yourself.",
+      "Nightly backups are much smaller: indexes lyra rebuilds on every start are left out, and the capabilities index no longer keeps every old copy of itself."
+    ]
+  },
+  {
     "version": "0.30.0.160",
     "date": "2026-10-08",
     "title": "Every page in reach",

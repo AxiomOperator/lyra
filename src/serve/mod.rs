@@ -95,6 +95,14 @@ impl crate::caps::Remote for HubRemote {
         self.0.call_folder(user, folder, request, timeout)
     }
 
+    fn call_trusted_folder(&self, user: &str, folder: &str, request: Value, timeout: Duration) -> Result<Value, String> {
+        self.0.call_trusted_folder(user, folder, request, timeout)
+    }
+
+    fn folder_trusted(&self, user: &str, folder: &str) -> bool {
+        self.0.folder_trusted(user, folder)
+    }
+
     fn upload_path(&self, id: &str) -> Option<std::path::PathBuf> {
         self.0.upload(id).map(|(_, path)| path)
     }
