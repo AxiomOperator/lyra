@@ -122,7 +122,7 @@ fn names(e: &Value) -> Vec<(String, String)> {
 }
 
 /// The prep note for a meeting: who, the latest mail with them, open tasks about it.
-fn prep(e: &Value, me: &str) -> (String, String) {
+pub(crate) fn prep(e: &Value, me: &str) -> (String, String) {
     let subject = e["subject"].as_str().unwrap_or("a meeting").to_string();
     let at = crate::graph::utc(&e["start"]).map(|t| t.with_timezone(&Local).format("%H:%M").to_string()).unwrap_or_default();
     let people: Vec<(String, String)> = names(e).into_iter().filter(|(_, a)| !a.eq_ignore_ascii_case(me)).take(6).collect();

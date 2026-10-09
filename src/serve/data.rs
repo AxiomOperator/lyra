@@ -205,6 +205,24 @@ pub(crate) fn slow(app: &App, what: &str, arg: &Value, loaded: &Loaded) -> Optio
             Box::new(move || search_page(&owner, &current, &query))
         }
         "mail" => Box::new(move || mail_page(&owner)),
+        // The meeting workspace: their meetings, one meeting's page, notes, the follow-up.
+        "meetings" => Box::new(move || crate::acting::run(&owner, crate::meetings::list).unwrap_or_else(|e| json!({ "error": e }))),
+        "meeting" => {
+            let id = arg["id"].as_str().unwrap_or("").to_string();
+            Box::new(move || crate::acting::run(&owner, || crate::meetings::workspace(&id)).unwrap_or_else(|e| json!({ "error": e })))
+        }
+        "meeting_notes" => {
+            let (id, notes) = (arg["id"].as_str().unwrap_or("").to_string(), arg["notes"].as_str().unwrap_or("").to_string());
+            Box::new(move || crate::acting::run(&owner, || crate::meetings::save_notes(&id, &notes)).map_or_else(|e| json!({ "error": e }), |()| json!({ "ok": true })))
+        }
+        "meeting_followup" => {
+            let (id, url, model) = (arg["id"].as_str().unwrap_or("").to_string(), format!("{}/chat/completions", app.base_url.trim_end_matches('/')), app.model.clone());
+            Box::new(move || crate::acting::run(&owner, || crate::meetings::follow_up(&id, &url, &model)).map_or_else(|e| json!({ "error": e }), |f| json!({ "followup": f })))
+        }
+        "meeting_draft" => {
+            let id = arg["id"].as_str().unwrap_or("").to_string();
+            Box::new(move || crate::acting::run(&owner, || crate::meetings::draft_mail(&id)).map_or_else(|e| json!({ "error": e }), |d| json!({ "draft": d })))
+        }
         "calendar" => Box::new(move || calendar_page(&owner)),
         "pmi" => Box::new(move || pmi_page(&owner)),
         _ => return None,

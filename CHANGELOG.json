@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.33.0.164",
+    "date": "2026-10-08",
+    "title": "Meetings",
+    "new": [
+      "Meetings: a page for each of your meetings. Before, what to prepare (who's coming, your last emails with them, open tasks); during, a notes box that saves as you type; after, the follow-up: a summary, the decisions, your action items (each one a task with a tap) and a mail to everyone who was invited, ready in your Outlook Drafts.",
+      "When the meeting was transcribed in Teams, the follow-up is written from the transcript; otherwise from your notes."
+    ]
+  },
+  {
     "version": "0.32.0.163",
     "date": "2026-10-08",
     "title": "Saved prompts",

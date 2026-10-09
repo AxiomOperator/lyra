@@ -23,6 +23,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "@/lib/utils";
 import {
   Activity,
+  CalendarDays,
   ChevronDown,
   ChevronUp,
   Code2,
@@ -112,6 +113,7 @@ const NotesPage = page(() => import("./lyra/notes"), "NotesPage");
 const UsersPage = page(() => import("./lyra/users"), "UsersPage");
 const UsagePage = page(() => import("./lyra/usage"), "UsagePage");
 const SettingsPage = page(() => import("./lyra/settings"), "SettingsPage");
+const MeetingsPage = page(() => import("./lyra/meetings"), "MeetingsPage");
 const ProjectsPage = page(() => import("./lyra/projects"), "ProjectsPage");
 const StatusPage = page(() => import("./lyra/status"), "StatusPage");
 const ActivityPage = page(() => import("./lyra/pages"), "ActivityPage");
@@ -127,10 +129,10 @@ function Loading() {
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings";
-const manage: Manage[] = ["whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings"];
+type Manage = "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings";
+const manage: Manage[] = ["whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings"];
 /** What a member (not an admin) has: their chats, tasks, status, activity, skills. */
-const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage"];
+const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage", "meetings"];
 
 type TabItem = {
   id: Tab;
@@ -142,7 +144,7 @@ type TabItem = {
 /** The icon rail's pages, in groups (a line between them). */
 const railGroups: Tab[][] = [
   ["chat", "status", "activity"],
-  ["tasks", "notes", "projects", "routines", "goals"],
+  ["tasks", "meetings", "notes", "projects", "routines", "goals"],
   ["memory", "skills", "coding", "model"],
   ["machines", "devices", "users", "usage"],
 ];
@@ -437,6 +439,7 @@ function Shell() {
   const pmiWaiting = (status.pmi?.waiting.task_transfers?.length ?? 0) + (status.pmi?.waiting.project_transfers?.length ?? 0) + (status.pmi?.waiting.approvals?.length ?? 0);
   const more: TabItem[] = ([
     { id: "tasks", label: "Tasks", icon: ListTodo, badge: (status.pmi?.tasks ?? []).filter((t) => t.due && t.due < todayKey).length + pmiWaiting },
+    { id: "meetings", label: "Meetings", icon: CalendarDays },
     { id: "notes", label: "Notes", icon: NotebookPen },
     { id: "whatsnew", label: "What's new", icon: Sparkles },
     { id: "feedback", label: "Feedback", icon: MessageSquareWarning, badge: status.feedback_news ?? 0 },
@@ -554,6 +557,7 @@ function Shell() {
           {tab === "usage" && <UsagePage onBack={toMore} />}
           {tab === "users" && <UsersPage onBack={toMore} />}
           {tab === "settings" && <SettingsPage onBack={toMore} />}
+          {tab === "meetings" && <MeetingsPage onBack={toMore} />}
           </Suspense>
         </div>
 

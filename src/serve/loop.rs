@@ -185,7 +185,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "briefing" | "watches" | "everything" | "templates" | "template_put" | "template_remove" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze" | "feedback_enhance" | "qa" | "qa_put" | "qa_remove" | "qa_promote") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "briefing" | "watches" | "everything" | "templates" | "template_put" | "template_remove" | "meetings" | "meeting" | "meeting_notes" | "meeting_followup" | "meeting_draft" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze" | "feedback_enhance" | "qa" | "qa_put" | "qa_remove" | "qa_promote") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
