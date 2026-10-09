@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.47.1.183",
+    "date": "2026-10-09",
+    "title": "Long routines fold",
+    "fixed": [
+      "Long routine instructions fold to their start on the Routines page, with Show all, and their sections are spaced so they read as sections."
+    ]
+  },
+  {
     "version": "0.47.0.182",
     "date": "2026-10-09",
     "title": "Routines in Markdown",

@@ -641,6 +641,25 @@ function RoutineDialog({ open, routine, onClose, saved }: { open: boolean; routi
   );
 }
 
+/** What a routine does, as Markdown; a long one folded to its start. */
+function RoutinePrompt({ text }: { text: string }) {
+  const long = text.length > 700 || text.split("\n").length > 14;
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <div className={cn("relative break-words text-sm [&_h1]:mt-1 [&_h1]:text-base [&_h2]:mt-4 [&_h2]:text-base [&_h3]:mt-3 [&_h3]:text-sm [&_p]:my-1", long && !open && "max-h-56 overflow-hidden")}>
+        <MessageResponse>{text}</MessageResponse>
+        {long && !open && <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-card to-transparent" />}
+      </div>
+      {long && (
+        <button type="button" className="mt-1 text-teal-300 text-xs hover:text-teal-200" onClick={() => setOpen(!open)}>
+          {open ? "Show less" : "Show all"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function RunLine({ run, open }: { run: RoutineRun; open: (session: string) => void }) {
   const [more, setMore] = useState(false);
   const mark = run.outcome !== "ok" ? `✗ ${run.outcome}` : run.needs_user ? "⚠ needs you" : "✓ all clear";
@@ -721,9 +740,7 @@ export function RoutinesPage({ onBack, toChat }: { onBack: () => void; toChat: (
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-2 px-4">
-              <div className="break-words text-sm [&_h1]:mt-1 [&_h1]:text-base [&_h2]:mt-1 [&_h2]:text-base [&_h3]:mt-1 [&_h3]:text-sm [&_p]:my-1">
-                <MessageResponse>{r.prompt}</MessageResponse>
-              </div>
+              <RoutinePrompt text={r.prompt} />
               {last ? <RunLine run={last} open={open} /> : <p className="text-muted-foreground text-xs">Not run yet.</p>}
               {history === r.name && r.runs.slice(1).map((x) => <RunLine key={x.at} run={x} open={open} />)}
               <div className="flex flex-wrap gap-2">
