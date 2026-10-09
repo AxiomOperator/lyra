@@ -164,6 +164,7 @@ Recurring errors:
 | I-22 ✅ | **Fixed in 0.25.3.147.** *Was:* `recap` saves aren't atomic. | Write to a temp file and rename. |
 | I-23 ✅ | **Fixed in 0.29.1.154:** `briefing` is on the members' page list and `/briefing` on their command list. `/briefing` showed the owner's briefing (`briefing::last()`) and is now each person's own (`last_for`); "Brief me now" makes only that person's briefing (`request_for`; the schedule still makes everyone's), and the batch counts what's left instead of waiting for the owner's, so a member-only one can't leave it busy. *Was:* members got "that's for admins" for their own briefing page. | Add `briefing` to the member list. |
 | I-24 | "Search everything" threads keep running after its 8 s cutoff. | One search at a time per person. |
+| I-25 ✅ | **Fixed in 0.29.2.155:** secrets files were wiped down to the Microsoft tokens on 2026-10-08 15:05 (the owner's and a member's: lyra's Microsoft app secret and PMI tokens lost). `secrets::set_token_for` read the file, changed one token and rewrote it with a truncating write and no lock, so concurrent Microsoft token refreshes read an empty file and wrote back only their own token. Now one lock, a private temp file renamed into place, and a file that can't be read is an error instead of a fresh start. | Re-enter the lost secrets (`lyra secret entra`, `/pmi token`). |
 
 ### Checked and fine
 - Every `data()` handler takes identity from the connection, never from the client.
