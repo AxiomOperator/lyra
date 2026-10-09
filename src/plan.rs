@@ -341,14 +341,37 @@ pub(crate) fn chat_with(url: &str, model: &str, messages: &[Value], tools: &[Val
         body["temperature"] = json!(t);
     }
     let started = std::time::Instant::now();
-    let resp = client.post(url).json(&body).send().map_err(|e| e.to_string())?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(format!("{status}: {}", resp.text().unwrap_or_default()));
-    }
-    let reply: Value = resp.json().map_err(|e| e.to_string())?;
-    // Agents' and plans' steps, for whoever this thread works for.
-    crate::usage::record_usage("agent", model, &reply["usage"], started.elapsed().as_millis() as u64);
+    let send = |url: &str, body: &Value| -> Result<Value, String> {
+        let resp = client.post(url).json(body).send().map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("{status}: {}", resp.text().unwrap_or_default().chars().take(500).collect::<String>()));
+        }
+        resp.json().map_err(|e| e.to_string())
+    };
+    // The main chat model down: the fallback takes the step (not an agent's own model).
+    let fallback = crate::fallback::target().filter(|(u, _)| u != url && crate::fallback::settings().is_some());
+    let mut used = model.to_string();
+    let reply: Value = match &fallback {
+        Some((fb_url, fb_model)) if crate::fallback::skip_main() => {
+            body["model"] = json!(fb_model);
+            used = fb_model.clone();
+            send(fb_url, &body)?
+        }
+        _ => match send(url, &body) {
+            Ok(r) => r,
+            Err(e) if crate::fallback::unreachable(&e) && fallback.is_some() => {
+                let (fb_url, fb_model) = fallback.clone().unwrap_or_default();
+                crate::fallback::main_failed();
+                body["model"] = json!(fb_model);
+                used = fb_model;
+                send(&fb_url, &body)?
+            }
+            Err(e) => return Err(e),
+        },
+    };
+    // Agents' and plans' steps, for whoever this thread works for (as the model that answered).
+    crate::usage::record_usage("agent", &used, &reply["usage"], started.elapsed().as_millis() as u64);
     let tokens = reply["usage"]["total_tokens"].as_u64().unwrap_or(0);
     Ok((reply["choices"][0]["message"].clone(), tokens))
 }

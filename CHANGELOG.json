@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.36.2.170",
+    "date": "2026-10-08",
+    "title": "Fallback for agents and plans",
+    "fixed": [
+      "Agents and plans use the fallback chat model too while the main one can't be reached, so a delegated job or a plan step doesn't fail when the main model is down."
+    ]
+  },
+  {
     "version": "0.36.1.169",
     "date": "2026-10-08",
     "title": "Fallback priced right",
