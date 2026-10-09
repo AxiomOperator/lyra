@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.50.2.191",
+    "date": "2026-10-09",
+    "title": "Rail groups fold open",
+    "improved": [
+      "The rail's groups fold open in place instead of opening a menu beside the rail. Tap Work, Knowledge, Automation, System or Help to show its pages under it; the others fold away, and the group you're working in opens by itself."
+    ]
+  },
+  {
     "version": "0.50.1.190",
     "date": "2026-10-09",
     "title": "Quicker page summaries",

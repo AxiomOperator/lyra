@@ -278,35 +278,35 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
     );
   // A group: its icon (lit while one of its pages is open, with what waits in
   // it), and a menu of its pages beside the rail.
+  // A group folds open under its icon (one at a time); the one holding the
+  // open page opens by itself. Folded, it shows what waits inside it.
+  const holding = railGroups.find((g) => g.pages.includes(tab))?.id ?? null;
+  const [unfolded, setUnfolded] = useState<string | null>(holding);
+  useEffect(() => setUnfolded(holding), [holding]);
   const railGroup = (label: string, Icon: typeof MessageSquare, items: TabItem[], key: string) => {
-    const here = items.find((t) => t.id === tab);
+    const open = unfolded === key;
+    const here = items.some((t) => t.id === tab);
     const waiting = items.reduce((n, t) => n + (t.badge ?? 0), 0);
     return (
-      <DropdownMenu key={key}>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            aria-label={label}
-            className={cn(
-              "relative flex w-14 shrink-0 flex-col items-center justify-center gap-0.5 rounded-md py-1 text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground data-[state=open]:bg-sidebar-accent [&>svg]:size-[18px]",
-              here && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary",
-            )}
-          >
-            <Icon />
-            <span className="w-full truncate text-center text-[10px] leading-tight">{here ? here.label : label}</span>
-            {waiting > 0 && <span data-badge className="absolute top-0.5 right-2 min-w-4 rounded-full bg-amber-400 px-1 text-center font-semibold text-[10px] text-black leading-4">{waiting}</span>}
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent side="right" align="start" sideOffset={6} className="min-w-48">
-          <DropdownMenuLabel className="text-muted-foreground text-xs">{label}</DropdownMenuLabel>
-          {items.map((t) => (
-            <DropdownMenuItem key={t.id} onClick={() => go(t.id)} className={cn(t.id === tab && "bg-accent")}>
-              <t.icon /> <span className="flex-1">{t.label}</span>
-              {!!t.badge && <span className="min-w-4 rounded-full bg-amber-400 px-1 text-center font-semibold text-[10px] text-black leading-4">{t.badge}</span>}
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <div key={key} className={cn("flex w-full flex-col items-center rounded-md", open && "bg-sidebar-accent/40 pb-0.5")}>
+        <button
+          type="button"
+          aria-label={label}
+          aria-expanded={open}
+          onClick={() => setUnfolded(open ? null : key)}
+          className={cn(
+            "relative flex w-14 shrink-0 flex-col items-center justify-center gap-0.5 rounded-md py-1 text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [&>svg]:size-[18px]",
+            here && !open && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary",
+            open && "text-sidebar-foreground",
+          )}
+        >
+          <Icon />
+          <span className="w-full truncate text-center text-[10px] leading-tight">{label}</span>
+          <ChevronDown className={cn("!size-2.5 absolute top-2 left-0.5 opacity-60 transition-transform", open && "rotate-180")} />
+          {waiting > 0 && !open && <span data-badge className="absolute top-0.5 right-2 min-w-4 rounded-full bg-amber-400 px-1 text-center font-semibold text-[10px] text-black leading-4">{waiting}</span>}
+        </button>
+        {open && <div className="flex flex-col items-center [&_button]:py-0.5 [&_button>svg]:size-4">{items.map(railItem)}</div>}
+      </div>
     );
   };
   return (
