@@ -18,6 +18,7 @@ pub(crate) const COMMANDS: &str = "\
 /new                         start a new conversation (this one is saved)
 /retry [other]               send your last message again (other: the other model answers); its reply is replaced
 /edit <text>                 change your last message and send it again; its reply is replaced
+/email [test | via lyra|outlook|auto | briefing|recap on|off]  email from lyra, to you only
 /chat-only [on|off]          just talk in this conversation: no tools (nothing looked up, sent or changed)
 /steps [on|off]              when lyra does several things at once, show them first to skip any (in the app)
 /machines [update|remove <name>]  machines lyra works on (lyra-node): online, version, update, remove
@@ -28,8 +29,8 @@ pub(crate) const COMMANDS: &str = "\
 /sessions                    saved conversations (lyra -c continues the latest)
 /sessions search <words>     find a conversation by what was said in it
 /routine [list]              scheduled things to ask lyra; runs tell you only when something needs you
-/routine new <name> | <schedule> | <what to do> [| notify problems|always|never] [| changes]
-/routine run|pause|resume|delete|show <name> · /routine edit <name> schedule|prompt|notify|changes <value>
+/routine new <name> | <schedule> | <what to do> [| notify problems|always|never] [| changes] [| email]
+/routine run|pause|resume|delete|show <name> · /routine edit <name> schedule|prompt|notify|changes|email <value>
 /coding                      coding jobs handed to Claude Code / OpenCode (ask: 'fix … in ~/Projects/x on @desktop')
 /diagnose [<machine> <problem>]  problems researched (read-only); look into one now
 /tasks [today|overdue|week|project <name>]   your PMI tasks (personal and assigned), numbered
@@ -38,6 +39,7 @@ pub(crate) const COMMANDS: &str = "\
 /users rounds <who> <n|default>   their own limit on tool calls in one reply (1–64; admins)
 /users add <username> <name> [admin]   an account without Microsoft: a one-time password, shown once (admins)
 /users password <who> [username]   a new one-time password (or a first username) for someone (admins)
+/users email <who> <address>  where lyra's emails to someone go (accounts without Microsoft; admins)
 /whoami                      who this conversation belongs to
 /settings [<key> <value>]    the common settings (models, working hours, briefing, recap, notifications); change one (admins)
 /templates                   your saved prompts and the shared ones (save them in the app)

@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { Brain, Check, ChevronDown, ChevronRight, Download, HelpCircle, KeyRound, Link2, PenLine, Smartphone, Trash2, X } from "lucide-react";
+import { Brain, Check, ChevronDown, ChevronRight, Download, HelpCircle, KeyRound, Link2, Mail, PenLine, Smartphone, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Back, Failed, Page, useAction, useConfirm } from "./parts";
 import { ago } from "./push";
@@ -114,6 +114,99 @@ function MemoryRow({ m, act, busy }: { m: Memory; act: (c: string) => Promise<bo
         </div>
       )}
     </div>
+  );
+}
+
+interface EmailView {
+  address: string | null;
+  via: "" | "lyra" | "outlook";
+  sends_with: string | null;
+  problem: string | null;
+  lyra_mailbox: boolean;
+  outlook: boolean;
+  briefing: boolean;
+  recap: boolean;
+  recent: { at: string; subject: string; kind: string; via: string; error?: string }[];
+  error?: string;
+}
+
+/** Email from lyra, to you only: how it goes, the briefing and recap by email, a test. */
+function EmailCard() {
+  const { call, ready } = useLyra();
+  const [v, setV] = useState<EmailView | null>(null);
+  const [said, setSaid] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => void call<EmailView>("email").then(setV), [call]);
+  useEffect(() => {
+    if (ready) load();
+  }, [ready, load]);
+  const set = async (change: Record<string, unknown>) => {
+    const r = await call<EmailView>("email_set", change);
+    if (r && !r.error) setV(r);
+    else setSaid({ ok: false, text: r?.error ?? "lyra didn't answer" });
+  };
+  const test = async () => {
+    setBusy(true);
+    const r = await call<{ ok?: boolean; text?: string; error?: string }>("email_test");
+    setBusy(false);
+    setSaid(r?.ok ? { ok: true, text: `${(r.text ?? "sent").replace(/^sent/, "Sent")}. Check your inbox.` } : { ok: false, text: r?.error ?? "lyra didn't answer" });
+    load();
+  };
+  if (!v) return null;
+  return (
+    <Card className="gap-1 py-4">
+      <CardHeader className="px-4">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Mail className="size-4" /> Email from lyra
+        </CardTitle>
+        <CardDescription>Routine results, your briefing and your recap, to you only. Turn it on for a routine on the Routines page.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 px-4 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-muted-foreground">Your address</span>
+          <span className="font-mono">{v.address ?? "none yet (an admin adds it on the Users page)"}</span>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-muted-foreground">Send with</span>
+          <select value={v.via} onChange={(e) => void set({ via: e.target.value })} className="rounded-md border bg-background px-2 py-1.5 text-sm" aria-label="Send with">
+            <option value="">lyra decides{v.sends_with ? ` (${v.sends_with})` : ""}</option>
+            <option value="lyra" disabled={!v.lyra_mailbox}>
+              lyra's mailbox{v.lyra_mailbox ? "" : " (not set up)"}
+            </option>
+            <option value="outlook" disabled={!v.outlook}>
+              my Outlook (as me){v.outlook ? "" : " (not connected)"}
+            </option>
+          </select>
+        </div>
+        {v.problem && <p className="text-amber-300 text-xs">Can't send yet: {v.problem}</p>}
+        <label className="flex items-center justify-between gap-2">
+          <span>Email me the morning briefing</span>
+          <input type="checkbox" className="size-4 accent-teal-500" checked={v.briefing} onChange={(e) => void set({ briefing: e.target.checked })} />
+        </label>
+        <label className="flex items-center justify-between gap-2">
+          <span>Email me the end-of-day recap</span>
+          <input type="checkbox" className="size-4 accent-teal-500" checked={v.recap} onChange={(e) => void set({ recap: e.target.checked })} />
+        </label>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="secondary" disabled={busy || !!v.problem || !v.address} onClick={() => void test()}>
+            {busy ? "Sending…" : "Send a test"}
+          </Button>
+          {said && <span className={cn("text-xs", said.ok ? "text-teal-300" : "text-red-300")}>{said.text}</span>}
+        </div>
+        {v.recent.length > 0 && (
+          <div className="divide-y rounded-md border text-xs">
+            {v.recent.slice(0, 5).map((s, i) => (
+              <div key={`${s.at}-${i}`} className="flex items-center justify-between gap-2 px-3 py-1.5">
+                <span className="min-w-0 truncate">{s.subject}</span>
+                <span className={cn("shrink-0", s.error ? "text-red-300" : "text-muted-foreground")} title={s.error || undefined}>
+                  {s.error ? "not sent" : s.via} · {ago(s.at)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -274,6 +367,7 @@ export function AboutMePage({ onBack }: { onBack: () => void }) {
           </div>
         </CardContent>
       </Card>
+      <EmailCard />
       {me?.username && <PasswordCard username={me.username} />}
       <Card className="gap-1 py-4">
         <CardHeader className="px-4">

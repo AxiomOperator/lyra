@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.45.0.179",
+    "date": "2026-10-09",
+    "title": "Email from lyra",
+    "new": [
+      "Routines can email you their result. Set one up like \"every morning at 7, search the web for news about X and summarize it with links\", tick Email me each result, and lyra writes the answer as an email and sends it to you.",
+      "Get your morning briefing and end-of-day recap by email: About me → Email from lyra.",
+      "Ask \"email me this\" in a chat and lyra sends you a summary, a list or a write-up with links.",
+      "Emails come from lyra's own mailbox through Postmark (admins add the key and sender in Settings → Email) or, if you prefer, your own Outlook. lyra only ever emails you, never anyone else.",
+      "Admins can add an email address for people who sign in without Microsoft (Users → Add email)."
+    ]
+  },
+  {
     "version": "0.44.0.178",
     "date": "2026-10-09",
     "title": "Ask lyra what changed",

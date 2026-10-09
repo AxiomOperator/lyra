@@ -559,8 +559,10 @@ function RoutineDialog({ open, routine, onClose, act }: { open: boolean; routine
   const [prompt, setPrompt] = useState("");
   const [notify, setNotify] = useState<Routine["notify"]>("problems");
   const [changes, setChanges] = useState(false);
+  const [email, setEmail] = useState(false);
   useEffect(() => {
     setChanges(routine?.changes ?? false);
+    setEmail(routine?.email ?? false);
     setName(routine?.name ?? "");
     setSchedule(routine?.schedule ?? "every day at 07:00");
     setPrompt(routine?.prompt ?? "");
@@ -571,13 +573,14 @@ function RoutineDialog({ open, routine, onClose, act }: { open: boolean; routine
   const save = async () => {
     let ok: boolean;
     if (!routine) {
-      ok = await act(`/routine new ${clean(name)} | ${clean(schedule)} | ${clean(prompt)} | notify ${notify}${changes ? " | changes" : ""}`);
+      ok = await act(`/routine new ${clean(name)} | ${clean(schedule)} | ${clean(prompt)} | notify ${notify}${changes ? " | changes" : ""}${email ? " | email" : ""}`);
     } else {
       ok = true;
       if (clean(schedule) !== routine.schedule) ok = (await act(`/routine edit ${routine.name} schedule ${clean(schedule)}`)) && ok;
       if (ok && clean(prompt) !== routine.prompt) ok = (await act(`/routine edit ${routine.name} prompt ${clean(prompt)}`)) && ok;
       if (ok && notify !== routine.notify) ok = (await act(`/routine notify ${routine.name} ${notify}`)) && ok;
       if (ok && changes !== routine.changes) ok = (await act(`/routine edit ${routine.name} changes ${changes ? "on" : "off"}`)) && ok;
+      if (ok && email !== !!routine.email) ok = (await act(`/routine edit ${routine.name} email ${email ? "on" : "off"}`)) && ok;
     }
     if (ok) onClose();
   };
@@ -606,6 +609,13 @@ function RoutineDialog({ open, routine, onClose, act }: { open: boolean; routine
             <span>
               It may change things
               <span className="block text-muted-foreground text-xs">Each change still asks you. Off: it only checks and reports, so it never waits on you.</span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-0.5 size-4 accent-teal-500" checked={email} onChange={(e) => setEmail(e.target.checked)} />
+            <span>
+              Email me each result
+              <span className="block text-muted-foreground text-xs">To you only, e.g. a morning digest with links. lyra writes the answer as the email.</span>
             </span>
           </label>
           <label className="flex items-center justify-between gap-3 text-sm">
@@ -642,6 +652,7 @@ function RunLine({ run, open }: { run: RoutineRun; open: (session: string) => vo
         </span>
       </div>
       <p className={cn("mt-1 whitespace-pre-wrap break-words text-muted-foreground text-xs", !more && "line-clamp-3")}>{run.summary}</p>
+      {run.emailed && <p className={cn("mt-1 text-xs", run.emailed.startsWith("not ") ? "text-red-300" : "text-teal-300")}>✉ {run.emailed}</p>}
       <div className="mt-1 flex gap-3 text-xs">
         <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setMore(!more)}>
           {more ? "less" : "more"}
@@ -697,6 +708,7 @@ export function RoutinesPage({ onBack, toChat }: { onBack: () => void; toChat: (
                 {r.running && <Badge className="bg-sky-600/80 text-white">running</Badge>}
                 {!r.enabled && <Badge variant="secondary">paused</Badge>}
                 {r.changes && <Badge variant="outline">may change things</Badge>}
+                {r.email && <Badge variant="outline">emailed to you</Badge>}
                 {!r.valid && <Badge className="bg-red-500/20 text-red-300">bad schedule</Badge>}
               </CardTitle>
               <CardDescription className="break-words">

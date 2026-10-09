@@ -85,6 +85,45 @@ function Editor({ f, value, set, models }: { f: Field; value: Value; set: (v: Va
   }
 }
 
+/** lyra's mailbox key: typed once, saved straight into secrets.toml, never shown again. */
+function EmailKey() {
+  const { call, ready } = useLyra();
+  const [info, setInfo] = useState<{ provider: string; key_set: boolean } | null>(null);
+  const [key, setKey] = useState("");
+  const [said, setSaid] = useState("");
+  const load = useCallback(() => void call<{ provider: string; key_set: boolean }>("email_admin").then(setInfo), [call]);
+  useEffect(() => {
+    if (ready) load();
+  }, [ready, load]);
+  const provider = info?.provider?.trim() || "postmark";
+  const save = async (value: string) => {
+    const r = await call<{ ok?: boolean; error?: string }>("email_key", { provider, key: value });
+    setSaid(r?.ok ? (value ? "Saved. Try it: About me → Email from lyra → Send a test." : "Removed.") : (r?.error ?? "lyra didn't answer"));
+    setKey("");
+    load();
+  };
+  return (
+    <div className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0">
+        <div className="font-medium text-sm">{provider === "postmark" ? "Postmark Server API token" : `${provider} key`}</div>
+        <div className="text-muted-foreground text-xs">{info?.key_set ? "Set. It's kept in secrets.toml and never shown; paste a new one to replace it." : "Not set yet. From your Postmark server's API Tokens tab."}</div>
+        {said && <div className="text-teal-300 text-xs">{said}</div>}
+      </div>
+      <div className="flex items-center gap-2">
+        <Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={info?.key_set ? "••••••••" : "Paste the key"} autoComplete="off" className="w-56" aria-label="Email service key" />
+        <Button size="sm" disabled={!key.trim()} onClick={() => void save(key.trim())}>
+          Save key
+        </Button>
+        {info?.key_set && (
+          <Button size="sm" variant="ghost" onClick={() => void save("")}>
+            Remove
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPage({ onBack }: { onBack: () => void }) {
   const { call, ready } = useLyra();
   const [data, setData] = useState<SettingsData | null>(null);
@@ -155,6 +194,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                 </div>
               );
             })}
+            {g.id === "email" && <EmailKey />}
           </CardContent>
         </Card>
       ))}

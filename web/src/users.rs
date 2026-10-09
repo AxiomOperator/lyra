@@ -231,6 +231,24 @@ impl Users {
         Ok(u)
     }
 
+    /// Set (or clear) someone's email address: where lyra's emails to them go.
+    /// For accounts without Microsoft (whose sign-in brings its own address).
+    pub fn set_email(&self, key: &str, email: &str) -> Result<User, String> {
+        let email = email.trim();
+        if !email.is_empty() && !(email.contains('@') && email.split('@').nth(1).is_some_and(|d| d.contains('.')) && !email.contains(char::is_whitespace)) {
+            return Err(format!("{email:?} doesn't look like an email address"));
+        }
+        let mut all = self.list();
+        let i = index_or_username(&all, key).ok_or_else(|| format!("no user {key:?} (or more than one by that name: use their email)"))?;
+        if !email.is_empty() && all.iter().enumerate().any(|(j, u)| j != i && u.email.eq_ignore_ascii_case(email)) {
+            return Err(format!("{email} is someone else's address here"));
+        }
+        all[i].email = email.to_string();
+        let u = all[i].clone();
+        self.save(&all)?;
+        Ok(u)
+    }
+
     /// A new account an admin makes for someone without Microsoft: active,
     /// with a one-time password (returned, shown to the admin once) to change
     /// at their first sign-in.

@@ -74,6 +74,7 @@ pub const GROUPS: &[Group] = &[
     Group { id: "replies", title: "Replies", help: "How far lyra goes in one reply before it stops and asks to continue. A person can have their own limit (Users)." },
     Group { id: "hours", title: "Working hours", help: "Your working day: Plan my day puts focus blocks inside it, and the recap comes at its end." },
     Group { id: "briefing", title: "Briefing and recap", help: "The morning briefing and the end-of-day recap." },
+    Group { id: "email", title: "Email", help: "lyra's own mailbox, for emailing people their routine results, briefing and recap (only ever to themselves). Its key is set below the fields and kept in secrets.toml. People with Outlook connected can send with it instead (About me)." },
     Group { id: "notify", title: "Notifications", help: "What lyra pushes to paired phones and browsers, and what it does by itself." },
 ];
 
@@ -111,6 +112,9 @@ pub const FIELDS: &[Field] = &[
     Field { key: "briefing.notify", group: "briefing", label: "Push the briefing", help: "", kind: Kind::Bool, get: |c, _| json!(c.briefing.notify) },
     Field { key: "recap.enabled", group: "briefing", label: "End-of-day recap", help: "What got done, what's open, tomorrow's first meeting.", kind: Kind::Bool, get: |c, _| json!(c.recap.enabled) },
     Field { key: "recap.at", group: "briefing", label: "Recap comes at", help: "Empty: when your working day ends.", kind: Kind::TimeOrEmpty, get: |c, _| s(&c.recap.at) },
+    Field { key: "email.provider", group: "email", label: "Email service", help: "The service lyra's mailbox sends through: postmark. Empty: none (people's own Outlook only).", kind: Kind::Text, get: |c, _| s(&c.email.provider) },
+    Field { key: "email.from", group: "email", label: "From", help: "Who lyra's emails come from, e.g. lyra <lyra@example.org> (an address the service lets you send from).", kind: Kind::Text, get: |c, _| s(&c.email.from) },
+    Field { key: "email.stream", group: "email", label: "Postmark stream", help: "Postmark's message stream. Empty: outbound.", kind: Kind::Text, get: |c, _| s(&c.email.stream) },
     Field { key: "recap.notify", group: "briefing", label: "Push the recap", help: "", kind: Kind::Bool, get: |c, _| json!(c.recap.notify) },
     // ---- notifications
     Field { key: "proactive.enabled", group: "notify", label: "Meeting prep and mail triage", help: "lyra looks ahead by itself: prep before meetings, tasks from mail, follow-ups.", kind: Kind::Bool, get: |c, _| json!(c.proactive.enabled) },

@@ -57,6 +57,9 @@ pub struct Routine {
     /// looks, and anything needing approval is declined at once.
     #[serde(default)]
     pub changes: bool,
+    /// Each run's result is emailed to its person (only them).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub email: bool,
     pub created: DateTime<Utc>,
 }
 
@@ -80,6 +83,9 @@ pub struct Run {
     /// Who decided `needs_user`: the decision model or the chat model.
     #[serde(default)]
     pub decided_by: String,
+    /// Emailed: how ("sent to … with Postmark"), or why not ("not emailed: …"); empty when it isn't emailed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub emailed: String,
 }
 
 /// Runs kept per routine.
@@ -270,7 +276,7 @@ pub fn delete(name: &str) -> Result<Routine, String> {
 }
 
 /// A new routine (checked: name, schedule, prompt).
-pub fn create(name: &str, schedule: &str, prompt: &str, notify: Notify, changes: bool) -> Result<Routine, String> {
+pub fn create(name: &str, schedule: &str, prompt: &str, notify: Notify, changes: bool, email: bool) -> Result<Routine, String> {
     let name = slug(name);
     if name.is_empty() {
         return Err("a routine needs a name".into());
@@ -278,7 +284,7 @@ pub fn create(name: &str, schedule: &str, prompt: &str, notify: Notify, changes:
     if find(&name).is_ok() {
         return Err(format!("there's already a routine called {name} (/routine edit or delete it)"));
     }
-    let r = Routine { name, schedule: schedule.trim().into(), prompt: prompt.trim().into(), notify, enabled: true, changes, created: Utc::now() };
+    let r = Routine { name, schedule: schedule.trim().into(), prompt: prompt.trim().into(), notify, enabled: true, changes, email, created: Utc::now() };
     save(&r)?;
     Ok(r)
 }
@@ -314,7 +320,7 @@ pub fn view(running: &[String], recent: usize) -> serde_json::Value {
         .map(|r| {
             let mine = runs.get(&r.name).cloned().unwrap_or_default();
             serde_json::json!({
-                "name": r.name, "schedule": r.schedule, "prompt": r.prompt, "notify": r.notify.as_str(), "enabled": r.enabled, "changes": r.changes,
+                "name": r.name, "schedule": r.schedule, "prompt": r.prompt, "notify": r.notify.as_str(), "enabled": r.enabled, "changes": r.changes, "email": r.email,
                 "valid": parse_schedule(&r.schedule).is_ok(),
                 "next": if r.enabled { next_run(r, mine.first().map(|x| x.at)).map(|n| n.to_rfc3339()) } else { None },
                 "running": running.contains(&r.name),
@@ -358,7 +364,7 @@ pub fn due(now: DateTime<Local>) -> Vec<Routine> {
 /// The message a run sends: the prompt, marked as a routine so the reply is a report.
 pub fn message(r: &Routine) -> String {
     format!(
-        "[routine \"{}\", {}] {}\n\n(This runs on a schedule with nobody watching: do it now, then report briefly. Start with a one-line verdict: all clear, or what's wrong.{})",
+        "[routine \"{}\", {}] {}\n\n(This runs on a schedule with nobody watching: do it now, then report briefly. Start with a one-line verdict: all clear, or what's wrong.{}{})",
         r.name,
         r.schedule,
         r.prompt,
@@ -366,6 +372,11 @@ pub fn message(r: &Routine) -> String {
             " Changes ask the user, who may not answer quickly."
         } else {
             " Only look: use read-only checks. Anything that would change something is refused, so say what you'd do instead."
+        },
+        if r.email {
+            " Your answer is emailed to the user as it is (don't call email_me): write it as the email, in Markdown, a short summary first, then the details, every source as a [title](url) link."
+        } else {
+            ""
         }
     )
 }
@@ -413,6 +424,7 @@ pub fn capabilities() -> Vec<lyra_capabilities::Capability> {
             "prompt": { "type": "string", "description": "What to do each time, as the user would ask it (mention machines with @name or @all)." },
             "notify": { "type": "string", "enum": ["problems", "always", "never"], "description": "When to tell the user (default problems)." },
             "changes": { "type": "boolean", "description": "It must change things (restart, clean up, update), each change asked of the user. Default false: it only checks and reports." },
+            "email": { "type": "boolean", "description": "Email each result to the user (only them): a morning digest, a summary with links. Default false." },
         }, "required": ["name", "schedule", "prompt"] }),
     );
     create.metadata.requires_approval = true;
@@ -426,9 +438,9 @@ pub fn call(name: &str, args: &serde_json::Value) -> Result<serde_json::Value, S
     match name {
         "routine_create" => {
             let notify = args["notify"].as_str().map_or(Ok(Notify::Problems), Notify::parse)?;
-            let r = create(args["name"].as_str().unwrap_or(""), args["schedule"].as_str().unwrap_or(""), args["prompt"].as_str().unwrap_or(""), notify, args["changes"] == true)?;
+            let r = create(args["name"].as_str().unwrap_or(""), args["schedule"].as_str().unwrap_or(""), args["prompt"].as_str().unwrap_or(""), notify, args["changes"] == true, args["email"] == true)?;
             let next = next_run(&r, None).map(|n| n.format("%a %Y-%m-%d %H:%M").to_string());
-            Ok(serde_json::json!({ "created": r.name, "schedule": r.schedule, "next_run": next, "notify": r.notify.as_str() }))
+            Ok(serde_json::json!({ "created": r.name, "schedule": r.schedule, "next_run": next, "notify": r.notify.as_str(), "email": r.email.then(|| crate::mailout::address(&crate::acting::current()).unwrap_or_else(|| "no address on their account yet: an admin adds one (Users)".into())) }))
         }
         "routine_list" => Ok(serde_json::json!({ "routines": describe() })),
         other => Err(format!("{other} isn't a routine tool")),
@@ -450,10 +462,10 @@ pub fn describe() -> String {
             let last = last.map_or("never run".into(), |l| {
                 format!("last {} {}", l.at.with_timezone(&Local).format("%m-%d %H:%M"), if l.outcome != "ok" { l.outcome.as_str() } else if l.needs_user { "⚠ needs you" } else { "all clear" })
             });
-            format!("{} — {} · next {next} · {last} · notify {}{}\n    {}", r.name, r.schedule, r.notify.as_str(), if r.changes { " · may change things" } else { "" }, r.prompt)
+            format!("{} — {} · next {next} · {last} · notify {}{}{}\n    {}", r.name, r.schedule, r.notify.as_str(), if r.changes { " · may change things" } else { "" }, if r.email { " · emailed to you" } else { "" }, r.prompt)
         })
         .collect();
-    out.push("/routine run|pause|resume|delete|show <name> · /routine edit <name> schedule|prompt|notify <value>".into());
+    out.push("/routine run|pause|resume|delete|show <name> · /routine edit <name> schedule|prompt|notify|changes|email <value>".into());
     out.join("\n")
 }
 

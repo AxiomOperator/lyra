@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { Check, Copy, KeyRound, ShieldCheck, UserMinus, UserPlus, X } from "lucide-react";
+import { Check, Copy, KeyRound, Mail, ShieldCheck, UserMinus, UserPlus, X } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Input } from "@/components/ui/input";
 import { Back, Failed, Page, useAction, useConfirm } from "./parts";
@@ -145,6 +145,14 @@ export function UsersPage({ onBack }: { onBack: () => void }) {
     setIssued(r);
     reload();
   };
+  // Where lyra's emails to them go (accounts without Microsoft bring none).
+  const setEmail = async (u: UserRow) => {
+    const email = prompt(`${u.name}'s email address (lyra emails them there, only them). Empty: none.`, u.email ?? "");
+    if (email === null) return;
+    const r = await call<{ ok?: boolean; error?: string }>("user_email", { id: u.id, email: email.trim() });
+    setFailed(r?.ok ? "" : (r?.error ?? "lyra didn't answer"));
+    reload();
+  };
   // Asked again when someone new signs in.
   const [data, reload] = useData<UserRow[] | { error: string }>("users", [status.users_waiting]);
   const { act, busy, note } = useAction(reload);
@@ -223,6 +231,11 @@ export function UsersPage({ onBack }: { onBack: () => void }) {
                   </div>
                 </div>
                 {u.status === "active" && <Rounds u={u} busy={busy} set={(v) => void act(`/users rounds ${key(u)} ${v}`)} />}
+                {u.status === "active" && !u.microsoft && (
+                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => void setEmail(u)} title="Where lyra's emails to them go">
+                    <Mail /> {u.email ? "Email" : "Add email"}
+                  </Button>
+                )}
                 {u.status === "active" && (
                   <Button size="sm" variant="ghost" disabled={busy} onClick={() => void reset(u)} title={u.username ? "A new one-time password" : "A username and password, for signing in without Microsoft"}>
                     <KeyRound /> {u.username ? "Reset password" : "Set password"}

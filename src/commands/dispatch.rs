@@ -169,6 +169,7 @@ impl App {
             "/templates" => Ok(crate::templates::command(&self.owner)),
             "/settings" => self.settings_command(arg),
             "/recap" => recap::command(&self.owner),
+            "/email" => mailout::command(&self.owner, arg),
             "/watches" | "/watch" => watches::command(&self.owner, arg),
             "/feedback" => Ok(feedback::command(&feedback::Who { user: self.owner.clone(), name: String::new(), admin: self.admin })),
             "/memory" => {
@@ -305,7 +306,7 @@ pub(crate) const PAGE_COMMANDS: &[&str] = &[
 /// tools, coding, devices, backups, agents and skills' approval stay admins'.
 pub(crate) fn member_may(name: &str, arg: &str) -> bool {
     match name {
-        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" | "/feedback" | "/templates" | "/chat-only" | "/steps" | "/retry" | "/edit" => true,
+        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" | "/feedback" | "/templates" | "/chat-only" | "/steps" | "/retry" | "/edit" | "/email" => true,
         // Their own skills (the commands check whose each one is).
         "/approve" | "/reject" | "/deprecate" => true,
         // Their own PMI account, routines and goals.

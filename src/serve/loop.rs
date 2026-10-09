@@ -194,7 +194,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 Inbound::Get { what, arg, session, who, reply } => {
                     sync_role(&mut convs, &who);
                     // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "briefing" | "watches" | "everything" | "templates" | "template_put" | "template_remove" | "meetings" | "meeting" | "meeting_notes" | "meeting_followup" | "meeting_draft" | "documents" | "document" | "document_save" | "document_remove" | "document_download" | "document_onedrive" | "document_mail" | "document_ask" | "me" | "me_export" | "me_clear_actions" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze" | "feedback_enhance" | "qa" | "qa_put" | "qa_remove" | "qa_promote") {
+                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "briefing" | "watches" | "everything" | "templates" | "template_put" | "template_remove" | "meetings" | "meeting" | "meeting_notes" | "meeting_followup" | "meeting_draft" | "documents" | "document" | "document_save" | "document_remove" | "document_download" | "document_onedrive" | "document_mail" | "document_ask" | "me" | "me_export" | "me_clear_actions" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze" | "feedback_enhance" | "qa" | "qa_put" | "qa_remove" | "qa_promote" | "email" | "email_set" | "email_test") {
                         let _ = reply.send(json!({ "error": "that's for admins" }));
                         continue;
                     }
@@ -443,7 +443,16 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         std::thread::spawn(move || {
                             let (needs_user, decided_by) = if outcome == "ok" { crate::routines::needs_user(&url, &model, &r, &text) } else { (true, "it didn't finish".into()) };
                             let summary: String = text.trim().chars().take(400).collect();
-                            let run = crate::routines::Run { at: chrono::Utc::now(), seconds: started.elapsed().as_secs(), needs_user, outcome: outcome.into(), summary, session, decided_by };
+                            // Its result by email, to its person only.
+                            let emailed = if !r.email {
+                                String::new()
+                            } else if outcome != "ok" {
+                                format!("not emailed: the run {outcome}")
+                            } else {
+                                let subject = format!("{} · {}", r.name.replace('-', " "), chrono::Local::now().format("%a %b %-d"));
+                                crate::mailout::send_to_me(&whose, &subject, &text, "routine").unwrap_or_else(|e| format!("not emailed: {e}"))
+                            };
+                            let run = crate::routines::Run { at: chrono::Utc::now(), seconds: started.elapsed().as_secs(), needs_user, outcome: outcome.into(), summary, session, decided_by, emailed };
                             let _ = tx.send((whose, r, run));
                         });
                     }
@@ -537,6 +546,9 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             // The owner's Activity tells the owner's routines only.
             if user == convs[0].app.owner {
                 convs[0].app.log(if run.needs_user { Level::Error } else { Level::Plan }, format!("routine {}: {verdict} ({}s, by {}) — {first}", r.name, run.seconds, run.decided_by));
+                if !run.emailed.is_empty() {
+                    convs[0].app.log(if run.emailed.starts_with("not ") { Level::Error } else { Level::Plan }, format!("routine {}: {}", r.name, run.emailed));
+                }
             }
             let tell = match r.notify {
                 crate::routines::Notify::Always => true,
@@ -800,6 +812,14 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         while let Ok((user, r)) = recap_rx.try_recv() {
             recapping.remove(&user);
             crate::recap::save_for(&user, &r);
+            if crate::mailout::prefs(&user).recap && !r.parts.is_empty() {
+                let (u, body) = (user.clone(), crate::recap::describe(&r));
+                std::thread::spawn(move || {
+                    if let Err(e) = crate::mailout::send_to_me(&u, &format!("End of day · {}", chrono::Local::now().format("%a %b %-d")), &body, "recap") {
+                        eprintln!("the recap wasn't emailed to {u}: {e}");
+                    }
+                });
+            }
             if user == convs[0].app.owner {
                 convs[0].app.log(Level::Plan, format!("end of day: {}", crate::recap::push_body(&r)));
             }
@@ -927,6 +947,15 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         while let Ok((user, b)) = brief_rx.try_recv() {
             let owner = user == convs[0].app.owner;
             crate::briefing::save_for(&user, &b);
+            // By email too, when they asked for it (off the loop).
+            if crate::mailout::prefs(&user).briefing && !b.sections.is_empty() {
+                let (u, subject, body) = (user.clone(), format!("☀ Briefing: {}", b.headline), crate::briefing::describe(&b));
+                std::thread::spawn(move || {
+                    if let Err(e) = crate::mailout::send_to_me(&u, &subject, &body, "briefing") {
+                        eprintln!("the briefing wasn't emailed to {u}: {e}");
+                    }
+                });
+            }
             brief_left = brief_left.saturating_sub(1);
             if owner {
                 convs[0].app.log(if b.attention > 0 { Level::Error } else { Level::Plan }, format!("briefing: {}{}", b.headline, b.takeaway.as_ref().map(|t| format!(" — {t}")).unwrap_or_default()));

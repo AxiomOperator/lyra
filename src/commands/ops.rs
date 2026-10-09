@@ -118,18 +118,19 @@ impl App {
             "new" => {
                 let parts: Vec<&str> = rest.split('|').map(str::trim).collect();
                 let [name, schedule, prompt, more @ ..] = parts.as_slice() else {
-                    return Err("usage: /routine new <name> | <schedule> | <what to do> [| notify problems|always|never] [| changes]".into());
+                    return Err("usage: /routine new <name> | <schedule> | <what to do> [| notify problems|always|never] [| changes] [| email]".into());
                 };
                 let mut notify = routines::Notify::Problems;
-                let mut changes = false;
+                let (mut changes, mut email) = (false, false);
                 for opt in more {
                     match opt.split_whitespace().collect::<Vec<_>>().as_slice() {
                         ["changes"] | ["changes", "on"] => changes = true,
+                        ["email"] | ["email", "on"] => email = true,
                         ["notify", mode] => notify = routines::Notify::parse(mode)?,
-                        _ => return Err(format!("unknown option {opt:?}: notify problems|always|never, changes")),
+                        _ => return Err(format!("unknown option {opt:?}: notify problems|always|never, changes, email")),
                     }
                 }
-                let r = routines::create(name, schedule, prompt, notify, changes)?;
+                let r = routines::create(name, schedule, prompt, notify, changes, email)?;
                 self.log(Level::Plan, format!("routine {} created: {}", r.name, r.schedule));
                 Ok(changed("created", &r))
             }
@@ -158,7 +159,8 @@ impl App {
                     "prompt" => r.prompt = value.into(),
                     "notify" => r.notify = routines::Notify::parse(value)?,
                     "changes" => r.changes = matches!(value, "on" | "yes" | "true"),
-                    _ => return Err("usage: /routine edit <name> schedule|prompt|notify|changes <value>".into()),
+                    "email" => r.email = matches!(value, "on" | "yes" | "true"),
+                    _ => return Err("usage: /routine edit <name> schedule|prompt|notify|changes|email <value>".into()),
                 }
                 routines::save(&r)?;
                 Ok(changed("changed", &r))

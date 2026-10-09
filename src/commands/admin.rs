@@ -206,7 +206,7 @@ impl App {
                         )
                     })
                     .collect();
-                out.push("/users approve|decline|admin|member|disable|enable <name or email> · /users add <username> <name> [admin] · /users password <who> [username] · /users rounds <who> <1–64 | default>".into());
+                out.push("/users approve|decline|admin|member|disable|enable <name or email> · /users add <username> <name> [admin] · /users password <who> [username] · /users rounds <who> <1–64 | default> · /users email <who> <address>".into());
                 Ok(out.join("\n"))
             }
             "approve" | "enable" => change(None, Some(Status::Active), "can use lyra"),
@@ -226,6 +226,16 @@ impl App {
                 let (u, temp) = users.create_local(username, &name, if admin { Role::Admin } else { Role::Member })?;
                 self.log(Level::Agent, format!("account made for {} (signs in as {})", u.name, u.username));
                 Ok(format!("{} can sign in as {} with the one-time password {temp}\n(shown only now: they choose their own at the first sign-in)", u.name, u.username))
+            }
+            // Where lyra's emails to them go: /users email <who> <address> (empty: none).
+            "email" => {
+                let (who, address) = match rest.rsplit_once(' ') {
+                    Some((w, a)) if a.contains('@') => (w.trim(), a.trim()),
+                    _ if !rest.is_empty() && !rest.contains('@') => (rest, ""),
+                    _ => return Err("usage: /users email <name, email or username> <address> (no address: remove it)".into()),
+                };
+                let u = users.set_email(who, address)?;
+                Ok(if address.is_empty() { format!("{} has no email address now", u.name) } else { format!("lyra's emails to {} go to {address}", u.name) })
             }
             // A new one-time password: /users password <who> [username] (a username for someone who has none).
             "password" => {

@@ -611,6 +611,8 @@ impl Caps {
         // Bug reports and feature requests to the admins.
         caps.extend(crate::feedback::capabilities());
         caps.extend(crate::qa::capabilities());
+        // Email to the person themselves (a summary, a routine's result).
+        caps.extend(crate::mailout::capabilities());
         // lyra's own release history ("when did X come in?").
         caps.extend(crate::changelog::capabilities());
         // "Tell me when …" (mail, PMI, Teams).
@@ -985,6 +987,7 @@ impl Caps {
             _ if c.source == "feedback" => crate::feedback::call(&c.name, &args),
             _ if c.source == "qa" => crate::qa::call(&c.name, &args),
             _ if c.source == "changelog" => crate::changelog::call(&c.name, &args),
+            _ if c.source == "mailout" => crate::mailout::call(&c.name, &args),
             // Teams and files of whoever this turn is for (read-only; attaching only touches their draft).
             _ if c.source == "teams" => crate::teams::call(&c.name, &args),
             _ if c.source == "files" => crate::files::call(&c.name, &args),

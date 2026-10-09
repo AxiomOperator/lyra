@@ -299,6 +299,8 @@ export interface RoutineRun {
   summary: string;
   session: string;
   decided_by: string;
+  /** How it was emailed, or "not emailed: why". */
+  emailed?: string;
 }
 
 export interface Routine {
@@ -309,6 +311,8 @@ export interface Routine {
   enabled: boolean;
   /** It may change things (asking first); otherwise it only looks. */
   changes: boolean;
+  /** Each result is emailed to its person. */
+  email?: boolean;
   valid: boolean;
   next: string | null;
   running: boolean;

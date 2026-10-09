@@ -75,6 +75,7 @@ pub(crate) fn configure(config: &Config) {
     fallback::configure(config.fallback_model.clone());
     proactive::configure(config.proactive.clone());
     recap::configure(config.recap.clone());
+    mailout::configure(config.email.clone());
     feedback::configure(&config.url, &config.model);
 }
 

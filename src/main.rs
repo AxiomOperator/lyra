@@ -2,6 +2,7 @@ mod acting;
 mod actions;
 mod alerts;
 mod asks;
+mod mailout;
 mod agents;
 mod backup;
 mod briefing;

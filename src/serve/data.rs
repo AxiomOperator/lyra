@@ -161,6 +161,32 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
             }
             Err(e) => json!({ "error": e }),
         },
+        // Where lyra's emails to someone go (accounts without Microsoft): admins.
+        "user_email" => match hub.users().set_email(arg["id"].as_str().unwrap_or(""), arg["email"].as_str().unwrap_or("")) {
+            Ok(u) => json!({ "ok": true, "name": u.name, "email": u.email }),
+            Err(e) => json!({ "error": e }),
+        },
+        // Email from lyra, to this person: how it's set up, and their choices.
+        "email" => crate::mailout::view(&app.owner),
+        "email_set" => page(crate::mailout::set(&app.owner, arg)),
+        // lyra's mailbox (admins): the service, who it's from, whether its key is set.
+        "email_admin" => {
+            let s = crate::mailout::settings();
+            let provider = if s.provider.trim().is_empty() { "postmark".to_string() } else { s.provider.trim().to_lowercase() };
+            json!({ "provider": s.provider, "from": s.from, "stream": s.stream, "key_set": crate::secrets::token(&provider).is_some(),
+                "providers": crate::mailout::PROVIDERS.iter().map(|(id, what)| json!({ "id": id, "what": what })).collect::<Vec<_>>() })
+        }
+        // Its key goes straight into secrets.toml (never shown again; empty removes it).
+        "email_key" => {
+            let provider = arg["provider"].as_str().filter(|p| crate::mailout::PROVIDERS.iter().any(|(id, _)| id == p)).unwrap_or("postmark");
+            match crate::secrets::set_token(provider, arg["key"].as_str().unwrap_or("").trim()) {
+                Ok(()) => {
+                    app.log(Level::Agent, format!("{provider}'s key {}", if arg["key"].as_str().unwrap_or("").trim().is_empty() { "removed" } else { "saved" }));
+                    json!({ "ok": true })
+                }
+                Err(e) => json!({ "error": e }),
+            }
+        }
         // Mark a model known down (or clear it): admins (the gate is in the loop).
         "known_down_set" => {
             let by = hub.users().get(&app.owner).map_or_else(|| app.owner.clone(), |u| u.name.split_whitespace().next().unwrap_or(&u.name).to_string());
@@ -256,6 +282,11 @@ pub(crate) fn slow(app: &App, what: &str, arg: &Value, loaded: &Loaded) -> Optio
             Box::new(move || search_page(&owner, &current, &query))
         }
         "mail" => Box::new(move || mail_page(&owner)),
+        // A test email, to them (it goes out over the network: off the loop).
+        "email_test" => Box::new(move || match crate::mailout::send_to_me(&owner, "A test from lyra", "This is a test email from **lyra**. If you can read it, lyra can email you: routine results, your briefing and your recap.", "test") {
+            Ok(text) => json!({ "ok": true, "text": text }),
+            Err(e) => json!({ "error": e }),
+        }),
         // The document workspace: their documents, lyra's drafts, Word to OneDrive or a mail.
         "documents" => Box::new(move || crate::documents::list(&owner)),
         "document" | "document_save" | "document_remove" | "document_download" | "document_onedrive" | "document_mail" | "document_ask" => {
