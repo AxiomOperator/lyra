@@ -769,6 +769,59 @@ impl Caps {
         defs
     }
 
+    /// The tools for a turn that's just conversation: only the search tool (so a
+    /// real need can still find one) and whatever it found earlier in the turn.
+    pub fn chat_definitions(&self, extra: &HashSet<String>) -> Vec<Value> {
+        let mut defs: Vec<Value> = self.callable().iter().filter(|c| extra.contains(&c.name)).map(Capability::definition).collect();
+        defs.push(json!({
+            "type": "function",
+            "function": {
+                "name": SEARCH_TOOL,
+                "description": "Find a tool when the user asks you to do or look up something (mail, calendar, tasks, files, machines…). Not needed to just talk.",
+                "parameters": { "type": "object", "properties": { "query": { "type": "string", "description": "What you need to do." } }, "required": ["query"] },
+            },
+        }));
+        defs
+    }
+
+    /// What's wrong with a call before anything runs or anyone is asked:
+    /// arguments that aren't JSON, a required one missing or empty, or (for
+    /// sending mail) a draft that isn't there. The model gets this back and
+    /// should ask the user rather than guess.
+    pub fn problem(&self, name: &str, arguments: &str) -> Option<String> {
+        let c = self.manager.get(name)?;
+        let args: Value = if arguments.trim().is_empty() {
+            json!({})
+        } else {
+            match serde_json::from_str(arguments) {
+                Ok(v) => v,
+                Err(e) => return Some(format!("{name}'s arguments aren't valid JSON ({e})")),
+            }
+        };
+        if !args.is_object() {
+            return Some(format!("{name} takes an object of arguments"));
+        }
+        let missing: Vec<&str> = c.input_schema["required"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|k| match &args[*k] {
+                Value::Null => true,
+                Value::String(s) => s.trim().is_empty(),
+                Value::Array(a) => a.is_empty(),
+                _ => false,
+            })
+            .collect();
+        if !missing.is_empty() {
+            return Some(format!("{name} needs {}", missing.join(", ")));
+        }
+        if c.source == "mail" {
+            return crate::mail::problem(&c.name, &args);
+        }
+        None
+    }
+
     /// `capability_search`: the best matches, as JSON for the model, and the
     /// names of the callable ones (to offer from now on).
     pub fn search(&self, arguments: &str) -> (String, Vec<String>) {
@@ -1195,6 +1248,20 @@ mod tests {
         caps.set_agents(Arc::new(agents));
         caps.refresh();
         (rt, caps)
+    }
+
+    #[test]
+    fn a_call_missing_what_it_needs_is_refused_before_anyone_is_asked() {
+        let (_rt, caps) = caps();
+        assert_eq!(caps.problem("memory_remember", "{}").as_deref(), Some("memory_remember needs content"));
+        assert_eq!(caps.problem("memory_remember", r#"{"content":"  "}"#).as_deref(), Some("memory_remember needs content"));
+        assert!(caps.problem("memory_remember", "{not json").unwrap().contains("aren't valid JSON"));
+        assert_eq!(caps.problem("memory_remember", r#"{"content":"likes tea"}"#), None);
+        assert_eq!(caps.problem("no_such_tool", "{}"), None, "unknown tools are refused by invoke");
+        // A turn that's just talk: only the search tool.
+        let defs = caps.chat_definitions(&HashSet::new());
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0]["function"]["name"], SEARCH_TOOL);
     }
 
     fn call(caps: &Caps, name: &str, args: Value) -> Value {

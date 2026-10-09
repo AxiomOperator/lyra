@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.40.0.174",
+    "date": "2026-10-09",
+    "title": "Just chatting",
+    "new": [
+      "Just chatting: a greeting, a thank-you or a \"test message\" gets an answer in words. lyra no longer reaches for tools on its own, so nothing is drafted, sent or changed by a guess. When you do ask it to do something, it still finds the right tool."
+    ],
+    "fixed": [
+      "lyra no longer asks you to approve sending an email with no recipient or subject. A send without a real draft is turned back to lyra, which asks you what you meant.",
+      "After you say no to something, lyra doesn't ask again in the same reply. It tells you what it would have done, or asks what you'd like instead."
+    ]
+  },
+  {
     "version": "0.39.0.173",
     "date": "2026-10-09",
     "title": "Fallback model for background jobs",

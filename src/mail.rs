@@ -200,6 +200,22 @@ pub fn capabilities() -> Vec<Capability> {
 }
 
 /// Sending needs the person's yes: everything else is theirs alone.
+/// A send whose draft can't be read: refused before the user is asked about
+/// an email with no recipients or subject.
+pub fn problem(name: &str, args: &Value) -> Option<String> {
+    if name != "mail_send" {
+        return None;
+    }
+    let id = args["id"].as_str().unwrap_or("");
+    let d = graph_with(reqwest::Method::GET, &format!("/me/messages/{}?$select=toRecipients,isDraft", enc(id)), None, TEXT);
+    match d {
+        Err(e) => Some(format!("there's no draft {id} to send ({}): make one with mail_draft first", e.chars().take(120).collect::<String>())),
+        Ok(d) if d["isDraft"] == false => Some("that message isn't a draft (it was sent already)".into()),
+        Ok(d) if d["toRecipients"].as_array().is_none_or(|a| a.is_empty()) => Some("that draft has nobody to send it to".into()),
+        Ok(_) => None,
+    }
+}
+
 pub fn approval(name: &str, args: &Value) -> Option<Ask> {
     if name != "mail_send" {
         return None;

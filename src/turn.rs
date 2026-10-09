@@ -94,6 +94,8 @@ impl App {
             env.fleet = agents::fleet_mention(&content, &groups);
         }
         let owner = self.owner.clone();
+        // What lyra said last, so "yes, do it" reads as the go-ahead it is.
+        let last_reply: String = self.messages.iter().rev().skip(1).find(|m| m.role == "assistant").map(|m| m.content.chars().take(400).collect()).unwrap_or_default();
         let looks = std::mem::take(&mut self.attach_looks);
         // Their own tool-call limit, else the shared one (evolved, or behavior.toml).
         let max_rounds = limits::tool_rounds(&owner, self.evolution.as_ref().map(|e| e.behavior().max_tool_rounds)) as usize;
@@ -135,11 +137,20 @@ impl App {
                 apply_memories(&tools.mem, &content, run, &mut history, &tx, mine.as_deref());
             }
             let skills = learning.map(|l| apply_skills(&l, &content, run, &mut history, &tx)).unwrap_or_default();
+            // Just talking (a greeting, a thank-you, "test"): no tools offered but
+            // the search for one, so nothing gets sent or changed by a guess.
+            let chatting = looks.is_empty() && chatting(&content, &last_reply);
+            if chatting {
+                let _ = tx.send(StreamEvent::Log("just chatting: no tools offered".into()));
+                add_to_system(&mut history, CHATTING);
+            } else if caps.is_some() {
+                add_to_system(&mut history, TOOL_RULES);
+            }
             // What this turn's changes come from (for "What lyra knows about me" → Why?).
             crate::actions::because(crate::actions::Why { source: "chat".into(), detail: content.chars().take(300).collect(), skills });
             // A specialist may take it first; the main agent checks and presents
             // its result (A6, A11).
-            if let Some(env) = &agent_env {
+            if let Some(env) = agent_env.as_ref().filter(|_| !chatting) {
                 if let Some(names) = env.agents.registry.enabled().iter().map(|a| format!("{} ({})", a.name, a.description)).reduce(|a, b| format!("{a}; {b}")) {
                     add_to_system(&mut history, &format!("{}\nSpecialist agents you can hand work to with the delegate tool: {names}. Keep simple requests yourself.", agents::MAIN_ROLE));
                 }
@@ -147,7 +158,7 @@ impl App {
                     add_to_system(&mut history, agents::MAIN_NOTE);
                 }
             }
-            let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref(), &content, max_rounds, run, &tx, &cancel, viewer.as_deref(), member) {
+            let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref().filter(|_| !chatting), &content, chatting, max_rounds, run, &tx, &cancel, viewer.as_deref(), member) {
                 Ok((stats, limited, answered)) => {
                     // The turn's own model calls (agents' and lyra's count separately), as the model that answered.
                     usage::record("chat", &answered, stats.input, stats.cached, stats.output, stats.elapsed.as_millis() as u64);
@@ -270,6 +281,47 @@ pub(crate) fn system_prompt(context: &Context, memory: bool) -> Option<String> {
 /// One user turn: stream a reply; if the model calls tools, run them, add the
 /// results to the history and stream again. Stats cover the whole turn; the
 /// flag says it stopped at `max_rounds` with the work unfinished.
+/// Said to the model on a turn that's just conversation.
+const CHATTING: &str = "This message is conversation, not a request to do something: answer it in words. Don't send, change or look up anything unless the user plainly asks; if they do, find the tool with capability_search.";
+
+/// Said to the model whenever tools are offered.
+const TOOL_RULES: &str = "Use a tool only when the request needs it. If it isn't clear what the user wants done (who an email goes to, what it says, which task), ask them instead of guessing. If the user says no to something, don't try it again: tell them what you would have done, or ask what they'd like instead.";
+
+/// A message that's plainly just talk, without asking anyone: greetings,
+/// thanks, "test", and "ok"/"great" unless lyra just asked something (then
+/// it's a yes).
+pub(crate) fn small_talk(message: &str, asked: bool) -> bool {
+    let m: String = message.to_lowercase().chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '\'' { c } else { ' ' }).collect();
+    let words: Vec<&str> = m.split_whitespace().collect();
+    if words.is_empty() || words.len() > 4 {
+        return false;
+    }
+    const ALONE: &[&str] = &[
+        "hi", "hello", "hey", "hiya", "yo", "morning", "evening", "thanks", "thank", "thx", "ty", "cheers", "ok", "okay", "k", "cool", "nice", "great", "awesome", "test",
+        "testing", "ping", "lol", "haha", "bye", "goodbye", "night", "goodnight", "sup",
+    ];
+    const WITH: &[&str] = &["you", "lyra", "there", "again", "message", "much", "so", "good", "1", "2", "3", "one", "two", "123", "a", "this", "is", "just", "only", "all", "very", "u"];
+    const AGREE: &[&str] = &["ok", "okay", "k", "cool", "nice", "great", "awesome"];
+    let alone = |w: &&str| ALONE.contains(w) && !(asked && AGREE.contains(w));
+    words.iter().any(alone) && words.iter().all(|w| alone(w) || WITH.contains(w))
+}
+
+/// The decision model, or plain small talk, says this turn needs no tools.
+/// When unsure, tools are offered as always.
+fn chatting(message: &str, last_reply: &str) -> bool {
+    if small_talk(message, last_reply.contains('?')) {
+        return true;
+    }
+    if message.chars().count() > 300 {
+        return false;
+    }
+    let state = if last_reply.is_empty() { format!("The user: {message}") } else { format!("lyra said: {last_reply}\n\nThe user: {message}") };
+    crate::decide::yes("just chatting?", &state, CHAT_GATE).is_some_and(|(yes, _)| yes)
+}
+
+/// The decision model's question for [`chatting`].
+const CHAT_GATE: &str = "Is the user's latest message only conversation (a greeting, thanks, small talk, a test, an opinion, or a question answered from general knowledge), and not asking lyra to do, find, check, write, send or change anything (mail, calendar, tasks, notes, files, machines, memory, the web), or agreeing to something lyra offered to do?";
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn converse(
     url: &str,
@@ -278,6 +330,7 @@ pub(crate) fn converse(
     caps: Option<&Caps>,
     agents: Option<&agents::Env>,
     request: &str,
+    chatting: bool,
     max_rounds: usize,
     run: Uuid,
     tx: &Sender<StreamEvent>,
@@ -311,6 +364,8 @@ pub(crate) fn converse(
     };
     // Capabilities the model found with the search tool, offered from then on.
     let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Tools the user said no to in this turn: not asked about again.
+    let mut refused: std::collections::HashSet<String> = std::collections::HashSet::new();
     for round in 1..=max_rounds.max(1) {
         let n = history.len();
         let note = format!("round {round} · sending {n} message{}", if n == 1 { "" } else { "s" });
@@ -322,7 +377,7 @@ pub(crate) fn converse(
             "stream_options": { "include_usage": true },
         });
         if let Some(caps) = caps {
-            let mut definitions = caps.definitions(request, &found);
+            let mut definitions = if chatting { caps.chat_definitions(&found) } else { caps.definitions(request, &found) };
             // The main agent can hand work to a specialist itself.
             if let Some(env) = agents {
                 let enabled = env.agents.registry.enabled();
@@ -391,7 +446,13 @@ pub(crate) fn converse(
             }
             let ctx = CallContext { member, read_scopes: scopes, write_scopes: scopes, ..CallContext::new(Some(run), &call.id) };
             // Policy, usage tracking and verification happen in there.
-            let content = if let (Some(env), "delegate") = (agents, call.function.name.as_str()) {
+            let name = call.function.name.as_str();
+            let content = if refused.contains(name) {
+                json!({ "error": format!("the user already said no to {name} in this conversation turn: don't try it again; answer them") }).to_string()
+            } else if let Some(problem) = caps.problem(name, &call.function.arguments) {
+                // Nothing to ask the user about: the model is told what's missing.
+                json!({ "error": problem, "hint": "don't guess: ask the user for what's missing" }).to_string()
+            } else if let (Some(env), "delegate") = (agents, name) {
                 agents::delegate_call(env, &call.function.arguments, run)
             } else if call.function.name == caps::SEARCH_TOOL {
                 let (text, names) = caps.search(&call.function.arguments);
@@ -401,7 +462,10 @@ pub(crate) fn converse(
                 // Changes others see, and files on their PC: the person approves them right here.
                 match agents.map(|env| agents::approve(env, &agents::main_profile(), &call.function.name, ask)) {
                     Some(Ok(())) => caps.invoke(&call.function.name, &call.function.arguments, ctx, true, true),
-                    Some(Err(why)) => json!({ "error": why }).to_string(),
+                    Some(Err(why)) => {
+                        refused.insert(call.function.name.clone());
+                        json!({ "error": why, "hint": "the user said no: don't try this again; tell them what you would have done, or ask what they'd like" }).to_string()
+                    }
                     None => json!({ "error": "that needs the user's approval, and approvals need agents on ([agents] enabled)" }).to_string(),
                 }
             } else {
@@ -511,4 +575,21 @@ pub(crate) fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: 
         return Ok(Round { stats, content, tool_calls: Vec::new(), stopped: true });
     }
     Ok(Round { stats, content, tool_calls, stopped: false })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::small_talk;
+
+    #[test]
+    fn small_talk_is_only_talk() {
+        for m in ["test message", "Hi!", "hello lyra", "thanks", "Thank you so much", "testing 123", "ok"] {
+            assert!(small_talk(m, false), "{m}");
+        }
+        for m in ["send a test message to Dana", "hey what's on my calendar", "check the disks", "ok send it", "remind me tomorrow", ""] {
+            assert!(!small_talk(m, false), "{m}");
+        }
+        assert!(!small_talk("ok", true), "a yes to lyra's question");
+        assert!(small_talk("thanks", true));
+    }
 }
