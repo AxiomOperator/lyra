@@ -630,6 +630,9 @@ pub(crate) fn converse(
         // Searches and page reads in one round go side by side (each as this
         // thread's person, counted for this conversation).
         let mut ready: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        // How big this conversation is: the web reader condenses pages only once it's big.
+        let size: usize = history.iter().map(|m| m["content"].as_str().map_or(0, str::len)).sum();
+        crate::websearch::set_conversation_size(size);
         let side_by_side: Vec<&ToolCall> = round.tool_calls.iter().filter(|c| matches!(c.function.name.as_str(), "web_search" | "web_fetch") && !skipped.contains(&c.id)).collect();
         if side_by_side.len() > 1 && !stopped(cancel) {
             let (user, job) = (crate::acting::current(), crate::usage::job());
@@ -641,6 +644,7 @@ pub(crate) fn converse(
                         s.spawn(move || {
                             crate::acting::run(&user, || {
                                 crate::usage::set_job(job);
+                                crate::websearch::set_conversation_size(size);
                                 let ctx = CallContext { member, read_scopes: scopes, write_scopes: scopes, ..CallContext::new(Some(run), &c.id) };
                                 (c.id.clone(), caps.invoke(&c.function.name, &c.function.arguments, ctx, false, true))
                             })

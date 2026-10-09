@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.50.3.192",
+    "date": "2026-10-09",
+    "title": "Quicker research early on",
+    "fixed": [
+      "Web research keeps its early steps quick: pages are read as they are while a conversation is still small, and condensed only once it has grown (when the context starts to cost more than the summary takes)."
+    ]
+  },
+  {
     "version": "0.50.2.191",
     "date": "2026-10-09",
     "title": "Rail groups fold open",

@@ -138,12 +138,36 @@ fn fetch(s: &Settings, args: &Value) -> Result<Value, String> {
         .and_then(|i| body[i..].find("</title>").map(|j| body[i..i + j].trim().to_string()))
         .unwrap_or_default();
     // A long page: what matters, not the whole thing (the conversation stays small).
-    if s.reader && args["full"] != true && text.chars().count() > READ_OVER
+    if s.reader && args["full"] != true && condense(text.chars().count(), conversation_size())
         && let Some(short) = read(&final_url, &title, &text, args["focus"].as_str().unwrap_or(""))
     {
         return Ok(json!({ "url": final_url, "title": title, "condensed": short, "note": format!("condensed from {} characters; web_fetch with full: true for the whole page", text.chars().count()) }));
     }
     Ok(json!({ "url": final_url, "title": title, "text": text }))
+}
+
+thread_local! {
+    /// How big the conversation asking is (characters): small, a page goes as
+    /// it is (quick); big, it's condensed (the context stays small).
+    static CONVERSATION: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+}
+
+/// This thread's tool calls are for a conversation this big.
+pub fn set_conversation_size(chars: usize) {
+    CONVERSATION.with(|c| c.set(chars));
+}
+
+pub fn conversation_size() -> usize {
+    CONVERSATION.with(|c| c.get())
+}
+
+/// Below this, pages aren't condensed: a model call per page costs more time
+/// than the context it saves (about 30k tokens).
+const CONDENSE_FROM: usize = 100_000;
+
+/// Whether a page this long, for a conversation this big, is condensed.
+fn condense(page: usize, conversation: usize) -> bool {
+    page > READ_OVER && conversation >= CONDENSE_FROM
 }
 
 /// Pages longer than this are condensed (shorter ones cost less as they are
@@ -182,6 +206,14 @@ pub fn call(s: &Settings, name: &str, args: &Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pages_are_condensed_only_once_the_conversation_is_big() {
+        assert!(!condense(20_000, 30_000), "early on: as it is (quick)");
+        assert!(condense(20_000, 150_000), "later: condensed (the context stays small)");
+        assert!(!condense(3_000, 150_000), "a short page goes as it is");
+        assert!(condense(20_000, usize::MAX), "outside a conversation: condensed");
+    }
 
     #[test]
     fn searxng_results_become_a_short_list() {
