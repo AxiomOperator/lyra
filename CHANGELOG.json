@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.34.0.165",
+    "date": "2026-10-08",
+    "title": "Documents",
+    "new": [
+      "Documents: write a letter, memo or one-pager with lyra. Type on one side; on the other, ask lyra to draft it or change it (\"make it more formal\", \"shorten it\") and look at its version before using it.",
+      "A finished document downloads as a Word file, saves to your OneDrive (in a \"lyra\" folder), or goes onto a new email draft as an attachment. Saving to OneDrive needs one more permission: if you connected Outlook before today, connect it again (More → Outlook)."
+    ]
+  },
+  {
     "version": "0.33.0.164",
     "date": "2026-10-08",
     "title": "Meetings",

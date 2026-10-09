@@ -34,7 +34,7 @@ pub struct Entra {
 impl Entra {
     /// What a connection asks Microsoft for.
     pub fn connect_scope(&self) -> &'static str {
-        if self.meetings { OUTLOOK_MEETINGS } else { OUTLOOK }
+        if self.meetings { OUTLOOK_MEETINGS_FILES } else { OUTLOOK_FILES }
     }
 
     pub fn ready(&self) -> bool {
@@ -66,6 +66,12 @@ pub const OUTLOOK: &str = "openid profile email offline_access Calendars.ReadWri
 /// …and their Teams meetings' transcripts (meeting follow-ups). A connection
 /// asks for this; one made before keeps refreshing with what it was granted.
 pub const OUTLOOK_MEETINGS: &str = "openid profile email offline_access Calendars.ReadWrite Mail.ReadWrite Mail.Send Chat.Read Files.Read.All OnlineMeetings.Read OnlineMeetingTranscript.Read.All";
+
+/// What a new connection asks for: all of the above and saving files to their
+/// own OneDrive (the document workspace). Connections made before keep
+/// refreshing with exactly what they were granted.
+pub const OUTLOOK_FILES: &str = "openid profile email offline_access Calendars.ReadWrite Mail.ReadWrite Mail.Send Chat.Read Files.Read.All Files.ReadWrite";
+pub const OUTLOOK_MEETINGS_FILES: &str = "openid profile email offline_access Calendars.ReadWrite Mail.ReadWrite Mail.Send Chat.Read Files.Read.All Files.ReadWrite OnlineMeetings.Read OnlineMeetingTranscript.Read.All";
 
 /// PKCE: the code challenge for a verifier.
 pub fn challenge(verifier: &str) -> String {

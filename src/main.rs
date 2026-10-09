@@ -16,6 +16,8 @@ mod connect;
 mod context;
 mod decide;
 mod diagnose;
+mod docx;
+mod documents;
 mod evolve;
 mod feedback;
 mod files;

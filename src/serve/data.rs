@@ -205,6 +205,28 @@ pub(crate) fn slow(app: &App, what: &str, arg: &Value, loaded: &Loaded) -> Optio
             Box::new(move || search_page(&owner, &current, &query))
         }
         "mail" => Box::new(move || mail_page(&owner)),
+        // The document workspace: their documents, lyra's drafts, Word to OneDrive or a mail.
+        "documents" => Box::new(move || crate::documents::list(&owner)),
+        "document" | "document_save" | "document_remove" | "document_download" | "document_onedrive" | "document_mail" | "document_ask" => {
+            let (what, arg) = (what.to_string(), arg.clone());
+            let (url, model) = (format!("{}/chat/completions", app.base_url.trim_end_matches('/')), app.model.clone());
+            Box::new(move || {
+                let id = arg["id"].as_str().unwrap_or("").to_string();
+                let r = crate::acting::run(&owner, || match what.as_str() {
+                    "document" => crate::documents::read(&owner, &id),
+                    "document_save" => crate::documents::save(&owner, &id, arg["text"].as_str().unwrap_or("")).map(|id| json!({ "id": id })),
+                    "document_remove" => crate::documents::remove(&owner, &id).map(|()| json!({ "ok": true })),
+                    "document_download" => crate::documents::download(&owner, &id),
+                    "document_onedrive" => crate::documents::to_onedrive(&owner, &id),
+                    "document_mail" => {
+                        let to: Vec<String> = arg["to"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
+                        crate::documents::attach_to_mail(&owner, &id, &to)
+                    }
+                    _ => crate::documents::ask(&owner, arg["text"].as_str().unwrap_or(""), arg["instruction"].as_str().unwrap_or(""), &url, &model).map(|text| json!({ "text": text })),
+                });
+                r.unwrap_or_else(|e| json!({ "error": e }))
+            })
+        }
         // The meeting workspace: their meetings, one meeting's page, notes, the follow-up.
         "meetings" => Box::new(move || crate::acting::run(&owner, crate::meetings::list).unwrap_or_else(|e| json!({ "error": e }))),
         "meeting" => {

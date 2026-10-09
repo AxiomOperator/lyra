@@ -293,7 +293,9 @@ currency = "$"
 # Each person connects their own Outlook in the app (More → Outlook). Give the app
 # registration these delegated Microsoft Graph permissions: Calendars.ReadWrite
 # (calendar, plan my day), Mail.ReadWrite and Mail.Send (mail, drafts, triage),
-# Chat.Read (Teams chats), Files.Read.All (OneDrive and SharePoint files).
+# Chat.Read (Teams chats), Files.Read.All (OneDrive and SharePoint files),
+# Files.ReadWrite (Documents: saving to their own OneDrive; people connected
+# before connect again to allow it).
 # Meeting follow-ups from Teams transcripts also need OnlineMeetings.Read and
 # OnlineMeetingTranscript.Read.All (admin consent); grant them, then turn this on
 # and connect Outlook again:

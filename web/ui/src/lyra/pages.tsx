@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { Activity as ActivityIcon, AlarmClock, Code2, Archive, Bell, BellOff, Bot, Brain, FolderOpen, Gauge, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, CalendarDays, Settings as SettingsIcon, Unplug, Users as UsersIcon } from "lucide-react";
+import { Activity as ActivityIcon, AlarmClock, Code2, Archive, Bell, BellOff, Bot, Brain, FolderOpen, Gauge, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, CalendarDays, FileText, Settings as SettingsIcon, Unplug, Users as UsersIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PairCard } from "./chat";
 import { CalendarCard } from "./calendar";
@@ -362,7 +362,7 @@ function Notifications() {
   );
 }
 
-export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "devices" | "usage" | "projects" | "users" | "settings" | "meetings") => void; update: () => void }) {
+export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "devices" | "usage" | "projects" | "users" | "settings" | "meetings" | "documents") => void; update: () => void }) {
   const { say, unpaired, token, serverVersion, status, user } = useLyra();
   const admin = user?.admin ?? true;
   const [sessions] = useData<Session[]>("sessions");
@@ -458,6 +458,9 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
           )}
           <Button variant="secondary" onClick={() => open("meetings")}>
             <CalendarDays /> Meetings
+          </Button>
+          <Button variant="secondary" onClick={() => open("documents")}>
+            <FileText /> Documents
           </Button>
           <Button variant="secondary" onClick={() => open("projects")}>
             <FolderOpen /> Projects

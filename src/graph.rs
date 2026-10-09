@@ -84,17 +84,27 @@ fn access(user: &str) -> Result<String, String> {
     }
     let refresh = crate::secrets::token_for("graph", user).ok_or("your Outlook calendar isn't connected: More → Connect Outlook calendar in the app")?;
     let entra = ENTRA.read().unwrap_or_else(|e| e.into_inner()).clone().filter(|e| e.ready()).ok_or("Microsoft sign-in isn't set up on this server")?;
-    // Ask for what they granted (a connection from before mail: the calendar only).
-    let scope = if has(user, "OnlineMeetingTranscript.Read.All") {
-        lyra_web::oidc::OUTLOOK_MEETINGS
+    // Ask for exactly what they granted (asking for more than that would be
+    // refused, and their connection would stop working); a connection from
+    // before lyra kept the list: the set it was made with.
+    let kept: Vec<String> = crate::secrets::token_for("graph_scope", user).map(|s| s.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect()).unwrap_or_default();
+    let scope = if !kept.is_empty() {
+        let mut all = vec!["openid".to_string(), "profile".into(), "email".into(), "offline_access".into()];
+        for s in kept {
+            if !all.iter().any(|a| a.eq_ignore_ascii_case(&s)) {
+                all.push(s);
+            }
+        }
+        all.join(" ")
+    } else if has(user, "OnlineMeetingTranscript.Read.All") {
+        lyra_web::oidc::OUTLOOK_MEETINGS.to_string()
     } else if has(user, "Chat.Read") {
-        lyra_web::oidc::OUTLOOK
+        lyra_web::oidc::OUTLOOK.to_string()
     } else if has(user, "Mail.ReadWrite") {
-        lyra_web::oidc::OUTLOOK_MAIL
+        lyra_web::oidc::OUTLOOK_MAIL.to_string()
     } else {
-        lyra_web::oidc::CALENDAR
-    }
-    .to_string();
+        lyra_web::oidc::CALENDAR.to_string()
+    };
     let form = [
         ("grant_type", "refresh_token"),
         ("client_id", entra.client_id.trim()),
@@ -157,6 +167,21 @@ pub(crate) fn graph_bytes(path: &str) -> Result<Vec<u8>, String> {
         return Err(format!("couldn't get the file ({})", resp.status()));
     }
     resp.bytes().map(|b| b.to_vec()).map_err(|e| e.to_string())
+}
+
+/// Put a file's bytes (OneDrive's simple upload, up to 4 MB): the item back.
+pub(crate) fn graph_put(path: &str, bytes: Vec<u8>, content_type: &str) -> Result<Value, String> {
+    let token = access(&crate::acting::current())?;
+    let resp = http()?.put(url(path)).bearer_auth(token).header("Content-Type", content_type).body(bytes).send().map_err(|e| format!("Microsoft 365 isn't answering: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+    if status.is_success() {
+        return Ok(serde_json::from_str(&text).unwrap_or(Value::Null));
+    }
+    Err(match status.as_u16() {
+        401 | 403 => "lyra may not save to your OneDrive yet: connect Outlook again (More → Outlook) and allow it".into(),
+        code => format!("OneDrive {code}: {}", serde_json::from_str::<Value>(&text).ok().and_then(|e| e["error"]["message"].as_str().map(str::to_string)).unwrap_or_default()),
+    })
 }
 
 /// The same with its own `Prefer` (mail bodies as text).
