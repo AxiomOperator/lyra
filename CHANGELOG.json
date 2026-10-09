@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.36.1.169",
+    "date": "2026-10-08",
+    "title": "Fallback priced right",
+    "fixed": [
+      "AI usage prices replies from the fallback chat model at the fallback's own prices ([fallback_model] input_cost_per_mtok …), not the main model's."
+    ]
+  },
+  {
     "version": "0.36.0.168",
     "date": "2026-10-08",
     "title": "A fallback chat model",

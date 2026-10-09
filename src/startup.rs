@@ -94,6 +94,7 @@ pub(crate) fn prices(config: &Config) -> usage::Prices {
         .into_iter()
         .filter_map(|(k, p)| Some((k.to_string(), p?.clone())))
         .collect(),
+        models: config.fallback_model.iter().map(|f| (f.model.clone(), f.price.clone())).collect(),
     }
 }
 

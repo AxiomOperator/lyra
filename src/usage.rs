@@ -40,6 +40,9 @@ pub struct Prices {
     pub currency: String,
     /// The other models' prices by kind ("decision", "embedding", "reranker", "vision").
     pub kinds: HashMap<String, Price>,
+    /// Prices by model name, before the kind's: the fallback chat model
+    /// answering a chat turn costs what it costs, not what the main one does.
+    pub models: HashMap<String, Price>,
 }
 
 /// A model's prices in its own section (`[embedding]`, `[decide]`, …), the
@@ -62,8 +65,11 @@ impl Price {
 }
 
 impl Prices {
-    /// (input, cached, output) per million tokens for a call of this kind.
-    fn of(&self, kind: &str) -> (f64, f64, f64) {
+    /// (input, cached, output) per million tokens for a call of this kind, by this model.
+    fn of(&self, kind: &str, model: &str) -> (f64, f64, f64) {
+        if let Some(p) = self.models.get(model) {
+            return (p.input_cost_per_mtok, p.cached_input_cost_per_mtok.unwrap_or(p.input_cost_per_mtok), p.output_cost_per_mtok);
+        }
         match kind {
             // The chat model: chat turns, agents' and plans' steps, lyra's own work.
             "chat" | "agent" | "background" => (self.input, if self.cached > 0.0 { self.cached } else { self.input }, self.output),
@@ -158,7 +164,7 @@ impl Total {
         self.output += c.output;
         self.ms += c.ms;
         // Each call at its own model's prices.
-        let (input, cached, output) = p.of(&c.kind);
+        let (input, cached, output) = p.of(&c.kind, &c.model);
         let fresh = c.input.saturating_sub(c.cached) as f64;
         self.cost += (fresh * input + c.cached as f64 * cached + c.output as f64 * output) / 1_000_000.0;
     }
@@ -258,6 +264,11 @@ mod tests {
         assert_eq!((t.calls, t.input, t.cached, t.output), (2, 2_000_000, 1_000_000, 2_000_000));
         // Each: 0.5M fresh × 1 + 0.5M cached × 0.1 + 1M out × 2 = 2.55
         assert!((t.cost - 5.1).abs() < 1e-9, "{}", t.cost);
+        // The fallback answering a chat turn: its own prices, not the main model's.
+        p.models.insert("gemma".into(), Price { input_cost_per_mtok: 0.5, output_cost_per_mtok: 0.5, ..Default::default() });
+        let mut t = Total::default();
+        t.add(&Call { model: "gemma".into(), cached: 0, ..c.clone() }, &p);
+        assert!((t.cost - 1.0).abs() < 1e-9, "1M in × 0.5 + 1M out × 0.5: {}", t.cost);
         // Another model's call: its own prices (none set: free).
         let e = Call { kind: "embedding".into(), input: 2_000_000, cached: 0, output: 0, ..c.clone() };
         let mut t = Total::default();
