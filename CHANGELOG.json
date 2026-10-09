@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.42.0.176",
+    "date": "2026-10-09",
+    "title": "What's new in pages",
+    "improved": [
+      "What's new shows ten releases at a time, with Newer and Older at the top and bottom, so it opens quickly however long the history gets."
+    ]
+  },
+  {
     "version": "0.41.0.175",
     "date": "2026-10-09",
     "title": "A better chat",

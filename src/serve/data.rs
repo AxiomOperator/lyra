@@ -16,7 +16,15 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
         "routines" => crate::acting::run(&app.owner, || crate::routines::view(&[], 10)),
         "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
         "recap" => crate::recap::last_for(&app.owner).map_or(Value::Null, |r| json!(r)),
-        "changelog" => json!({ "version": crate::changelog::version(), "releases": crate::changelog::all() }),
+        // A page of releases at a time, newest first.
+        "changelog" => {
+            const PER: usize = 10;
+            let all = crate::changelog::all();
+            let pages = all.len().div_ceil(PER).max(1);
+            let page = (arg["page"].as_u64().unwrap_or(0) as usize).min(pages - 1);
+            let releases: Vec<_> = all.iter().skip(page * PER).take(PER).collect();
+            json!({ "version": crate::changelog::version(), "releases": releases, "page": page, "pages": pages, "total": all.len(), "per": PER })
+        }
         // Feedback: everyone sends and follows their own; admins see and move everyone's.
         // Q&A: everyone reads it; admins add, change, remove and promote questions into it.
         "qa" | "qa_put" | "qa_remove" | "qa_promote" => {

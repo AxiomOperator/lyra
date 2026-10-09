@@ -4,10 +4,10 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Sparkles, Wrench, X, Zap } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ChevronLeft, ChevronRight, Sparkles, Wrench, X, Zap } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { Back, Page } from "./parts";
-import { useData, useLyra } from "./store";
+import { useLyra } from "./store";
 
 interface Release {
   version: string;
@@ -28,23 +28,64 @@ function day(d: string) {
   return new Date(`${d}T12:00:00`).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 }
 
+interface Changelog {
+  version: string;
+  releases: Release[];
+  page: number;
+  pages: number;
+  total: number;
+  per: number;
+}
+
+/** Newer / Older, and where you are. */
+function Pager({ data, go }: { data: Changelog; go: (page: number) => void }) {
+  if (data.pages <= 1) return null;
+  const first = data.page * data.per + 1;
+  const last = Math.min(data.total, first + data.releases.length - 1);
+  return (
+    <div className="flex items-center justify-between gap-2 text-muted-foreground text-sm">
+      <Button size="sm" variant="ghost" disabled={data.page === 0} onClick={() => go(data.page - 1)}>
+        <ChevronLeft /> Newer
+      </Button>
+      <span>
+        {first}–{last} of {data.total} releases
+      </span>
+      <Button size="sm" variant="ghost" disabled={data.page >= data.pages - 1} onClick={() => go(data.page + 1)}>
+        Older <ChevronRight />
+      </Button>
+    </div>
+  );
+}
+
 export function WhatsNewPage({ onBack }: { onBack: () => void }) {
-  const [data] = useData<{ version: string; releases: Release[] } | null>("changelog");
+  const { call, ready } = useLyra();
+  const [page, setPage] = useState(0);
+  const [data, setData] = useState<Changelog | null>(null);
+  const top = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (ready) void call<Changelog>("changelog", { page }).then((d) => d && Array.isArray(d.releases) && setData(d));
+  }, [ready, call, page]);
   // Seen now: the update note goes away.
   useEffect(() => {
     if (data?.version) markSeen(data.version);
   }, [data?.version]);
+  const go = (p: number) => {
+    setPage(p);
+    top.current?.scrollIntoView({ block: "start" });
+  };
   return (
     <Page title="What's new" description={data ? `You're on lyra ${data.version}.` : "Every change to lyra, newest first."} action={<Back onBack={onBack} />}>
-      {(data?.releases ?? []).map((r, i) => (
+      <div ref={top} />
+      {data && <Pager data={data} go={go} />}
+      {(data?.releases ?? []).map((r) => (
         <Card key={r.version} className="gap-3 py-4">
           <CardHeader className="px-4">
             <CardDescription className="flex flex-wrap items-center gap-2">
-              <Badge variant={i === 0 ? "default" : "outline"} className="font-mono">
+              <Badge variant={r.version === data?.version ? "default" : "outline"} className="font-mono">
                 {r.version}
               </Badge>
               <span>{day(r.date)}</span>
-              {i === 0 && <span className="text-primary text-xs">current</span>}
+              {r.version === data?.version && <span className="text-primary text-xs">current</span>}
             </CardDescription>
             <CardTitle className="text-base">{r.title}</CardTitle>
           </CardHeader>
@@ -66,6 +107,7 @@ export function WhatsNewPage({ onBack }: { onBack: () => void }) {
           </CardContent>
         </Card>
       ))}
+      {data && data.releases.length > 3 && <Pager data={data} go={go} />}
     </Page>
   );
 }
