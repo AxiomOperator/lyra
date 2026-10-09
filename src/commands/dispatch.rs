@@ -147,6 +147,7 @@ impl App {
             "/users" => self.users_command(arg),
             "/whoami" => Ok(self.whoami()),
             "/usage" => self.usage_command(arg),
+            "/templates" => Ok(crate::templates::command(&self.owner)),
             "/settings" => self.settings_command(arg),
             "/recap" => recap::command(&self.owner),
             "/watches" | "/watch" => watches::command(&self.owner, arg),
@@ -285,7 +286,7 @@ pub(crate) const PAGE_COMMANDS: &[&str] = &[
 /// tools, coding, devices, backups, agents and skills' approval stay admins'.
 pub(crate) fn member_may(name: &str, arg: &str) -> bool {
     match name {
-        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" | "/feedback" => true,
+        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" | "/feedback" | "/templates" => true,
         // Their own skills (the commands check whose each one is).
         "/approve" | "/reject" | "/deprecate" => true,
         // Their own PMI account, routines and goals.

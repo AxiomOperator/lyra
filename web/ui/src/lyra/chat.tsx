@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { AtSign, Clock, CloudOff, Link2, Paperclip, Pencil, Play, ShieldAlert, ShieldCheck, ShieldX, Slash, TriangleAlert, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { loadDraft, saveDraft, type Queued } from "./outbox";
+import { TemplatesButton } from "./templates";
 import { useLyra } from "./store";
 import type { Approval, ChatMessage, PairRequest } from "./types";
 import { ComposerModel, PlanCard, ToolFileContent, ToolFileTree, ToolTerminal, type PlanView } from "./chat-parts2";
@@ -521,6 +522,7 @@ function Composer() {
               />
             )}
             <VoiceButton />
+            <TemplatesButton text={text} use={(prompt) => setText(prompt)} />
             <ComposerModel admin={user?.admin ?? true} />
           </PromptInputTools>
           {/* While a reply is being written the button stops it. */}

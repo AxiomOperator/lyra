@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.32.0.163",
+    "date": "2026-10-08",
+    "title": "Saved prompts",
+    "new": [
+      "Saved prompts: the bookmark button by the message box keeps the requests you make often. Tap one to put it in the box, change it if you like, and send. Save what you've typed as a new one any time.",
+      "Admins can share prompts with everyone; lyra starts with a few: your weekly status, summarizing a thread, a reply in your style, and meeting prep."
+    ]
+  },
+  {
     "version": "0.31.0.162",
     "date": "2026-10-08",
     "title": "Home-screen shortcuts",

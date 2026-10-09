@@ -50,6 +50,7 @@ mod style;
 mod status;
 mod teams;
 mod text;
+mod templates;
 mod tools;
 mod qa;
 mod recap;

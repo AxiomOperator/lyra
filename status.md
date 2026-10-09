@@ -246,7 +246,7 @@ Recurring errors:
 
 ### Now: user features (asked for 2026-10-08)
 1. ✅ **Home-screen shortcuts and notification buttons** (0.31.0.162): long-press the icon for New chat, Add task, Quick note (manifest `shortcuts`, `lyra/intent.ts`). Approvals (Allow / Deny) and reminders (Done / In 1 hour / Tomorrow) were already answerable from the notification.
-2. **Saved prompts (templates):** one-tap starters; each person's own, plus shared ones an admin publishes.
+2. ✅ **Saved prompts (templates)** (0.32.0.163): the bookmark button by the message box; one tap fills the box to change before sending. Each person's own (`templates.json` in their files; the owner's `templates/mine.json`) and shared ones admins publish (`templates/shared.json`, starting from four starters); `/templates` lists them in the terminal (`src/templates.rs`, `web/ui/src/lyra/templates.tsx`).
 3. **Meeting workspace:** a page per meeting: prep before, notes during, the follow-up after (summary, decisions, your action items as tasks, a draft email to attendees).
 4. **Document workspace:** draft a letter, memo or one-pager side by side with lyra; save it to OneDrive or attach it to an email.
 5. **"What lyra knows about me":** memories, writing style, connected accounts and recent actions on one page, each correctable, deletable or exportable.

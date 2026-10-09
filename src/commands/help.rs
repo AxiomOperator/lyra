@@ -34,6 +34,7 @@ pub(crate) const COMMANDS: &str = "\
 /users rounds <who> <n|default>   their own limit on tool calls in one reply (1–64; admins)
 /whoami                      who this conversation belongs to
 /settings [<key> <value>]    the common settings (models, working hours, briefing, recap, notifications); change one (admins)
+/templates                   your saved prompts and the shared ones (save them in the app)
 /usage [days]                AI usage: everyone's and each person's (admins), your own (members)
 /recap                       your end-of-day recap now (it also comes at the end of the working day)
 /watches [cancel <id>]       what lyra watches for you (tell me when Jeremy replies)

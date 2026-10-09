@@ -146,6 +146,16 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
             let mine = app.personal().map(|u| format!("user:{u}"));
             page(app.mem().ok_or("memory is off".to_string()).and_then(|m| m.page(arg["query"].as_str().unwrap_or(""), arg["scope"].as_str().unwrap_or(""), mine.as_deref())))
         }
+        // Saved prompts: theirs and the shared ones; changes return the list again.
+        "templates" => crate::templates::page(&app.owner, app.admin),
+        "template_put" => match crate::templates::put(&app.owner, app.admin, arg["shared"] == true, arg["id"].as_str().unwrap_or(""), arg["title"].as_str().unwrap_or(""), arg["prompt"].as_str().unwrap_or("")) {
+            Ok(_) => crate::templates::page(&app.owner, app.admin),
+            Err(e) => json!({ "error": e }),
+        },
+        "template_remove" => match crate::templates::remove(&app.owner, app.admin, arg["shared"] == true, arg["id"].as_str().unwrap_or("")) {
+            Ok(()) => crate::templates::page(&app.owner, app.admin),
+            Err(e) => json!({ "error": e }),
+        },
         // The Settings page (admins): the common settings and their values.
         "settings" => crate::settings::page(),
         "rules" => json!({
