@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { CheckCheck, FolderOpen, FolderPlus, Pencil, ShieldCheck, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Back, Page, useConfirm } from "./parts";
-import { addFolder, allowFolder, folderStates, onFoldersChanged, removeFolder, renameFolder, supported, trustFolder, type FolderState } from "./folders";
+import { addFolder, allowFolder, folderStates, foldersWereReset, onFoldersChanged, removeFolder, renameFolder, supported, trustFolder, type FolderState } from "./folders";
 
 export function ProjectsPage({ onBack }: { onBack: () => void }) {
   const [folders, setFolders] = useState<FolderState[]>([]);
@@ -28,6 +28,11 @@ export function ProjectsPage({ onBack }: { onBack: () => void }) {
       {!supported && (
         <Card className="border-amber-700/50 py-3">
           <CardContent className="px-4 text-sm">This browser can't lend folders. Use Chrome or Edge (or lyra installed from them) on your PC.</CardContent>
+        </Card>
+      )}
+      {supported && foldersWereReset() && (
+        <Card className="border-amber-700/50 py-3">
+          <CardContent className="px-4 text-sm">Folders are now kept for each person, not for this browser. The ones added before couldn't be told apart, so add yours again (the browser remembers them: it's quick).</CardContent>
         </Card>
       )}
       {supported && (

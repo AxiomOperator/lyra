@@ -56,8 +56,8 @@ impl App {
             "/reject" => need().and_then(|l| l.decide("reject", arg, self.personal().as_deref(), self.admin)),
             "/deprecate" => need().and_then(|l| l.decide("deprecate", arg, self.personal().as_deref(), self.admin)),
             "/forget-skill" => need().and_then(|l| l.decide("forget", arg, self.personal().as_deref(), self.admin)),
-            "/history" => need().and_then(|l| l.history(arg)),
-            "/rollback" => need().and_then(|l| l.rollback(arg)),
+            "/history" => need().and_then(|l| l.history(arg, self.personal().as_deref())),
+            "/rollback" => need().and_then(|l| l.rollback(arg, self.personal().as_deref(), self.admin)),
             "/outcome" => (|| {
                 let outcome = match arg.trim() {
                     "good" | "success" => SkillOutcome::Success,

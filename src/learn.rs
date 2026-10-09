@@ -69,9 +69,10 @@ impl Learning {
         Ok(found.into_iter().filter(|r| (r.skill.agent.is_none() || r.skill.agent.as_deref() == agent) && r.skill.visible_to(viewer.as_deref())).take(limit).collect())
     }
 
-    /// Make a skill an agent's own (or global again with `None`).
+    /// Make a skill an agent's own (or global again with `None`). Agents are
+    /// everyone's: only shared skills (never someone's personal one).
     pub fn assign(&self, key: &str, agent: Option<&str>) -> Result<Skill, String> {
-        let skill = self.find(key)?;
+        let skill = self.run(self.manager.find_as(key, None))?;
         self.run(self.manager.set_agent(skill.id, agent))
     }
 
@@ -304,9 +305,11 @@ impl Learning {
         }
     }
 
-    /// Text for `/history`: versions and audit trail.
-    pub fn history(&self, key: &str) -> Result<String, String> {
-        let skill = self.run(self.manager.find(key))?;
+    /// Text for `/history`: versions and audit trail, of a skill `viewer` may
+    /// see (shared, or theirs; `None`: lyra's owner, the shared ones). Someone
+    /// else's personal skill isn't found: its evidence is from their conversations.
+    pub fn history(&self, key: &str, viewer: Option<&str>) -> Result<String, String> {
+        let skill = self.run(self.manager.find_as(key, viewer))?;
         let (versions, events) = self.run(self.manager.history(skill.id))?;
         let mut out = vec![format!("{} ({}) — {}", skill.name, skill.status, track_record(&skill))];
         let relationships = self.run(self.manager.relationships(skill.id))?;
@@ -332,15 +335,19 @@ impl Learning {
         Ok(out.join("\n"))
     }
 
-    /// `/rollback <skill> [version]`.
-    pub fn rollback(&self, args: &str) -> Result<String, String> {
+    /// `/rollback <skill> [version]`: a skill `viewer` may change (their own;
+    /// a shared one only an admin).
+    pub fn rollback(&self, args: &str, viewer: Option<&str>, admin: bool) -> Result<String, String> {
         let mut parts = args.split_whitespace();
         let key = parts.next().ok_or("usage: /rollback <skill> [version]")?;
         let to = parts
             .next()
             .map(|v| v.trim_start_matches('v').parse::<i64>().map_err(|_| format!("bad version {v:?}")))
             .transpose()?;
-        let skill = self.run(self.manager.find(key))?;
+        let skill = self.run(self.manager.find_as(key, viewer))?;
+        if !skill.editable_by(viewer, admin) {
+            return Err(format!("{} is a shared skill: only an admin can roll it back", skill.name));
+        }
         let v = self.run(self.manager.rollback(skill.id, to, None))?;
         Ok(format!("rolled {} back; now at v{v} (see /history {})", skill.name, skill.name))
     }
@@ -509,6 +516,29 @@ mod tests {
         assert_eq!(turn.user, "No, use the staging server instead");
         assert!(turn.follows_reply);
         assert_eq!((turn.tool_calls, turn.tool_errors, turn.skills_used), (2, 1, 2));
+    }
+
+    #[test]
+    fn history_and_rollback_keep_to_whose_skill_it_is() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = std::env::temp_dir().join(format!("lyra-learn-history-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let manager = Arc::new(rt.block_on(SkillManager::open(&dir, lyra_learning::Settings::default())).unwrap());
+        let l = Learning::new(manager.clone(), rt.handle().clone(), dir.display().to_string());
+        let c = |name: &str| lyra_learning::evaluator::Candidate { name: name.into(), description: "When committing Rust code".into(), instructions: "Run cargo test first.".into(), confidence: 0.9, reason: "a correction".into() };
+        rt.block_on(manager.learn_as(c("shared-one"), "conversation", None, None)).unwrap();
+        rt.block_on(manager.learn_as(c("danas-own"), "conversation", None, Some("dana"))).unwrap();
+        // Dana sees hers and the shared one; Juan (and the owner) not hers.
+        assert!(l.history("danas-own", Some("dana")).unwrap().contains("danas-own"));
+        assert!(l.history("shared-one", Some("juan")).is_ok());
+        assert!(l.history("danas-own", Some("juan")).is_err(), "another member's skill");
+        assert!(l.history("danas-own", None).is_err(), "not the owner either: its evidence is Dana's");
+        // Rollback: only what one may change.
+        assert!(l.rollback("danas-own", Some("juan"), true).is_err());
+        assert!(l.rollback("shared-one", Some("juan"), false).unwrap_err().contains("only an admin"));
+        assert!(l.assign("danas-own", Some("ops")).is_err(), "agents get shared skills only");
+        drop(l);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

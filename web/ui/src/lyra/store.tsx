@@ -5,7 +5,7 @@
 // conversation shows them, sent when lyra is reachable and done answering.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
-import { answer as answerFolder, folderStates, onFoldersChanged } from "./folders";
+import { answer as answerFolder, folderStates, folderUser, onFoldersChanged, setFolderUser } from "./folders";
 import { forgetAll, loadLast, loadOutbox, newQueued, saveLast, saveOutbox, timesSaid, type Queued } from "./outbox";
 import { saveToken } from "./token";
 import type { ChatMessage, Command, Me, Status, ThisDevice } from "./types";
@@ -184,6 +184,8 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
           sock.close();
           return;
         }
+        // The person signed in here: their folders (and only theirs) are lent.
+        if (msg.type === "snapshot") void setFolderUser((msg.user as Me | undefined)?.user ?? null);
         if (msg.type === "snapshot" && typeof msg.session_id === "string") {
           try {
             localStorage.setItem("lyra-session", msg.session_id);
@@ -207,6 +209,7 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
             if (r.status === 401) {
               saveToken(null);
               forgetAll();
+              void setFolderUser(null);
               onUnpaired("This device isn't paired any more. Pair it again.");
               return;
             }
@@ -276,6 +279,7 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
   const unpaired = useCallback(() => {
     saveToken(null);
     forgetAll();
+    void setFolderUser(null);
     ws.current?.close();
     onUnpaired();
   }, [onUnpaired]);
@@ -349,8 +353,10 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
 
 /** The folders this page lends lyra, for it to route requests here. */
 async function tellFolders(sock: WebSocket) {
+  // Whose they are goes with them: lyra takes them only for that person.
+  const user = folderUser();
   const folders = await folderStates();
-  if (sock.readyState === 1) sock.send(JSON.stringify({ type: "folders", folders }));
+  if (sock.readyState === 1) sock.send(JSON.stringify({ type: "folders", folders, user }));
 }
 
 /** Ask for a page's data and keep the latest answer. */

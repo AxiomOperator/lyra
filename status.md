@@ -130,8 +130,8 @@ Recurring errors:
 
 | ID | Issue | Where | Fix |
 |---|---|---|---|
-| **I-1** | **Lent project folders belong to the browser, not the person.** Folder handles live in IndexedDB under one key and are re-announced as whoever signs in next. On a shared PC or browser profile, user B's chat can read, search and (after approval) write user A's folders. | `web/ui/src/lyra/folders.ts:57-78`, `web/src/lib.rs` "folders" | Key the store by user (`folders:<id>`), and only announce the signed-in person's folders. |
-| **I-2** | **`/history <skill>` shows another member's personal skill:** its versions, evidence (from their conversations) and related skills. Members are allowed `/history`, and it looks the skill up without checking whose it is. | `src/learn.rs:308`, `src/commands/dispatch.rs` (`/history`) | `find_as(key, viewer)` in `history` (and `rollback`). |
+| **I-1** ✅ | **Fixed in 0.29.5.158:** folders are kept per person in IndexedDB (`folders:<user id>`), only the signed-in person's are announced (none until lyra says who that is), and the announcement says whose they are: the server takes folders only when that matches the connection's person, so an older cached app lends none. The old browser-wide list is dropped once (whose it was can't be known); the Projects page says to add them again. *Was:* **Lent project folders belong to the browser, not the person.** Folder handles live in IndexedDB under one key and are re-announced as whoever signs in next. On a shared PC or browser profile, user B's chat can read, search and (after approval) write user A's folders. | `web/ui/src/lyra/folders.ts:57-78`, `web/src/lib.rs` "folders" | Key the store by user (`folders:<id>`), and only announce the signed-in person's folders. |
+| **I-2** ✅ | **Fixed in 0.29.5.158:** `/history` and `/rollback` look skills up with `find_as(key, viewer)` (shared, or the person's own), `/rollback` also needs `editable_by`, and `/agent`'s skill assignment takes shared skills only. *Was:* **`/history <skill>` shows another member's personal skill:** its versions, evidence (from their conversations) and related skills. Members are allowed `/history`, and it looks the skill up without checking whose it is. | `src/learn.rs:308`, `src/commands/dispatch.rs` (`/history`) | `find_as(key, viewer)` in `history` (and `rollback`). |
 
 ### Medium
 
@@ -228,7 +228,7 @@ Recurring errors:
 ## 8. Roadmap
 
 ### Now: hardening (about a week)
-1. **I-1, I-2, I-3:** the cross-user problems.
+1. ~~I-1, I-2~~ (done), **I-3:** the cross-user problems.
 2. **I-5, I-6, I-7:** nothing slow on the serve loop or a connection's loop.
 3. ~~D-2: one atomic JSON store, which also fixes I-4 and I-22~~ (done).
 4. **I-9, I-10, I-12, I-13, I-23** and the small ones (I-17 to I-21).

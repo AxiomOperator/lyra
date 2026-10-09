@@ -1,7 +1,9 @@
 // Project folders: folders on this PC the person lends lyra (the browser's
 // File System Access, Chrome/Edge). The handles stay in this browser
-// (IndexedDB); lyra's requests for them come over the WebSocket, only ever
-// from this person's own conversations, and a write only after their yes.
+// (IndexedDB), kept per person (`folders:<user id>`): on a shared PC or
+// browser profile, only the signed-in person's folders are lent. lyra's
+// requests for them come over the WebSocket, only ever from this person's
+// own conversations, and a write only after their yes.
 
 // The parts of the File System Access API used here (not in TypeScript's DOM lib yet).
 type Mode = { mode: "read" | "readwrite" };
@@ -54,11 +56,59 @@ function idb(): Promise<IDBDatabase> {
   });
 }
 
+// Whose folders: the person signed in on this page (from lyra's snapshot).
+// Until lyra says, there are none: nothing is lent as nobody in particular.
+let owner: string | null = null;
+let legacyDropped = false;
+
+/** The person signed in here (or nobody): their folders are the ones lent. */
+export async function setFolderUser(user: string | null) {
+  if (user === owner) return;
+  owner = user;
+  if (user) await dropLegacy();
+  changed();
+}
+
+/** Who the folders lent now belong to (sent with them, so lyra can check). */
+export function folderUser() {
+  return owner;
+}
+
+/** Folders added before they were kept per person were dropped (once): add them again. */
+export function foldersWereReset() {
+  return legacyDropped;
+}
+
+// Before 0.29.5 the list was this browser's ("folders"), whoever added it.
+// Whose it was isn't known, so it's given to nobody: each person adds theirs again.
+async function dropLegacy() {
+  try {
+    const db = await idb();
+    const old = await new Promise<unknown>((resolve) => {
+      const r = db.transaction("kv").objectStore("kv").get("folders");
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => resolve(undefined);
+    });
+    if (old === undefined) return;
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction("kv", "readwrite");
+      tx.objectStore("kv").delete("folders");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+    legacyDropped = Array.isArray(old) && old.length > 0;
+  } catch {
+    // no storage: nothing to drop
+  }
+}
+
 async function load(): Promise<ProjectFolder[]> {
+  if (!owner) return [];
+  const key = `folders:${owner}`;
   try {
     const db = await idb();
     return await new Promise((resolve) => {
-      const r = db.transaction("kv").objectStore("kv").get("folders");
+      const r = db.transaction("kv").objectStore("kv").get(key);
       r.onsuccess = () => resolve((r.result as ProjectFolder[] | undefined) ?? []);
       r.onerror = () => resolve([]);
     });
@@ -68,10 +118,12 @@ async function load(): Promise<ProjectFolder[]> {
 }
 
 async function save(list: ProjectFolder[]) {
+  if (!owner) throw new Error("not signed in yet");
+  const key = `folders:${owner}`;
   const db = await idb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction("kv", "readwrite");
-    tx.objectStore("kv").put(list, "folders");
+    tx.objectStore("kv").put(list, key);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -108,6 +160,7 @@ export async function addFolder(): Promise<string | null> {
   } catch {
     return null; // cancelled
   }
+  if (!owner) return null;
   const list = await load();
   let name = handle.name;
   for (let i = 2; list.some((f) => f.name.toLowerCase() === name.toLowerCase()); i++) name = `${handle.name} ${i}`;

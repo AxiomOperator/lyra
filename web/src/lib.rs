@@ -1302,7 +1302,10 @@ async fn connection(s: Arc<Shared>, d: Device, mut who: Who, session: String, mu
                     }
                     // The folders this page lends lyra (on connect and on every change).
                     "folders" => {
-                        let folders: Vec<Folder> = serde_json::from_value(v["folders"].clone()).unwrap_or_default();
+                        // Only folders said to be the signed-in person's: a page (or an
+                        // older app) lending someone else's, or nobody's, lends none.
+                        let theirs = v["user"].as_str() == Some(who.user.as_str());
+                        let folders: Vec<Folder> = if theirs { serde_json::from_value(v["folders"].clone()).unwrap_or_default() } else { Vec::new() };
                         let folders: Vec<Folder> = folders.into_iter().filter(|f| !f.name.trim().is_empty()).take(50).collect();
                         let mut browsers = s.browsers.lock().unwrap_or_else(|e| e.into_inner());
                         // Always the person signed in now (re-checked above).

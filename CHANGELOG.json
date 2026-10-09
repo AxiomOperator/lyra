@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.29.5.158",
+    "date": "2026-10-08",
+    "title": "Your folders and skills stay yours",
+    "fixed": [
+      "Project folders are now kept for each person, not for the browser: on a shared PC, lyra only works in the folders of whoever is signed in. Folders added before this couldn't be told apart, so each person adds theirs again on the Projects page.",
+      "Looking up a skill's history (or rolling one back) no longer shows someone else's personal skill."
+    ]
+  },
+  {
     "version": "0.29.4.157",
     "date": "2026-10-08",
     "title": "Replace your PMI token",

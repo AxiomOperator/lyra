@@ -213,7 +213,7 @@ fn rollback_to(env: &Env, to: Option<u32>, why: &str) -> Result<Vec<String>, Str
             }
             continue;
         }
-        match env.learning.as_ref().map(|l| l.rollback(&format!("{} {}", r.name, r.from_version))) {
+        match env.learning.as_ref().map(|l| l.rollback(&format!("{} {}", r.name, r.from_version), None, true)) {
             Some(Ok(note)) => notes.push(format!("  {note}")),
             Some(Err(e)) => notes.push(format!("  ✗ couldn't restore skill {} v{}: {e}", r.name, r.from_version)),
             None => notes.push(format!("  ✗ learning is off; skill {} wasn't restored to v{}", r.name, r.from_version)),
