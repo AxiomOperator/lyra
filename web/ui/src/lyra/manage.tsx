@@ -63,11 +63,39 @@ function EditDialog({ open, title, text, onSave, onClose }: { open: boolean; tit
 
 // ---- memory
 
+/** Memory kinds, as the page names them. */
+const MEMORY_KINDS: Record<string, { label: string; help: string }> = {
+  semantic: { label: "Semantic", help: "Facts: what's true about you, your work and your systems" },
+  episodic: { label: "Episodic", help: "Events: what happened, and when" },
+  working: { label: "Working", help: "Short-term notes for what's going on now; they expire" },
+};
+
+/** A row of filter chips: a label, then each choice with its count. */
+function Chips({ label, choices, value, set }: { label: string; choices: { id: string; text: string; count: number; title?: string }[]; value: string; set: (v: string) => void }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="w-12 shrink-0 text-[11px] text-muted-foreground uppercase tracking-wide">{label}</span>
+      {choices.map((c) => (
+        <button
+          key={c.id || "all"}
+          type="button"
+          title={c.title}
+          onClick={() => set(c.id)}
+          className={cn("rounded-full border px-2.5 py-0.5 text-xs", value === c.id ? "border-teal-500 bg-teal-500/15 text-teal-200" : "text-muted-foreground hover:bg-accent/50")}
+        >
+          {c.text} <span className="opacity-60">{c.count}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function MemoryPage({ onBack }: { onBack: () => void }) {
   const [typed, setTyped] = useState("");
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState("");
-  const [data, reload] = usePage<MemoryPageData>("memory", { query, scope });
+  const [kind, setKind] = useState("");
+  const [data, reload] = usePage<MemoryPageData>("memory", { query, scope, kind });
   const { act, busy, note } = useAction(reload);
   const [confirm, dialog] = useConfirm();
   const [editing, setEditing] = useState<{ id: string; content: string } | null>(null);
@@ -86,19 +114,20 @@ export function MemoryPage({ onBack }: { onBack: () => void }) {
         </Button>
       </form>
       {!!data?.scopes.length && (
-        <div className="flex flex-wrap gap-1.5">
-          {[{ scope: "", count: data.active }, ...data.scopes].map((s) => (
-            <button
-              key={s.scope || "all"}
-              type="button"
-              onClick={() => setScope(s.scope)}
-              className={cn("rounded-full border px-2.5 py-0.5 text-xs", scope === s.scope ? "border-teal-500 bg-teal-500/15 text-teal-200" : "text-muted-foreground hover:bg-accent/50")}
-            >
-              {s.scope || "all"} <span className="opacity-60">{s.count}</span>
-            </button>
-          ))}
-        </div>
+        <Chips label="Whose" value={scope} set={setScope} choices={[{ scope: "", count: data.active }, ...data.scopes].map((s) => ({ id: s.scope, text: s.scope || "all", count: s.count }))} />
       )}
+      {!!data?.kinds?.length && (
+        <Chips
+          label="Kind"
+          value={kind}
+          set={setKind}
+          choices={[
+            { id: "", text: "all", count: data.kinds.reduce((n, k) => n + k.count, 0) },
+            ...data.kinds.map((k) => ({ id: k.kind, text: MEMORY_KINDS[k.kind]?.label ?? k.kind, count: k.count, title: MEMORY_KINDS[k.kind]?.help })),
+          ]}
+        />
+      )}
+      {kind && MEMORY_KINDS[kind] && <p className="-mt-2 text-muted-foreground text-xs">{MEMORY_KINDS[kind].help}.</p>}
       {!!data?.proposals.length && (
         <Card className="border-amber-700/50 py-4">
           <CardHeader className="px-4">
@@ -122,13 +151,15 @@ export function MemoryPage({ onBack }: { onBack: () => void }) {
           </CardContent>
         </Card>
       )}
-      {data && !data.error && data.memories.length === 0 && <p className="text-muted-foreground text-sm">{query ? "Nothing found." : "No memories yet."}</p>}
+      {data && !data.error && data.memories.length === 0 && <p className="text-muted-foreground text-sm">{query ? "Nothing found." : kind || scope ? "None of these." : "No memories yet."}</p>}
       {data?.memories.map((m) => (
         <Card key={m.id} className="gap-2 py-3">
           <CardContent className="space-y-2 px-4">
             <p className="whitespace-pre-wrap break-words text-sm">{m.content}</p>
             <div className="flex flex-wrap items-center gap-1.5">
-              <Badge variant="secondary">{m.kind}</Badge>
+              <Badge variant="secondary" title={MEMORY_KINDS[m.kind]?.help}>
+                {MEMORY_KINDS[m.kind]?.label ?? m.kind}
+              </Badge>
               <Badge variant="outline">{m.scope}</Badge>
               <span className="text-muted-foreground text-xs">
                 sure {Math.round(m.confidence * 100)}% · {ago(m.updated)}

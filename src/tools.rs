@@ -594,20 +594,25 @@ mod tests {
         let mine: &[&str] = &["user:dana"];
         let dana = CallContext { member: true, read_scopes: Some(mine), write_scopes: Some(mine), ..CallContext::new(None, "") };
         t.run("memory_remember", r#"{"content":"Dana's desk is by the window."}"#, dana);
-        let page = t.mem.page("", "", Some("user:dana")).unwrap();
+        let page = t.mem.page("", "", "", Some("user:dana")).unwrap();
         let shown: Vec<&str> = page["memories"].as_array().unwrap().iter().filter_map(|m| m["content"].as_str()).collect();
         assert_eq!(shown, ["Dana's desk is by the window."], "only hers");
         assert_eq!(page["scopes"], json!([{ "scope": "user:dana", "count": 1 }]));
-        let asked = t.mem.page("", "user", Some("user:dana")).unwrap();
+        // By kind too: her one fact, and nothing when another kind is chosen.
+        assert_eq!(page["kinds"][0], json!({ "kind": "semantic", "count": 1 }));
+        assert_eq!(t.mem.page("", "", "episodic", Some("user:dana")).unwrap()["memories"].as_array().unwrap().len(), 0);
+        assert_eq!(t.mem.page("", "", "semantic", Some("user:dana")).unwrap()["memories"].as_array().unwrap().len(), 1);
+        assert!(t.mem.page("", "", "nonsense", Some("user:dana")).is_err());
+        let asked = t.mem.page("", "user", "", Some("user:dana")).unwrap();
         assert_eq!(asked["memories"].as_array().unwrap().len(), 1, "asking for another scope still shows hers");
-        let searched = t.mem.page("server called", "", Some("user:dana")).unwrap();
+        let searched = t.mem.page("server called", "", "", Some("user:dana")).unwrap();
         assert!(!searched.to_string().contains("atlas"), "search stays in her scope");
         // The owner's page: never anyone's own.
-        let owner = t.mem.page("", "", None).unwrap();
+        let owner = t.mem.page("", "", "", None).unwrap();
         assert!(!owner.to_string().contains("window") && !owner.to_string().contains("user:dana"), "{owner}");
-        assert!(t.mem.page("", "user:dana", None).is_err());
+        assert!(t.mem.page("", "user:dana", "", None).is_err());
         // Her commands: her memories only.
-        let ids: Vec<String> = t.mem.page("", "", None).unwrap()["memories"].as_array().unwrap().iter().filter_map(|m| m["id"].as_str().map(str::to_string)).collect();
+        let ids: Vec<String> = t.mem.page("", "", "", None).unwrap()["memories"].as_array().unwrap().iter().filter_map(|m| m["id"].as_str().map(str::to_string)).collect();
         assert!(t.mem.command_for(&format!("forget {}", ids[0]), "user:dana").is_err(), "not the owner's");
         let hers = page["memories"][0]["id"].as_str().unwrap();
         assert!(t.mem.command_for(&format!("archive {hers}"), "user:dana").unwrap().starts_with("archived"));

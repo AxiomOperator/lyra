@@ -376,14 +376,18 @@ impl Mem {
     /// The Memory page. `mine`: one person's own scope (`user:<id>`): only
     /// theirs, whatever scope is asked for, and no review proposals. The
     /// owner's page never shows anyone's own memories.
-    pub fn page(&self, query: &str, scope: &str, mine: Option<&str>) -> Result<serde_json::Value, String> {
+    /// The Memory page: by scope (whose: agent, user, project…) and by kind
+    /// (`kind`: "semantic" facts, "episodic" events, "working" short-term; empty: all).
+    pub fn page(&self, query: &str, scope: &str, kind: &str, mine: Option<&str>) -> Result<serde_json::Value, String> {
         let scope = match mine {
             Some(m) => m,
             None if lyra_memory::personal(scope) => return Err("that scope is someone's own".into()),
             None => scope,
         };
+        let kind = (!kind.trim().is_empty()).then(|| parse_kind(Some(kind.trim()))).transpose()?;
+        let in_scope = (!scope.is_empty()).then(|| scope.to_string());
         let found: Vec<(Memory, Option<f32>)> = if query.trim().is_empty() {
-            let filter = Filter { scope: (!scope.is_empty()).then(|| scope.to_string()), statuses: vec![MemoryStatus::Active], kind: None };
+            let filter = Filter { scope: in_scope.clone(), statuses: vec![MemoryStatus::Active], kind };
             self.run(self.manager.list(&filter, 200))?.into_iter().map(|m| (m, None)).collect()
         } else if let Some(m) = mine {
             self.recall(Some(m), query.trim(), 30, true)?.into_iter().map(|r| (r.memory, Some(r.score.total))).collect()
@@ -394,6 +398,14 @@ impl Mem {
                 .map(|r| (r.memory, Some(r.score.total)))
                 .collect()
         };
+        // A search: only that kind, when one is chosen.
+        let found: Vec<(Memory, Option<f32>)> = found.into_iter().filter(|(m, _)| kind.is_none_or(|k| m.kind == k)).collect();
+        // How many of each kind there are in this scope.
+        let mut kinds = Vec::new();
+        for k in [MemoryKind::Semantic, MemoryKind::Episodic, MemoryKind::Working] {
+            let n = self.run(self.manager.list(&Filter { scope: in_scope.clone(), statuses: vec![MemoryStatus::Active], kind: Some(k) }, 100_000))?.len();
+            kinds.push(serde_json::json!({ "kind": k.as_str(), "count": n }));
+        }
         let stats = self.run(self.manager.stats())?;
         let recent = self.run(self.manager.list(&Filter::active(), 30))?;
         let proposals: Vec<serde_json::Value> = if mine.is_some() {
@@ -420,6 +432,7 @@ impl Mem {
             })).collect::<Vec<_>>(),
             "proposals": proposals,
             "scopes": scopes,
+            "kinds": kinds,
             "active": active,
         }))
     }

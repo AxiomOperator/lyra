@@ -199,7 +199,7 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
         "skills" => page(app.learning.clone().ok_or("learning is off".to_string()).and_then(|l| l.page_for(app.personal().as_deref(), app.admin))),
         "memory" => {
             let mine = app.personal().map(|u| format!("user:{u}"));
-            page(app.mem().ok_or("memory is off".to_string()).and_then(|m| m.page(arg["query"].as_str().unwrap_or(""), arg["scope"].as_str().unwrap_or(""), mine.as_deref())))
+            page(app.mem().ok_or("memory is off".to_string()).and_then(|m| m.page(arg["query"].as_str().unwrap_or(""), arg["scope"].as_str().unwrap_or(""), arg["kind"].as_str().unwrap_or(""), mine.as_deref())))
         }
         // "What lyra knows about me": everything kept about them, on one page.
         "me" => about_me(app, hub, false),
@@ -492,7 +492,7 @@ fn about_me(app: &App, hub: &Hub, export: bool) -> Value {
     let user = app.owner.clone();
     let u = hub.users().get(&user);
     let mine = app.personal().map(|u| format!("user:{u}"));
-    let memories = app.mem().map_or(Value::Null, |m| m.page("", "", mine.as_deref()).map_or(Value::Null, |p| p["memories"].clone()));
+    let memories = app.mem().map_or(Value::Null, |m| m.page("", "", "", mine.as_deref()).map_or(Value::Null, |p| p["memories"].clone()));
     let pmi = crate::pmi::configured_for(&user);
     let microsoft = crate::graph::connected_for(&user);
     let mut theirs: Vec<_> = hub.devices().list().into_iter().filter(|d| d.user.as_deref().unwrap_or(lyra_web::users::OWNER) == user && d.kind == "device").collect();

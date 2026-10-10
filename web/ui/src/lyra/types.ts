@@ -225,6 +225,8 @@ export interface MemoryPageData {
   memories: MemoryRow[];
   proposals: { id: string; text: string }[];
   scopes: { scope: string; count: number }[];
+  /** Active memories of each kind in the chosen scope. */
+  kinds?: { kind: string; count: number }[];
   active: number;
   error?: string;
 }

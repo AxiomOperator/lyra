@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.60.0.206",
+    "date": "2026-10-10",
+    "title": "Memories by kind",
+    "new": [
+      "The Memory page can now also be filtered by kind: Semantic (facts), Episodic (events) or Working (short-term notes). Each shows how many there are, and it works together with the filter for whose memories they are (agent, user, project) and with search."
+    ]
+  },
+  {
     "version": "0.59.0.205",
     "date": "2026-10-10",
     "title": "Notes and documents are one",
