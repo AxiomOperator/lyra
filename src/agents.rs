@@ -32,6 +32,8 @@ pub struct Settings {
     pub auto_delegate: bool,
     /// Longest chain of delegations (main → agent counts as 1).
     pub max_depth: u32,
+    /// Delegations run side by side when one round asks for several (at most this many at once).
+    pub max_parallel: usize,
     /// Say "handled with: Writer" under replies that used a specialist.
     pub show_handled_by: bool,
     pub routing: RouterSettings,
@@ -40,7 +42,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { enabled: true, auto_delegate: true, max_depth: 2, show_handled_by: true, routing: RouterSettings::default(), budget: AgentBudget::default() }
+        Self { enabled: true, auto_delegate: true, max_depth: 2, max_parallel: 3, show_handled_by: true, routing: RouterSettings::default(), budget: AgentBudget::default() }
     }
 }
 
@@ -48,14 +50,15 @@ impl Default for Settings {
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     Routed { agent: String, method: RouteMethod, confidence: f32, reason: String },
-    Started { agent: String, task: String, depth: u32 },
+    /// `key` is this delegation's own (several can run at once, even with the same agent).
+    Started { agent: String, task: String, depth: u32, key: String },
     /// An agent calls a tool: `id` is unique to this call, `args` as sent.
-    Tool { agent: String, tool: String, id: String, args: String },
+    Tool { agent: String, tool: String, id: String, args: String, key: String },
     /// What that call returned (clipped for the screen).
     ToolResult { agent: String, id: String, output: String },
     /// A long tool's progress (a coding job's steps), shown live under its call.
     ToolProgress { agent: String, id: String, event: Value },
-    Finished { agent: String, status: DelegationStatus, confidence: Option<f32>, ms: u64, output: String, depth: u32 },
+    Finished { agent: String, status: DelegationStatus, confidence: Option<f32>, ms: u64, output: String, depth: u32, key: String },
 }
 
 pub struct Agents {
@@ -144,6 +147,8 @@ pub struct Env {
     pub viewer: Option<String>,
     /// Whose turn it is (their "always" answers are theirs alone).
     pub owner: String,
+    /// The conversation (its task board).
+    pub session: String,
 }
 
 /// The machine a message names with `@name` (one of `known`, or `server`).
@@ -301,7 +306,7 @@ pub fn delegate_tool(agents: &[AgentProfile]) -> Value {
         "type": "function",
         "function": {
             "name": "delegate",
-            "description": format!("Hand a task to a specialist agent and get its result back to check and use. Agents: {}", list.join("; ")),
+            "description": format!("Hand a task to a specialist agent and get its result back to check and use. Several delegate calls in one turn run side by side. Agents: {}", list.join("; ")),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -309,6 +314,7 @@ pub fn delegate_tool(agents: &[AgentProfile]) -> Value {
                     "task": { "type": "string", "description": "What to do, self-contained." },
                     "input": { "type": "string", "description": "The material to work on (text to rewrite, data, findings)." },
                     "expected_output": { "type": "string", "description": "What to hand back, e.g. \"the rewritten email only\"." },
+                    "board_task": { "type": "integer", "description": "The task board's task this is (it's marked working, then done with the result)." },
                 },
                 "required": ["agent", "task"],
             },
@@ -335,7 +341,8 @@ pub fn delegate(
     let s = env.agents.settings();
     let start = Instant::now();
     let task_id = Uuid::new_v4();
-    emit(&env.tx, AgentEvent::Started { agent: profile.title.clone(), task: task.chars().take(160).collect(), depth });
+    let key = task_id.to_string();
+    emit(&env.tx, AgentEvent::Started { agent: profile.title.clone(), task: task.chars().take(160).collect(), depth, key: key.clone() });
     env.agents.set_active(&profile.title, true);
     // A10: only the memories this agent may read; for a member, only theirs.
     let mine = env.viewer.as_ref().map(|v| vec![format!("user:{v}")]);
@@ -367,7 +374,7 @@ pub fn delegate(
             }
         }
     }
-    let request = DelegationRequest {
+    let mut request = DelegationRequest {
         task_id,
         from_agent: from.to_string(),
         to_agent: profile.name.clone(),
@@ -377,6 +384,10 @@ pub fn delegate(
         budget: s.budget,
         depth,
     };
+    // What's on the conversation's task board for it (tasks, notes from other agents).
+    if let Some(board) = crate::board::context(&env.session, &profile.name) {
+        request.context["task_board"] = board;
+    }
     // A9: the capabilities it may use, enforced again on every call.
     let allowed: Vec<lyra_capabilities::Capability> = env
         .caps
@@ -390,6 +401,8 @@ pub fn delegate(
     if can_delegate && !others.is_empty() {
         defs.push(delegate_tool(&others));
     }
+    // The conversation's task board: every agent working in it shares it.
+    defs.extend(crate::board::definitions());
     let url = profile.model_policy.url.clone().map(|u| format!("{}/chat/completions", u.trim_end_matches('/'))).unwrap_or_else(|| env.url.clone());
     let model = profile.model_policy.model.clone().unwrap_or_else(|| env.model.clone());
     let options = crate::plan::ChatOptions {
@@ -432,12 +445,34 @@ pub fn delegate(
             break;
         }
         messages.push(json!({ "role": "assistant", "content": message["content"].as_str().unwrap_or(""), "tool_calls": calls }));
+        // Several delegations in one reply: side by side (each within the tool budget).
+        let mut ready: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let many: Vec<(String, String)> = calls
+            .iter()
+            .filter(|c| c["function"]["name"] == "delegate")
+            .map(|c| (c["id"].as_str().unwrap_or("").to_string(), c["function"]["arguments"].as_str().unwrap_or("{}").to_string()))
+            .collect();
+        if can_delegate && many.len() > 1 && !crate::stopped(&env.cancel) {
+            let room = s.budget.max_tool_calls.saturating_sub(tool_calls) as usize;
+            let these: Vec<(String, String)> = many.into_iter().take(room).collect();
+            for c in &these {
+                emit(&env.tx, AgentEvent::Tool { agent: profile.title.clone(), tool: "delegate".into(), id: format!("{task_id}-{}", c.0), args: c.1.clone(), key: key.clone() });
+            }
+            tool_calls += these.len() as u32;
+            ready.extend(delegate_many(env, &these, run, Some((profile, depth))));
+        }
         for call in &calls {
             let name = call["function"]["name"].as_str().unwrap_or("");
             let args = call["function"]["arguments"].as_str().unwrap_or("{}");
             // Shown in the chat as this delegation's own tool card.
             let shown_id = format!("{task_id}-{}", call["id"].as_str().unwrap_or(""));
-            emit(&env.tx, AgentEvent::Tool { agent: profile.title.clone(), tool: name.to_string(), id: shown_id.clone(), args: with_machine(env, name, args) });
+            if let Some(out) = ready.remove(call["id"].as_str().unwrap_or("")) {
+                let clipped: String = out.chars().take(4000).collect();
+                emit(&env.tx, AgentEvent::ToolResult { agent: profile.title.clone(), id: shown_id, output: clipped });
+                messages.push(json!({ "role": "tool", "tool_call_id": call["id"], "content": out }));
+                continue;
+            }
+            emit(&env.tx, AgentEvent::Tool { agent: profile.title.clone(), tool: name.to_string(), id: shown_id.clone(), args: with_machine(env, name, args), key: key.clone() });
             let out = if crate::stopped(&env.cancel) {
                 json!({ "error": "stopped by the user" }).to_string()
             } else if tool_calls >= s.budget.max_tool_calls {
@@ -445,6 +480,9 @@ pub fn delegate(
             } else if name == "delegate" && can_delegate {
                 tool_calls += 1;
                 nested(env, profile, args, depth, run)
+            } else if crate::board::TOOLS.contains(&name) {
+                tool_calls += 1;
+                crate::board::call(&env.session, &profile.name, name, args)
             } else if allowed.iter().any(|c| c.name == name) {
                 tool_calls += 1;
                 let filled = with_machine(env, name, args);
@@ -510,7 +548,7 @@ pub fn delegate(
     }
     emit(
         &env.tx,
-        AgentEvent::Finished { agent: profile.title.clone(), status: result.status, confidence: result.confidence, ms, output: result.text(), depth },
+        AgentEvent::Finished { agent: profile.title.clone(), status: result.status, confidence: result.confidence, ms, output: result.text(), depth, key },
     );
     result
 }
@@ -524,8 +562,65 @@ fn nested(env: &Env, from: &AgentProfile, args: &str, depth: u32, run: Option<Uu
     if env.member && admin_only(&to.name) {
         return json!({ "error": format!("{} works on machines and code: that's for admins", to.title) }).to_string();
     }
-    let r = delegate(env, &to, &from.name, a["task"].as_str().unwrap_or(""), a["input"].as_str(), a["expected_output"].as_str(), depth + 1, "agent", None, run);
+    let r = on_board(env, &to, &a, || delegate(env, &to, &from.name, a["task"].as_str().unwrap_or(""), a["input"].as_str(), a["expected_output"].as_str(), depth + 1, "agent", None, run));
     result_json(&to, &r).to_string()
+}
+
+/// A delegation that takes a board task (`board_task`): it's marked working,
+/// then done or failed with the result.
+fn on_board(env: &Env, to: &AgentProfile, args: &Value, work: impl FnOnce() -> DelegationResult) -> DelegationResult {
+    let id = args["board_task"].as_u64().map(|i| i as u32);
+    if let Some(id) = id {
+        let _ = crate::board::taken(&env.session, id, &to.name);
+    }
+    let r = work();
+    if let Some(id) = id {
+        let status = if r.status == DelegationStatus::Completed { "done" } else { "failed" };
+        let text = if r.status == DelegationStatus::Completed { r.text() } else { r.notes.clone().unwrap_or_else(|| r.text()) };
+        let _ = crate::board::update(&env.session, &to.name, id, status, &text);
+    }
+    r
+}
+
+/// Several delegations at once (one round's `delegate` calls), side by side,
+/// at most `max_parallel` at a time. Each keeps its own contract, budget,
+/// approvals and record, and works for the same person as this thread.
+/// `from`: the agent delegating and its depth (none: the main agent). The
+/// results, by call id.
+pub fn delegate_many(env: &Env, calls: &[(String, String)], run: Option<Uuid>, from: Option<(&AgentProfile, u32)>) -> Vec<(String, String)> {
+    let n = env.agents.settings().max_parallel.max(1);
+    let (user, job) = (crate::acting::current(), crate::usage::job());
+    let mut out = Vec::new();
+    for chunk in calls.chunks(n) {
+        if crate::stopped(&env.cancel) {
+            out.extend(chunk.iter().map(|(id, _)| (id.clone(), json!({ "error": "stopped by the user" }).to_string())));
+            continue;
+        }
+        std::thread::scope(|s| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|(id, args)| {
+                    let (user, job) = (user.clone(), job.clone());
+                    s.spawn(move || {
+                        crate::acting::run(&user, || {
+                            crate::usage::set_job(job);
+                            let r = match from {
+                                Some((p, depth)) => nested(env, p, args, depth, run),
+                                None => delegate_call(env, args, run.unwrap_or_default()),
+                            };
+                            (id.clone(), r)
+                        })
+                    })
+                })
+                .collect();
+            for h in handles {
+                if let Ok(r) = h.join() {
+                    out.push(r);
+                }
+            }
+        });
+    }
+    out
 }
 
 /// A result as the delegating agent sees it.
@@ -542,7 +637,7 @@ pub fn delegate_call(env: &Env, args: &str, run: Uuid) -> String {
     if env.member && admin_only(&to.name) {
         return json!({ "error": format!("{} works on machines and code: that's for admins", to.title) }).to_string();
     }
-    let r = delegate(env, &to, MAIN, a["task"].as_str().unwrap_or(""), a["input"].as_str(), a["expected_output"].as_str(), 1, "tool", None, Some(run));
+    let r = on_board(env, &to, &a, || delegate(env, &to, MAIN, a["task"].as_str().unwrap_or(""), a["input"].as_str(), a["expected_output"].as_str(), 1, "tool", None, Some(run)));
     result_json(&to, &r).to_string()
 }
 
@@ -797,6 +892,7 @@ impl crate::App {
             member: !self.admin,
             viewer: self.personal(),
             owner: self.owner.clone(),
+            session: self.session_id.clone(),
         })
     }
 
@@ -1005,21 +1101,21 @@ impl crate::App {
             AgentEvent::Routed { agent, method, confidence, reason } => {
                 self.log(Level::Agent, format!("routing → {agent} ({}, {confidence:.2}): {reason}", method.as_str()));
             }
-            AgentEvent::Started { agent, task, depth } => {
+            AgentEvent::Started { agent, task, depth, key } => {
                 self.set_phase(Phase::Delegating(agent.clone()));
                 let from = if depth > 1 { "an agent" } else { "lyra" };
                 self.log(Level::Agent, format!("{from} → {agent}: {task}"));
                 self.messages.push(Message::new("agent", format!("{agent} · working on it for {from}{}", if depth > 1 { " (nested)" } else { "" })));
                 // Its tool calls and the result go on this card.
-                self.agent_cards.push((agent.clone(), self.messages.len() - 1));
+                self.agent_cards.push((key, self.messages.len() - 1));
                 if !self.handled_by.contains(&agent) {
                     self.handled_by.push(agent);
                 }
             }
-            AgentEvent::Tool { agent, tool, id, args } => {
+            AgentEvent::Tool { agent, tool, id, args, key } => {
                 self.log(Level::Agent, format!("{agent} ⚙ {tool} {}", args.chars().take(120).collect::<String>()));
                 self.set_phase(Phase::Delegating(format!("{agent} · {tool}")));
-                if let Some(&(_, i)) = self.agent_cards.iter().rev().find(|(a, _)| *a == agent)
+                if let Some(&(_, i)) = self.agent_cards.iter().rev().find(|(k, _)| *k == key)
                     && let Some(card) = self.messages.get_mut(i)
                 {
                     card.tool_calls.push(crate::ToolCall { id, kind: "function".into(), function: crate::FunctionCall { name: tool, arguments: args } });
@@ -1070,14 +1166,14 @@ impl crate::App {
                 self.messages[i].content = v.to_string();
                 self.touch(i);
             }
-            AgentEvent::Finished { agent, status, confidence, ms, output, depth } => {
+            AgentEvent::Finished { agent, status, confidence, ms, output, depth, key } => {
                 let conf = confidence.map_or(String::new(), |c| format!(", confidence {c:.2}"));
                 let line = format!("{agent} {} ({}{conf}) in {:.1}s", status.as_str(), if depth > 1 { "nested" } else { "to lyra" }, ms as f32 / 1000.0);
                 self.log(if status == DelegationStatus::Completed { Level::Agent } else { Level::Error }, line.clone());
                 let preview: String = output.lines().take(4).collect::<Vec<_>>().join("\n");
                 let more = if output.lines().count() > 4 { "\n…" } else { "" };
                 // The card that said "working on it" now says how it went.
-                match self.agent_cards.iter().rposition(|(a, _)| *a == agent) {
+                match self.agent_cards.iter().rposition(|(k, _)| *k == key) {
                     Some(k) => {
                         let (_, i) = self.agent_cards.remove(k);
                         if let Some(card) = self.messages.get_mut(i) {
@@ -1087,7 +1183,10 @@ impl crate::App {
                     }
                     None => self.messages.push(Message::new("agent", format!("{line}\n{preview}{more}"))),
                 }
-                self.set_phase(if self.waiting { Phase::Waiting } else { Phase::Idle });
+                // Others still working side by side: still delegating.
+                if self.agent_cards.is_empty() {
+                    self.set_phase(if self.waiting { Phase::Waiting } else { Phase::Idle });
+                }
                 self.refresh_agents();
             }
         }
@@ -1303,7 +1402,12 @@ pub fn step_started(tx: &Sender<StreamEvent>, caps: Option<&Caps>, p: &AgentProf
     if let Some(a) = caps.and_then(Caps::agents) {
         a.set_active(&p.title, true);
     }
-    emit(tx, AgentEvent::Started { agent: p.title.clone(), task: task.chars().take(160).collect(), depth: 1 });
+    emit(tx, AgentEvent::Started { agent: p.title.clone(), task: task.chars().take(160).collect(), depth: 1, key: step_key(p, task) });
+}
+
+/// A plan step's events, kept together.
+fn step_key(p: &AgentProfile, task: &str) -> String {
+    format!("step:{}:{}", p.name, task.chars().take(80).collect::<String>())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1332,7 +1436,7 @@ pub fn step_finished(tx: &Sender<StreamEvent>, caps: Option<&Caps>, p: &AgentPro
             created_at: Utc::now(),
         });
     }
-    emit(tx, AgentEvent::Finished { agent: p.title.clone(), status, confidence: None, ms, output: text, depth: 1 });
+    emit(tx, AgentEvent::Finished { agent: p.title.clone(), status, confidence: None, ms, output: text, depth: 1, key: step_key(p, task) });
 }
 
 // ---- evolution (A15)
@@ -1414,6 +1518,7 @@ mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
+    use std::time::Duration;
 
     use super::*;
     use crate::mem::Mem;
@@ -1473,7 +1578,7 @@ mod tests {
         caps.set_agents(agents.clone());
         caps.refresh();
         let (tx, events) = mpsc::channel();
-        let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx, machine: None, fleet: None, cancel: Default::default(), member: false, viewer: None, owner: "owner".into() };
+        let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx, machine: None, fleet: None, cancel: Default::default(), member: false, viewer: None, owner: "owner".into(), session: "test-conv".into() };
         Fixture { _rt: rt, env, events }
     }
 
@@ -1507,6 +1612,80 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e, StreamEvent::Agent(AgentEvent::Tool { tool, .. }) if tool == "memory_forget")));
         assert!(events.iter().any(|e| matches!(e, StreamEvent::Agent(AgentEvent::ToolResult { output, .. }) if output.contains("may not use memory_forget"))), "the result follows the call");
         assert!(matches!(events.last(), Some(StreamEvent::Agent(AgentEvent::Finished { status: DelegationStatus::Completed, .. }))));
+        assert!(f.env.agents.active.lock().unwrap().is_empty());
+    }
+
+    /// A chat server that answers every request at once, each on its own
+    /// thread after `pause`: "done: <task>" for the task it was given.
+    fn slow_model(pause: Duration) -> (String, mpsc::Receiver<Value>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    let mut stream = stream;
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut length = 0;
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        if let Some(v) = line.to_lowercase().strip_prefix("content-length:") {
+                            length = v.trim().parse().unwrap();
+                        }
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                    let mut body = vec![0; length];
+                    reader.read_exact(&mut body).unwrap();
+                    let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                    let asked = body["messages"][1]["content"].as_str().unwrap_or("").to_string();
+                    let task = ["apples", "pears"].into_iter().find(|t| asked.contains(t)).unwrap_or("?");
+                    let _ = tx.send(body);
+                    std::thread::sleep(pause);
+                    let reply = json!({ "role": "assistant", "content": format!("done: {task}\nCONFIDENCE: 0.9") });
+                    let out = json!({ "choices": [{ "message": reply }], "usage": { "total_tokens": 10 } }).to_string();
+                    let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}", out.len());
+                });
+            }
+        });
+        (url, rx)
+    }
+
+    #[test]
+    fn several_delegations_run_side_by_side_and_work_the_task_board() {
+        let (url, requests) = slow_model(Duration::from_millis(600));
+        let mut f = fixture(&url);
+        f.env.session = format!("board-{}", Uuid::new_v4().simple());
+        let s = f.env.session.clone();
+        let task = crate::board::post(&s, "lyra", "Count the pears", "", Some("writer"), false).unwrap();
+        crate::board::post(&s, "operator", "The pears are in crate 3", "", Some("writer"), true).unwrap();
+        let calls = vec![
+            ("c1".to_string(), json!({ "agent": "writer", "task": "Count the apples" }).to_string()),
+            ("c2".to_string(), json!({ "agent": "writer", "task": "Count the pears", "board_task": task.id }).to_string()),
+        ];
+        let started = Instant::now();
+        let out: std::collections::HashMap<String, String> = delegate_many(&f.env, &calls, Some(Uuid::new_v4()), None).into_iter().collect();
+        let took = started.elapsed();
+        assert!(took < Duration::from_millis(1100), "side by side, not one after the other: {took:?}");
+        assert!(out["c1"].contains("done: apples") && out["c2"].contains("done: pears"), "{out:?}");
+        // The board task: taken, then done with its result.
+        let t = crate::board::read(&s).tasks.into_iter().find(|t| t.id == task.id).unwrap();
+        assert_eq!((t.status, t.taken_by.as_deref()), (crate::board::Status::Done, Some("writer")));
+        assert!(t.result.contains("done: pears"));
+        // What was on the board for the writer reached it (the note from the operator too).
+        let bodies: Vec<Value> = requests.try_iter().collect();
+        assert_eq!(bodies.len(), 2);
+        assert!(bodies.iter().all(|b| b["messages"].to_string().contains("crate 3")), "the note reached both");
+        // Both recorded, and each delegation's events kept to its own card.
+        assert_eq!(f.env.agents.registry.delegations(Some("writer"), 5).unwrap().len(), 2);
+        let keys: std::collections::HashSet<String> = f.events.try_iter().filter_map(|e| match e {
+            StreamEvent::Agent(AgentEvent::Started { key, .. }) => Some(key),
+            _ => None,
+        }).collect();
+        assert_eq!(keys.len(), 2, "two cards, though it's the same agent");
         assert!(f.env.agents.active.lock().unwrap().is_empty());
     }
 

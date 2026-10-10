@@ -92,6 +92,8 @@ export interface Status {
   context_window?: number;
   /** The plan this conversation is running (see chat-parts2's PlanView). */
   plan?: unknown;
+  /** This conversation's task board, shared by lyra and its agents (see chat-parts2's BoardView). */
+  board?: unknown;
   phase?: string;
   waiting?: boolean;
   /** The last reply stopped at its tool-call limit, or on an error: Continue picks it up. */

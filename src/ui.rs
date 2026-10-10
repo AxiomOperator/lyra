@@ -635,6 +635,10 @@ fn agents_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
         let name_width = width.saturating_sub(2 + info.chars().count());
         lines.push(Line::from(vec![Span::styled(mark, style), Span::styled(truncate(&a.title, name_width), style), Span::styled(info, dim)]));
     }
+    // This conversation's task board.
+    if let Some(board) = crate::board::line(&app.session_id) {
+        lines.push(Line::from(vec![Span::styled("☰ ", Style::default().fg(Color::LightBlue)), Span::styled(truncate(&format!("board: {board}"), width.saturating_sub(2)), dim)]));
+    }
     for r in &app.approvals {
         lines.push(Line::styled(truncate(&format!("⚠ {} awaits approval", r.agent), width), Style::default().fg(Color::Yellow)));
     }

@@ -556,6 +556,10 @@ pub(crate) fn converse(
                 let enabled = env.agents.registry.enabled();
                 if !enabled.is_empty() {
                     definitions.push(agents::delegate_tool(&enabled));
+                    // The conversation's task board, shared with the agents.
+                    if !matches!(how.offer, Offer::Nothing) {
+                        definitions.extend(crate::board::definitions());
+                    }
                 }
             }
             if !definitions.is_empty() {
@@ -660,6 +664,19 @@ pub(crate) fn converse(
                 }
             });
         }
+        // Several delegations in one round: side by side (each with its own budget and approvals).
+        if let Some(env) = agents {
+            let many: Vec<(String, String)> = round
+                .tool_calls
+                .iter()
+                .filter(|c| c.function.name == "delegate" && !skipped.contains(&c.id) && !ready.contains_key(&c.id))
+                .map(|c| (c.id.clone(), c.function.arguments.clone()))
+                .collect();
+            if many.len() > 1 && !stopped(cancel) {
+                let _ = tx.send(StreamEvent::Log(format!("{} delegations side by side", many.len())));
+                ready.extend(agents::delegate_many(env, &many, Some(run), None));
+            }
+        }
         for (k, call) in round.tool_calls.iter().enumerate() {
             // Stopped: the calls not made yet answer so (the history stays well-formed).
             if stopped(cancel) {
@@ -697,6 +714,8 @@ pub(crate) fn converse(
                 json!({ "error": problem.text, "hint": "don't guess: ask the user for what's missing" }).to_string()
             } else if let (Some(env), "delegate") = (agents, name) {
                 agents::delegate_call(env, arguments, run)
+            } else if let Some(env) = agents.filter(|_| crate::board::TOOLS.contains(&name)) {
+                crate::board::call(&env.session, "lyra", name, arguments)
             } else if call.function.name == caps::SEARCH_TOOL {
                 let (text, names) = caps.search(arguments);
                 found.extend(names);

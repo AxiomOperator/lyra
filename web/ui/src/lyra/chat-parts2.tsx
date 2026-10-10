@@ -1,5 +1,5 @@
 // More of the chat's AI Elements: the plan this conversation runs (Plan,
-// Queue, Checkpoint), command output as a terminal (Terminal), folder
+// Queue, Checkpoint), its task board shared by lyra and the agents (Queue), command output as a terminal (Terminal), folder
 // listings as a tree (File tree), file contents with highlighting (Code
 // block), and switching models from the composer (Model selector).
 
@@ -12,10 +12,103 @@ import { QueueItem, QueueItemContent, QueueItemDescription, QueueItemIndicator, 
 import { Terminal } from "@/components/ai-elements/terminal";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { CheckCircle2, ChevronDown, CircleDashed, ListTodo, Loader2, OctagonX, Pause } from "lucide-react";
+import { CheckCircle2, ChevronDown, CircleDashed, KanbanSquare, ListTodo, Loader2, MessageSquareText, OctagonX, Pause } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { BundledLanguage } from "shiki";
 import { useLyra } from "./store";
+
+// ---- the task board
+
+export interface BoardTask {
+  id: number;
+  title: string;
+  detail: string;
+  agent: string | null;
+  by: string;
+  status: "open" | "working" | "done" | "failed" | "note";
+  taken_by: string | null;
+  result: string;
+  updated: string;
+}
+export interface BoardView {
+  tasks: BoardTask[];
+  open: number;
+  working: number;
+  done: number;
+  failed: number;
+}
+
+const BOARD_ICON = { open: CircleDashed, working: Loader2, done: CheckCircle2, failed: OctagonX, note: MessageSquareText };
+
+function BoardRow({ t }: { t: BoardTask }) {
+  const Icon = BOARD_ICON[t.status] ?? CircleDashed;
+  const who = t.status === "note" ? `${t.by} → ${t.agent ?? "everyone"}` : [t.agent ? `for ${t.agent}` : "for anyone", t.taken_by && t.status !== "open" ? `${t.taken_by} ${t.status === "working" ? "on it" : t.status}` : `posted by ${t.by}`].join(" · ");
+  return (
+    <QueueItem>
+      <div className="flex items-start gap-2">
+        <Icon className={cn("mt-0.5 size-4 shrink-0", t.status === "working" && "animate-spin text-sky-400", t.status === "done" && "text-emerald-500", t.status === "failed" && "text-red-400", t.status === "note" && "text-amber-300")} />
+        <div className="min-w-0 flex-1">
+          <QueueItemContent completed={t.status === "done"}>{t.title}</QueueItemContent>
+          <QueueItemDescription>{who}</QueueItemDescription>
+          {t.result && <p className="mt-0.5 line-clamp-3 whitespace-pre-wrap text-muted-foreground text-xs">{t.result}</p>}
+        </div>
+      </div>
+    </QueueItem>
+  );
+}
+
+/** The conversation's task board: what lyra and the agents posted for each other, who's on it, and how it went. */
+export function BoardCard({ board }: { board: BoardView }) {
+  const live = board.tasks.filter((t) => t.status === "open" || t.status === "working" || t.status === "note");
+  const finished = board.tasks.filter((t) => t.status === "done" || t.status === "failed");
+  const counts = [["open", board.open], ["working", board.working], ["done", board.done], ["failed", board.failed]].filter(([, n]) => (n as number) > 0).map(([w, n]) => `${n} ${w}`);
+  return (
+    <Plan isStreaming={board.working > 0} defaultOpen={board.working > 0 || board.open > 0} className="mx-3 mb-2">
+      <PlanHeader>
+        <div className="flex min-w-0 items-start gap-2">
+          <KanbanSquare className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0">
+            <PlanTitle>Task board</PlanTitle>
+            <PlanDescription>{counts.length ? counts.join(" · ") : "notes between agents"}</PlanDescription>
+          </div>
+        </div>
+        <PlanAction>
+          <PlanTrigger />
+        </PlanAction>
+      </PlanHeader>
+      <PlanContent className="space-y-2">
+        {live.length > 0 && (
+          <QueueSection>
+            <QueueSectionTrigger>
+              <QueueSectionLabel count={live.length} label="open" icon={<CircleDashed className="size-4" />} />
+            </QueueSectionTrigger>
+            <QueueSectionContent>
+              <QueueList>
+                {live.map((t) => (
+                  <BoardRow key={t.id} t={t} />
+                ))}
+              </QueueList>
+            </QueueSectionContent>
+          </QueueSection>
+        )}
+        {finished.length > 0 && (
+          <QueueSection defaultOpen={live.length === 0}>
+            <QueueSectionTrigger>
+              <QueueSectionLabel count={finished.length} label="finished" icon={<CheckCircle2 className="size-4" />} />
+            </QueueSectionTrigger>
+            <QueueSectionContent>
+              <QueueList>
+                {finished.map((t) => (
+                  <BoardRow key={t.id} t={t} />
+                ))}
+              </QueueList>
+            </QueueSectionContent>
+          </QueueSection>
+        )}
+      </PlanContent>
+    </Plan>
+  );
+}
 
 // ---- the plan
 

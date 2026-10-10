@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.62.0.209",
+    "date": "2026-10-10",
+    "title": "Agents work side by side",
+    "new": [
+      "When lyra hands several tasks to agents in one go, they now run side by side instead of one after another, up to three at once ([agents] max_parallel). Agents that hand work on do the same.",
+      "Each conversation has a task board shared by lyra and its agents. They can post tasks for each other, leave notes for another agent, take a task and record how it went. It shows in the chat as a Task board card, and in the terminal's Agents panel."
+    ],
+    "improved": [
+      "Each agent's work keeps its own card in the chat, even when the same agent does two things at once. Every delegation still keeps its own instructions, tool budget, approvals and record."
+    ]
+  },
+  {
     "version": "0.61.0.208",
     "date": "2026-10-10",
     "title": "How lyra compares",

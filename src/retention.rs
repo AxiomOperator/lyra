@@ -93,6 +93,11 @@ pub fn tidy(home: &Path, devices: Option<&lyra_web::Devices>) -> Vec<String> {
             said.push(format!("{n} conversation{} not opened in {} days removed (pinned ones are kept)", if n == 1 { "" } else { "s" }, s.sessions_days));
         }
     }
+    // Task boards whose conversation is gone.
+    let gone = crate::board::tidy(home);
+    if gone > 0 {
+        said.push(format!("{gone} task board{} of removed conversations removed", if gone == 1 { "" } else { "s" }));
+    }
     // Uploaded files.
     let mut n = 0;
     for e in std::fs::read_dir(home.join("uploads")).into_iter().flatten().flatten() {

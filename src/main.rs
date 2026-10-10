@@ -6,6 +6,7 @@ mod trouble;
 mod retention;
 mod mailout;
 mod agents;
+mod board;
 mod backup;
 mod briefing;
 mod calendar;

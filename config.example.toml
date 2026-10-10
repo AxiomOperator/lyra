@@ -272,6 +272,7 @@ currency = "$"
 # enabled = true
 # auto_delegate = true        # hand matching requests over without being asked
 # max_depth = 2               # main → agent → agent, no further
+# max_parallel = 3            # delegations asked for in one turn run side by side, this many at once
 # show_handled_by = true      # "handled with: Writer" under replies
 #
 # [agents.routing]

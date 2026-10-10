@@ -21,7 +21,7 @@ import { TemplatesButton } from "./templates";
 import { useLyra } from "./store";
 import type { Approval, ChatAsk, ChatMessage, PairRequest } from "./types";
 import { AskCard, ChatOnlyButton, EditButton, EditLast, FoldedTries, RetryButtons, foldFailures } from "./chat-asks";
-import { ComposerModel, PlanCard, ToolFileContent, ToolFileTree, ToolTerminal, type PlanView } from "./chat-parts2";
+import { BoardCard, ComposerModel, PlanCard, ToolFileContent, ToolFileTree, ToolTerminal, type BoardView, type PlanView } from "./chat-parts2";
 import { SpeakButton, VoiceButton, useAutoRead } from "./voice";
 import { AgentTask, ApprovalAt, ApprovalDetail, ComposerAttachments, ReplyContext, ReplySources, SentAttachments, StarterSuggestions, approvalCall, splitAttached, webSources } from "./chat-parts";
 
@@ -737,6 +737,7 @@ export function ChatPage() {
           <PairCard key={p.id} p={p} className="mx-3 mb-2" />
         ))}
         {!!status.plan && (user?.admin ?? true) && <PlanCard plan={status.plan as PlanView} />}
+        {!!status.board && <BoardCard board={status.board as BoardView} />}
         {approvals[0] && !asking && <ApprovalCard a={approvals[0]} more={approvals.length - 1} />}
         {loose.map((a) => (
           <div key={a.id} className="mx-3 mb-2">

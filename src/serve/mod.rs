@@ -208,6 +208,8 @@ fn status(app: &App, machines: &[String]) -> Value {
         // Bug reports and feature requests with news for this person.
         "feedback_rev": crate::feedback::revision(),
         "feedback_news": crate::feedback::badge(&crate::feedback::Who { user: app.owner.clone(), name: String::new(), admin: app.admin }),
+        // This conversation's task board (lyra's and the agents' shared tasks).
+        "board": crate::board::current(&app.session_id),
         // The plan this conversation is running (the app's plan card).
         "plan": app.current_plan.as_ref().map(|p| json!({
             "id": lyra_execution::short(p.id), "version": p.version, "status": p.status, "busy": app.plan_busy,
