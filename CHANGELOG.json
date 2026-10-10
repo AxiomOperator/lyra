@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.55.0.201",
+    "date": "2026-10-10",
+    "title": "A second fallback model",
+    "new": [
+      "You can now set up a second fallback model ([second_fallback_model], or on the Settings page). When the chat model and the first fallback both can't be reached, it answers, and the chat says which model did.",
+      "Background jobs go to the first fallback set to take them. Your best fallback can wait for the chats while a lighter model does the small jobs.",
+      "The second fallback has its own row on the Status page and can be marked known down."
+    ]
+  },
+  {
     "version": "0.54.0.200",
     "date": "2026-10-09",
     "title": "Status moves under System",

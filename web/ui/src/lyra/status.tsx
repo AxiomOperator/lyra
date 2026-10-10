@@ -55,7 +55,7 @@ function pct(v: number | null) {
 }
 
 /** The models lyra calls, which an admin can mark known down. */
-const MARKABLE = ["chat", "fallback", "decide", "vision"];
+const MARKABLE = ["chat", "fallback", "fallback2", "decide", "vision"];
 
 /** Mark a model known down (lyra stops trying it), or say it's back. */
 function KnownDown({ id, known }: { id: string; known?: { text: string } }) {

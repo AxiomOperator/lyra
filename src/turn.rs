@@ -257,7 +257,7 @@ impl App {
     /// one when the fallback answered it (base URL and name).
     pub(crate) fn other_model(&self) -> Option<(String, String)> {
         // Either one marked down: there's only one model to ask.
-        let fb = crate::fallback::settings().filter(|_| !crate::known_down::is_down("fallback") && !crate::known_down::is_down("chat"))?;
+        let fb = crate::fallback::first_up().filter(|_| !crate::known_down::is_down("chat"))?;
         let start = self.messages.iter().rposition(|m| m.role == "user").unwrap_or(0);
         let by_fallback = self.messages[start..].iter().any(|m| m.role == "info" && m.content.contains(&format!(": {} answered instead", fb.model)));
         Some(if by_fallback { (self.base_url.clone(), self.model.clone()) } else { (fb.url, fb.model) })
@@ -507,18 +507,15 @@ pub(crate) fn converse(
     member: bool,
 ) -> Result<(Stats, bool, String), String> {
     let start = Instant::now();
-    // The model answering: the main one, or the fallback while it's down.
-    let fallback = crate::fallback::target();
+    // The model answering: the main one, or the next fallback in line while it's down.
     let mut current = (url.to_string(), model.to_string());
-    let mut told = false;
-    let switch = |current: &mut (String, String), told: &mut bool, why: &str| {
-        if let Some(fb) = &fallback {
-            *current = fb.clone();
-            if !*told {
-                *told = true;
-                let _ = tx.send(StreamEvent::Notice(format!("The chat model isn't answering ({why}): {} answered instead.", fb.1)));
-            }
+    // Moving down the line, said in the chat (unless `why` is None: known down).
+    let switch = |current: &mut (String, String), next: (String, String), why: Option<&str>| {
+        if let Some(why) = why {
+            let who = if current.0 == url { "The chat model isn't answering".to_string() } else { format!("{} isn't answering either", current.1) };
+            let _ = tx.send(StreamEvent::Notice(format!("{who} ({why}): {} answered instead.", next.1)));
         }
+        *current = next;
     };
     // A member's calls: their own memory scope only, and no admin tools.
     let mine = viewer.map(|v| format!("user:{v}"));
@@ -571,34 +568,39 @@ pub(crate) fn converse(
         if let Some(why) = crate::fallback::blocked() {
             return Err(why);
         }
-        if current.0 == url && crate::fallback::skip_main() {
-            if crate::known_down::is_down("chat") {
-                // Known down: no note in every reply, just where it went.
-                if let Some(fb) = &fallback {
-                    current = fb.clone();
-                    told = true;
-                }
-            } else {
-                switch(&mut current, &mut told, "it failed a moment ago");
-            }
+        if current.0 == url
+            && crate::fallback::skip_main()
+            && let Some(next) = crate::fallback::target()
+        {
+            // Known down: no note in every reply, just where it went.
+            let why = (!crate::known_down::is_down("chat")).then_some("it failed a moment ago");
+            switch(&mut current, next, why);
         }
         body["model"] = json!(current.1);
-        let round = match stream(&current.0, &body, tx, cancel) {
-            Ok(r) => {
-                if current.0 == url {
-                    crate::fallback::main_ok();
+        let round = loop {
+            match stream(&current.0, &body, tx, cancel) {
+                Ok(r) => {
+                    if current.0 == url {
+                        crate::fallback::main_ok();
+                    } else {
+                        crate::fallback::ok(&current.0, &current.1);
+                    }
+                    break r;
                 }
-                r
+                // Not there (before saying anything): the next in line takes this round and the rest.
+                Err(e) if e.starts_with(UNREACHED) && crate::fallback::unreachable(&e) => {
+                    let Some(next) = crate::fallback::after(&current.0, &current.1) else { return Err(e) };
+                    if current.0 == url {
+                        crate::fallback::main_failed();
+                    } else {
+                        crate::fallback::failed(&current.0, &current.1);
+                    }
+                    let _ = tx.send(StreamEvent::Log(format!("{} failed: {e}", if current.0 == url { "chat model" } else { current.1.as_str() })));
+                    switch(&mut current, next, Some(e.trim_start_matches(UNREACHED).chars().take(80).collect::<String>().as_str()));
+                    body["model"] = json!(current.1);
+                }
+                Err(e) => return Err(e),
             }
-            // Not there (before saying anything): the fallback takes this round and the rest.
-            Err(e) if current.0 == url && fallback.is_some() && e.starts_with(UNREACHED) && crate::fallback::unreachable(&e) => {
-                crate::fallback::main_failed();
-                let _ = tx.send(StreamEvent::Log(format!("chat model failed: {e}")));
-                switch(&mut current, &mut told, e.trim_start_matches(UNREACHED).chars().take(80).collect::<String>().as_str());
-                body["model"] = json!(current.1);
-                stream(&current.0, &body, tx, cancel)?
-            }
-            Err(e) => return Err(e),
         };
         // Each round as the model that answered it (the fallback may take over part way).
         usage::record("chat", &current.1, round.stats.input, round.stats.cached, round.stats.output, round.stats.elapsed.as_millis() as u64);

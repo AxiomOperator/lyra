@@ -91,6 +91,9 @@ pub const FIELDS: &[Field] = &[
     Field { key: "fallback_model.url", group: "models", label: "Fallback server", help: "Answers in the chat model's place while it can't be reached. Empty: none.", kind: Kind::Url, get: |c, _| s(c.fallback_model.as_ref().map_or("", |f| f.url.as_str())) },
     Field { key: "fallback_model.model", group: "models", label: "Fallback model", help: "Its name on that server.", kind: Kind::Model, get: |c, _| s(c.fallback_model.as_ref().map_or("", |f| f.model.as_str())) },
     Field { key: "fallback_model.background", group: "models", label: "Fallback does background jobs", help: "While the chat model is up, the fallback does lyra's small background jobs (memory, skill reviews, mail triage, briefing notes, routine checks), leaving the chat model to the chats.", kind: Kind::Bool, get: |c, _| json!(c.fallback_model.as_ref().is_some_and(|f| f.background)) },
+    Field { key: "second_fallback_model.url", group: "models", label: "Second fallback server", help: "Answers when the fallback can't be reached either. Empty: none.", kind: Kind::Url, get: |c, _| s(c.second_fallback_model.as_ref().map_or("", |f| f.url.as_str())) },
+    Field { key: "second_fallback_model.model", group: "models", label: "Second fallback model", help: "Its name on that server.", kind: Kind::Model, get: |c, _| s(c.second_fallback_model.as_ref().map_or("", |f| f.model.as_str())) },
+    Field { key: "second_fallback_model.background", group: "models", label: "Second fallback does background jobs", help: "While the chat model is up, lyra's small background jobs go to the first fallback that takes them.", kind: Kind::Bool, get: |c, _| json!(c.second_fallback_model.as_ref().is_some_and(|f| f.background)) },
     Field { key: "vision_model.url", group: "models", label: "Vision server", help: "Reads pictures and scanned PDFs for a chat model that can't. Empty: not set up.", kind: Kind::Url, get: |c, _| s(c.vision_model.as_ref().map_or("", |v| v.url.as_str())) },
     Field { key: "vision_model.model", group: "models", label: "Vision model", help: "Its name on that server.", kind: Kind::Model, get: |c, _| s(c.vision_model.as_ref().map_or("", |v| v.model.as_str())) },
     Field { key: "decide.url", group: "models", label: "Decision server", help: "The small model that routes and classifies (llama-server). Empty: not set up.", kind: Kind::Url, get: |c, _| s(c.decide.as_ref().map_or("", |d| d.url.as_str())) },
@@ -270,7 +273,7 @@ fn set_in(path: &std::path::Path, changes: &Value) -> Result<Vec<String>, String
     for (key, value) in changes {
         let f = field(key).ok_or_else(|| format!("{key} isn't a setting the app changes (it's in config.toml)"))?;
         // An optional model left empty and not set up yet: nothing to do.
-        let optional = f.key.starts_with("vision_model.") || f.key.starts_with("decide.") || f.key.starts_with("fallback_model.");
+        let optional = f.key.starts_with("vision_model.") || f.key.starts_with("decide.") || f.key.starts_with("fallback_model.") || f.key.starts_with("second_fallback_model.");
         if optional && value.as_str().is_some_and(|t| t.trim().is_empty()) {
             if (f.get)(&now, &behavior).as_str().is_some_and(str::is_empty) {
                 continue;
@@ -286,14 +289,18 @@ fn set_in(path: &std::path::Path, changes: &Value) -> Result<Vec<String>, String
     if writes.iter().any(|(f, _)| f.key == "fallback_model.background") && now.fallback_model.is_none() && !writes.iter().any(|(f, _)| f.key == "fallback_model.url") {
         return Err("set up the fallback model (its server and name) first".into());
     }
+    if writes.iter().any(|(f, _)| f.key == "second_fallback_model.background") && now.second_fallback_model.is_none() && !writes.iter().any(|(f, _)| f.key == "second_fallback_model.url") {
+        return Err("set up the second fallback model (its server and name) first".into());
+    }
     // A helper model set up for the first time needs both its server and its name.
-    for section in ["vision_model", "decide", "fallback_model"] {
+    for section in ["vision_model", "decide", "fallback_model", "second_fallback_model"] {
         let missing = |k: &str| (field(&format!("{section}.{k}")).map(|f| (f.get)(&now, &behavior))).is_some_and(|v| v.as_str().is_some_and(str::is_empty));
         let setting = |k: &str| writes.iter().any(|(f, _)| f.key == format!("{section}.{k}"));
         if (setting("url") && missing("model") && !setting("model")) || (setting("model") && missing("url") && !setting("url")) {
             let label = match section {
                 "decide" => "decision",
                 "fallback_model" => "fallback",
+                "second_fallback_model" => "second fallback",
                 _ => "vision",
             };
             return Err(format!("give the {label} model's server and its name together"));

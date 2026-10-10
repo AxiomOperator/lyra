@@ -69,6 +69,16 @@ currency = "$"
 # input_cost_per_mtok = 0.0      # its own prices, for AI usage
 # output_cost_per_mtok = 0.0
 
+# A second fallback: answers when the fallback can't be reached either. The
+# same keys; lyra's small background jobs go to the first fallback in line
+# with background = true (so this one can take them while the first doesn't).
+# [second_fallback_model]
+# url = "http://gpu3:8080/v1"
+# model = "gemma4-v2-Q8_0.gguf"
+# background = true
+# input_cost_per_mtok = 0.0
+# output_cost_per_mtok = 0.0
+
 # Memory (see README): facts, episodes and working memory, with automatic
 # capture, superseding, hybrid recall (keywords + [embedding] vectors) and a
 # context compiler that adds the relevant few memories to each prompt.

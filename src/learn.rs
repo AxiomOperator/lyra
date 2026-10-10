@@ -479,9 +479,9 @@ pub(crate) fn complete(
 }
 
 /// A small background job (memory capture, a skill review, mail triage…):
-/// the fallback model does it first when it takes them (`[fallback_model]
-/// background = true`) and the main model is up, so the main one is left to
-/// the chats; if the fallback fails, the main model does it after all.
+/// the first fallback that takes them (`background = true`) does it while the
+/// main model is up, so the main one is left to the chats; if it fails, the
+/// main model does it after all.
 pub(crate) fn complete_light(
     url: &str,
     model: &str,
@@ -536,44 +536,11 @@ fn call(
         }
         resp.json().map_err(|e| e.to_string())
     };
-    // The main chat model down (or failing just now): the fallback does it.
-    if let Some(why) = crate::fallback::blocked() {
-        return Err(why);
-    }
-    let fallback = crate::fallback::target().filter(|(u, _)| u != url);
-    let mut used = model.to_string();
-    let first = light.then(crate::fallback::light).flatten().filter(|(u, _)| u != url);
-    let reply = match &fallback {
-        Some((fb_url, fb_model)) if first.is_some() => {
-            body["model"] = json!(fb_model);
-            match send(fb_url, &body) {
-                Ok(r) => {
-                    used = fb_model.clone();
-                    r
-                }
-                Err(_) => {
-                    body["model"] = json!(model);
-                    send(url, &body)?
-                }
-            }
-        }
-        Some((fb_url, fb_model)) if crate::fallback::skip_main() => {
-            body["model"] = json!(fb_model);
-            used = fb_model.clone();
-            send(fb_url, &body)?
-        }
-        _ => match send(url, &body) {
-            Ok(r) => r,
-            Err(e) if crate::fallback::unreachable(&e) && fallback.is_some() => {
-                let (fb_url, fb_model) = fallback.clone().unwrap_or_default();
-                crate::fallback::main_failed();
-                body["model"] = json!(fb_model);
-                used = fb_model;
-                send(&fb_url, &body)?
-            }
-            Err(e) => return Err(e),
-        },
-    };
+    // The main chat model down (or failing just now): the next in line does it.
+    let (reply, used) = crate::fallback::call(url, model, light, |u, m| {
+        body["model"] = json!(m);
+        send(u, &body)
+    })?;
     // lyra's own work for whoever this thread works for (capture, triage, briefings, reviews…).
     crate::usage::record_usage("background", &used, &reply["usage"], started.elapsed().as_millis() as u64);
     let text = reply["choices"][0]["message"]["content"]

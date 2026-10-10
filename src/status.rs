@@ -243,14 +243,15 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
             vec![check("chat", "Models", "Chat model", &target, move || crate::models(&url).map(|offered| chat_state(&model, &offered)))]
         }),
     );
-    // The fallback, so it's known to work before it's needed.
-    if let Some(fb) = crate::fallback::settings() {
+    // The fallbacks, so they're known to work before they're needed.
+    for (id, fb) in crate::fallback::each() {
         spawn(
             &mut jobs,
             Box::new(move || {
                 let target = host(&fb.url);
                 let (url, model) = (fb.url.clone(), fb.model.clone());
-                vec![check("fallback", "Models", "Fallback chat model", &target, move || crate::models(&url).map(|offered| chat_state(&model, &offered)))]
+                let name = if id == "fallback" { "Fallback chat model" } else { "Second fallback model" };
+                vec![check(id, "Models", name, &target, move || crate::models(&url).map(|offered| chat_state(&model, &offered)))]
             }),
         );
     }
@@ -495,7 +496,7 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
     }
     let order = ["Models", "Tools & APIs", "lyra", "Machines"];
     // Groups in order; the fixed checks in this order of the fixed checks within a group.
-    let fixed = ["chat", "fallback", "embedding", "reranker", "decide", "search", "lyra", "public", "push", "storage", "backup", "routines", "files", "problems"];
+    let fixed = ["chat", "fallback", "fallback2", "embedding", "reranker", "decide", "search", "lyra", "public", "push", "storage", "backup", "routines", "files", "problems"];
     // Marked known down: say so; and say when one answers again (only a person clears it).
     let marks = crate::known_down::all();
     for p in out.iter_mut() {

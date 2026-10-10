@@ -72,7 +72,7 @@ pub(crate) fn configure(config: &Config) {
     planner::configure(config.planner.clone());
     usage::configure(prices(config));
     vision::configure(config.vision_model.clone());
-    fallback::configure(config.fallback_model.clone());
+    fallback::configure(config.fallback_model.clone(), config.second_fallback_model.clone());
     proactive::configure(config.proactive.clone());
     recap::configure(config.recap.clone());
     mailout::configure(config.email.clone());
@@ -97,7 +97,7 @@ pub(crate) fn prices(config: &Config) -> usage::Prices {
         .into_iter()
         .filter_map(|(k, p)| Some((k.to_string(), p?.clone())))
         .collect(),
-        models: config.fallback_model.iter().map(|f| (f.model.clone(), f.price.clone())).collect(),
+        models: config.fallback_model.iter().chain(config.second_fallback_model.iter()).map(|f| (f.model.clone(), f.price.clone())).collect(),
     }
 }
 

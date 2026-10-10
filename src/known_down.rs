@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use crate::store::JsonStore;
 
 /// The checks that can be marked: the models lyra calls.
-pub const MARKABLE: &[(&str, &str)] = &[("chat", "Chat model"), ("fallback", "Fallback chat model"), ("decide", "Decision model"), ("vision", "Vision model")];
+pub const MARKABLE: &[(&str, &str)] = &[("chat", "Chat model"), ("fallback", "Fallback chat model"), ("fallback2", "Second fallback model"), ("decide", "Decision model"), ("vision", "Vision model")];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Mark {

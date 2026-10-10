@@ -40,6 +40,9 @@ pub struct Config {
     /// Answers in the chat model's place while it can't be reached.
     #[serde(default)]
     pub fallback_model: Option<crate::fallback::Settings>,
+    /// Answers when the fallback can't be reached either (and may take background jobs).
+    #[serde(default)]
+    pub second_fallback_model: Option<crate::fallback::Settings>,
     /// `[coding]` table: coding work handed to Claude Code / OpenCode.
     pub coding: crate::coding::Settings,
     /// `[diagnose]` table: problems researched by themselves.
@@ -338,6 +341,7 @@ impl Default for Config {
             decide: None,
             vision_model: None,
             fallback_model: None,
+            second_fallback_model: None,
             backup: Default::default(),
             groups: Default::default(),
             health: Default::default(),
