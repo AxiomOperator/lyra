@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.51.1.195",
+    "date": "2026-10-09",
+    "title": "A test for the silence limit",
+    "improved": [
+      "lyra's checks now confirm a silent model gets 3 minutes before the fallback takes over."
+    ]
+  },
+  {
     "version": "0.51.1.194",
     "date": "2026-10-09",
     "title": "Sturdier under trouble",

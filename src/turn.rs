@@ -900,6 +900,13 @@ mod tests {
     }
 
     #[test]
+    fn a_silent_model_is_given_three_minutes_by_default() {
+        if std::env::var_os("LYRA_MODEL_SILENCE_SECONDS").is_none() {
+            assert_eq!(super::silence(), std::time::Duration::from_secs(180));
+        }
+    }
+
+    #[test]
     fn small_talk_is_only_talk() {
         for m in ["test message", "Hi!", "hello lyra", "thanks", "Thank you so much", "testing 123", "ok"] {
             assert!(small_talk(m, false), "{m}");
