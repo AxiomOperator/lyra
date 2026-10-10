@@ -48,6 +48,7 @@ fn documents_into_notes(home: &Path) -> Result<Option<String>, String> {
             std::fs::create_dir_all(&to).map_err(|e| format!("creating {}: {e}", to.display()))?;
             let id = crate::documents::free_id(&to, &title, None);
             crate::store::write_text(&to.join(format!("{id}.md")), &text)?;
+            crate::notes::set_document(&to, &id, true)?;
             std::fs::remove_file(&p).map_err(|e| format!("moving {}: {e}", p.display()))?;
             moved += 1;
         }
@@ -251,6 +252,7 @@ mod tests {
         // No heading: its first line is the title.
         assert_eq!(std::fs::read_to_string(home.join("users/dana/notes/dear-all.md")).unwrap(), "# Dear all,\n\nThe office closes early.\n");
         assert!(!home.join("documents").exists() && !home.join("users/dana/documents").exists());
+        assert_eq!(crate::notes::documents(&home.join("notes")), ["memo-2"], "still a document; the note isn't");
         assert_eq!(documents_into_notes(&home).unwrap(), None, "once");
         let _ = std::fs::remove_dir_all(&home);
     }

@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { ArrowLeft, CheckSquare, FilePlus, Plus, Square, SquarePen, Trash2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { ArrowLeft, CheckSquare, FilePlus, FileText, ListChecks, Plus, Square, SquarePen, StickyNote, Trash2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Editor } from "./documents";
 import { takeIntent } from "./intent";
@@ -15,6 +16,8 @@ import { Back, Failed, Page, useAction, useConfirm } from "./parts";
 import { useData, useLyra } from "./store";
 
 interface NoteView {
+  /** A document (started as one, or switched), a list (checklist lines) or a note. */
+  kind: "document" | "list" | "note";
   slug: string;
   title: string;
   words: number;
@@ -23,6 +26,12 @@ interface NoteView {
   items: { done: boolean; text: string }[];
   text: string;
 }
+
+const KIND = {
+  document: { label: "Document", icon: FileText, cls: "border-sky-700/60 text-sky-300" },
+  list: { label: "List", icon: ListChecks, cls: "border-teal-700/60 text-teal-300" },
+  note: { label: "Note", icon: StickyNote, cls: "border-amber-700/60 text-amber-300" },
+};
 
 export function NotesPage({ onBack }: { onBack: () => void }) {
   const { call } = useLyra();
@@ -61,7 +70,7 @@ export function NotesPage({ onBack }: { onBack: () => void }) {
           <Button size="sm" variant="ghost" onClick={() => (setOpen(null), reload())}>
             <ArrowLeft /> All notes
           </Button>
-          <Editor key={open} id={open} onSaved={reload} onGone={() => (setOpen(null), reload())} />
+          <Editor key={open} id={open} document={notes.find((n) => n.slug === open)?.kind === "document"} onSaved={reload} onGone={() => (setOpen(null), reload())} />
         </div>
       </Page>
     );
@@ -84,8 +93,16 @@ export function NotesPage({ onBack }: { onBack: () => void }) {
         {notes.map((n) => (
           <Card key={n.title} className="gap-1 py-3">
             <CardHeader className="px-4">
-              <CardTitle className="min-w-0 text-sm">
-                <button type="button" className="truncate text-left hover:underline" onClick={() => setOpen(n.slug)}>
+              <CardTitle className="flex min-w-0 items-center gap-2 text-sm">
+                {(() => {
+                  const k = KIND[n.kind] ?? KIND.note;
+                  return (
+                    <Badge variant="outline" className={cn("shrink-0 gap-1 font-normal", k.cls)}>
+                      <k.icon className="size-3" /> {k.label}
+                    </Badge>
+                  );
+                })()}
+                <button type="button" className="min-w-0 truncate text-left hover:underline" onClick={() => setOpen(n.slug)}>
                   {n.title}
                 </button>
               </CardTitle>

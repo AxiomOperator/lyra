@@ -10,7 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { Check, CloudUpload, Download, Eye, Mail, Pencil, Sparkles, Trash2, X } from "lucide-react";
+import { Check, CloudUpload, Download, Eye, FileText, Mail, Pencil, Sparkles, StickyNote, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useConfirm } from "./parts";
 import { useLyra } from "./store";
@@ -18,7 +18,7 @@ import { useLyra } from "./store";
 const QUICK = ["Make it more formal", "Shorten it", "Fix the grammar and spelling", "Add a short closing", "Turn it into bullet points"];
 
 /** One note in full, by its file name (`id`). Its name follows its title as it's saved. */
-export function Editor({ id: opened, onSaved, onGone }: { id: string; onSaved: () => void; onGone: () => void }) {
+export function Editor({ id: opened, document: wasDocument, onSaved, onGone }: { id: string; document?: boolean; onSaved: () => void; onGone: () => void }) {
   const { call } = useLyra();
   const [text, setText] = useState<string | null>(null);
   const [saved, setSaved] = useState("");
@@ -29,6 +29,15 @@ export function Editor({ id: opened, onSaved, onGone }: { id: string; onSaved: (
   const [note, setNote] = useState<{ ok: boolean; text: string; url?: string } | null>(null);
   const [to, setTo] = useState("");
   const [confirm, dialog] = useConfirm();
+  // A document or a plain note (switched here; the Notes page shows which).
+  const [isDocument, setIsDocument] = useState(!!wasDocument);
+  const switchKind = async () => {
+    const r = await call<{ ok?: boolean; error?: string }>("document_kind", { id: name.current, document: !isDocument });
+    if (r?.ok) {
+      setIsDocument(!isDocument);
+      onSaved();
+    } else setNote({ ok: false, text: r?.error ?? "couldn't change it" });
+  };
   const loaded = useRef(false);
   // Its file name now (a new title renames it while it's open).
   const name = useRef(opened);
@@ -95,6 +104,9 @@ export function Editor({ id: opened, onSaved, onGone }: { id: string; onSaved: (
             {preview ? <Pencil /> : <Eye />} {preview ? "Edit" : "Preview"}
           </Button>
           <span className="text-muted-foreground text-xs">{saved}</span>
+          <Button size="sm" variant="ghost" onClick={() => void switchKind()} title={isDocument ? "Show it as a plain note" : "Show it as a document"}>
+            {isDocument ? <StickyNote /> : <FileText />} {isDocument ? "Make it a note" : "Make it a document"}
+          </Button>
           <div className="ml-auto flex flex-wrap gap-1">
             <Button size="sm" variant="ghost" onClick={() => void act("document_download")} disabled={!!busy}>
               <Download /> Word

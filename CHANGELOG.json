@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.61.0.207",
+    "date": "2026-10-10",
+    "title": "Notes, lists and documents told apart",
+    "new": [
+      "Each card on the Notes page now says whether it's a Note, a List or a Document.",
+      "Notes started with New document, and those moved from the old Documents page, are documents. In the editor you can switch any of them between a note and a document."
+    ]
+  },
+  {
     "version": "0.60.0.206",
     "date": "2026-10-10",
     "title": "Memories by kind",

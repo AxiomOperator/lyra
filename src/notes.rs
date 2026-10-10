@@ -2,7 +2,9 @@
 //! owner's in `~/.lyra/notes`, anyone else's in `~/.lyra/users/<id>/notes`),
 //! its `# Title` first. A list is a note of checklist lines (`- [ ] milk`); a
 //! document is a longer note written with lyra in the editor (`documents.rs`:
-//! drafts, Word, OneDrive, mail). Said or typed in chat, kept here,
+//! drafts, Word, OneDrive, mail), marked as one in `.documents.json` (the
+//! file names of the notes that are documents: started as one, moved from
+//! the old Documents page, or switched in the editor). Said or typed in chat, kept here,
 //! searchable; all theirs alone.
 
 use std::path::PathBuf;
@@ -18,6 +20,48 @@ fn dir() -> Option<PathBuf> {
 /// Someone's notes folder.
 pub fn dir_for(user: &str) -> Option<PathBuf> {
     if crate::acting::is_owner(user) { Some(crate::config::home()?.join("notes")) } else { Some(crate::context::user_dir(user)?.join("notes")) }
+}
+
+fn documents_file(dir: &std::path::Path) -> PathBuf {
+    dir.join(".documents.json")
+}
+
+/// The file names of the notes in `dir` that are documents.
+pub fn documents(dir: &std::path::Path) -> Vec<String> {
+    crate::store::read_json(&documents_file(dir))
+}
+
+/// Mark a note as a document, or as a plain note again.
+pub fn set_document(dir: &std::path::Path, slug: &str, on: bool) -> Result<(), String> {
+    crate::store::JsonStore::<Vec<String>>::new(documents_file(dir)).update(|v| {
+        v.retain(|x| x != slug);
+        if on {
+            v.push(slug.to_string());
+            v.sort();
+        }
+    })
+}
+
+/// A note's file was renamed (a new title): it stays a document if it was one.
+pub fn renamed(dir: &std::path::Path, old: &str, new: &str) -> Result<(), String> {
+    crate::store::JsonStore::<Vec<String>>::new(documents_file(dir)).update(|v| {
+        if v.iter().any(|x| x == old) {
+            v.retain(|x| x != old && x != new);
+            v.push(new.to_string());
+            v.sort();
+        }
+    })
+}
+
+/// What a note is: "document", "list" or "note".
+fn kind(n: &Note, documents: &[String]) -> &'static str {
+    if documents.contains(&n.slug) {
+        "document"
+    } else if n.is_list() {
+        "list"
+    } else {
+        "note"
+    }
 }
 
 /// A title's file name.
@@ -154,6 +198,7 @@ pub fn delete(title: &str) -> Result<Note, String> {
     let n = find(title)?;
     let d = dir().ok_or("no lyra home")?;
     std::fs::remove_file(d.join(format!("{}.md", n.slug))).map_err(|e| e.to_string())?;
+    let _ = set_document(&d, &n.slug, false);
     Ok(n)
 }
 
@@ -166,9 +211,10 @@ pub fn search(query: &str) -> Vec<Note> {
     }).collect()
 }
 
-fn view(n: &Note) -> Value {
+fn view(n: &Note, documents: &[String]) -> Value {
     let items = n.items();
     json!({
+        "kind": kind(n, documents),
         "slug": n.slug, "title": n.title, "updated": n.updated, "list": !items.is_empty(), "words": n.text.split_whitespace().count(),
         "items": items.iter().map(|(d, t)| json!({ "done": d, "text": t })).collect::<Vec<_>>(),
         "text": if items.is_empty() { n.text.chars().take(4000).collect::<String>() } else { String::new() },
@@ -177,7 +223,8 @@ fn view(n: &Note) -> Value {
 
 /// The Notes page.
 pub fn page() -> Value {
-    json!(all().iter().map(view).collect::<Vec<_>>())
+    let documents = dir().map(|d| documents(&d)).unwrap_or_default();
+    json!(all().iter().map(|n| view(n, &documents)).collect::<Vec<_>>())
 }
 
 // ---- tools
@@ -225,7 +272,7 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
             let found = if q.trim().is_empty() { all() } else { search(&q) };
             Ok(json!({ "notes": found.iter().take(30).map(|n| json!({ "title": n.title, "updated": n.updated, "list": n.is_list(), "preview": n.text.chars().take(160).collect::<String>() })).collect::<Vec<_>>() }))
         }
-        "note_read" => Ok(view(&find(&s("title"))?)),
+        "note_read" => Ok(view(&find(&s("title"))?, &dir().map(|d| documents(&d)).unwrap_or_default())),
         "note_delete" => Ok(json!({ "deleted": delete(&s("title"))?.title })),
         "list_add" => {
             let items: Vec<String> = args["items"].as_array().into_iter().flatten().filter_map(|i| i.as_str().map(str::to_string)).collect();

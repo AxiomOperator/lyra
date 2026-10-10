@@ -55,14 +55,30 @@ pub fn save(user: &str, id: &str, text: &str) -> Result<String, String> {
     let old = (!id.trim().is_empty()).then(|| safe_id(id)).transpose()?;
     let new = free_id(&d, &title_of(text), old.as_deref());
     crate::store::write_text(&path(user, &new)?, text)?;
-    if let Some(old) = old.filter(|o| *o != new) {
-        let _ = std::fs::remove_file(path(user, &old)?);
+    match old.as_deref() {
+        // Started here ("New document"): a document.
+        None => crate::notes::set_document(&d, &new, true)?,
+        Some(old) if old != new => {
+            let _ = std::fs::remove_file(path(user, old)?);
+            crate::notes::renamed(&d, old, &new)?;
+        }
+        Some(_) => {}
     }
     Ok(new)
 }
 
+/// Whether it's a document or a plain note (the Notes page shows which).
+pub fn set_kind(user: &str, id: &str, document: bool) -> Result<(), String> {
+    let p = path(user, id)?;
+    if !p.exists() {
+        return Err("no such note".into());
+    }
+    crate::notes::set_document(&dir(user).ok_or("no lyra home")?, &safe_id(id)?, document)
+}
+
 pub fn remove(user: &str, id: &str) -> Result<(), String> {
-    std::fs::remove_file(path(user, id)?).map_err(|_| "no such note".to_string())
+    std::fs::remove_file(path(user, id)?).map_err(|_| "no such note".to_string())?;
+    crate::notes::set_document(&dir(user).ok_or("no lyra home")?, &safe_id(id)?, false)
 }
 
 const EDIT: &str = "You write and revise documents (letters, memos, one-pagers, notices) with the person you work for. You get the document as it is now (it may be empty) and what they want. Answer with the whole document after the change, in Markdown (# for the title, ## for sections, - for lists, **bold**), and nothing else: no comments before or after, no code fences. Keep what they didn't ask to change. Write as they would.";
@@ -153,9 +169,13 @@ mod tests {
             let id = save("owner", "", "# Untitled\n\n").unwrap();
             assert_eq!(id, "untitled");
             assert_eq!(save("owner", "", "# Untitled\n").unwrap(), "untitled-2", "a second untitled one");
-            // Retitled: the file follows, and the old name is gone.
+            assert_eq!(crate::notes::documents(&d), ["untitled", "untitled-2"], "made here: documents");
+            // Retitled: the file follows, and the old name is gone (still a document).
             let id = save("owner", &id, "# Office closed Friday\n\nDear all,").unwrap();
             assert_eq!(id, "office-closed-friday");
+            assert_eq!(crate::notes::documents(&d), ["office-closed-friday", "untitled-2"]);
+            set_kind("owner", "untitled-2", false).unwrap();
+            assert_eq!(crate::notes::documents(&d), ["office-closed-friday"], "switched back to a note");
             assert!(d.join("office-closed-friday.md").exists() && !d.join("untitled.md").exists());
             // It reads as a note (title and text).
             let n = crate::acting::run("owner", || crate::notes::find("Office closed Friday")).unwrap();

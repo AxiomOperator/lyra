@@ -340,7 +340,7 @@ pub(crate) fn slow(app: &App, what: &str, arg: &Value, loaded: &Loaded) -> Optio
             Err(e) => json!({ "error": e }),
         }),
         // The note editor: one note, lyra's drafts, Word to OneDrive or a mail.
-        "document" | "document_save" | "document_remove" | "document_download" | "document_onedrive" | "document_mail" | "document_ask" => {
+        "document" | "document_save" | "document_kind" | "document_remove" | "document_download" | "document_onedrive" | "document_mail" | "document_ask" => {
             let (what, arg) = (what.to_string(), arg.clone());
             let (url, model) = (format!("{}/chat/completions", app.base_url.trim_end_matches('/')), app.model.clone());
             Box::new(move || {
@@ -349,6 +349,7 @@ pub(crate) fn slow(app: &App, what: &str, arg: &Value, loaded: &Loaded) -> Optio
                     "document" => crate::documents::read(&owner, &id),
                     "document_save" => crate::documents::save(&owner, &id, arg["text"].as_str().unwrap_or("")).map(|id| json!({ "id": id })),
                     "document_remove" => crate::documents::remove(&owner, &id).map(|()| json!({ "ok": true })),
+                    "document_kind" => crate::documents::set_kind(&owner, &id, arg["document"] == true).map(|()| json!({ "ok": true })),
                     "document_download" => crate::documents::download(&owner, &id),
                     "document_onedrive" => crate::documents::to_onedrive(&owner, &id),
                     "document_mail" => {
