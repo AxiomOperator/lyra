@@ -59,6 +59,7 @@ import {
   Shield,
   Pin,
   PinOff,
+  Sun,
 } from "lucide-react";
 import { loadOpen, onOpenChange, setOpen } from "./lyra/rail";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ComponentType, type FormEvent, type ReactNode } from "react";
@@ -129,6 +130,7 @@ const DocumentsPage = page(() => import("./lyra/documents"), "DocumentsPage");
 const AboutMePage = page(() => import("./lyra/aboutme"), "AboutMePage");
 const ProjectsPage = page(() => import("./lyra/projects"), "ProjectsPage");
 const StatusPage = page(() => import("./lyra/status"), "StatusPage");
+const TodayPage = page(() => import("./lyra/today"), "TodayPage");
 const ActivityPage = page(() => import("./lyra/pages"), "ActivityPage");
 const DevicesPage = page(() => import("./lyra/pages"), "DevicesPage");
 const MachinesPage = page(() => import("./lyra/pages"), "MachinesPage");
@@ -142,10 +144,10 @@ function Loading() {
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "documents" | "me" | "running" | "profile";
-const manage: Manage[] = ["me", "documents", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings", "running", "profile"];
-/** What a member (not an admin) has: their chats, tasks, status, activity, skills. */
-const forMembers: string[] = ["chat", "status", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage", "meetings", "documents", "me", "profile"];
+type Manage = "today" | "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "documents" | "me" | "running" | "profile";
+const manage: Manage[] = ["today", "me", "documents", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings", "running", "profile"];
+/** What a member (not an admin) has: their chats, day, tasks, activity, skills (Status is admins'). */
+const forMembers: string[] = ["chat", "today", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage", "meetings", "documents", "me", "profile"];
 
 type TabItem = {
   id: Tab;
@@ -159,7 +161,7 @@ type TabItem = {
 const railGroups: { id: string; label: string; icon: typeof MessageSquare; pages: Tab[] }[] = [
   { id: "chat", label: "Chat", icon: MessageSquare, pages: ["chat"] },
   { id: "status", label: "Status", icon: Activity, pages: ["status"] },
-  { id: "work", label: "Work", icon: Briefcase, pages: ["tasks", "meetings", "notes", "documents", "projects"] },
+  { id: "work", label: "Work", icon: Briefcase, pages: ["today", "tasks", "meetings", "notes", "documents", "projects"] },
   { id: "knowledge", label: "Knowledge", icon: Brain, pages: ["memory", "skills"] },
   { id: "automation", label: "Automation", icon: Zap, pages: ["routines", "goals", "coding"] },
   { id: "system", label: "System", icon: Shield, pages: ["machines", "devices", "users", "usage", "running", "model", "activity", "settings"] },
@@ -470,7 +472,7 @@ function Shell() {
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, []);
-  // Opened from a notification for a page (the briefing → Status): go there.
+  // Opened from a notification for a page (the briefing → Today): go there.
   useEffect(() => {
     const go = (page: string | null) => {
       if (page && (["status", "machines", "activity", "more", ...manage] as string[]).includes(page)) setTab(page as Tab);
@@ -511,6 +513,7 @@ function Shell() {
   const todayKey = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
   const pmiWaiting = (status.pmi?.waiting.task_transfers?.length ?? 0) + (status.pmi?.waiting.project_transfers?.length ?? 0) + (status.pmi?.waiting.approvals?.length ?? 0);
   const more: TabItem[] = ([
+    { id: "today", label: "Today", icon: Sun },
     { id: "tasks", label: "Tasks", icon: ListTodo, badge: (status.pmi?.tasks ?? []).filter((t) => t.due && t.due < todayKey).length + pmiWaiting },
     { id: "meetings", label: "Meetings", icon: CalendarDays },
     { id: "notes", label: "Notes", icon: NotebookPen },
@@ -614,7 +617,8 @@ function Shell() {
         <div className="flex min-h-0 flex-1 flex-col">
           <Suspense fallback={<Loading />}>
           {tab === "chat" && <ChatPage />}
-          {tab === "status" && <StatusPage toMachines={() => setTab("machines")} toChat={() => setTab("chat")} go={(p) => setTab(p as Tab)} />}
+          {tab === "status" && admin && <StatusPage toMachines={() => setTab("machines")} toChat={() => setTab("chat")} />}
+          {tab === "today" && <TodayPage go={(p) => setTab(p as Tab)} />}
           {tab === "machines" && <MachinesPage mention={mention} toStatus={() => setTab("status")} toChat={() => setTab("chat")} />}
           {tab === "devices" && <DevicesPage />}
           {tab === "activity" && <ActivityPage />}

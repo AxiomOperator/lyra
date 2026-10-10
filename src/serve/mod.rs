@@ -113,7 +113,7 @@ impl crate::caps::Remote for HubRemote {
 /// The pages a member (not an admin) may ask for: their own conversations,
 /// data and settings. Everything else is an admin's (machines, users, devices,
 /// the server's settings, email services, Running now…).
-pub(crate) const MEMBER_PAGES: &[&str] = &["sessions", "search", "status", "agents", "skills", "activity", "about", "models", "do", "pmi", "routines", "routine_save", "routine_results", "routine_result", "goals", "memory", "calendar", "mail", "notes", "usage", "recap", "briefing", "watches", "everything", "templates", "template_put", "template_remove", "meetings", "meeting", "meeting_notes", "meeting_followup", "meeting_draft", "documents", "document", "document_save", "document_remove", "document_download", "document_onedrive", "document_mail", "document_ask", "me", "me_export", "me_clear_actions", "changelog", "feedback", "feedback_submit", "feedback_comment", "feedback_update", "feedback_seen", "feedback_analyze", "feedback_enhance", "qa", "qa_put", "qa_remove", "qa_promote", "email", "email_set", "email_test"];
+pub(crate) const MEMBER_PAGES: &[&str] = &["sessions", "search", "agents", "skills", "activity", "about", "models", "do", "pmi", "routines", "routine_save", "routine_results", "routine_result", "goals", "memory", "calendar", "mail", "notes", "usage", "recap", "briefing", "watches", "everything", "templates", "template_put", "template_remove", "meetings", "meeting", "meeting_notes", "meeting_followup", "meeting_draft", "documents", "document", "document_save", "document_remove", "document_download", "document_onedrive", "document_mail", "document_ask", "me", "me_export", "me_clear_actions", "changelog", "feedback", "feedback_submit", "feedback_comment", "feedback_update", "feedback_seen", "feedback_analyze", "feedback_enhance", "qa", "qa_put", "qa_remove", "qa_promote", "email", "email_set", "email_test"];
 
 pub(crate) fn member_may_get(what: &str) -> bool {
     MEMBER_PAGES.contains(&what)
@@ -470,12 +470,9 @@ fn for_viewer(extra: &Value, app: &App) -> Value {
         return v;
     }
     if let Some(map) = v.as_object_mut() {
-        for key in ["machines_detail", "pairing", "online", "server_health", "server_harnesses", "diagnoses", "users_waiting"] {
+        for key in ["status", "machines_detail", "pairing", "online", "server_health", "server_harnesses", "diagnoses", "users_waiting"] {
             map.remove(key);
         }
-    }
-    if let Some(rows) = v["status"]["rows"].as_array() {
-        v["status"]["rows"] = json!(rows.iter().filter(|r| r["group"] != "Machines").cloned().collect::<Vec<_>>());
     }
     v
 }
@@ -676,7 +673,7 @@ mod tests {
             assert!(member_may_get(own), "{own} is a member's own");
         }
         for admin in [
-            "users", "user_add", "user_password", "user_email", "settings", "settings_set", "email_providers", "email_provider_put", "email_provider_test", "running",
+            "status", "users", "user_add", "user_password", "user_email", "settings", "settings_set", "email_providers", "email_provider_put", "email_provider_test", "running",
             "running_stop", "known_down_set", "devices", "machines", "rules", "set_rules", "backups",
         ] {
             assert!(!member_may_get(admin), "{admin} is an admin's");

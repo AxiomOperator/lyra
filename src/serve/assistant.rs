@@ -236,7 +236,7 @@ impl Assistant {
                 convs[0].app.log(Level::Plan, format!("end of day: {}", crate::recap::push_body(&r)));
             }
             if crate::recap::settings().notify && !r.parts.is_empty() {
-                hub.notify(Notification { title: "End of day".into(), body: crate::recap::push_body(&r), tag: "recap".into(), approval: None, url: Some("/?page=status".into()), actions: vec![], reference: None, to: To::User(user.clone()) });
+                hub.notify(Notification { title: "End of day".into(), body: crate::recap::push_body(&r), tag: "recap".into(), approval: None, url: Some("/?page=today".into()), actions: vec![], reference: None, to: To::User(user.clone()) });
             }
             everyone = true;
         }

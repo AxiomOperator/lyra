@@ -121,13 +121,8 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
             })).collect::<Vec<_>>())
         }
         "status" => {
+            // Admins only (not in MEMBER_PAGES).
             let mut v = crate::status::latest().map_or(Value::Null, |b| json!(b));
-            // A member's view leaves the machines out.
-            if !app.admin
-                && let Some(rows) = v["rows"].as_array()
-            {
-                v["rows"] = json!(rows.iter().filter(|r| r["group"] != "Machines").cloned().collect::<Vec<_>>());
-            }
             if let Some(map) = v.as_object_mut() {
                 map.insert("known_down".into(), crate::known_down::view());
             }

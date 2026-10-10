@@ -62,13 +62,7 @@ impl App {
                 status::request();
                 return Ok("checking everything now — /status in a moment shows it (the app's Status page updates by itself)".into());
             }
-            return Ok(status::latest().map(|mut b| {
-                // A member's view leaves the machines out.
-                if !self.admin {
-                    b.rows.retain(|r| r.probe.group != "Machines");
-                }
-                status::describe(&b)
-            }).unwrap_or_default());
+            return Ok(status::latest().map(|b| status::describe(&b)).unwrap_or_default());
         }
         if !now && let Some(b) = status::latest() {
             return Ok(status::describe(&b));

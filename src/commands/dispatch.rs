@@ -307,7 +307,7 @@ pub(crate) const PAGE_COMMANDS: &[&str] = &[
 /// tools, coding, devices, backups, agents and skills' approval stay admins'.
 pub(crate) fn member_may(name: &str, arg: &str) -> bool {
     match name {
-        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/status" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" | "/feedback" | "/templates" | "/chat-only" | "/steps" | "/retry" | "/edit" | "/email" => true,
+        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" | "/feedback" | "/templates" | "/chat-only" | "/steps" | "/retry" | "/edit" | "/email" => true,
         // Their own skills (the commands check whose each one is).
         "/approve" | "/reject" | "/deprecate" => true,
         // Their own PMI account, routines and goals.
@@ -360,12 +360,12 @@ mod page_tests {
 mod member_tests {
     #[test]
     fn members_keep_to_their_own() {
-        for ok in ["/help", "/new", "/resume", "/sessions", "/status", "/whoami", "/skills", "/briefing"] {
+        for ok in ["/help", "/new", "/resume", "/sessions", "/whoami", "/skills", "/briefing"] {
             assert!(super::member_may(ok, ""), "{ok}");
         }
         assert!(super::member_may("/model", "") && !super::member_may("/model", "other-model"), "look, not change");
         assert!(super::member_may("/memory", "forget 1a2b") && !super::member_may("/memory", "curate") && !super::member_may("/memory", "approve 1a2b"));
-        for no in ["/outcome", "/machines", "/devices", "/users", "/backup", "/caps", "/evolve", "/plan", "/agent", "/coding", "/diagnose", "/settings"] {
+        for no in ["/status", "/outcome", "/machines", "/devices", "/users", "/backup", "/caps", "/evolve", "/plan", "/agent", "/coding", "/diagnose", "/settings"] {
             assert!(!super::member_may(no, "x"), "{no}");
         }
         // Their own routines and goals, but no plans or autonomy.
