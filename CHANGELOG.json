@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.61.0.208",
+    "date": "2026-10-10",
+    "title": "How lyra compares",
+    "improved": [
+      "A written comparison of lyra with Grok Bot, Meta Muse and OpenClaw is now in the docs. It says where lyra leads, where it matches them, where it's behind, what's missing entirely, and what would matter most next."
+    ]
+  },
+  {
     "version": "0.61.0.207",
     "date": "2026-10-10",
     "title": "Notes, lists and documents told apart",
