@@ -564,6 +564,7 @@ pub(crate) fn converse(
                     let talkers: Vec<_> = enabled.iter().filter(|a| !(env.member && agents::admin_only(&a.name))).cloned().collect();
                     if talkers.len() >= 2 && !matches!(how.offer, Offer::Nothing) {
                         definitions.push(agents::huddle_tool(&talkers));
+                        definitions.push(agents::swarm_tool(&talkers));
                     }
                 }
             }
@@ -723,6 +724,8 @@ pub(crate) fn converse(
                 crate::board::call(&env.session, "lyra", name, arguments)
             } else if let (Some(env), "agent_huddle") = (agents, name) {
                 agents::huddle(env, arguments, Some(run))
+            } else if let (Some(env), "agent_swarm") = (agents, name) {
+                agents::swarm(env, arguments, Some(run))
             } else if call.function.name == caps::SEARCH_TOOL {
                 let (text, names) = caps.search(arguments);
                 found.extend(names);

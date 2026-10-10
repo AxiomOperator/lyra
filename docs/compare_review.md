@@ -54,7 +54,7 @@ How to read it:
 
 | What | lyra |
 |---|---|
-| Agent-to-agent coordination (since 0.62–0.63): delegations side by side and nested; direct questions between agents; group huddles of two to four agents; a task board per conversation where agents post tasks and notes for each other, and posted tasks start the other agent's work by themselves | `agents.rs` (`delegate_many`, `ask_agent`, `huddle`, `hand_on`), `board.rs`; `[agents] max_parallel`, `board_autostart` |
+| Agent-to-agent coordination (since 0.62–0.63): delegations side by side and nested; direct questions between agents; group huddles of two to four agents; a task board per conversation where agents post tasks and notes for each other, and posted tasks start the other agent's work by themselves; swarms, one task to two to six agents at once, each tracked on the board | `agents.rs` (`delegate_many`, `ask_agent`, `huddle`, `swarm`, `hand_on`), `board.rs`; `[agents] max_parallel`, `board_autostart` |
 | Named, persistent agents with roles, instructions, routing and a conversational creation wizard with templates | `agents/` (profiles as TOML, versions, rule / semantic / model routing, `builder`, `templates`) |
 | Separate memory per agent (its own `agent:<name>` scope, or none, read-only, or scoped) | `agents/src/model.rs` memory modes |
 | Persistent sessions: saved conversations, resume (`-c` / `-r`), folders, pins, archive, search across them, age limits | `sessions.rs`, `retention.rs` |

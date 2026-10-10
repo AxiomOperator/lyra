@@ -602,7 +602,7 @@ fn plan_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
 
 /// The main agent and its specialists: who's working right now (A1, and
 /// "the TUI must show when the main agent is interacting with subagents").
-fn agents_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
+pub(crate) fn agents_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
     let dim = Style::default().fg(Color::DarkGray);
     let Some(agents) = &app.agents else { return (String::new(), Vec::new()) };
     let active = agents.active.lock().map(|a| a.clone()).unwrap_or_default();

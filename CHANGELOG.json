@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.64.0.211",
+    "date": "2026-10-10",
+    "title": "Agent swarms",
+    "new": [
+      "lyra can give one task to two to six agents at once for their separate takes. They run side by side, each with its own task on the conversation's board, and lyra gets every result to compare and combine."
+    ]
+  },
+  {
     "version": "0.63.0.210",
     "date": "2026-10-10",
     "title": "Agents talk to each other",

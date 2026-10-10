@@ -702,6 +702,60 @@ pub fn ask_agent(env: &Env, from: &str, args: &str, depth: u32, run: Option<Uuid
     if ok { json!({ "agent": to.name, "answer": text }) } else { json!({ "agent": to.name, "error": text }) }.to_string()
 }
 
+/// The main agent's tool for a swarm: one task to many agents at once.
+pub fn swarm_tool(agents: &[AgentProfile]) -> Value {
+    let list: Vec<String> = agents.iter().map(|a| format!("{} ({})", a.name, a.description)).collect();
+    json!({
+        "type": "function",
+        "function": {
+            "name": "agent_swarm",
+            "description": format!("Give one task to several agents at once (two to six) for their separate takes, run side by side, each tracked on the task board; you get every result to compare and combine. Agents: {}", list.join("; ")),
+            "parameters": { "type": "object", "properties": {
+                "agents": { "type": "array", "items": { "type": "string" }, "description": "Two to six agents' names." },
+                "task": { "type": "string", "description": "What each should do, self-contained." },
+                "input": { "type": "string", "description": "The material they all work on." },
+            }, "required": ["agents", "task"] },
+        },
+    })
+}
+
+/// Swarms: the same task to several agents at once. Each gets a board task
+/// of its own and runs as an ordinary delegation, side by side (at most
+/// `max_parallel` at a time), so each keeps its contract, budget, approvals
+/// and record; the main agent gets every result back to combine.
+pub fn swarm(env: &Env, args: &str, run: Option<Uuid>) -> String {
+    let a: Value = serde_json::from_str(args).unwrap_or(json!({}));
+    let task = a["task"].as_str().unwrap_or("").trim().to_string();
+    let mut who: Vec<AgentProfile> = Vec::new();
+    for name in a["agents"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        match reachable(env, name, MAIN) {
+            Ok(p) if !who.iter().any(|w| w.name == p.name) => who.push(p),
+            Ok(_) => {}
+            Err(e) => return json!({ "error": e }).to_string(),
+        }
+    }
+    if task.is_empty() || !(2..=6).contains(&who.len()) {
+        return json!({ "error": "a swarm needs a task and two to six different agents" }).to_string();
+    }
+    let mut calls = Vec::new();
+    for p in &who {
+        let id = match crate::board::post(&env.session, "lyra", &format!("Swarm: {}", task.chars().take(120).collect::<String>()), "", Some(&p.name), false) {
+            Ok(t) => Some(t.id),
+            Err(_) => None,
+        };
+        calls.push((p.name.clone(), json!({ "agent": p.name, "task": task, "input": a["input"], "board_task": id }).to_string()));
+    }
+    let results = delegate_many(env, &calls, run, None);
+    let done = results.iter().filter(|(_, r)| r.contains("\"status\":\"completed\"")).count();
+    json!({
+        "task": task,
+        "results": results.into_iter().map(|(_, r)| serde_json::from_str::<Value>(&r).unwrap_or(json!(r))).collect::<Vec<_>>(),
+        "completed": done,
+        "of": who.len(),
+    })
+    .to_string()
+}
+
 /// The main agent's tool for a group chat between agents.
 pub fn huddle_tool(agents: &[AgentProfile]) -> Value {
     let list: Vec<String> = agents.iter().map(|a| format!("{} ({})", a.name, a.description)).collect();
@@ -2014,6 +2068,86 @@ mod tests {
         assert!(note.title.starts_with("Huddle: Should we move") && note.detail.contains("Operator: Operator here"));
         assert!(huddle(&f.env, r#"{"agents":["writer"],"topic":"x"}"#, None).contains("two to four"));
         assert!(f.env.agents.active.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_swarm_gives_one_task_to_many_agents_at_once() {
+        let (url, requests) = slow_model(Duration::from_millis(600));
+        let mut f = fixture(&url);
+        f.env.session = format!("swarm-{}", Uuid::new_v4().simple());
+        for t in ["researcher", "archivist"] {
+            if f.env.agents.registry.find(t).is_err() {
+                f.env.agents.registry.create(lyra_agents::templates::template(t).unwrap(), "test").unwrap();
+            }
+        }
+        f.env.agents.settings.lock().unwrap().max_parallel = 4;
+        let started = Instant::now();
+        let out: Value = serde_json::from_str(&swarm(&f.env, r#"{"agents":["writer","operator","researcher","archivist"],"task":"Count the apples"}"#, None)).unwrap();
+        let took = started.elapsed();
+        assert!(took < Duration::from_millis(1100), "all four at once: {took:?}");
+        assert_eq!((out["completed"].as_u64(), out["of"].as_u64()), (Some(4), Some(4)), "{out}");
+        assert!(out["results"].as_array().unwrap().iter().all(|r| r["output"] == "done: apples"));
+        // Each has its own board task, done by that agent; each is recorded.
+        let tasks = crate::board::read(&f.env.session).tasks;
+        assert_eq!(tasks.len(), 4);
+        for t in &tasks {
+            assert_eq!(t.status, crate::board::Status::Done);
+            assert_eq!(t.taken_by, t.agent, "{t:?}");
+        }
+        assert_eq!(requests.try_iter().count(), 4);
+        for a in ["writer", "operator", "researcher", "archivist"] {
+            assert_eq!(f.env.agents.registry.delegations(Some(a), 5).unwrap().len(), 1, "{a}");
+        }
+        assert!(swarm(&f.env, r#"{"agents":["writer"],"task":"x"}"#, None).contains("two to six"));
+        // Not past max_parallel: with two at a time, it takes two turns.
+        f.env.agents.settings.lock().unwrap().max_parallel = 2;
+        let started = Instant::now();
+        swarm(&f.env, r#"{"agents":["writer","operator","researcher","archivist"],"task":"Count the pears"}"#, None);
+        assert!(started.elapsed() >= Duration::from_millis(1200), "two at a time");
+    }
+
+    /// An app (the terminal's and each device's conversation) with these agents, nothing else.
+    fn app_with(agents: Arc<Agents>, session: &str) -> crate::App {
+        let off = || Err("off".to_string());
+        let services = crate::Services {
+            tools: None, memory_status: off(), learning: None, learning_status: off(), engine: None, planning_status: off(),
+            evolution: None, evolution_status: off(), caps: None, goals: None, agents: Some(agents), agents_status: Ok("test".into()),
+        };
+        let mut app = crate::App::new(crate::config::Config::default(), crate::context::Context::default(), services);
+        app.session_id = session.to_string();
+        app
+    }
+
+    #[test]
+    fn the_terminal_shows_huddles_questions_and_the_board() {
+        let (url, _requests) = scripted_model(|b| {
+            let who = if system_of(b).contains("You are Writer") { "Writer" } else { "Operator" };
+            json!({ "role": "assistant", "content": format!("{who} here") })
+        });
+        let mut f = fixture(&url);
+        f.env.session = format!("tui-{}", Uuid::new_v4().simple());
+        ask_agent(&f.env, "writer", r#"{"agent":"operator","question":"Is the server up?"}"#, 2, None);
+        huddle(&f.env, r#"{"agents":["writer","operator"],"topic":"Move the backup?","rounds":1}"#, None);
+        crate::board::post(&f.env.session, "writer", "Check the disk", "", Some("operator"), false).unwrap();
+        let mut app = app_with(f.env.agents.clone(), &f.env.session);
+        for e in f.events.try_iter() {
+            if let StreamEvent::Agent(e) = e {
+                app.agent_event(e);
+            }
+        }
+        // Activity: who asked whom, the huddle and how it went.
+        let activity: Vec<String> = app.activity.iter().map(|a| a.text.clone()).collect();
+        assert!(activity.iter().any(|t| t.contains("Operator") && t.contains("writer asks: Is the server up?")), "{activity:#?}");
+        assert!(activity.iter().any(|t| t.contains("→ Huddle · Writer, Operator: Move the backup?")), "{activity:#?}");
+        assert!(activity.iter().any(|t| t.starts_with("Huddle · Writer, Operator completed")), "{activity:#?}");
+        // The chat: one card for the huddle with its turns, and both agents credited.
+        let card = app.messages.iter().find(|m| m.role == "agent" && m.content.starts_with("Huddle · Writer, Operator completed")).expect("the huddle's card");
+        assert_eq!(card.tool_calls.iter().map(|c| c.function.name.as_str()).collect::<Vec<_>>(), ["Writer", "Operator"]);
+        assert!(app.handled_by.contains(&"Writer".to_string()) && app.handled_by.contains(&"Operator".to_string()) && !app.handled_by.iter().any(|h| h.starts_with("Huddle")));
+        // The Agents panel: the conversation's board.
+        let panel = crate::ui::agents_panel(&app, 60).1;
+        let text: Vec<String> = panel.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect()).collect();
+        assert!(text.iter().any(|l| l.contains("board: 1 open")), "{text:#?}");
     }
 
     #[test]
