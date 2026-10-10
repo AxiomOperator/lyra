@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.54.0.200",
+    "date": "2026-10-09",
+    "title": "Status moves under System",
+    "improved": [
+      "Status is now the first page in the System group on the side rail, next to Machines and Devices, instead of being a group of its own."
+    ]
+  },
+  {
     "version": "0.53.0.199",
     "date": "2026-10-09",
     "title": "Today page; Status is for admins",

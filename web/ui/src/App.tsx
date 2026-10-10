@@ -160,11 +160,10 @@ type TabItem = {
  *  alone opens at once). Badges add up on the group. */
 const railGroups: { id: string; label: string; icon: typeof MessageSquare; pages: Tab[] }[] = [
   { id: "chat", label: "Chat", icon: MessageSquare, pages: ["chat"] },
-  { id: "status", label: "Status", icon: Activity, pages: ["status"] },
   { id: "work", label: "Work", icon: Briefcase, pages: ["today", "tasks", "meetings", "notes", "documents", "projects"] },
   { id: "knowledge", label: "Knowledge", icon: Brain, pages: ["memory", "skills"] },
   { id: "automation", label: "Automation", icon: Zap, pages: ["routines", "goals", "coding"] },
-  { id: "system", label: "System", icon: Shield, pages: ["machines", "devices", "users", "usage", "running", "model", "activity", "settings"] },
+  { id: "system", label: "System", icon: Shield, pages: ["status", "machines", "devices", "users", "usage", "running", "model", "activity", "settings"] },
   { id: "help", label: "Help", icon: CircleHelp, pages: ["qa", "feedback", "whatsnew"] },
 ];
 
