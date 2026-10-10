@@ -22,7 +22,7 @@ fn lock_for(path: &Path) -> Arc<Mutex<()>> {
 
 /// Something went wrong with a file: into lyra's log (the journal under lyra serve).
 fn report(what: &str, path: &Path, e: &str) {
-    eprintln!("lyra: couldn't {what} {}: {e}", path.display());
+    crate::trouble::report(format!("couldn't {what} {}: {e}", path.display()));
 }
 
 /// Write `bytes` to `path` atomically (temp file, then rename), making its folder.

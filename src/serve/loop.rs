@@ -62,34 +62,17 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     // Each person with a PMI token: their live view, followed while lyra runs.
     let mut pmi: std::collections::HashMap<String, PmiUser> = std::collections::HashMap::new();
     let mut last_pmi_scan = Instant::now() - Duration::from_secs(120);
-    let mut last_nag = Instant::now();
-    // Plan my day: re-planned every 15 minutes in each person's working day;
-    // what changed is told when they aren't in quiet time (held until then).
-    let (plan_tx, plan_rx) = std::sync::mpsc::channel::<(String, Result<Vec<String>, String>)>();
-    let mut last_plan = Instant::now() - Duration::from_secs(3600);
-    let mut planning: std::collections::HashSet<String> = Default::default();
-    let mut held: std::collections::HashMap<String, Vec<String>> = Default::default();
-    let mut quiet = QuietTimes::new();
-    let mut last_held = Instant::now();
-    // Proactive help: a pass every 5 minutes in the working day (mail every other one).
-    let (pro_tx, pro_rx) = std::sync::mpsc::channel::<(String, crate::proactive::Pass)>();
-    let mut last_pro = Instant::now() - Duration::from_secs(3600);
-    let mut pro_round: u64 = 0;
-    let mut pro_busy: std::collections::HashSet<String> = Default::default();
-    let (action_tx, action_rx) = std::sync::mpsc::channel::<(String, String, String, Result<String, String>)>();
-    // The end-of-day recap: looked for once a minute, made once a day per person.
-    let (recap_tx, recap_rx) = std::sync::mpsc::channel::<(String, crate::recap::Recap)>();
-    let mut last_recap_look = Instant::now() - Duration::from_secs(120);
-    let mut recapping: std::collections::HashSet<String> = Default::default();
-    // "Tell me when …": each person's watches, looked at every two minutes.
-    let (watch_tx, watch_rx) = std::sync::mpsc::channel::<(String, Vec<(String, String)>)>();
-    let mut last_watch = Instant::now();
-    let mut watching: std::collections::HashSet<String> = Default::default();
+    // Each person's assistant work: nags, plan my day, proactive help, the
+    // recap, "tell me when …", and telling what was done outside quiet time.
+    let mut assistant = assistant::Assistant::new();
     let started = Instant::now();
     let mut convs = vec![Conv::new(primary)];
     // A stop waits for what's running; runs a restart cut off start again now.
     catch_stop();
     let mut draining: Option<Instant> = None;
+    // What grows by itself, tidied once a day (off the loop), the first time a little after starting.
+    let mut last_tidy = Instant::now() - Duration::from_secs(86_400 - 600);
+    let (tidy_tx, tidy_rx) = std::sync::mpsc::channel::<Vec<String>>();
     // Routine runs done but not recorded yet (their check and email): a stop waits for them too.
     let mut finishing = 0usize;
     for (user, name) in crate::routines::take_resume() {
@@ -98,37 +81,27 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     }
     loop {
         if stopping() {
-            let busy: Vec<String> = convs
-                .iter()
-                .filter(|c| c.app.waiting || c.app.plan_busy)
-                .map(|c| c.routine.as_ref().map_or_else(|| if c.diagnosis.is_some() { "a problem write-up".to_string() } else { format!("a reply for {}", c.app.owner) }, |(r, _)| format!("routine {}", r.name)))
-                .chain((finishing > 0).then(|| format!("{finishing} routine result(s) being recorded")))
-                .chain(crate::backup::running().then(|| "a backup".to_string()))
-                .collect();
-            let since = *draining.get_or_insert_with(|| {
-                println!("stopping: {}", if busy.is_empty() { "nothing running".to_string() } else { format!("waiting up to {}s for {}", drain().as_secs(), busy.join(", ")) });
-                Instant::now()
-            });
-            if busy.is_empty() || since.elapsed() >= drain() {
-                // What's still going: routines start again after the restart; replies say so.
-                let mut again = Vec::new();
-                for c in convs.iter_mut() {
-                    if let Some((r, _)) = &c.routine {
-                        again.push((c.app.owner.clone(), r.name.clone()));
-                    } else if c.app.waiting && c.diagnosis.is_none() {
-                        c.app.messages.push(Message::new("error", "lyra restarted while answering this. Try again to send it once more.".into()));
-                    }
-                    c.app.save_session();
-                }
-                if !again.is_empty() {
-                    println!("stopping: {} routine run(s) will start again: {}", again.len(), again.iter().map(|a| a.1.as_str()).collect::<Vec<_>>().join(", "));
-                    crate::routines::save_resume(&again);
-                }
-                println!("stopped");
-                std::process::exit(0);
-            }
+            drain_step(&mut convs, &mut draining, finishing);
         }
         let stopping_now = stopping();
+        if last_tidy.elapsed() >= Duration::from_secs(86_400) && !stopping_now {
+            last_tidy = Instant::now();
+            let tx = tidy_tx.clone();
+            crate::acting::spawn(move || {
+                let home = crate::config::home().unwrap_or_default();
+                let devices = lyra_web::Devices::open(&home.join("web")).ok();
+                let _ = tx.send(crate::retention::tidy(&home, devices.as_ref()));
+            });
+        }
+        while let Ok(said) = tidy_rx.try_recv() {
+            for s in said {
+                convs[0].app.log(Level::Info, format!("tidied: {s}"));
+            }
+        }
+        // Problems with nobody watching: into the owner's Activity.
+        for t in crate::trouble::take_new() {
+            convs[0].app.log(Level::Error, t);
+        }
         let mut everyone = false;
         // What the devices ask for (waiting a little when there's nothing).
         let mut next = inbound.recv_timeout(Duration::from_millis(40)).ok();
@@ -174,7 +147,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                             "Someone (hopefully you) asked to choose a new password for lyra.\n\n**[Choose a new password]({link})**\n\nThe link works once, for 30 minutes. If you didn't ask, ignore this email: your password stays as it is."
                         );
                         if let Err(e) = crate::mailout::send_to_me(&user, "Choose a new lyra password", &body, "reset") {
-                            eprintln!("the reset link for {user} wasn't emailed: {e}");
+                            crate::trouble::report(format!("the reset link for {user} wasn't emailed: {e}"));
                         }
                     });
                 }
@@ -191,7 +164,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     if who.user == convs[0].app.owner {
                         convs[0].app.log(Level::Info, format!("{device} pressed {action} on a reminder"));
                     }
-                    let tx = action_tx.clone();
+                    let tx = assistant.action_tx.clone();
                     crate::acting::spawn(move || {
                         // In their own PMI account.
                         let r = crate::pmi::as_user(&who.user, || crate::pmi::push_action(&action, &reference));
@@ -247,171 +220,8 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     }
                 }
                 Inbound::Get { what, arg, session, who, reply } => {
-                    sync_role(&mut convs, &who);
-                    // Pages a member may open; the rest are admins' (or still the owner's data).
-                    if !who.admin && !matches!(what.as_str(), "sessions" | "search" | "status" | "agents" | "skills" | "activity" | "about" | "models" | "do" | "pmi" | "routines" | "routine_save" | "routine_results" | "routine_result" | "goals" | "memory" | "calendar" | "mail" | "notes" | "usage" | "recap" | "briefing" | "watches" | "everything" | "templates" | "template_put" | "template_remove" | "meetings" | "meeting" | "meeting_notes" | "meeting_followup" | "meeting_draft" | "documents" | "document" | "document_save" | "document_remove" | "document_download" | "document_onedrive" | "document_mail" | "document_ask" | "me" | "me_export" | "me_clear_actions" | "changelog" | "feedback" | "feedback_submit" | "feedback_comment" | "feedback_update" | "feedback_seen" | "feedback_analyze" | "feedback_enhance" | "qa" | "qa_put" | "qa_remove" | "qa_promote" | "email" | "email_set" | "email_test") {
-                        let _ = reply.send(json!({ "error": "that's for admins" }));
-                        continue;
-                    }
-                    // Running now (admins): every conversation at work, anyone's; and Stop.
-                    if what == "running" {
-                        let _ = reply.send(running_view(&convs, hub));
-                        continue;
-                    }
-                    if what == "running_stop" {
-                        let id = arg["session"].as_str().unwrap_or("");
-                        let answer = match convs.iter_mut().find(|c| c.app.session_id == id) {
-                            Some(c) => {
-                                let r = if c.app.waiting { c.app.stop() } else if c.app.plan_busy { c.app.command_result("/plan cancel") } else { Err("it isn't running any more".into()) };
-                                c.changed = true;
-                                if r.is_ok() {
-                                    convs[0].app.log(Level::Agent, format!("{} stopped {id} (Running now)", who.name));
-                                }
-                                r
-                            }
-                            None => Err("it isn't running any more".into()),
-                        };
-                        let _ = reply.send(match answer {
-                            Ok(t) => json!({ "ok": true, "text": t }),
-                            Err(e) => json!({ "error": e }),
-                        });
+                    if get::get_page(&mut convs, hub, node_build.as_deref(), &switch_tx, what, arg, session, who, reply) {
                         everyone = true;
-                        continue;
-                    }
-                    let loaded: Loaded = convs.iter().filter(|c| c.app.owner == who.user).map(|c| (c.app.session_id.clone(), c.app.waiting)).collect();
-                    let i = conv_for(&mut convs, &session, &who);
-                    let machine = arg["machine"].as_str().unwrap_or("server").to_string();
-                    match what.as_str() {
-                        // A machine's rules: it answers (and checks changes) itself, off this loop.
-                        "rules" | "set_rules" if machine != "server" => {
-                            let hub = hub.clone();
-                            let mut request = json!({ "type": "rules" });
-                            if what == "set_rules" {
-                                request["set"] = arg["system"].clone();
-                                convs[0].app.log(Level::Agent, format!("rules for {machine} changed from the app"));
-                            }
-                            crate::acting::spawn(move || {
-                                let answer = hub.call_machine(&machine, request, Duration::from_secs(20));
-                                let _ = reply.send(answer.unwrap_or_else(|e| json!({ "error": e })));
-                            });
-                        }
-                        // A coding job's changes: `git diff` in its folder, read-only, on its machine.
-                        "coding_diff" => {
-                            let (dir, caps) = (arg["dir"].as_str().unwrap_or("").to_string(), convs[0].app.caps.clone());
-                            crate::acting::spawn(move || {
-                                let shell = json!({ "command": "git diff --stat HEAD~0 && git diff && git status --short", "cwd": dir });
-                                let answer = if machine == crate::caps::HERE {
-                                    caps.as_ref().and_then(|c| c.system.as_ref()).ok_or("system access is off".to_string()).and_then(|s| s.call("shell_run", &shell))
-                                } else {
-                                    caps.as_ref().and_then(|c| c.remote()).ok_or("no machines".to_string()).and_then(|r| r.call(&machine, json!({ "type": "call", "tool": "shell_run", "args": shell, "approved": false }), Duration::from_secs(30)))
-                                };
-                                let _ = reply.send(answer.map(|v| json!({ "diff": v["stdout"], "error": v["error"] })).unwrap_or_else(|e| json!({ "error": e })));
-                            });
-                        }
-                        // The Settings page's Save: written to config.toml, then every
-                        // conversation picks it up (the model and prices are each one's own).
-                        "settings_set" => {
-                            let answer = match crate::settings::set(&arg["changes"]) {
-                                Ok(changed) if changed.is_empty() => json!({ "ok": true, "changed": changed, "page": crate::settings::page() }),
-                                Ok(changed) => {
-                                    convs[0].app.reload();
-                                    let (url, model, pricing, status) = (convs[0].app.base_url.clone(), convs[0].app.model.clone(), convs[0].app.pricing.clone(), convs[0].app.status.clone());
-                                    for c in convs.iter_mut() {
-                                        c.app.base_url = url.clone();
-                                        c.app.model = model.clone();
-                                        c.app.pricing = pricing.clone();
-                                        c.app.status = status.clone();
-                                        c.changed = true;
-                                    }
-                                    convs[0].app.log(Level::Agent, format!("settings changed from the app by {}: {}", who.user, changed.join(", ")));
-                                    json!({ "ok": true, "changed": changed, "page": crate::settings::page() })
-                                }
-                                Err(e) => json!({ "ok": false, "error": e }),
-                            };
-                            let _ = reply.send(answer);
-                        }
-                        "set_rules" => {
-                            let answer = set_server_rules(&mut convs[0].app, &arg["system"]);
-                            let _ = reply.send(answer.unwrap_or_else(|e| json!({ "error": e })));
-                        }
-                        // A clearer draft for the feedback form: off this loop (the model takes a moment).
-                        "feedback_enhance" => {
-                            let (kind, title, details, user) = (arg["kind"].as_str().unwrap_or("bug").to_string(), arg["title"].as_str().unwrap_or("").to_string(), arg["details"].as_str().unwrap_or("").to_string(), convs[i].app.owner.clone());
-                            crate::acting::spawn(move || {
-                                let answer = crate::acting::run(&user, || crate::feedback::enhance(&kind, &title, &details));
-                                let _ = reply.send(answer.map_or_else(|e| json!({ "error": e }), |text| json!({ "text": text })));
-                            });
-                        }
-                        // One search for everything (Ctrl-K): off this loop, their own things only.
-                        "everything" => {
-                            let (query, user) = (arg["query"].as_str().unwrap_or("").to_string(), convs[i].app.owner.clone());
-                            let mem = convs[i].app.tools.as_ref().map(|t| t.mem.clone());
-                            crate::acting::spawn(move || {
-                                let _ = reply.send(crate::search::everything(&query, &user, mem));
-                            });
-                        }
-                        "models" => {
-                            let (url, current) = (convs[i].app.base_url.clone(), convs[i].app.model.clone());
-                            crate::acting::spawn(move || {
-                                let answer = match crate::models(&url) {
-                                    Ok(list) => json!({ "current": current, "models": list }),
-                                    Err(e) => json!({ "current": current, "models": [], "error": e }),
-                                };
-                                let _ = reply.send(answer);
-                            });
-                        }
-                        // A page's button: memory, skills, goals, model commands, answered to the page.
-                        "do" if convs[i].app.off_loop(arg["command"].as_str().unwrap_or("").trim()).is_some() => {
-                            let line = arg["command"].as_str().unwrap_or("").trim().to_string();
-                            let job = convs[i].app.off_loop(&line).expect("checked above");
-                            convs[i].app.log(Level::Info, format!("from the app: {}", crate::shown(&line)));
-                            crate::acting::spawn(move || {
-                                let _ = reply.send(match job() {
-                                    Ok(text) => json!({ "ok": true, "text": text }),
-                                    Err(e) => json!({ "ok": false, "text": e }),
-                                });
-                            });
-                        }
-                        // Switching the model: the server is asked off the loop; the switch comes back here.
-                        "do" if convs[i].app.admin && arg["command"].as_str().unwrap_or("").trim().strip_prefix("/model ").is_some_and(|n| !n.trim().is_empty()) => {
-                            let name = arg["command"].as_str().unwrap_or("").trim().trim_start_matches("/model ").trim().to_string();
-                            let (url, tx) = (convs[i].app.base_url.clone(), switch_tx.clone());
-                            crate::acting::spawn(move || match crate::commands::check_model(&url, &name) {
-                                Ok(()) => {
-                                    let _ = tx.send((name, url, reply));
-                                }
-                                Err(e) => {
-                                    let _ = reply.send(json!({ "ok": false, "text": e }));
-                                }
-                            });
-                        }
-                        "do" => {
-                            let line = arg["command"].as_str().unwrap_or("").trim().to_string();
-                            let result = convs[i].app.quiet_command(&line);
-                            if result.is_ok() && line.starts_with("/model ") {
-                                let model = convs[i].app.model.clone();
-                                for c in convs.iter_mut() {
-                                    c.app.model = model.clone();
-                                }
-                            }
-                            for c in convs.iter_mut() {
-                                c.changed = true;
-                            }
-                            let _ = reply.send(match result {
-                                Ok(text) => json!({ "ok": true, "text": text }),
-                                Err(e) => json!({ "ok": false, "text": e }),
-                            });
-                        }
-                        // Pages that read every conversation or call out: on a thread (I-6).
-                        _ if slow(&convs[i].app, &what, &arg, &loaded).is_some() => {
-                            let job = slow(&convs[i].app, &what, &arg, &loaded).expect("checked above");
-                            crate::acting::spawn(move || {
-                                let _ = reply.send(job());
-                            });
-                        }
-                        _ => {
-                            let _ = reply.send(data(&mut convs[i].app, hub, &what, &arg, node_build.as_deref(), &loaded));
-                        }
                     }
                 }
                 Inbound::MachineHealth { name, health } => {
@@ -478,115 +288,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         let many = convs.len() > 1;
         let mut diagnosed: Vec<String> = Vec::new();
         for c in convs.iter_mut() {
-            while let Ok(event) = c.app.rx.try_recv() {
-                let note = notification(&event);
-                let done = matches!(event, StreamEvent::Done(_) | StreamEvent::Error(_));
-                c.app.handle(event);
-                c.changed = true;
-                // A diagnosis only looks: changes it asks for are declined; its write-up is kept.
-                if let Some(key) = c.diagnosis.clone() {
-                    let asked: Vec<u64> = c.app.approvals.iter().map(|a| a.id).collect();
-                    for id in asked {
-                        c.app.answer_approval_id(id, "n");
-                    }
-                    if done && !c.app.waiting {
-                        c.diagnosis = None;
-                        let reply = c.app.messages.iter().rev().find(|m| matches!(m.role.as_str(), "assistant" | "error")).map(|m| (m.role == "assistant", m.content.clone()));
-                        let (ok, text) = reply.unwrap_or((false, "no answer".into()));
-                        crate::diagnose::finish(&key, &text, ok);
-                        diagnosed.push(key);
-                    }
-                    continue;
-                }
-                // A routine's run: judged and told by its own rules, not "lyra replied".
-                if let Some((r, started)) = c.routine.clone() {
-                    crate::routines::running_doing(&c.app.owner, &r.name, &crate::ui::doing_text(&c.app));
-                    let may_change = r.changes;
-                    // One that only looks: anything asking to change something is refused at once.
-                    if !r.changes {
-                        let asked: Vec<u64> = c.app.approvals.iter().map(|a| a.id).collect();
-                        for id in asked {
-                            c.app.answer_approval_id(id, "n");
-                            c.app.log(Level::Plan, format!("routine {}: declined a change (it only looks; /routine edit {} changes on lets it ask)", r.name, r.name));
-                        }
-                    }
-                    if done && !c.app.waiting {
-                        c.routine = None;
-                        crate::routines::running_end(&c.app.owner, &r.name);
-                        let reply = c.app.messages.iter().rev().find(|m| matches!(m.role.as_str(), "assistant" | "error")).map(|m| (m.role.clone(), m.content.clone()));
-                        let outcome = match &reply {
-                            Some((role, _)) if role == "error" => "error",
-                            Some((_, content)) if content.ends_with("_(stopped)_") => "stopped",
-                            _ => "ok",
-                        };
-                        let text = reply.map(|m| m.1).unwrap_or_default();
-                        let (url, model, session, tx) = (format!("{}/chat/completions", c.app.base_url.trim_end_matches('/')), c.app.model.clone(), c.app.session_id.clone(), routine_tx.clone());
-                        let whose = c.app.owner.clone();
-                        let began = chrono::Utc::now() - chrono::Duration::from_std(started.elapsed()).unwrap_or_default();
-                        finishing += 1;
-                        crate::acting::spawn(move || {
-                            // Its checks count for the run too.
-                            crate::usage::set_job(Some(session.clone()));
-                            let summary: String = text.trim().chars().take(400).collect();
-                            // The whole result, for its page and the next run.
-                            if outcome == "ok"
-                                && let Err(e) = crate::acting::run(&whose, || crate::routines::save_result(&r.name, chrono::Utc::now(), &text))
-                            {
-                                eprintln!("routine {}: its result wasn't kept: {e}", r.name);
-                            }
-                            // Kept as done at once (a stop during the check or the email
-                            // leaves this, not "interrupted"); the full record replaces it.
-                            let early = crate::routines::Run {
-                                at: chrono::Utc::now(), seconds: started.elapsed().as_secs(), needs_user: outcome != "ok", outcome: outcome.into(), summary: summary.clone(), session: session.clone(),
-                                decided_by: if outcome == "ok" { "not checked: lyra stopped first".into() } else { "it didn't finish".into() },
-                                emailed: if r.email && outcome == "ok" { "not emailed: lyra stopped first".into() } else { String::new() },
-                                calls: 0, tokens_in: 0, tokens_out: 0, cost: 0.0,
-                            };
-                            crate::acting::run(&whose, || crate::routines::record(&r.name, early));
-                            let (needs_user, decided_by) = if outcome == "ok" { crate::routines::needs_user(&url, &model, &r, &text) } else { (true, "it didn't finish".into()) };
-                            // Its result by email, to its person only.
-                            let emailed = if !r.email {
-                                String::new()
-                            } else if outcome != "ok" {
-                                format!("not emailed: the run {outcome}")
-                            } else {
-                                let subject = format!("{} · {}", r.name.replace('-', " "), chrono::Local::now().format("%a %b %-d"));
-                                crate::mailout::send_to_me(&whose, &subject, &text, "routine").unwrap_or_else(|e| format!("not emailed: {e}"))
-                            };
-                            let spent = crate::usage::spent(&session, began);
-                            let run = crate::routines::Run {
-                                at: chrono::Utc::now(), seconds: started.elapsed().as_secs(), needs_user, outcome: outcome.into(), summary, session, decided_by, emailed,
-                                calls: spent.calls, tokens_in: spent.input, tokens_out: spent.output, cost: spent.cost,
-                            };
-                            let _ = tx.send((whose, r, run));
-                        });
-                    }
-                    // Only a routine allowed to change things asks the user.
-                    if let Some(mut n) = note.filter(|_| may_change) {
-                        n.to = To::User(c.app.owner.clone());
-                        hub.notify(n);
-                    }
-                    continue;
-                }
-                // Their own conversation, and only when they aren't looking at lyra.
-                if !notify || hub.watching(&c.app.owner) {
-                    continue;
-                }
-                // With several conversations, say which one.
-                let about = |title: String| match c.app.messages.iter().find(|m| m.role == "user") {
-                    Some(m) if many => format!("{title} · {}", m.content.lines().next().unwrap_or("").chars().take(40).collect::<String>()),
-                    _ => title,
-                };
-                if done {
-                    let body = c.app.messages.iter().rev().find(|m| m.role == "assistant").map(|m| preview(&m.content)).unwrap_or_default();
-                    hub.notify(Notification { title: about("lyra replied".into()), body, tag: format!("reply-{}", c.app.session_id), approval: None, url: None, actions: vec![], reference: None, to: To::User(c.app.owner.clone()) });
-                }
-                if let Some(mut n) = note {
-                    n.title = about(n.title);
-                    n.to = To::User(c.app.owner.clone());
-                    hub.notify(n);
-                }
-            }
+            conversation_events(c, hub, notify, many, &routine_tx, &mut finishing, &mut diagnosed);
         }
         // Finished write-ups: logged and told.
         for key in diagnosed {
@@ -615,361 +317,19 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         if !stopping_now && (last_routines.elapsed() >= Duration::from_secs(20) || routines_wanted()) {
             last_routines = Instant::now();
             // Everyone's: each runs in its person's own conversation, with their rights.
-            let mut start: Vec<(String, crate::routines::Routine)> = crate::routines::due_all(chrono::Local::now());
-            for (user, name) in crate::routines::take_requests() {
-                if let Ok(r) = crate::acting::run(&user, || crate::routines::find(&name))
-                    && !start.iter().any(|(u, x)| *u == user && x.name == r.name)
-                {
-                    start.push((user, r));
-                }
-            }
-            for (user, r) in start {
-                if convs.iter().any(|c| c.app.owner == user && c.routine.as_ref().is_some_and(|(x, _)| x.name == r.name)) {
-                    continue;
-                }
-                let mine = user == convs[0].app.owner;
-                let mut app = if mine {
-                    convs[0].app.fork()
-                } else {
-                    // Someone else's: only while they may use lyra.
-                    let Some(who) = hub.users().who(Some(&user)) else { continue };
-                    convs[0].app.fork_for(&who)
-                };
-                // Its own person's past results go with it.
-                app.input = crate::acting::run(&user, || crate::routines::message(&r));
-                app.unattended = true;
-                app.send();
-                crate::routines::running_start(&user, &r.name, &app.session_id);
-                if mine {
-                    convs[0].app.log(Level::Plan, format!("routine {} started", r.name));
-                }
-                let mut c = Conv::new(app);
-                c.routine = Some((r, Instant::now()));
-                convs.push(c);
-            }
+            start_routines(&mut convs, hub);
         }
         while let Ok((user, r, run)) = routine_rx.try_recv() {
-            let verdict = if run.outcome != "ok" { format!("{} ({})", run.outcome, run.decided_by) } else if run.needs_user { "needs you".into() } else { "all clear".into() };
-            let first = run.summary.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(140).collect::<String>();
-            // The owner's Activity tells the owner's routines only.
-            if user == convs[0].app.owner {
-                convs[0].app.log(if run.needs_user { Level::Error } else { Level::Plan }, format!("routine {}: {verdict} ({}s, by {}) — {first}", r.name, run.seconds, run.decided_by));
-                if !run.emailed.is_empty() {
-                    convs[0].app.log(if run.emailed.starts_with("not ") { Level::Error } else { Level::Plan }, format!("routine {}: {}", r.name, run.emailed));
-                }
-            }
-            let tell = match r.notify {
-                crate::routines::Notify::Always => true,
-                crate::routines::Notify::Problems => run.needs_user,
-                crate::routines::Notify::Never => false,
-            };
-            if tell {
-                hub.notify(Notification {
-                    title: format!("{} {}", if run.needs_user { "⚠" } else { "✓" }, r.name),
-                    body: preview(&run.summary),
-                    tag: format!("routine-{}", r.name),
-                    approval: None,
-                    url: None, actions: vec![], reference: None,
-                    to: To::User(user.clone()),
-                });
-            }
-            crate::acting::run(&user, || crate::routines::record(&r.name, run));
+            routine_done(&mut convs, hub, &user, &r, run);
             finishing = finishing.saturating_sub(1);
             everyone = true;
         }
         // PMI, per person with a token: follow their live events (a thread each,
         // started as tokens appear), read again shortly after a change and every 5 minutes.
-        if last_pmi_scan.elapsed() >= Duration::from_secs(60) {
-            last_pmi_scan = Instant::now();
-            let people: Vec<String> = hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active && !pmi.contains_key(&u.id) && crate::pmi::configured_for(&u.id)).map(|u| u.id).collect();
-            for user in people {
-                let tx = pmi_events_tx.clone();
-                let who = user.clone();
-                crate::acting::spawn(move || crate::pmi::follow(who, tx));
-                pmi.insert(user.clone(), PmiUser { due: Some(Instant::now()), last: Instant::now(), nags: crate::pmi::Nags::load_for(&user), ..Default::default() });
-            }
-        }
-        while let Ok((user, e)) = pmi_events.try_recv() {
-            let Some(p) = pmi.get_mut(&user) else { continue };
-            match e {
-                crate::pmi::Event::Live(live) => {
-                    if live != p.state.live {
-                        p.state.live = live;
-                        if user == convs[0].app.owner {
-                            convs[0].app.log(Level::Info, if live { "PMI: following its live updates".to_string() } else { "PMI: can't follow its live updates, retrying".to_string() });
-                        }
-                        p.view = json!(p.state);
-                        everyone = true;
-                        // Back after an outage: what changed meanwhile.
-                        if live {
-                            p.due = Some(Instant::now());
-                        }
-                    }
-                    // Their token is gone: forget them until one is set again.
-                    if !live && !crate::pmi::configured_for(&user) {
-                        pmi.remove(&user);
-                        everyone = true;
-                    }
-                }
-                crate::pmi::Event::Changed(areas) => {
-                    if areas.iter().any(|a| matches!(a.as_str(), "tasks" | "projects" | "resync" | "structure")) {
-                        let soon = Instant::now() + Duration::from_secs(5);
-                        p.due = Some(p.due.map_or(soon, |d| d.min(soon)));
-                    }
-                }
-            }
-        }
-        for user in crate::pmi::take_stale() {
-            if let Some(p) = pmi.get_mut(&user) {
-                p.due = Some(Instant::now() + Duration::from_secs(2));
-            } else {
-                // A token was just set: start following them now.
-                last_pmi_scan = Instant::now() - Duration::from_secs(120);
-            }
-        }
-        for (user, p) in pmi.iter_mut() {
-            if !p.busy && (p.due.is_some_and(|d| Instant::now() >= d) || p.last.elapsed() >= Duration::from_secs(300)) {
-                p.busy = true;
-                p.due = None;
-                p.last = Instant::now();
-                let (tx, user) = (pmi_tx.clone(), user.clone());
-                crate::acting::spawn(move || {
-                    let r = crate::pmi::as_user(&user, crate::pmi::snapshot);
-                    let _ = tx.send((user, r));
-                });
-            }
-        }
-        while let Ok((user, r)) = pmi_rx.try_recv() {
-            let Some(p) = pmi.get_mut(&user) else { continue };
-            p.busy = false;
-            let mine = user == convs[0].app.owner;
-            match r {
-                Ok(mut s) => {
-                    s.live = p.state.live;
-                    if mine && p.state.error.is_some() {
-                        convs[0].app.log(Level::Info, format!("PMI: back ({})", s.line(chrono::Local::now().date_naive())));
-                    }
-                    p.state = s;
-                }
-                Err(e) => {
-                    if mine && p.state.error.as_deref() != Some(e.as_str()) {
-                        convs[0].app.log(Level::Error, format!("PMI: {e}"));
-                    }
-                    p.state.error = Some(e);
-                }
-            }
-            let view = json!(p.state);
-            if view != p.view {
-                p.view = view;
-                everyone = true;
-            }
-        }
-        // Nags: each person's, checked with each new view and every minute.
-        if last_nag.elapsed() >= Duration::from_secs(60) || everyone {
-            last_nag = Instant::now();
-            let s = crate::pmi::settings();
-            let owner = convs[0].app.owner.clone();
-            for (user, p) in pmi.iter_mut().filter(|(_, p)| p.state.at.is_some() && p.state.error.is_none()) {
-                // Not in their quiet time (outside work hours, in a meeting): nags wait.
-                // Not known yet: it's being looked up, and they wait until it is.
-                if quiet.now(user) != Some(false) {
-                    continue;
-                }
-                let (due, changed) = p.nags.due(&p.state, &s, chrono::Utc::now());
-                for n in due {
-                    // Only the owner's own reminders in the owner's Activity.
-                    if *user == owner {
-                        convs[0].app.log(Level::Plan, format!("⏰ still to do: {} (reminder {} of {})", n.title, n.sent, s.nag_max));
-                    }
-                    hub.notify(Notification {
-                        title: format!("⏰ Still to do: {}", n.title),
-                        body: format!("The reminder went off {}. Done, or later?", n.fired.with_timezone(&chrono::Local).format("%a %H:%M")),
-                        tag: format!("nag-{}", n.task),
-                        approval: None,
-                        url: Some("/?page=tasks".into()),
-                        actions: vec![("done".into(), "Done".into()), ("snooze1h".into(), "In 1 hour".into()), ("tomorrow".into(), "Tomorrow".into())],
-                        reference: Some(n.task.clone()),
-                        to: To::User(user.clone()),
-                    });
-                }
-                if changed {
-                    p.nags.save_for(user);
-                }
-            }
-        }
-        while let Ok((user, action, task, r)) = action_rx.try_recv() {
-            match r {
-                Ok(what) => {
-                    if user == convs[0].app.owner {
-                        convs[0].app.log(Level::Plan, format!("reminder: {what}"));
-                    }
-                    if let Some(p) = pmi.get_mut(&user) {
-                        p.nags.items.retain(|_, n| n.task != task);
-                        p.nags.save_for(&user);
-                    }
-                }
-                Err(e) => {
-                    if user == convs[0].app.owner {
-                        convs[0].app.log(Level::Error, format!("reminder {action} failed: {e}"));
-                    }
-                    hub.notify(Notification { title: "Couldn't update the task".into(), body: e, tag: format!("nag-{task}"), approval: None, url: Some("/?page=tasks".into()), actions: vec![], reference: None, to: To::User(user) });
-                }
-            }
-        }
-        // Plan my day, for everyone with Outlook and PMI, in their working day.
-        if last_plan.elapsed() >= Duration::from_secs(15 * 60) && crate::planner::settings().enabled && crate::planner::settings().working_now(chrono::Local::now()) {
-            last_plan = Instant::now();
-            for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id) {
-                if planning.contains(&u) || !crate::graph::connected_for(&u) || !crate::pmi::configured_for(&u) {
-                    continue;
-                }
-                planning.insert(u.clone());
-                let tx = plan_tx.clone();
-                crate::acting::spawn(move || {
-                    let r = crate::acting::run(&u, crate::planner::run);
-                    let _ = tx.send((u, r));
-                });
-            }
-        }
-        while let Ok((user, r)) = plan_rx.try_recv() {
-            planning.remove(&user);
-            let mine = user == convs[0].app.owner;
-            match r {
-                Ok(did) if !did.is_empty() => {
-                    if mine {
-                        for d in &did {
-                            convs[0].app.log(Level::Plan, format!("🗓 {d}"));
-                        }
-                    }
-                    held.entry(user).or_default().extend(did);
-                }
-                Ok(_) => {}
-                Err(e) if mine => convs[0].app.log(Level::Error, format!("plan my day: {e}")),
-                Err(_) => {}
-            }
-        }
-        // Proactive help, for everyone with Outlook connected.
-        if last_pro.elapsed() >= Duration::from_secs(5 * 60) && crate::proactive::settings().enabled && crate::planner::settings().working_now(chrono::Local::now()) {
-            last_pro = Instant::now();
-            pro_round += 1;
-            let mail_due = pro_round % 2 == 1;
-            let (url, model) = (format!("{}/chat/completions", convs[0].app.base_url.trim_end_matches('/')), convs[0].app.model.clone());
-            for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id) {
-                if pro_busy.contains(&u) || !crate::graph::connected_for(&u) {
-                    continue;
-                }
-                pro_busy.insert(u.clone());
-                let (tx, url, model) = (pro_tx.clone(), url.clone(), model.clone());
-                crate::acting::spawn(move || {
-                    let p = crate::acting::run(&u, || crate::proactive::pass(&url, &model, mail_due));
-                    let _ = tx.send((u, p));
-                });
-            }
-        }
-        if last_recap_look.elapsed() >= Duration::from_secs(60) && crate::recap::settings().enabled {
-            last_recap_look = Instant::now();
-            let now = chrono::Local::now();
-            for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id) {
-                if recapping.contains(&u) || !(crate::graph::connected_for(&u) || crate::pmi::configured_for(&u)) || !crate::recap::due(&u, now) {
-                    continue;
-                }
-                recapping.insert(u.clone());
-                let tx = recap_tx.clone();
-                crate::acting::spawn(move || {
-                    let r = crate::acting::run(&u, || crate::recap::gather(chrono::Utc::now()));
-                    let _ = tx.send((u, r));
-                });
-            }
-        }
-        // Bug reports and feature requests: who should hear about what.
-        for n in crate::feedback::take_notices() {
-            let to = if n.to_admins { To::Admins } else { To::User(n.user.clone().unwrap_or_default()) };
-            hub.notify(Notification { title: n.title, body: n.body, tag: "feedback".into(), approval: None, url: Some("/?page=feedback".into()), actions: vec![], reference: None, to });
+        if pmi_tick(&mut pmi, &mut last_pmi_scan, &pmi_events_tx, &pmi_events, &pmi_tx, &pmi_rx, &mut convs, hub) {
             everyone = true;
         }
-        if last_watch.elapsed() >= Duration::from_secs(120) {
-            last_watch = Instant::now();
-            for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id) {
-                if watching.contains(&u) || !crate::watches::any(&u) {
-                    continue;
-                }
-                watching.insert(u.clone());
-                let tx = watch_tx.clone();
-                crate::acting::spawn(move || {
-                    let fired = crate::acting::run(&u, crate::watches::pass);
-                    let _ = tx.send((u, fired));
-                });
-            }
-        }
-        while let Ok((user, fired)) = watch_rx.try_recv() {
-            watching.remove(&user);
-            for (title, body) in fired {
-                if user == convs[0].app.owner {
-                    convs[0].app.log(Level::Plan, format!("👀 {title}: {body}"));
-                }
-                hub.notify(Notification { title, body, tag: "watch".into(), approval: None, url: None, actions: vec![], reference: None, to: To::User(user.clone()) });
-            }
-            everyone = true;
-        }
-        while let Ok((user, r)) = recap_rx.try_recv() {
-            recapping.remove(&user);
-            crate::recap::save_for(&user, &r);
-            if crate::mailout::prefs(&user).recap && !r.parts.is_empty() {
-                let (u, body) = (user.clone(), crate::recap::describe(&r));
-                crate::acting::spawn(move || {
-                    if let Err(e) = crate::mailout::send_to_me(&u, &format!("End of day · {}", chrono::Local::now().format("%a %b %-d")), &body, "recap") {
-                        eprintln!("the recap wasn't emailed to {u}: {e}");
-                    }
-                });
-            }
-            if user == convs[0].app.owner {
-                convs[0].app.log(Level::Plan, format!("end of day: {}", crate::recap::push_body(&r)));
-            }
-            if crate::recap::settings().notify && !r.parts.is_empty() {
-                hub.notify(Notification { title: "End of day".into(), body: crate::recap::push_body(&r), tag: "recap".into(), approval: None, url: Some("/?page=status".into()), actions: vec![], reference: None, to: To::User(user.clone()) });
-            }
-            everyone = true;
-        }
-        while let Ok((user, p)) = pro_rx.try_recv() {
-            pro_busy.remove(&user);
-            let mine = user == convs[0].app.owner;
-            // Meeting prep can't wait: it goes now.
-            for (title, body) in p.prep {
-                if mine {
-                    convs[0].app.log(Level::Plan, format!("{title} — {}", body.replace('\n', " · ")));
-                }
-                hub.notify(Notification { title, body, tag: "prep".into(), approval: None, url: Some("/?page=tasks".into()), actions: vec![], reference: None, to: To::User(user.clone()) });
-            }
-            if !p.done.is_empty() {
-                if mine {
-                    for d in &p.done {
-                        convs[0].app.log(Level::Plan, format!("✨ {d}"));
-                    }
-                }
-                held.entry(user).or_default().extend(p.done);
-            }
-        }
-        // What the planner did, told once they're out of quiet time.
-        if !held.is_empty() && last_held.elapsed() >= Duration::from_secs(60) {
-            last_held = Instant::now();
-            let ready: Vec<String> = held.keys().cloned().collect();
-            for user in ready {
-                if quiet.now(&user) != Some(false) {
-                    continue;
-                }
-                let did = held.remove(&user).unwrap_or_default();
-                hub.notify(Notification {
-                    title: "✨ lyra took care of".into(),
-                    body: did.join("\n").chars().take(400).collect(),
-                    tag: "plan".into(),
-                    approval: None,
-                    url: Some("/?page=tasks".into()),
-                    actions: vec![],
-                    reference: None,
-                    to: To::User(user),
-                });
-            }
-        }
+        everyone = assistant.tick(&mut convs, hub, &mut pmi, everyone);
         // The daily briefing: on schedule or asked for, gathered and written off the loop.
         // Asked for while a batch is still being made: kept for the next look.
         let wanted = if brief_left == 0 { crate::briefing::take_requests() } else { Vec::new() };
@@ -979,56 +339,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             let now = chrono::Local::now();
             let due = s.enabled && crate::briefing::next(&s.schedule, last_brief.as_ref().map(|b| b.at), now).is_some_and(|t| t <= now);
             if !wanted.is_empty() || due {
-                let at = chrono::Utc::now();
-                let since = crate::briefing::window_start(last_brief.as_ref().map(|b| b.at), at);
-                let mut inputs = crate::briefing::local_inputs(convs[0].app.goals.as_deref(), at, since);
-                inputs.machines = machines_detail(hub, node_build.as_deref());
-                inputs.server_health = (!server_health.is_null()).then(|| server_health.clone());
-                inputs.pmi = pmi.get(&convs[0].app.owner).filter(|p| p.state.at.is_some()).map(|p| p.state.clone());
-                let (url, model, tx) = (format!("{}/chat/completions", convs[0].app.base_url.trim_end_matches('/')), convs[0].app.model.clone(), brief_tx.clone());
-                let owner = convs[0].app.owner.clone();
-                // On schedule: everyone with PMI or a calendar connected gets their own.
-                // Asked for: only those who asked (whatever they have connected).
-                let asked = |u: &String| wanted.iter().any(|w| w == u);
-                let with_owner = due || asked(&owner);
-                let others: Vec<(String, crate::briefing::Inputs)> = hub
-                    .users()
-                    .list()
-                    .into_iter()
-                    .filter(|u| u.status == lyra_web::Status::Active && u.id != owner)
-                    .map(|u| u.id)
-                    .filter(|u| if due { pmi.get(u).is_some_and(|p| p.state.at.is_some()) || crate::graph::connected_for(u) } else { asked(u) })
-                    .map(|u| {
-                        let since = crate::briefing::window_start(crate::briefing::last_for(&u).map(|b| b.at), at);
-                        // Their tasks, routines and goals.
-                        let (goals, goal_events) = crate::goals::for_user(&u).map_or_else(Default::default, |g| (g.manager.all().unwrap_or_default(), g.manager.events(None, 300).unwrap_or_default()));
-                        let runs = crate::acting::run(&u, crate::routines::runs);
-                        let pmi = pmi.get(&u).filter(|p| p.state.at.is_some()).map(|p| p.state.clone());
-                        (u, crate::briefing::Inputs { now: at, since, pmi, runs, goals, goal_events, ..Default::default() })
-                    })
-                    .collect();
-                let batch: Vec<(String, crate::briefing::Inputs)> = with_owner.then_some((owner, inputs)).into_iter().chain(others).collect();
-                brief_left = batch.len();
-                crate::acting::spawn(move || {
-                    for (user, mut inputs) in batch {
-                        // Their calendar today, when they've connected it.
-                        if crate::graph::connected_for(&user) {
-                            inputs.calendar = crate::acting::run(&user, crate::calendar::today).ok();
-                        }
-                        if crate::teams::connected_for(&user) {
-                            inputs.teams = crate::acting::run(&user, || crate::teams::chats(25)).ok().map(|c| c.into_iter().filter(|x| x["unread"] == true).collect());
-                        }
-                        if crate::mail::connected_for(&user) {
-                            let since = inputs.since;
-                            inputs.mail = crate::acting::run(&user, || crate::mail::glance(since)).ok();
-                        }
-                        let mut b = crate::briefing::gather(&inputs);
-                        if s.summary {
-                            b.takeaway = crate::acting::run(&user, || crate::briefing::takeaway(&url, &model, &b));
-                        }
-                        let _ = tx.send((user, b));
-                    }
-                });
+                brief_left = start_briefings(&convs, hub, node_build.as_deref(), &server_health, &pmi, last_brief.as_ref(), &wanted, due, &s, &brief_tx);
             }
         }
         while let Ok(ready) = ready_rx.try_recv() {
@@ -1053,7 +364,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 let (u, subject, body) = (user.clone(), format!("☀ Briefing: {}", b.headline), crate::briefing::describe(&b));
                 crate::acting::spawn(move || {
                     if let Err(e) = crate::mailout::send_to_me(&u, &subject, &body, "briefing") {
-                        eprintln!("the briefing wasn't emailed to {u}: {e}");
+                        crate::trouble::report(format!("the briefing wasn't emailed to {u}: {e}"));
                     }
                 });
             }
@@ -1140,28 +451,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             status_busy = false;
             match board {
                 Ok(board) => {
-                    for (id, problem, text) in crate::status::alerts(&mut status_alerts, &board, &ss) {
-                        let d = &convs[0].app.diagnose;
-                        if problem && d.enabled && d.auto {
-                            crate::diagnose::queue(&format!("status:{id}"), crate::caps::HERE, &text, false);
-                        } else if !problem {
-                            crate::diagnose::resolve(&format!("status:{id}"));
-                        }
-                        convs[0].app.log(if problem { Level::Error } else { Level::Agent }, format!("{} {text}", if problem { "⚠" } else { "✓" }));
-                        if ss.notify {
-                            hub.notify(Notification {
-                                title: if problem { "⚠ lyra needs a look".into() } else { "✓ lyra".into() },
-                                body: text,
-                                tag: "status".into(),
-                                approval: None,
-                                url: None, actions: vec![], reference: None,
-                            to: To::Admins,
-                            });
-                        }
-                    }
-                    status_view = json!(board);
-                    // The models marked known down, for the page's buttons.
-                    status_view["known_down"] = crate::known_down::view();
+                    status_view = status_board(&mut convs, hub, &mut status_alerts, &board, &ss);
                     everyone = true;
                 }
                 Err(e) => convs[0].app.log(Level::Error, format!("status: {e}")),
@@ -1253,6 +543,442 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     }
 }
 
+/// A fresh status board: what went down or came back told (and looked into,
+/// when diagnoses do that by themselves), and the board as the Status page
+/// shows it, with the models marked known down.
+fn status_board(convs: &mut [Conv], hub: &Hub, status_alerts: &mut crate::status::Alerts, board: &crate::status::Board, ss: &crate::status::Settings) -> Value {
+    for (id, problem, text) in crate::status::alerts(status_alerts, board, ss) {
+        let d = &convs[0].app.diagnose;
+        if problem && d.enabled && d.auto {
+            crate::diagnose::queue(&format!("status:{id}"), crate::caps::HERE, &text, false);
+        } else if !problem {
+            crate::diagnose::resolve(&format!("status:{id}"));
+        }
+        convs[0].app.log(if problem { Level::Error } else { Level::Agent }, format!("{} {text}", if problem { "⚠" } else { "✓" }));
+        if ss.notify {
+            hub.notify(Notification {
+                title: if problem { "⚠ lyra needs a look".into() } else { "✓ lyra".into() },
+                body: text,
+                tag: "status".into(),
+                approval: None,
+                url: None,
+                actions: vec![],
+                reference: None,
+                to: To::Admins,
+            });
+        }
+    }
+    let mut status_view = json!(board);
+    // The models marked known down, for the page's buttons.
+    status_view["known_down"] = crate::known_down::view();
+    status_view
+}
+
+/// PMI, per person with a token: follow their live events (a thread each,
+/// started as tokens appear), read again shortly after a change and every 5
+/// minutes. True when what devices show changed.
+#[allow(clippy::too_many_arguments)]
+fn pmi_tick(
+    pmi: &mut std::collections::HashMap<String, PmiUser>,
+    last_pmi_scan: &mut Instant,
+    pmi_events_tx: &std::sync::mpsc::Sender<(String, crate::pmi::Event)>,
+    pmi_events: &std::sync::mpsc::Receiver<(String, crate::pmi::Event)>,
+    pmi_tx: &std::sync::mpsc::Sender<(String, Result<crate::pmi::State, String>)>,
+    pmi_rx: &std::sync::mpsc::Receiver<(String, Result<crate::pmi::State, String>)>,
+    convs: &mut [Conv],
+    hub: &Hub,
+) -> bool {
+    let mut everyone = false;
+    if last_pmi_scan.elapsed() >= Duration::from_secs(60) {
+        *last_pmi_scan = Instant::now();
+        let people: Vec<String> = hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active && !pmi.contains_key(&u.id) && crate::pmi::configured_for(&u.id)).map(|u| u.id).collect();
+        for user in people {
+            let tx = pmi_events_tx.clone();
+            let who = user.clone();
+            crate::acting::spawn(move || crate::pmi::follow(who, tx));
+            pmi.insert(user.clone(), PmiUser { due: Some(Instant::now()), last: Instant::now(), nags: crate::pmi::Nags::load_for(&user), ..Default::default() });
+        }
+    }
+    while let Ok((user, e)) = pmi_events.try_recv() {
+        let Some(p) = pmi.get_mut(&user) else { continue };
+        match e {
+            crate::pmi::Event::Live(live) => {
+                if live != p.state.live {
+                    p.state.live = live;
+                    if user == convs[0].app.owner {
+                        convs[0].app.log(Level::Info, if live { "PMI: following its live updates".to_string() } else { "PMI: can't follow its live updates, retrying".to_string() });
+                    }
+                    p.view = json!(p.state);
+                    everyone = true;
+                    // Back after an outage: what changed meanwhile.
+                    if live {
+                        p.due = Some(Instant::now());
+                    }
+                }
+                // Their token is gone: forget them until one is set again.
+                if !live && !crate::pmi::configured_for(&user) {
+                    pmi.remove(&user);
+                    everyone = true;
+                }
+            }
+            crate::pmi::Event::Changed(areas) => {
+                if areas.iter().any(|a| matches!(a.as_str(), "tasks" | "projects" | "resync" | "structure")) {
+                    let soon = Instant::now() + Duration::from_secs(5);
+                    p.due = Some(p.due.map_or(soon, |d| d.min(soon)));
+                }
+            }
+        }
+    }
+    for user in crate::pmi::take_stale() {
+        if let Some(p) = pmi.get_mut(&user) {
+            p.due = Some(Instant::now() + Duration::from_secs(2));
+        } else {
+            // A token was just set: start following them now.
+            *last_pmi_scan = Instant::now() - Duration::from_secs(120);
+        }
+    }
+    for (user, p) in pmi.iter_mut() {
+        if !p.busy && (p.due.is_some_and(|d| Instant::now() >= d) || p.last.elapsed() >= Duration::from_secs(300)) {
+            p.busy = true;
+            p.due = None;
+            p.last = Instant::now();
+            let (tx, user) = (pmi_tx.clone(), user.clone());
+            crate::acting::spawn(move || {
+                let r = crate::pmi::as_user(&user, crate::pmi::snapshot);
+                let _ = tx.send((user, r));
+            });
+        }
+    }
+    while let Ok((user, r)) = pmi_rx.try_recv() {
+        let Some(p) = pmi.get_mut(&user) else { continue };
+        p.busy = false;
+        let mine = user == convs[0].app.owner;
+        match r {
+            Ok(mut s) => {
+                s.live = p.state.live;
+                if mine && p.state.error.is_some() {
+                    convs[0].app.log(Level::Info, format!("PMI: back ({})", s.line(chrono::Local::now().date_naive())));
+                }
+                p.state = s;
+            }
+            Err(e) => {
+                if mine && p.state.error.as_deref() != Some(e.as_str()) {
+                    convs[0].app.log(Level::Error, format!("PMI: {e}"));
+                }
+                p.state.error = Some(e);
+            }
+        }
+        let view = json!(p.state);
+        if view != p.view {
+            p.view = view;
+            everyone = true;
+        }
+    }
+    everyone
+}
+
+/// The daily briefing, for those it's for (everyone with PMI or a calendar on
+/// schedule; only those who asked otherwise): what's at hand gathered here,
+/// their calendar, Teams and mail read and the takeaway written off the loop.
+/// How many are coming.
+#[allow(clippy::too_many_arguments)]
+fn start_briefings(
+    convs: &[Conv],
+    hub: &Hub,
+    node_build: Option<&str>,
+    server_health: &Value,
+    pmi: &std::collections::HashMap<String, PmiUser>,
+    last_brief: Option<&crate::briefing::Briefing>,
+    wanted: &[String],
+    due: bool,
+    s: &crate::briefing::Settings,
+    brief_tx: &std::sync::mpsc::Sender<(String, crate::briefing::Briefing)>,
+) -> usize {
+    let at = chrono::Utc::now();
+    let since = crate::briefing::window_start(last_brief.map(|b| b.at), at);
+    let mut inputs = crate::briefing::local_inputs(convs[0].app.goals.as_deref(), at, since);
+    inputs.machines = machines_detail(hub, node_build);
+    inputs.server_health = (!server_health.is_null()).then(|| server_health.clone());
+    inputs.pmi = pmi.get(&convs[0].app.owner).filter(|p| p.state.at.is_some()).map(|p| p.state.clone());
+    let (url, model, tx) = (format!("{}/chat/completions", convs[0].app.base_url.trim_end_matches('/')), convs[0].app.model.clone(), brief_tx.clone());
+    let owner = convs[0].app.owner.clone();
+    // On schedule: everyone with PMI or a calendar connected gets their own.
+    // Asked for: only those who asked (whatever they have connected).
+    let asked = |u: &String| wanted.iter().any(|w| w == u);
+    let with_owner = due || asked(&owner);
+    let others: Vec<(String, crate::briefing::Inputs)> = hub
+        .users()
+        .list()
+        .into_iter()
+        .filter(|u| u.status == lyra_web::Status::Active && u.id != owner)
+        .map(|u| u.id)
+        .filter(|u| if due { pmi.get(u).is_some_and(|p| p.state.at.is_some()) || crate::graph::connected_for(u) } else { asked(u) })
+        .map(|u| {
+            let since = crate::briefing::window_start(crate::briefing::last_for(&u).map(|b| b.at), at);
+            // Their tasks, routines and goals.
+            let (goals, goal_events) = crate::goals::for_user(&u).map_or_else(Default::default, |g| (g.manager.all().unwrap_or_default(), g.manager.events(None, 300).unwrap_or_default()));
+            let runs = crate::acting::run(&u, crate::routines::runs);
+            let pmi = pmi.get(&u).filter(|p| p.state.at.is_some()).map(|p| p.state.clone());
+            (u, crate::briefing::Inputs { now: at, since, pmi, runs, goals, goal_events, ..Default::default() })
+        })
+        .collect();
+    let batch: Vec<(String, crate::briefing::Inputs)> = with_owner.then_some((owner, inputs)).into_iter().chain(others).collect();
+    let n = batch.len();
+    let summary = s.summary;
+    crate::acting::spawn(move || {
+        for (user, mut inputs) in batch {
+            // Their calendar today, when they've connected it.
+            if crate::graph::connected_for(&user) {
+                inputs.calendar = crate::acting::run(&user, crate::calendar::today).ok();
+            }
+            if crate::teams::connected_for(&user) {
+                inputs.teams = crate::acting::run(&user, || crate::teams::chats(25)).ok().map(|c| c.into_iter().filter(|x| x["unread"] == true).collect());
+            }
+            if crate::mail::connected_for(&user) {
+                let since = inputs.since;
+                inputs.mail = crate::acting::run(&user, || crate::mail::glance(since)).ok();
+            }
+            let mut b = crate::briefing::gather(&inputs);
+            if summary {
+                b.takeaway = crate::acting::run(&user, || crate::briefing::takeaway(&url, &model, &b));
+            }
+            let _ = tx.send((user, b));
+        }
+    });
+    n
+}
+
+/// One conversation's new events: handled, and what follows from them, by
+/// what the conversation is (a problem write-up only looks; a routine's run
+/// is judged and told by its own rules, then kept; anyone else's reply is
+/// pushed to them when they aren't looking).
+#[allow(clippy::too_many_arguments)]
+fn conversation_events(
+    c: &mut Conv,
+    hub: &Hub,
+    notify: bool,
+    many: bool,
+    routine_tx: &std::sync::mpsc::Sender<(String, crate::routines::Routine, crate::routines::Run)>,
+    finishing: &mut usize,
+    diagnosed: &mut Vec<String>,
+) {
+    while let Ok(event) = c.app.rx.try_recv() {
+        let note = notification(&event);
+        let done = matches!(event, StreamEvent::Done(_) | StreamEvent::Error(_));
+        c.app.handle(event);
+        c.changed = true;
+        // A diagnosis only looks: changes it asks for are declined; its write-up is kept.
+        if let Some(key) = c.diagnosis.clone() {
+            let asked: Vec<u64> = c.app.approvals.iter().map(|a| a.id).collect();
+            for id in asked {
+                c.app.answer_approval_id(id, "n");
+            }
+            if done && !c.app.waiting {
+                c.diagnosis = None;
+                let reply = c.app.messages.iter().rev().find(|m| matches!(m.role.as_str(), "assistant" | "error")).map(|m| (m.role == "assistant", m.content.clone()));
+                let (ok, text) = reply.unwrap_or((false, "no answer".into()));
+                crate::diagnose::finish(&key, &text, ok);
+                diagnosed.push(key);
+            }
+            continue;
+        }
+        // A routine's run: judged and told by its own rules, not "lyra replied".
+        if let Some((r, started)) = c.routine.clone() {
+            crate::routines::running_doing(&c.app.owner, &r.name, &crate::ui::doing_text(&c.app));
+            let may_change = r.changes;
+            // One that only looks: anything asking to change something is refused at once.
+            if !r.changes {
+                let asked: Vec<u64> = c.app.approvals.iter().map(|a| a.id).collect();
+                for id in asked {
+                    c.app.answer_approval_id(id, "n");
+                    c.app.log(Level::Plan, format!("routine {}: declined a change (it only looks; /routine edit {} changes on lets it ask)", r.name, r.name));
+                }
+            }
+            if done && !c.app.waiting {
+                c.routine = None;
+                crate::routines::running_end(&c.app.owner, &r.name);
+                let reply = c.app.messages.iter().rev().find(|m| matches!(m.role.as_str(), "assistant" | "error")).map(|m| (m.role.clone(), m.content.clone()));
+                let outcome = match &reply {
+                    Some((role, _)) if role == "error" => "error",
+                    Some((_, content)) if content.ends_with("_(stopped)_") => "stopped",
+                    _ => "ok",
+                };
+                let text = reply.map(|m| m.1).unwrap_or_default();
+                let (url, model, session, tx) = (format!("{}/chat/completions", c.app.base_url.trim_end_matches('/')), c.app.model.clone(), c.app.session_id.clone(), routine_tx.clone());
+                let whose = c.app.owner.clone();
+                let began = chrono::Utc::now() - chrono::Duration::from_std(started.elapsed()).unwrap_or_default();
+                *finishing += 1;
+                crate::acting::spawn(move || {
+                    // Its checks count for the run too.
+                    crate::usage::set_job(Some(session.clone()));
+                    let summary: String = text.trim().chars().take(400).collect();
+                    // The whole result, for its page and the next run.
+                    if outcome == "ok"
+                        && let Err(e) = crate::acting::run(&whose, || crate::routines::save_result(&r.name, chrono::Utc::now(), &text))
+                    {
+                        crate::trouble::report(format!("routine {}: its result wasn't kept: {e}", r.name));
+                    }
+                    // Kept as done at once (a stop during the check or the email
+                    // leaves this, not "interrupted"); the full record replaces it.
+                    let early = crate::routines::Run {
+                        at: chrono::Utc::now(), seconds: started.elapsed().as_secs(), needs_user: outcome != "ok", outcome: outcome.into(), summary: summary.clone(), session: session.clone(),
+                        decided_by: if outcome == "ok" { "not checked: lyra stopped first".into() } else { "it didn't finish".into() },
+                        emailed: if r.email && outcome == "ok" { "not emailed: lyra stopped first".into() } else { String::new() },
+                        calls: 0, tokens_in: 0, tokens_out: 0, cost: 0.0,
+                    };
+                    crate::acting::run(&whose, || crate::routines::record(&r.name, early));
+                    let (needs_user, decided_by) = if outcome == "ok" { crate::routines::needs_user(&url, &model, &r, &text) } else { (true, "it didn't finish".into()) };
+                    // Its result by email, to its person only.
+                    let emailed = if !r.email {
+                        String::new()
+                    } else if outcome != "ok" {
+                        format!("not emailed: the run {outcome}")
+                    } else {
+                        let subject = format!("{} · {}", r.name.replace('-', " "), chrono::Local::now().format("%a %b %-d"));
+                        crate::mailout::send_to_me(&whose, &subject, &text, "routine").unwrap_or_else(|e| format!("not emailed: {e}"))
+                    };
+                    if emailed.starts_with("not emailed:") && outcome == "ok" {
+                        crate::trouble::report(format!("routine {}: {emailed}", r.name));
+                    }
+                    let spent = crate::usage::spent(&session, began);
+                    let run = crate::routines::Run {
+                        at: chrono::Utc::now(), seconds: started.elapsed().as_secs(), needs_user, outcome: outcome.into(), summary, session, decided_by, emailed,
+                        calls: spent.calls, tokens_in: spent.input, tokens_out: spent.output, cost: spent.cost,
+                    };
+                    let _ = tx.send((whose, r, run));
+                });
+            }
+            // Only a routine allowed to change things asks the user.
+            if let Some(mut n) = note.filter(|_| may_change) {
+                n.to = To::User(c.app.owner.clone());
+                hub.notify(n);
+            }
+            continue;
+        }
+        // Their own conversation, and only when they aren't looking at lyra.
+        if !notify || hub.watching(&c.app.owner) {
+            continue;
+        }
+        // With several conversations, say which one.
+        let about = |title: String| match c.app.messages.iter().find(|m| m.role == "user") {
+            Some(m) if many => format!("{title} · {}", m.content.lines().next().unwrap_or("").chars().take(40).collect::<String>()),
+            _ => title,
+        };
+        if done {
+            let body = c.app.messages.iter().rev().find(|m| m.role == "assistant").map(|m| preview(&m.content)).unwrap_or_default();
+            hub.notify(Notification { title: about("lyra replied".into()), body, tag: format!("reply-{}", c.app.session_id), approval: None, url: None, actions: vec![], reference: None, to: To::User(c.app.owner.clone()) });
+        }
+        if let Some(mut n) = note {
+            n.title = about(n.title);
+            n.to = To::User(c.app.owner.clone());
+            hub.notify(n);
+        }
+    }
+
+}
+
+/// The routines due now (everyone's) and the ones asked for: each started in
+/// its person's own conversation, with their rights (one run of each at a time).
+fn start_routines(convs: &mut Vec<Conv>, hub: &Hub) {
+    let mut start: Vec<(String, crate::routines::Routine)> = crate::routines::due_all(chrono::Local::now());
+    for (user, name) in crate::routines::take_requests() {
+        if let Ok(r) = crate::acting::run(&user, || crate::routines::find(&name))
+            && !start.iter().any(|(u, x)| *u == user && x.name == r.name)
+        {
+            start.push((user, r));
+        }
+    }
+    for (user, r) in start {
+        if convs.iter().any(|c| c.app.owner == user && c.routine.as_ref().is_some_and(|(x, _)| x.name == r.name)) {
+            continue;
+        }
+        let mine = user == convs[0].app.owner;
+        let mut app = if mine {
+            convs[0].app.fork()
+        } else {
+            // Someone else's: only while they may use lyra.
+            let Some(who) = hub.users().who(Some(&user)) else { continue };
+            convs[0].app.fork_for(&who)
+        };
+        // Its own person's past results go with it.
+        app.input = crate::acting::run(&user, || crate::routines::message(&r));
+        app.unattended = true;
+        app.send();
+        crate::routines::running_start(&user, &r.name, &app.session_id);
+        if mine {
+            convs[0].app.log(Level::Plan, format!("routine {} started", r.name));
+        }
+        let mut c = Conv::new(app);
+        c.routine = Some((r, Instant::now()));
+        convs.push(c);
+    }
+}
+
+/// A routine's run is done and judged: told (by its own rules) and kept.
+fn routine_done(convs: &mut [Conv], hub: &Hub, user: &str, r: &crate::routines::Routine, run: crate::routines::Run) {
+    let verdict = if run.outcome != "ok" { format!("{} ({})", run.outcome, run.decided_by) } else if run.needs_user { "needs you".into() } else { "all clear".into() };
+    let first = run.summary.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(140).collect::<String>();
+    // The owner's Activity tells the owner's routines only.
+    if user == convs[0].app.owner {
+        convs[0].app.log(if run.needs_user { Level::Error } else { Level::Plan }, format!("routine {}: {verdict} ({}s, by {}) — {first}", r.name, run.seconds, run.decided_by));
+        if !run.emailed.is_empty() {
+            convs[0].app.log(if run.emailed.starts_with("not ") { Level::Error } else { Level::Plan }, format!("routine {}: {}", r.name, run.emailed));
+        }
+    }
+    let tell = match r.notify {
+        crate::routines::Notify::Always => true,
+        crate::routines::Notify::Problems => run.needs_user,
+        crate::routines::Notify::Never => false,
+    };
+    if tell {
+        hub.notify(Notification {
+            title: format!("{} {}", if run.needs_user { "⚠" } else { "✓" }, r.name),
+            body: preview(&run.summary),
+            tag: format!("routine-{}", r.name),
+            approval: None,
+            url: None, actions: vec![], reference: None,
+            to: To::User(user.to_string()),
+        });
+    }
+    crate::acting::run(user, || crate::routines::record(&r.name, run));
+
+}
+
+/// lyra was asked to stop: wait for what's running (up to `drain()`), then
+/// note the routine runs still going (they start again after the restart),
+/// tell the replies cut off, save every conversation and exit.
+fn drain_step(convs: &mut [Conv], draining: &mut Option<Instant>, finishing: usize) {
+    let busy: Vec<String> = convs
+        .iter()
+        .filter(|c| c.app.waiting || c.app.plan_busy)
+        .map(|c| c.routine.as_ref().map_or_else(|| if c.diagnosis.is_some() { "a problem write-up".to_string() } else { format!("a reply for {}", c.app.owner) }, |(r, _)| format!("routine {}", r.name)))
+        .chain((finishing > 0).then(|| format!("{finishing} routine result(s) being recorded")))
+        .chain(crate::backup::running().then(|| "a backup".to_string()))
+        .collect();
+    let since = *draining.get_or_insert_with(|| {
+        println!("stopping: {}", if busy.is_empty() { "nothing running".to_string() } else { format!("waiting up to {}s for {}", drain().as_secs(), busy.join(", ")) });
+        Instant::now()
+    });
+    if busy.is_empty() || since.elapsed() >= drain() {
+        // What's still going: routines start again after the restart; replies say so.
+        let mut again = Vec::new();
+        for c in convs.iter_mut() {
+            if let Some((r, _)) = &c.routine {
+                again.push((c.app.owner.clone(), r.name.clone()));
+            } else if c.app.waiting && c.diagnosis.is_none() {
+                c.app.messages.push(Message::new("error", "lyra restarted while answering this. Try again to send it once more.".into()));
+            }
+            c.app.save_session();
+        }
+        if !again.is_empty() {
+            println!("stopping: {} routine run(s) will start again: {}", again.len(), again.iter().map(|a| a.1.as_str()).collect::<Vec<_>>().join(", "));
+            crate::routines::save_resume(&again);
+        }
+        println!("stopped");
+        std::process::exit(0);
+    }
+}
+
 /// A message from a device, ready to go (its attachments read).
 pub(crate) struct Ready {
     text: String,
@@ -1309,30 +1035,4 @@ fn deliver(convs: &mut Vec<Conv>, hub: &Hub, m: Ready) {
     }
 }
 
-/// Running now (admins): each conversation at work, whoever's: what it is,
-/// since when, what it's doing, what its model calls have cost so far.
-fn running_view(convs: &[Conv], hub: &Hub) -> Value {
-    let users = hub.users();
-    let mut out = Vec::new();
-    for c in convs.iter().filter(|c| c.app.waiting || c.app.plan_busy) {
-        let who = users.get(&c.app.owner).map_or_else(|| c.app.owner.clone(), |u| u.name);
-        let (kind, what, since) = if let Some((r, started)) = &c.routine {
-            ("routine", r.name.clone(), Some(chrono::Utc::now() - chrono::Duration::from_std(started.elapsed()).unwrap_or_default()))
-        } else if c.diagnosis.is_some() {
-            ("diagnosis", c.app.messages.iter().find(|m| m.role == "user").map(|m| m.content.lines().next().unwrap_or("").chars().take(80).collect()).unwrap_or_default(), None)
-        } else if c.app.plan_busy && !c.app.waiting {
-            ("plan", c.app.current_goal.as_ref().map(|g| g.description.clone()).or_else(|| c.app.current_plan.as_ref().map(|p| lyra_execution::short(p.id))).unwrap_or_else(|| "a plan".into()), None)
-        } else {
-            ("reply", title(&c.app).unwrap_or_default(), None)
-        };
-        let since = since.or_else(|| c.app.started.map(|s| chrono::Utc::now() - chrono::Duration::from_std(s.elapsed()).unwrap_or_default()));
-        let spent = crate::usage::spent_now(&c.app.session_id, since.unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::hours(24)));
-        out.push(json!({
-            "session": c.app.session_id, "who": who, "kind": kind, "what": what, "since": since,
-            "doing": crate::ui::doing_text(&c.app), "calls": spent.calls, "tokens_in": spent.input, "tokens_out": spent.output, "cost": spent.cost,
-            "stoppable": c.app.waiting || c.app.plan_busy,
-        }));
-    }
-    json!(out)
-}
 

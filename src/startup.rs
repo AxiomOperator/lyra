@@ -76,6 +76,7 @@ pub(crate) fn configure(config: &Config) {
     proactive::configure(config.proactive.clone());
     recap::configure(config.recap.clone());
     mailout::configure(config.email.clone());
+    retention::configure(config.retention.clone());
     feedback::configure(&config.url, &config.model);
     learn::set_chat(&config.url, &config.model);
 }

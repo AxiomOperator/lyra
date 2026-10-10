@@ -428,6 +428,19 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
     } else {
         out.push(probe("backup", "lyra", "Backups", "", State::Off, None, "nightly backups are off ([backup] enabled)"));
     }
+    // What grows by itself, and what's kept of it.
+    if let Some(home) = crate::config::home() {
+        let devices = lyra_web::Devices::open(&home.join("web")).ok();
+        let sizes = crate::retention::sizes(&home, devices.as_ref());
+        out.push(probe("files", "lyra", "Lyra's files", "tidied daily ([retention])", State::Up, None, crate::retention::line(&sizes)));
+    }
+    // Things that went wrong with nobody watching (emails, files set aside).
+    let problems = crate::trouble::recent(24);
+    let (state, detail) = match problems.first() {
+        None => (State::Up, "nothing went wrong in the last day".to_string()),
+        Some((at, text)) => (State::Degraded, format!("{} in the last day; the latest ({}): {text}", problems.len(), at.with_timezone(&chrono::Local).format("%H:%M"))),
+    };
+    out.push(probe("problems", "lyra", "Problems", "emails, files, results (see Activity)", state, None, detail));
     {
         let routines = crate::routines::list();
         let runs = crate::routines::runs();
@@ -482,7 +495,7 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
     }
     let order = ["Models", "Tools & APIs", "lyra", "Machines"];
     // Groups in order; the fixed checks in this order of the fixed checks within a group.
-    let fixed = ["chat", "fallback", "embedding", "reranker", "decide", "search", "lyra", "public", "push", "storage", "backup", "routines"];
+    let fixed = ["chat", "fallback", "embedding", "reranker", "decide", "search", "lyra", "public", "push", "storage", "backup", "routines", "files", "problems"];
     // Marked known down: say so; and say when one answers again (only a person clears it).
     let marks = crate::known_down::all();
     for p in out.iter_mut() {

@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.52.0.198",
+    "date": "2026-10-09",
+    "title": "Tidy files and problems you can see",
+    "new": [
+      "Old conversations (not pinned), uploaded files, old usage and activity logs, and phones or browsers unused for 90 days are now tidied once a day. You can change how long each is kept under [retention] in config.toml, and 0 keeps them forever. Paired machines are never removed.",
+      "The Status page has a Lyra's files row showing how many conversations, uploads, logs and devices are kept and how much space they use.",
+      "Problems that used to reach only the server log now show in Activity and on the Status page's Problems row, for the last day. These are emails that couldn't be sent, results that couldn't be kept, and files that couldn't be read and were set aside."
+    ],
+    "improved": [
+      "The server's main loop was split into smaller tested parts, and the pages members may open are now one checked list. Behaviour hasn't changed, and future fixes are safer."
+    ]
+  },
+  {
     "version": "0.51.3.197",
     "date": "2026-10-09",
     "title": "Safer saving everywhere",

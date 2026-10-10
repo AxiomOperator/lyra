@@ -2,6 +2,8 @@ mod acting;
 mod actions;
 mod alerts;
 mod asks;
+mod trouble;
+mod retention;
 mod mailout;
 mod agents;
 mod backup;

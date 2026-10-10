@@ -432,3 +432,13 @@ currency = "$"
 # nag_minutes = 30
 # nag_max = 3
 # enabled = true
+
+# How long lyra keeps what grows by itself, tidied once a day; 0 keeps that
+# kind forever. Pinned conversations always stay; paired machines never expire
+# here. Sizes show on the Status page (Lyra's files).
+# [retention]
+# sessions_days = 365    # saved conversations not opened in this many days
+# uploads_days = 90      # files sent from devices
+# usage_months = 13      # the AI usage log
+# actions_months = 12    # what lyra did (About me)
+# devices_days = 90      # phones and browsers nobody has used in this long are unpaired
