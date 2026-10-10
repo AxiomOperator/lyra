@@ -255,15 +255,45 @@ pub(crate) fn slow(app: &App, what: &str, arg: &Value, loaded: &Loaded) -> Optio
         // AI usage: up to a year of month files read (off the loop).
         "usage" => {
             let days = arg["days"].as_i64().unwrap_or(7);
-            let only = (!app.admin).then(|| owner.clone());
+            // A member: their own. An admin: everyone's, or one person's (`user`).
+            let person = arg["user"].as_str().filter(|u| app.admin && !u.is_empty()).map(str::to_string);
+            let only = if app.admin { person.clone() } else { Some(owner.clone()) };
             Box::new(move || {
                 let mut v = crate::usage::summary(days, only.as_deref());
-                let users = lyra_web::Users::open(&crate::config::home().unwrap_or_default().join("web")).list();
+                let home = crate::config::home().unwrap_or_default();
+                let users = lyra_web::Users::open(&home.join("web")).list();
                 if let Some(list) = v["users"].as_array_mut() {
                     for u in list {
                         let id = u["user"].as_str().unwrap_or("").to_string();
                         u["name"] = json!(users.iter().find(|x| x.id == id).map_or(id, |x| x.name.clone()));
                     }
+                }
+                // Each conversation by its title (and whether it's a chat, a diagnosis or a routine's run).
+                if v["jobs"].as_array().is_some_and(|j| !j.is_empty()) {
+                    let sessions = crate::sessions::list(&home.join("sessions"));
+                    if let Some(list) = v["jobs"].as_array_mut() {
+                        for j in list {
+                            match sessions.iter().find(|s| j["job"].as_str() == Some(s.id.as_str())) {
+                                Some(s) => {
+                                    j["title"] = json!(s.label());
+                                    j["kind"] = json!(s.kind());
+                                }
+                                None => j["title"] = json!("(no longer kept)"),
+                            }
+                        }
+                    }
+                }
+                // Who they are, for an admin looking at one person.
+                if let Some(id) = &person
+                    && let Some(u) = users.iter().find(|x| &x.id == id)
+                {
+                    let devices = lyra_web::Devices::open(&home.join("web")).map(|d| d.list()).unwrap_or_default();
+                    let theirs: Vec<_> = devices.iter().filter(|d| d.user.as_deref() == Some(id.as_str()) && d.kind != "node").collect();
+                    v["person"] = json!({
+                        "id": u.id, "name": u.name, "email": u.email, "role": u.role, "status": u.status, "created": u.created, "last_seen": u.last_seen,
+                        "sign_in": if !u.oid.is_empty() { "Microsoft" } else if !u.username.is_empty() { "username and password" } else { "—" },
+                        "devices": theirs.iter().map(|d| json!({ "name": d.name, "last_seen": d.last_seen })).collect::<Vec<_>>(),
+                    });
                 }
                 v
             })

@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.57.0.203",
+    "date": "2026-10-10",
+    "title": "Each person's usage",
+    "new": [
+      "On the Usage page, admins can choose a person's name to see their account (role, sign-in, last seen, devices), their usage day by day, by kind and by model, and the conversations that used the most.",
+      "The Usage page now lists the biggest conversations, diagnoses and routine runs in the period you choose."
+    ]
+  },
+  {
     "version": "0.56.0.202",
     "date": "2026-10-10",
     "title": "Chats, diagnoses and routines apart",

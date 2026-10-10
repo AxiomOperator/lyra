@@ -247,7 +247,11 @@ pub fn summary(days: i64, only: Option<&str>) -> Value {
     let mut by_kind: BTreeMap<String, Total> = BTreeMap::new();
     let mut by_model: BTreeMap<String, Total> = BTreeMap::new();
     let mut by_day: BTreeMap<String, Total> = BTreeMap::new();
+    let mut by_job: BTreeMap<String, Total> = BTreeMap::new();
     for c in &calls {
+        if let Some(job) = &c.job {
+            by_job.entry(job.clone()).or_default().add(c, &p);
+        }
         all.add(c, &p);
         let u = by_user.entry(c.user.clone()).or_default();
         u.0.add(c, &p);
@@ -257,6 +261,10 @@ pub fn summary(days: i64, only: Option<&str>) -> Value {
         by_day.entry(c.at.with_timezone(&Local).format("%Y-%m-%d").to_string()).or_default().add(c, &p);
     }
     let mut users: Vec<Value> = by_user.into_iter().map(|(u, (t, kinds))| json!({ "user": u, "total": t, "kinds": kinds })).collect();
+    // The conversations (a routine's run is one) that used the most.
+    let mut jobs: Vec<(String, Total)> = by_job.into_iter().collect();
+    jobs.sort_by_key(|(_, t)| std::cmp::Reverse(t.input + t.output));
+    jobs.truncate(10);
     users.sort_by(|a, b| b["total"]["input"].as_u64().unwrap_or(0).saturating_add(b["total"]["output"].as_u64().unwrap_or(0)).cmp(&a["total"]["input"].as_u64().unwrap_or(0).saturating_add(a["total"]["output"].as_u64().unwrap_or(0))));
     json!({
         "days": days,
@@ -266,6 +274,7 @@ pub fn summary(days: i64, only: Option<&str>) -> Value {
         "users": users,
         "kinds": by_kind,
         "models": by_model,
+        "jobs": jobs.into_iter().map(|(job, t)| json!({ "job": job, "total": t })).collect::<Vec<_>>(),
         "daily": by_day.into_iter().map(|(d, t)| json!({ "day": d, "tokens": t.input + t.output, "calls": t.calls })).collect::<Vec<_>>(),
     })
 }
@@ -345,5 +354,20 @@ mod tests {
         assert!((t.cost - 0.04).abs() < 1e-9 && p.any(), "{}", t.cost);
         assert_eq!(tokens(1_234), "1.2k");
         assert_eq!(tokens(2_500_000), "2.5M");
+    }
+
+    #[test]
+    fn one_persons_usage_has_only_theirs_with_their_biggest_conversations_first() {
+        crate::config::with_test_home(|home| {
+            std::fs::create_dir_all(home.join("usage")).unwrap();
+            let call = |user: &str, job: Option<&str>, output: u64| Call { at: Utc::now(), user: user.into(), kind: "chat".into(), model: "m".into(), input: 10, cached: 0, output, ms: 1, job: job.map(str::to_string) };
+            let lines: Vec<String> = [call("dana", Some("small"), 5), call("dana", Some("big"), 500), call("dana", None, 1), call("sam", Some("sams"), 9000)].iter().map(|c| serde_json::to_string(c).unwrap()).collect();
+            std::fs::write(home.join("usage").join(format!("{}.jsonl", Utc::now().format("%Y-%m"))), lines.join("\n")).unwrap();
+            let v = summary(7, Some("dana"));
+            assert_eq!(v["total"]["calls"], 3, "only dana's");
+            let jobs: Vec<&str> = v["jobs"].as_array().unwrap().iter().map(|j| j["job"].as_str().unwrap()).collect();
+            assert_eq!(jobs, ["big", "small"], "biggest first, nobody else's");
+            assert_eq!(summary(7, None)["jobs"][0]["job"], "sams");
+        });
     }
 }
