@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.56.0.202",
+    "date": "2026-10-10",
+    "title": "Chats, diagnoses and routines apart",
+    "improved": [
+      "The conversation list keeps your own chats by date, and puts lyra's diagnoses and routine runs in their own foldable Diagnoses and Routines sections, each with a count.",
+      "Routine runs are listed by the routine's name, and diagnoses by the problem they look into, without the bracketed prefix.",
+      "lyra only suggests folders for your own chats, not for routine runs or diagnoses."
+    ]
+  },
+  {
     "version": "0.55.0.201",
     "date": "2026-10-10",
     "title": "A second fallback model",

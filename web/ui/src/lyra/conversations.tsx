@@ -1,6 +1,7 @@
-// The sidebar's conversation list: pinned, the person's folders, the rest by
-// date (today, yesterday, this week, this month, earlier), and archived ones
-// folded away. Each row's menu pins, files and archives it (lyra's
+// The sidebar's conversation list: pinned, the person's folders, their own
+// chats by date (today, yesterday, this week, this month, earlier), then
+// lyra's diagnoses and routine runs each in their own section, and archived
+// ones folded away. Each row's menu pins, files and archives it (lyra's
 // `/sessions` commands); lyra suggests a folder for new ones.
 
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarMenu, SidebarMenuAction, SidebarMenuButton, SidebarMenuItem } from "@/components/ui/sidebar";
-import { Archive, ArchiveRestore, ChevronRight, Ellipsis, Folder, FolderInput, FolderMinus, FolderPlus, Pin, PinOff, Sparkles, X } from "lucide-react";
+import { AlarmClock, Archive, ArchiveRestore, ChevronRight, Stethoscope, Ellipsis, Folder, FolderInput, FolderMinus, FolderPlus, Pin, PinOff, Sparkles, X } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { ago } from "./push";
 import { useLyra } from "./store";
@@ -103,7 +104,10 @@ export function ConversationList({ sessions, active, open, reload }: { sessions:
   const live = sessions.filter((s) => !s.archived);
   const pinned = live.filter((s) => s.pinned);
   const filed = (f: string) => live.filter((s) => !s.pinned && s.folder === f);
-  const loose = live.filter((s) => !s.pinned && !s.folder);
+  const unfiled = live.filter((s) => !s.pinned && !s.folder);
+  const loose = unfiled.filter((s) => (s.kind ?? "chat") === "chat");
+  const diagnoses = unfiled.filter((s) => s.kind === "diagnosis");
+  const routines = unfiled.filter((s) => s.kind === "routine");
   const archived = sessions.filter((s) => s.archived);
 
   const row = (s: Session) => (
@@ -213,6 +217,16 @@ export function ConversationList({ sessions, active, open, reload }: { sessions:
             </div>
           ) : null;
         })}
+        {diagnoses.length > 0 && (
+          <Section id="diagnoses" label="Diagnoses" icon={<Stethoscope className="size-3" />} count={diagnoses.length} initial={false}>
+            {diagnoses.map(row)}
+          </Section>
+        )}
+        {routines.length > 0 && (
+          <Section id="routines" label="Routines" icon={<AlarmClock className="size-3" />} count={routines.length} initial={false}>
+            {routines.map(row)}
+          </Section>
+        )}
         {archived.length > 0 && (
           <Section id="archived" label="Archived" icon={<Archive className="size-3" />} count={archived.length} initial={false}>
             {archived.map(row)}

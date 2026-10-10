@@ -368,7 +368,7 @@ fn sessions_page(owner: &str, current: &str, loaded: &Loaded) -> Value {
             let mut busy = SUGGESTING.lock().unwrap_or_else(|e| e.into_inner());
             let todo: Vec<String> = all
                 .iter()
-                .filter(|s| s.id != current && s.updated > chrono::Utc::now() - chrono::Duration::days(14) && metas.get(&s.id).is_none_or(|m| !m.looked && m.folder.is_none() && !m.archived) && !busy.contains(&s.id))
+                .filter(|s| s.id != current && s.kind() == "chat" && s.updated > chrono::Utc::now() - chrono::Duration::days(14) && metas.get(&s.id).is_none_or(|m| !m.looked && m.folder.is_none() && !m.archived) && !busy.contains(&s.id))
                 .take(3)
                 .map(|s| s.id.clone())
                 .collect();
@@ -399,7 +399,7 @@ fn sessions_page(owner: &str, current: &str, loaded: &Loaded) -> Value {
     json!(all.iter().enumerate().filter(|(i, s)| *i < 300 || keep(s)).map(|(_, s)| {
         let m = metas.get(&s.id).cloned().unwrap_or_default();
         json!({
-            "id": s.id, "title": s.title, "turns": s.user_turns(), "updated": s.updated, "current": s.id == current,
+            "id": s.id, "title": s.label(), "kind": s.kind(), "turns": s.user_turns(), "updated": s.updated, "current": s.id == current,
             "open": loaded.iter().any(|(id, _)| *id == s.id), "answering": loaded.iter().any(|(id, w)| *id == s.id && *w),
             "pinned": m.pinned, "archived": m.archived, "folder": m.folder, "suggested": m.suggested,
         })

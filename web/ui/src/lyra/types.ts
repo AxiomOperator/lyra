@@ -157,6 +157,8 @@ export interface Device {
 export interface Session {
   id: string;
   title: string;
+  /** How it started: the person's own chat, a diagnosis or a routine's run. */
+  kind?: "chat" | "diagnosis" | "routine";
   turns: number;
   updated: string;
   current: boolean;

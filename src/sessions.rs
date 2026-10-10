@@ -113,6 +113,35 @@ impl Session {
     pub fn user_turns(&self) -> usize {
         self.messages.iter().filter(|m| m.role == "user").count()
     }
+
+    /// How it started: "routine" (a routine's run), "diagnosis" (lyra looking
+    /// into a problem) or "chat" (the person's own), from its first message.
+    pub fn kind(&self) -> &'static str {
+        kind_of(&self.title)
+    }
+
+    /// Its title for lists: a routine's name, a diagnosis's problem, else the title.
+    pub fn label(&self) -> String {
+        label_of(&self.title)
+    }
+}
+
+fn kind_of(title: &str) -> &'static str {
+    if title.starts_with("[routine \"") {
+        "routine"
+    } else if title.starts_with("[diagnosis]") {
+        "diagnosis"
+    } else {
+        "chat"
+    }
+}
+
+fn label_of(title: &str) -> String {
+    match kind_of(title) {
+        "routine" => title["[routine \"".len()..].split('"').next().unwrap_or("").to_string(),
+        "diagnosis" => title["[diagnosis]".len()..].trim().to_string(),
+        _ => title.to_string(),
+    }
 }
 
 /// Write a session (atomically: a half-written file never replaces a good one).
@@ -353,6 +382,7 @@ mod tests {
         assert_eq!(latest(&dir).unwrap().id, "20260102-000000-bbbbbb");
         let back = find_for(&dir, "20260101", "owner").unwrap();
         assert_eq!(back.title, "first question");
+        assert_eq!(back.kind(), "chat");
         let messages = back.into_messages();
         assert_eq!((messages.len(), messages[1].agents.clone(), messages[2].tool_calls.len()), (3, vec!["Writer".to_string()], 1));
         assert!(find_for(&dir, "2026010", "owner").err().unwrap().contains("match"));
@@ -496,5 +526,14 @@ mod keep_tests {
         keep_command(&dir, "dana", "unarchive abc123").unwrap();
         assert!(!metas(&dir).contains_key("20261008-090000-abc123"), "nothing left to keep");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn routines_and_diagnoses_are_told_apart_from_chats() {
+        assert_eq!(kind_of("[routine \"email-triage\", every day at 07:00] Look at my mail"), "routine");
+        assert_eq!(label_of("[routine \"email-triage\", every day at 07:00] Look at my mail"), "email-triage");
+        assert_eq!(kind_of("[diagnosis] On @server: nfs.mount failed."), "diagnosis");
+        assert_eq!(label_of("[diagnosis] On @server: nfs.mount failed."), "On @server: nfs.mount failed.");
+        assert_eq!((kind_of("why is [routine] odd"), label_of("plain")), ("chat", "plain".to_string()));
     }
 }
