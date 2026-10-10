@@ -178,7 +178,7 @@ where
 {
     let (tx, rx) = mpsc::channel();
     let started = Instant::now();
-    std::thread::spawn(move || {
+    crate::acting::spawn(move || {
         let _ = tx.send(f());
     });
     match rx.recv_timeout(TIMEOUT) {
@@ -232,7 +232,7 @@ pub fn backup_state(last: Option<DateTime<Utc>>, now: DateTime<Utc>) -> (State, 
 pub fn pass(i: Inputs) -> Vec<Probe> {
     let mut jobs: Vec<std::thread::JoinHandle<Vec<Probe>>> = Vec::new();
     let mut out: Vec<Probe> = Vec::new();
-    let spawn = |jobs: &mut Vec<std::thread::JoinHandle<Vec<Probe>>>, f: Box<dyn FnOnce() -> Vec<Probe> + Send>| jobs.push(std::thread::spawn(f));
+    let spawn = |jobs: &mut Vec<std::thread::JoinHandle<Vec<Probe>>>, f: Box<dyn FnOnce() -> Vec<Probe> + Send>| jobs.push(crate::acting::spawn(f));
 
     // Models
     let (url, model) = (i.chat_url.clone(), i.chat_model.clone());
@@ -709,7 +709,7 @@ pub fn take_request() -> bool {
 pub fn worker(dir: PathBuf) -> (mpsc::Sender<Inputs>, mpsc::Receiver<Result<Board, String>>) {
     let (tx, inputs) = mpsc::channel::<Inputs>();
     let (boards, rx) = mpsc::channel();
-    std::thread::spawn(move || {
+    crate::acting::spawn(move || {
         let mut store = Store::open(&dir);
         for i in inputs {
             let probes = pass(i);

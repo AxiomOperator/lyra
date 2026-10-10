@@ -143,7 +143,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         // the message comes back here to be sent, in the order it was written.
                         let i = conv_for(&mut convs, &session, &who);
                         let (hub, vision, tx) = (hub.clone(), convs[i].app.vision, ready_tx.clone());
-                        std::thread::spawn(move || {
+                        crate::acting::spawn(move || {
                             let (about, images, looks) = attachments(&hub, &files, vision, &who);
                             let text = format!("{text}{about}").trim().to_string();
                             let _ = tx.send(Ready { text, device, who, session, conn, images, looks });
@@ -169,7 +169,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 // A reset link, by email to its own account (off the loop).
                 Inbound::ResetLink { user, link } => {
                     convs[0].app.log(Level::Agent, format!("a password reset link was asked for ({user})"));
-                    std::thread::spawn(move || {
+                    crate::acting::spawn(move || {
                         let body = format!(
                             "Someone (hopefully you) asked to choose a new password for lyra.\n\n**[Choose a new password]({link})**\n\nThe link works once, for 30 minutes. If you didn't ask, ignore this email: your password stays as it is."
                         );
@@ -192,7 +192,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         convs[0].app.log(Level::Info, format!("{device} pressed {action} on a reminder"));
                     }
                     let tx = action_tx.clone();
-                    std::thread::spawn(move || {
+                    crate::acting::spawn(move || {
                         // In their own PMI account.
                         let r = crate::pmi::as_user(&who.user, || crate::pmi::push_action(&action, &reference));
                         let _ = tx.send((who.user, action, reference, r));
@@ -290,7 +290,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                                 request["set"] = arg["system"].clone();
                                 convs[0].app.log(Level::Agent, format!("rules for {machine} changed from the app"));
                             }
-                            std::thread::spawn(move || {
+                            crate::acting::spawn(move || {
                                 let answer = hub.call_machine(&machine, request, Duration::from_secs(20));
                                 let _ = reply.send(answer.unwrap_or_else(|e| json!({ "error": e })));
                             });
@@ -298,7 +298,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         // A coding job's changes: `git diff` in its folder, read-only, on its machine.
                         "coding_diff" => {
                             let (dir, caps) = (arg["dir"].as_str().unwrap_or("").to_string(), convs[0].app.caps.clone());
-                            std::thread::spawn(move || {
+                            crate::acting::spawn(move || {
                                 let shell = json!({ "command": "git diff --stat HEAD~0 && git diff && git status --short", "cwd": dir });
                                 let answer = if machine == crate::caps::HERE {
                                     caps.as_ref().and_then(|c| c.system.as_ref()).ok_or("system access is off".to_string()).and_then(|s| s.call("shell_run", &shell))
@@ -337,7 +337,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         // A clearer draft for the feedback form: off this loop (the model takes a moment).
                         "feedback_enhance" => {
                             let (kind, title, details, user) = (arg["kind"].as_str().unwrap_or("bug").to_string(), arg["title"].as_str().unwrap_or("").to_string(), arg["details"].as_str().unwrap_or("").to_string(), convs[i].app.owner.clone());
-                            std::thread::spawn(move || {
+                            crate::acting::spawn(move || {
                                 let answer = crate::acting::run(&user, || crate::feedback::enhance(&kind, &title, &details));
                                 let _ = reply.send(answer.map_or_else(|e| json!({ "error": e }), |text| json!({ "text": text })));
                             });
@@ -346,13 +346,13 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         "everything" => {
                             let (query, user) = (arg["query"].as_str().unwrap_or("").to_string(), convs[i].app.owner.clone());
                             let mem = convs[i].app.tools.as_ref().map(|t| t.mem.clone());
-                            std::thread::spawn(move || {
+                            crate::acting::spawn(move || {
                                 let _ = reply.send(crate::search::everything(&query, &user, mem));
                             });
                         }
                         "models" => {
                             let (url, current) = (convs[i].app.base_url.clone(), convs[i].app.model.clone());
-                            std::thread::spawn(move || {
+                            crate::acting::spawn(move || {
                                 let answer = match crate::models(&url) {
                                     Ok(list) => json!({ "current": current, "models": list }),
                                     Err(e) => json!({ "current": current, "models": [], "error": e }),
@@ -365,7 +365,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                             let line = arg["command"].as_str().unwrap_or("").trim().to_string();
                             let job = convs[i].app.off_loop(&line).expect("checked above");
                             convs[i].app.log(Level::Info, format!("from the app: {}", crate::shown(&line)));
-                            std::thread::spawn(move || {
+                            crate::acting::spawn(move || {
                                 let _ = reply.send(match job() {
                                     Ok(text) => json!({ "ok": true, "text": text }),
                                     Err(e) => json!({ "ok": false, "text": e }),
@@ -376,7 +376,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         "do" if convs[i].app.admin && arg["command"].as_str().unwrap_or("").trim().strip_prefix("/model ").is_some_and(|n| !n.trim().is_empty()) => {
                             let name = arg["command"].as_str().unwrap_or("").trim().trim_start_matches("/model ").trim().to_string();
                             let (url, tx) = (convs[i].app.base_url.clone(), switch_tx.clone());
-                            std::thread::spawn(move || match crate::commands::check_model(&url, &name) {
+                            crate::acting::spawn(move || match crate::commands::check_model(&url, &name) {
                                 Ok(()) => {
                                     let _ = tx.send((name, url, reply));
                                 }
@@ -405,7 +405,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         // Pages that read every conversation or call out: on a thread (I-6).
                         _ if slow(&convs[i].app, &what, &arg, &loaded).is_some() => {
                             let job = slow(&convs[i].app, &what, &arg, &loaded).expect("checked above");
-                            std::thread::spawn(move || {
+                            crate::acting::spawn(move || {
                                 let _ = reply.send(job());
                             });
                         }
@@ -432,7 +432,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     everyone = true;
                     // The system tools' `machine` choices follow.
                     if let Some(caps) = convs[0].app.caps.clone() {
-                        std::thread::spawn(move || {
+                        crate::acting::spawn(move || {
                             caps.refresh();
                         });
                     }
@@ -524,7 +524,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         let whose = c.app.owner.clone();
                         let began = chrono::Utc::now() - chrono::Duration::from_std(started.elapsed()).unwrap_or_default();
                         finishing += 1;
-                        std::thread::spawn(move || {
+                        crate::acting::spawn(move || {
                             // Its checks count for the run too.
                             crate::usage::set_job(Some(session.clone()));
                             let summary: String = text.trim().chars().take(400).collect();
@@ -685,7 +685,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             for user in people {
                 let tx = pmi_events_tx.clone();
                 let who = user.clone();
-                std::thread::spawn(move || crate::pmi::follow(who, tx));
+                crate::acting::spawn(move || crate::pmi::follow(who, tx));
                 pmi.insert(user.clone(), PmiUser { due: Some(Instant::now()), last: Instant::now(), nags: crate::pmi::Nags::load_for(&user), ..Default::default() });
             }
         }
@@ -733,7 +733,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 p.due = None;
                 p.last = Instant::now();
                 let (tx, user) = (pmi_tx.clone(), user.clone());
-                std::thread::spawn(move || {
+                crate::acting::spawn(move || {
                     let r = crate::pmi::as_user(&user, crate::pmi::snapshot);
                     let _ = tx.send((user, r));
                 });
@@ -825,7 +825,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 }
                 planning.insert(u.clone());
                 let tx = plan_tx.clone();
-                std::thread::spawn(move || {
+                crate::acting::spawn(move || {
                     let r = crate::acting::run(&u, crate::planner::run);
                     let _ = tx.send((u, r));
                 });
@@ -860,7 +860,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 }
                 pro_busy.insert(u.clone());
                 let (tx, url, model) = (pro_tx.clone(), url.clone(), model.clone());
-                std::thread::spawn(move || {
+                crate::acting::spawn(move || {
                     let p = crate::acting::run(&u, || crate::proactive::pass(&url, &model, mail_due));
                     let _ = tx.send((u, p));
                 });
@@ -875,7 +875,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 }
                 recapping.insert(u.clone());
                 let tx = recap_tx.clone();
-                std::thread::spawn(move || {
+                crate::acting::spawn(move || {
                     let r = crate::acting::run(&u, || crate::recap::gather(chrono::Utc::now()));
                     let _ = tx.send((u, r));
                 });
@@ -895,7 +895,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 }
                 watching.insert(u.clone());
                 let tx = watch_tx.clone();
-                std::thread::spawn(move || {
+                crate::acting::spawn(move || {
                     let fired = crate::acting::run(&u, crate::watches::pass);
                     let _ = tx.send((u, fired));
                 });
@@ -916,7 +916,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             crate::recap::save_for(&user, &r);
             if crate::mailout::prefs(&user).recap && !r.parts.is_empty() {
                 let (u, body) = (user.clone(), crate::recap::describe(&r));
-                std::thread::spawn(move || {
+                crate::acting::spawn(move || {
                     if let Err(e) = crate::mailout::send_to_me(&u, &format!("End of day · {}", chrono::Local::now().format("%a %b %-d")), &body, "recap") {
                         eprintln!("the recap wasn't emailed to {u}: {e}");
                     }
@@ -1009,7 +1009,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     .collect();
                 let batch: Vec<(String, crate::briefing::Inputs)> = with_owner.then_some((owner, inputs)).into_iter().chain(others).collect();
                 brief_left = batch.len();
-                std::thread::spawn(move || {
+                crate::acting::spawn(move || {
                     for (user, mut inputs) in batch {
                         // Their calendar today, when they've connected it.
                         if crate::graph::connected_for(&user) {
@@ -1051,7 +1051,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             // By email too, when they asked for it (off the loop).
             if crate::mailout::prefs(&user).briefing && !b.sections.is_empty() {
                 let (u, subject, body) = (user.clone(), format!("☀ Briefing: {}", b.headline), crate::briefing::describe(&b));
-                std::thread::spawn(move || {
+                crate::acting::spawn(move || {
                     if let Err(e) = crate::mailout::send_to_me(&u, &subject, &body, "briefing") {
                         eprintln!("the briefing wasn't emailed to {u}: {e}");
                     }
@@ -1171,7 +1171,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         if last_checkup.is_none_or(|t| t.elapsed() >= lyra_node::health::EVERY) {
             last_checkup = Some(Instant::now());
             let tx = health_tx.clone();
-            std::thread::spawn(move || {
+            crate::acting::spawn(move || {
                 let _ = tx.send(lyra_node::health::report());
             });
         }

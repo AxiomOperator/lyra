@@ -72,7 +72,7 @@ impl App {
                 self.plan_busy = true;
                 self.set_phase(Phase::Tools(format!("plan {}", lyra_execution::short(plan.id))));
                 let (rt, tx, id) = (self.runtime(), self.tx.clone(), plan.id);
-                thread::spawn(move || {
+                crate::acting::spawn(move || {
                     let _ = tx.send(StreamEvent::PlanFinished(engine.run(id, &rt)));
                 });
                 Ok(format!("running plan {}…", lyra_execution::short(id)))
@@ -99,7 +99,7 @@ impl App {
                 }
                 self.plan_busy = true;
                 let (rt, tx, request) = (self.runtime(), self.tx.clone(), arg.trim().to_string());
-                thread::spawn(move || {
+                crate::acting::spawn(move || {
                     let _ = tx.send(StreamEvent::PlanCreated(engine.create(&request, &rt)));
                 });
                 Ok("working out the goal and a plan…".into())
@@ -128,7 +128,7 @@ impl App {
         let rt = if autonomous { self.autonomous_runtime() } else { self.runtime() };
         let (tx, base) = (self.tx.clone(), engine.settings.budget);
         let title = g.title.clone();
-        thread::spawn(move || match engine.create(&request, &rt) {
+        crate::acting::spawn(move || match engine.create(&request, &rt) {
             Ok((plan_goal, plan)) => {
                 let _ = goals.manager.link_plan(g.id, plan.id, autonomous);
                 if autonomous {
@@ -165,7 +165,7 @@ impl App {
         }
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let (model, tx, title) = (self.model.clone(), self.tx.clone(), g.title.clone());
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let prompt = lyra_goals::prompts::decompose_prompt(&g, &context.join("\n"));
             let notes = learn::complete(&url, &model, lyra_goals::prompts::DECOMPOSE_PROMPT, &prompt)
                 .and_then(|(reply, _)| lyra_goals::prompts::parse_decomposition(&reply, &g))
@@ -198,7 +198,7 @@ impl App {
         self.goals_busy = true;
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let (model, tx) = (self.model.clone(), self.tx.clone());
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let stale: Vec<lyra_goals::Uuid> = goals.manager.stale().unwrap_or_default().iter().map(|g| g.id).collect();
             let prompt = lyra_goals::prompts::review_prompt(&all, &stale);
             let notes = match learn::complete(&url, &model, lyra_goals::prompts::REVIEW_PROMPT, &prompt).and_then(|(r, _)| lyra_goals::prompts::parse_review(&r)) {

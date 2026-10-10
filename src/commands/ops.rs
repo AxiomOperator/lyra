@@ -12,7 +12,7 @@ impl App {
         }
         let (settings, tx, mem, store) = (self.backup.clone(), self.tx.clone(), self.mem(), self.memory_store.clone());
         let dir = settings.dir(&home);
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let copy = |to: &std::path::Path| -> Result<(), String> {
                 let mem = mem.as_ref().ok_or("memory is off")?;
                 mem.run(mem.manager.backup(to))
@@ -75,7 +75,7 @@ impl App {
         }
         // The terminal on its own: one check, no history.
         let (inputs, tx) = (self.status_inputs(), self.tx.clone());
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let board = status::Board::plain(status::pass(inputs));
             status::set_latest(&board);
             let _ = tx.send(StreamEvent::Notice(status::describe(&board)));

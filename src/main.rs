@@ -71,7 +71,6 @@ mod ui;
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
@@ -1138,7 +1137,7 @@ impl App {
         // A first look at everything lyra depends on (lyra serve keeps checking).
         if self.status.enabled {
             let inputs = self.status_inputs();
-            thread::spawn(move || status::set_latest(&status::Board::plain(status::pass(inputs))));
+            crate::acting::spawn(move || status::set_latest(&status::Board::plain(status::pass(inputs))));
         }
         self.refresh_caps(true);
         self.refresh_goals();
@@ -1189,7 +1188,7 @@ impl App {
     fn sync_skills(&self) {
         let Some(learning) = self.learning.clone() else { return };
         let tx = self.tx.clone();
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let notes = learning.sync().unwrap_or_else(|e| vec![format!("skill sync failed: {e}")]);
             let _ = tx.send(StreamEvent::LearnNotes(notes));
         });
@@ -1214,7 +1213,7 @@ impl App {
             && let Some(mem) = self.mem()
         {
             let (tx, helpful) = (self.tx.clone(), outcome == SkillOutcome::Success);
-            thread::spawn(move || {
+            crate::acting::spawn(move || {
                 let note = match mem.feedback(last.id, helpful) {
                     Ok(n) => format!("{n} memor{} marked {}", if n == 1 { "y" } else { "ies" }, if helpful { "helpful" } else { "not helpful" }),
                     Err(e) => format!("memory feedback failed: {e}"),
@@ -1231,7 +1230,7 @@ impl App {
             self.corrected_skills = skills;
         }
         let tx = self.tx.clone();
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let notes = learning
                 .record_outcome(run, outcome, false)
                 .unwrap_or_else(|e| vec![format!("recording outcome failed: {e}")]);
@@ -1248,7 +1247,7 @@ impl App {
         self.curating = true;
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let (model, tx) = (self.model.clone(), self.tx.clone());
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let _ = tx.send(StreamEvent::Curated(learning.curate(&url, &model, None)));
         });
     }
@@ -1257,7 +1256,7 @@ impl App {
     fn refresh_skills(&self) {
         let Some(learning) = self.learning.clone() else { return };
         let tx = self.tx.clone();
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let _ = tx.send(StreamEvent::Skills(learning.snapshot()));
         });
     }
@@ -1312,7 +1311,7 @@ impl App {
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let (model, tx, run) = (self.model.clone(), self.tx.clone(), self.last_run.as_ref().map(|r| r.id));
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let trigger = match trigger {
                 Some(t) => t,
                 None => match decide::yes("a lesson here?", &transcript, LESSON_GATE) {
@@ -1339,7 +1338,7 @@ impl App {
     fn refresh_memory(&self) {
         let Some(mem) = self.mem() else { return };
         let tx = self.tx.clone();
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let _ = tx.send(StreamEvent::Memory(mem.snapshot()));
         });
     }
@@ -1353,7 +1352,7 @@ impl App {
         let Some(mem) = self.mem() else { return };
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let (model, tx) = (self.model.clone(), self.tx.clone());
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let review = match mem.run(mem.manager.find(&short_id)) {
                 Ok(m) => mem.relate(&url, &model, m.id),
                 Err(e) => Review { outcome: Err(e), usage: None },
@@ -1366,7 +1365,7 @@ impl App {
     fn memory_upkeep(&self) {
         let Some(mem) = self.mem() else { return };
         let tx = self.tx.clone();
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let _ = tx.send(StreamEvent::MemoryNotes(mem.upkeep()));
         });
     }
@@ -1412,7 +1411,7 @@ impl App {
         let (model, tx, run) = (self.model.clone(), self.tx.clone(), self.last_run.as_ref().map(|r| r.id));
         let started = self.session_started;
         let owner = self.owner.clone();
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             // Counted (and kept) for the conversation's person.
             crate::acting::set(&owner);
             let reason = match reason {
@@ -1467,7 +1466,7 @@ impl App {
             self.reload_plan(latest.id);
         }
         let (rt, tx) = (self.runtime(), self.tx.clone());
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let notes = engine.recover(&rt).unwrap_or_else(|e| vec![format!("plan recovery failed: {e}")]);
             let _ = tx.send(StreamEvent::PlanNotes(notes));
         });
@@ -1530,7 +1529,7 @@ impl App {
             let transcript = format!("Goal: {goal_text}\n\n{}", plan::results(&plan));
             let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
             let model = self.model.clone();
-            thread::spawn(move || {
+            crate::acting::spawn(move || {
                 let note = match mem.run(mem.manager.add_episode(&scope, &episode_summary, &episode_outcome, entities, Some(plan_id), Some(started))) {
                     Ok(m) => format!("recorded plan episode [{}]", m.short_id()),
                     Err(e) => format!("plan episode not recorded: {e}"),
@@ -1554,7 +1553,7 @@ impl App {
             let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
             let (model, tx, owner) = (self.model.clone(), self.tx.clone(), self.personal());
             self.log(Level::Learn, "reviewing the plan's recoveries for a lesson".into());
-            thread::spawn(move || {
+            crate::acting::spawn(move || {
                 let review = learning.review(&url, &model, "a failed step was replaced by a working one (plan execution)", &transcript, None, owner.as_deref());
                 let _ = tx.send(StreamEvent::Reviewed(review));
             });
@@ -1581,7 +1580,7 @@ impl App {
         let Some(env) = self.evolution_env() else { return };
         self.evolving = Some(what);
         let tx = self.tx.clone();
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let _ = tx.send(StreamEvent::Evolved { done: work(&env), show });
         });
     }
@@ -1616,7 +1615,7 @@ impl App {
     fn refresh_caps(&self, health: bool) {
         let Some(caps) = self.caps.clone() else { return };
         let tx = self.tx.clone();
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let mut notes = caps.refresh();
             if health {
                 notes.extend(caps.check_health());
@@ -1630,7 +1629,7 @@ impl App {
     fn refresh_goals(&self) {
         let Some(goals) = self.goals.clone() else { return };
         let tx = self.tx.clone();
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let _ = tx.send(StreamEvent::Goals(goals.snapshot()));
         });
     }
@@ -1675,7 +1674,7 @@ impl App {
         let summary = format!("Goal: {}. {}", g.title, g.progress_detail.summary);
         let outcome = format!("goal {} after {} plan(s)", g.status, goals.manager.plans(g.id).map(|p| p.len()).unwrap_or(0));
         let tx = self.tx.clone();
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let note = match mem.run(mem.manager.add_episode(&scope, &summary, &outcome, Vec::new(), None, Some(g.created_at))) {
                 Ok(m) => format!("recorded goal episode [{}]", m.short_id()),
                 Err(e) => format!("goal episode not recorded: {e}"),
@@ -1724,7 +1723,7 @@ impl App {
                         self.plan_busy = true;
                         self.autonomous_plans.insert(plan.id);
                         let (rt, tx) = (self.autonomous_runtime(), self.tx.clone());
-                        thread::spawn(move || {
+                        crate::acting::spawn(move || {
                             let _ = tx.send(StreamEvent::PlanFinished(engine.run(plan.id, &rt)));
                         });
                         break;
@@ -1765,7 +1764,7 @@ impl App {
     fn refresh_evolution(&self) {
         let Some(evolution) = self.evolution.clone() else { return };
         let tx = self.tx.clone();
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let _ = tx.send(StreamEvent::Evolution(evolution.snapshot()));
         });
     }
@@ -1798,7 +1797,7 @@ impl App {
         }
         let id = run.id;
         let tx = self.tx.clone();
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             if let Err(e) = evolution.record(run) {
                 let _ = tx.send(StreamEvent::Log(format!("recording the run failed: {e}")));
             }
@@ -1817,7 +1816,7 @@ impl App {
             SkillOutcome::Unknown => return,
         };
         let (tx, feedback) = (self.tx.clone(), feedback.map(str::to_string));
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let mut notes = Vec::new();
             if let Err(e) = env.evolution.manager.set_outcome(id, outcome, corrected, feedback.as_deref()) {
                 notes.push(format!("recording the outcome failed: {e}"));
@@ -1864,7 +1863,7 @@ impl App {
         };
         let env = self.evolution_env();
         let (tx, id) = (self.tx.clone(), run.id);
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let mut notes = Vec::new();
             if let Err(e) = evolution.record(run) {
                 notes.push(format!("recording the plan run failed: {e}"));
@@ -1887,7 +1886,7 @@ impl App {
         self.memory_curating = true;
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let (model, tx) = (self.model.clone(), self.tx.clone());
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let review = mem.curate(&url, &model);
             let _ = tx.send(StreamEvent::MemoryReview { curation: true, review });
         });
@@ -1898,7 +1897,7 @@ impl App {
         self.model_status = None;
         let (embedding, reranker) = (self.embedding.clone(), self.reranker.clone());
         let tx = self.tx.clone();
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             let results = retrieval::check(embedding.as_ref(), reranker.as_ref());
             let _ = tx.send(StreamEvent::Models(results));
         });

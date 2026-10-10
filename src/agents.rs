@@ -808,7 +808,7 @@ impl crate::App {
     pub(crate) fn sync_agents(&self) {
         let Some(agents) = self.agents.clone() else { return };
         let (tx, caps) = (self.tx.clone(), self.caps.clone());
-        std::thread::spawn(move || {
+        crate::acting::spawn(move || {
             for note in agents.sync() {
                 let _ = tx.send(StreamEvent::Log(format!("agents: {note}")));
             }
@@ -854,7 +854,7 @@ impl crate::App {
         self.set_wizard(Some(draft.clone()));
         self.wizard_busy = true;
         self.log(crate::Level::Agent, "building the agent and trying it on a test task…".into());
-        std::thread::spawn(move || {
+        crate::acting::spawn(move || {
             let built = finish_draft(&env, draft);
             let _ = env.tx.send(StreamEvent::AgentBuilt(Ok(Box::new(built))));
         });
@@ -1107,7 +1107,7 @@ impl crate::App {
         let (url, model) = (format!("{}/chat/completions", self.base_url.trim_end_matches('/')), self.model.clone());
         // A lesson from someone's conversation is theirs.
         let owner = self.personal();
-        std::thread::spawn(move || {
+        crate::acting::spawn(move || {
             let Ok(records) = agents.registry.set_outcome(run, word) else { return };
             if records.is_empty() {
                 return;

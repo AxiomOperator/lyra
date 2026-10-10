@@ -382,7 +382,7 @@ fn sessions_page(owner: &str, current: &str, loaded: &Loaded) -> Value {
         };
         if !todo.is_empty() {
             let (dir, owner) = (dir.clone(), owner.to_string());
-            std::thread::spawn(move || {
+            crate::acting::spawn(move || {
                 crate::acting::set(&owner);
                 for id in todo {
                     if let Ok(s) = crate::sessions::find_for(&dir, &id, &owner) {

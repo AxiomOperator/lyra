@@ -208,7 +208,7 @@ pub fn analyze(id: u64, user: &str, files: Vec<(String, std::path::PathBuf)>) {
         }
     }
     let user = user.to_string();
-    std::thread::spawn(move || {
+    crate::acting::spawn(move || {
         crate::acting::set(&user);
         let Some(item) = load().into_iter().find(|i| i.id == id) else { return };
         // Screenshots: what they show, when a vision model can look.

@@ -32,7 +32,7 @@ pub static CONTEXT_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 /// `/models` meta or `/props`; vLLM's `max_model_len`), in the background.
 pub fn learn_context_window(url: &str) {
     let base = url.trim_end_matches('/').to_string();
-    std::thread::spawn(move || {
+    crate::acting::spawn(move || {
         let get = |u: &str| -> Option<serde_json::Value> {
             reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(10)).build().ok()?.get(u).send().ok()?.json().ok()
         };

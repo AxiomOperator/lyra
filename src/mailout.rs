@@ -669,6 +669,20 @@ mod tests {
     }
 
     #[test]
+    fn email_choices_are_each_persons_and_nothing_goes_without_an_address() {
+        crate::config::with_test_home(|home| {
+            set("owner", &json!({ "briefing": true, "via": "lyra" })).unwrap();
+            set("dana", &json!({ "recap": true })).unwrap();
+            assert!(prefs("owner").briefing && !prefs("owner").recap);
+            assert!(prefs("dana").recap && !prefs("dana").briefing, "Dana's are her own");
+            assert!(home.join("email/prefs.json").exists() && home.join("users/dana/email/prefs.json").exists());
+            assert!(set("owner", &json!({ "via": "someone@else" })).is_err(), "only lyra, outlook or lyra decides");
+            let e = send_to_me("dana", "s", "b", "test").unwrap_err();
+            assert!(e.contains("no email address"), "{e}");
+        });
+    }
+
+    #[test]
     fn the_tool_takes_no_recipient() {
         let c = &capabilities()[0];
         assert!(c.input_schema["properties"].get("to").is_none(), "only ever the person themselves");

@@ -134,7 +134,7 @@ impl QuietTimes {
         let fresh = self.seen.get(user).is_some_and(|(_, at)| at.elapsed() < Duration::from_secs(300));
         if !fresh && self.asking.insert(user.to_string()) {
             let (tx, user) = (self.tx.clone(), user.to_string());
-            std::thread::spawn(move || {
+            crate::acting::spawn(move || {
                 let q = crate::planner::quiet(&user);
                 let _ = tx.send((user, q));
             });

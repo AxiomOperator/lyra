@@ -61,7 +61,7 @@ impl App {
                 for name in targets.clone() {
                     let (hub, tx) = (hub.clone(), tx.clone());
                     let sub = sub.to_string();
-                    std::thread::spawn(move || {
+                    crate::acting::spawn(move || {
                         let request = json!({ "type": if sub == "update" { "update" } else { "uninstall" } });
                         let result = hub.call_machine(&name, request, Duration::from_secs(180));
                         let note = match (sub.as_str(), result) {
@@ -142,7 +142,7 @@ impl App {
                     edit_rules(&mut lyra_system::Settings::default(), change)?;
                 }
                 let (tx, change) = (self.tx.clone(), change.to_string());
-                std::thread::spawn(move || {
+                crate::acting::spawn(move || {
                     let ask = |set: Option<&lyra_system::Settings>| {
                         let mut request = json!({ "type": "rules" });
                         if let Some(set) = set {

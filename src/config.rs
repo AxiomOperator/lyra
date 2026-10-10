@@ -403,10 +403,34 @@ fn user_home() -> Option<PathBuf> {
 /// └── workflows/ <name>.toml
 /// ```
 pub fn home() -> Option<PathBuf> {
+    // Tests never touch a real home: their own folder, or one for this run.
+    #[cfg(test)]
+    {
+        return Some(TEST_HOME.with(|h| h.borrow().clone()).unwrap_or_else(|| std::env::temp_dir().join(format!("lyra-test-home-{}", std::process::id()))));
+    }
+    #[allow(unreachable_code)]
     match std::env::var_os("LYRA_HOME") {
         Some(dir) => Some(PathBuf::from(dir)),
         None => Some(user_home()?.join(".lyra")),
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_HOME: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with lyra's home in a fresh folder of its own (tests: per-person
+/// stores, routines, email, written for real and looked at).
+#[cfg(test)]
+pub fn with_test_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
+    let dir = std::env::temp_dir().join(format!("lyra-home-{}", lyra_memory::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("a test home");
+    let before = TEST_HOME.with(|h| h.replace(Some(dir.clone())));
+    let out = f(&dir);
+    TEST_HOME.with(|h| *h.borrow_mut() = before);
+    let _ = std::fs::remove_dir_all(&dir);
+    out
 }
 
 /// `<lyra home>/config`: config.toml.

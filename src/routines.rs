@@ -730,6 +730,64 @@ pub fn show(name: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    fn run(session: &str, outcome: &str) -> Run {
+        Run { at: Utc::now(), seconds: 1, needs_user: false, outcome: outcome.into(), summary: String::new(), session: session.into(), decided_by: String::new(), emailed: String::new(), calls: 0, tokens_in: 0, tokens_out: 0, cost: 0.0 }
+    }
+
+    #[test]
+    fn a_run_sees_its_last_two_results_and_they_can_be_searched() {
+        crate::config::with_test_home(|_| {
+            let r = create("brief", "every day at 07:00", "Summarize AI news", Notify::Never, false, false).unwrap();
+            assert!(!message(&r).contains("previous results"), "nothing yet");
+            for (i, text) in ["## Monday\nllama.cpp b4000", "## Tuesday\nvLLM 0.9", "## Wednesday\nGPT-6"].iter().enumerate() {
+                save_result("brief", Utc::now() + Duration::seconds(i as i64), text).unwrap();
+            }
+            assert_eq!(results("brief").len(), 3);
+            let m = message(&r);
+            assert!(m.contains("GPT-6") && m.contains("vLLM 0.9") && !m.contains("llama.cpp b4000"), "the last two, newest first");
+            let found = results_page(None, "vllm");
+            assert_eq!(found.as_array().unwrap().len(), 1);
+            assert_eq!(found[0]["title"], "Tuesday");
+            let mut quiet = r.clone();
+            quiet.remember = false;
+            assert!(!message(&quiet).contains("previous results"), "remember off");
+        });
+    }
+
+    #[test]
+    fn a_run_is_one_record_and_one_left_running_reads_as_interrupted() {
+        crate::config::with_test_home(|_| {
+            create("check", "every day at 07:00", "Check disks", Notify::Never, false, false).unwrap();
+            record("check", run("s1", "running"));
+            assert_eq!(runs()["check"][0].outcome, "interrupted", "nothing is running it");
+            record("check", run("s1", "ok"));
+            record("check", run("s2", "ok"));
+            let all = &runs()["check"];
+            assert_eq!(all.len(), 2, "one record per run: its first record gave way");
+            assert!(all.iter().all(|x| x.outcome == "ok"));
+        });
+    }
+
+    #[test]
+    fn runs_a_stop_cut_off_come_back_once() {
+        crate::config::with_test_home(|_| {
+            save_resume(&[("owner".into(), "brief".into()), ("dana".into(), "standup".into())]);
+            assert_eq!(take_resume().len(), 2);
+            assert!(take_resume().is_empty(), "once");
+        });
+    }
+
+    #[test]
+    fn each_persons_routines_live_in_their_own_folder() {
+        crate::config::with_test_home(|home| {
+            crate::acting::run("dana", || create("standup", "weekdays at 9", "Prep my standup", Notify::Always, false, false)).unwrap();
+            create("brief", "every day at 07:00", "AI news", Notify::Never, false, false).unwrap();
+            assert!(home.join("users/dana/routines/standup.toml").exists());
+            assert_eq!(list().iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["brief"], "the owner doesn't see Dana's");
+            assert_eq!(crate::acting::run("dana", list).iter().map(|r| r.name.clone()).collect::<Vec<_>>(), ["standup"]);
+        });
+    }
+
     #[test]
     fn each_persons_routines_are_their_own() {
         let owner = dir().unwrap();

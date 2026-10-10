@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.51.2.196",
+    "date": "2026-10-09",
+    "title": "Background work always knows whose it is",
+    "fixed": [
+      "Every background job lyra starts (a page, a routine's check, an email, a lookup) keeps working for the person who started it. A new one can't quietly fall back to the owner's Microsoft account or PMI."
+    ],
+    "improved": [
+      "lyra's tests now cover each person's routines, past results, run records, resume after a restart and email choices, in a throw-away folder that never touches real data."
+    ]
+  },
+  {
     "version": "0.51.1.195",
     "date": "2026-10-09",
     "title": "A test for the silence limit",

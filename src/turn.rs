@@ -122,7 +122,7 @@ impl App {
         let max_rounds = limits::tool_rounds(&owner, self.evolution.as_ref().map(|e| e.behavior().max_tool_rounds)) as usize;
         self.can_continue = false;
         let job = self.session_id.clone();
-        thread::spawn(move || {
+        crate::acting::spawn(move || {
             // This turn works in its person's PMI account; its calls count for this conversation.
             pmi::set_user(&owner);
             usage::set_job(Some(job));
@@ -763,7 +763,7 @@ pub(crate) fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: 
     // the model is silent (thinking, or stuck): this side waits in short steps.
     let (lines_tx, lines) = std::sync::mpsc::channel::<Result<String, String>>();
     let (url, body) = (url.to_string(), body.clone());
-    thread::spawn(move || {
+    crate::acting::spawn(move || {
         let resp = match client.post(&url).json(&body).send() {
             Ok(r) => r,
             Err(e) => return drop(lines_tx.send(Err(format!("{UNREACHED}{e}")))),

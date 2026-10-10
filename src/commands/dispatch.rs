@@ -263,7 +263,7 @@ impl App {
             "/memory" if ok && memory_sub == "reembed" => {
                 if let Some(mem) = self.mem() {
                     let tx = self.tx.clone();
-                    thread::spawn(move || {
+                    crate::acting::spawn(move || {
                         let mut notes = mem.backfill();
                         if notes.is_empty() {
                             notes.push("every memory already has a current vector".into());

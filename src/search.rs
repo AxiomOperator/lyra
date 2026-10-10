@@ -19,7 +19,7 @@ pub fn everything(query: &str, user: &str, mem: Option<Arc<Mem>>) -> Value {
     let (tx, rx) = std::sync::mpsc::channel::<(usize, &'static str, Vec<Value>)>();
     let spawn = |order: usize, name: &'static str, f: Box<dyn FnOnce() -> Vec<Value> + Send>| {
         let (tx, user) = (tx.clone(), user.to_string());
-        std::thread::spawn(move || {
+        crate::acting::spawn(move || {
             let found = crate::acting::run(&user, f);
             let _ = tx.send((order, name, found));
         });
