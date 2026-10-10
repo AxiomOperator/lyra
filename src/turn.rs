@@ -560,6 +560,11 @@ pub(crate) fn converse(
                     if !matches!(how.offer, Offer::Nothing) {
                         definitions.extend(crate::board::definitions());
                     }
+                    // A group discussion between agents.
+                    let talkers: Vec<_> = enabled.iter().filter(|a| !(env.member && agents::admin_only(&a.name))).cloned().collect();
+                    if talkers.len() >= 2 && !matches!(how.offer, Offer::Nothing) {
+                        definitions.push(agents::huddle_tool(&talkers));
+                    }
                 }
             }
             if !definitions.is_empty() {
@@ -716,6 +721,8 @@ pub(crate) fn converse(
                 agents::delegate_call(env, arguments, run)
             } else if let Some(env) = agents.filter(|_| crate::board::TOOLS.contains(&name)) {
                 crate::board::call(&env.session, "lyra", name, arguments)
+            } else if let (Some(env), "agent_huddle") = (agents, name) {
+                agents::huddle(env, arguments, Some(run))
             } else if call.function.name == caps::SEARCH_TOOL {
                 let (text, names) = caps.search(arguments);
                 found.extend(names);

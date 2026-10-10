@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.63.0.210",
+    "date": "2026-10-10",
+    "title": "Agents talk to each other",
+    "new": [
+      "Agents can ask each other a quick question while they work and get the answer straight back.",
+      "lyra can call a huddle: two to four agents take turns discussing a question, each hearing what the others said, before lyra decides. The discussion shows as one card in the chat and is kept on the conversation's task board.",
+      "Agents start each other's work: a task one agent puts on the board for another begins as soon as the first is done, side by side with any others, and its result comes back with the first agent's ([agents] board_autostart)."
+    ],
+    "improved": [
+      "Every one of these keeps the usual limits: how deep hand-offs may go, how many run at once, each agent's tool budget and approvals, and a record of each exchange. Members' agents still never reach the Operator or the Coder."
+    ]
+  },
+  {
     "version": "0.62.0.209",
     "date": "2026-10-10",
     "title": "Agents work side by side",

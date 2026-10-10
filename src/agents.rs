@@ -34,6 +34,8 @@ pub struct Settings {
     pub max_depth: u32,
     /// Delegations run side by side when one round asks for several (at most this many at once).
     pub max_parallel: usize,
+    /// Tasks an agent posts on the board for another agent start when it's done (within `max_depth`).
+    pub board_autostart: bool,
     /// Say "handled with: Writer" under replies that used a specialist.
     pub show_handled_by: bool,
     pub routing: RouterSettings,
@@ -42,7 +44,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { enabled: true, auto_delegate: true, max_depth: 2, max_parallel: 3, show_handled_by: true, routing: RouterSettings::default(), budget: AgentBudget::default() }
+        Self { enabled: true, auto_delegate: true, max_depth: 2, max_parallel: 3, board_autostart: true, show_handled_by: true, routing: RouterSettings::default(), budget: AgentBudget::default() }
     }
 }
 
@@ -401,6 +403,10 @@ pub fn delegate(
     if can_delegate && !others.is_empty() {
         defs.push(delegate_tool(&others));
     }
+    // A quick word with another agent (no tools, one answer).
+    if !others.is_empty() {
+        defs.push(ask_agent_tool(&others));
+    }
     // The conversation's task board: every agent working in it shares it.
     defs.extend(crate::board::definitions());
     let url = profile.model_policy.url.clone().map(|u| format!("{}/chat/completions", u.trim_end_matches('/'))).unwrap_or_else(|| env.url.clone());
@@ -483,6 +489,9 @@ pub fn delegate(
             } else if crate::board::TOOLS.contains(&name) {
                 tool_calls += 1;
                 crate::board::call(&env.session, &profile.name, name, args)
+            } else if name == "ask_agent" && !others.is_empty() {
+                tool_calls += 1;
+                ask_agent(env, &profile.name, args, depth + 1, run)
             } else if allowed.iter().any(|c| c.name == name) {
                 tool_calls += 1;
                 let filled = with_machine(env, name, args);
@@ -562,8 +571,225 @@ fn nested(env: &Env, from: &AgentProfile, args: &str, depth: u32, run: Option<Uu
     if env.member && admin_only(&to.name) {
         return json!({ "error": format!("{} works on machines and code: that's for admins", to.title) }).to_string();
     }
+    let since = Utc::now();
     let r = on_board(env, &to, &a, || delegate(env, &to, &from.name, a["task"].as_str().unwrap_or(""), a["input"].as_str(), a["expected_output"].as_str(), depth + 1, "agent", None, run));
-    result_json(&to, &r).to_string()
+    with_handed_on(result_json(&to, &r), hand_on(env, &to, depth + 1, since, run)).to_string()
+}
+
+fn with_handed_on(mut v: Value, handed: Vec<Value>) -> Value {
+    if !handed.is_empty() {
+        v["handed_on"] = json!(handed);
+    }
+    v
+}
+
+/// Agents starting work with each other: the tasks `from` put on the board
+/// for other agents while it worked start as soon as it's done, side by side,
+/// as its own delegations (so within `max_depth` and `max_parallel`, each
+/// with its contract and budget). Their results, for whoever asked `from`.
+fn hand_on(env: &Env, from: &AgentProfile, depth: u32, since: chrono::DateTime<Utc>, run: Option<Uuid>) -> Vec<Value> {
+    let s = env.agents.settings();
+    if !s.board_autostart || depth >= s.max_depth || !from.permission_policy.can_delegate || crate::stopped(&env.cancel) {
+        return Vec::new();
+    }
+    let calls: Vec<(String, String)> = crate::board::read(&env.session)
+        .tasks
+        .into_iter()
+        .filter(|t| t.status == crate::board::Status::Open && t.by == from.name && t.at >= since && t.agent.as_deref().is_some_and(|a| !a.eq_ignore_ascii_case(&from.name)))
+        .take(s.max_parallel.max(1))
+        .map(|t| {
+            let task = if t.detail.is_empty() { t.title.clone() } else { format!("{}\n\n{}", t.title, t.detail) };
+            (format!("board-{}", t.id), json!({ "agent": t.agent, "task": task, "board_task": t.id }).to_string())
+        })
+        .collect();
+    if calls.is_empty() {
+        return Vec::new();
+    }
+    delegate_many(env, &calls, run, Some((from, depth))).into_iter().map(|(_, r)| serde_json::from_str(&r).unwrap_or(json!(r))).collect()
+}
+
+/// The model, server and options an agent answers with.
+fn voice(env: &Env, p: &AgentProfile) -> (String, String, crate::plan::ChatOptions) {
+    let url = p.model_policy.url.clone().map(|u| format!("{}/chat/completions", u.trim_end_matches('/'))).unwrap_or_else(|| env.url.clone());
+    let model = p.model_policy.model.clone().unwrap_or_else(|| env.model.clone());
+    (url, model, crate::plan::ChatOptions { max_tokens: p.model_policy.max_tokens, thinking: p.model_policy.thinking, temperature: p.model_policy.temperature })
+}
+
+/// One agent's word: its own instructions and model, no tools, one call.
+fn say(env: &Env, p: &AgentProfile, situation: &str, text: &str) -> Result<(String, u64), String> {
+    let (url, model, options) = voice(env, p);
+    let system = format!("You are {}, a specialist agent. {}\n\n{}\n\n{situation}", p.title, p.role, p.instructions);
+    let messages = [json!({ "role": "system", "content": system }), json!({ "role": "user", "content": text })];
+    let (m, used) = crate::plan::chat_with(&url, &model, &messages, &[], &options)?;
+    let said = m["content"].as_str().unwrap_or("");
+    let said = said.rsplit_once("</think>").map_or(said, |(_, a)| a).trim();
+    if said.is_empty() {
+        return Err(format!("{} said nothing", p.title));
+    }
+    Ok((said.to_string(), used))
+}
+
+/// Keep one exchange in the agent's track record.
+#[allow(clippy::too_many_arguments)]
+fn record(env: &Env, from: &str, p: &AgentProfile, task: &str, method: &str, ok: bool, output: &str, ms: u64, tokens: u64, run: Option<Uuid>) {
+    let _ = env.agents.registry.record_delegation(&DelegationRecord {
+        id: Uuid::new_v4(),
+        run_id: run,
+        from_agent: from.to_string(),
+        agent: p.name.clone(),
+        task: task.chars().take(500).collect(),
+        method: method.into(),
+        confidence: None,
+        status: if ok { "completed" } else { "failed" }.into(),
+        output: output.chars().take(2000).collect(),
+        duration_ms: ms,
+        model_calls: 1,
+        tool_calls: 0,
+        tokens,
+        outcome: None,
+        created_at: Utc::now(),
+    });
+}
+
+/// Find an agent another may talk to (enabled, not itself; a member's never the Operator or the Coder).
+fn reachable(env: &Env, name: &str, from: &str) -> Result<AgentProfile, String> {
+    let to = env.agents.registry.find(name).ok().filter(|p| p.enabled && p.name != from).ok_or_else(|| format!("no agent called {name:?}"))?;
+    if env.member && admin_only(&to.name) {
+        return Err(format!("{} works on machines and code: that's for admins", to.title));
+    }
+    Ok(to)
+}
+
+/// The tool an agent uses to ask another a quick question.
+pub fn ask_agent_tool(agents: &[AgentProfile]) -> Value {
+    let list: Vec<String> = agents.iter().map(|a| format!("{} ({})", a.name, a.description)).collect();
+    json!({
+        "type": "function",
+        "function": {
+            "name": "ask_agent",
+            "description": format!("Ask another agent a quick question while you work and get its answer (no tools on its side; for real work, post a task on the board for it). Agents: {}", list.join("; ")),
+            "parameters": { "type": "object", "properties": {
+                "agent": { "type": "string", "description": "The agent's name." },
+                "question": { "type": "string", "description": "What you want to know, self-contained." },
+            }, "required": ["agent", "question"] },
+        },
+    })
+}
+
+/// Direct messages between agents: `from` asks, the other answers once.
+pub fn ask_agent(env: &Env, from: &str, args: &str, depth: u32, run: Option<Uuid>) -> String {
+    let a: Value = serde_json::from_str(args).unwrap_or(json!({}));
+    let question = a["question"].as_str().unwrap_or("").trim().to_string();
+    let to = match reachable(env, a["agent"].as_str().unwrap_or(""), from) {
+        Ok(p) if !question.is_empty() => p,
+        Ok(_) => return json!({ "error": "ask it something" }).to_string(),
+        Err(e) => return json!({ "error": e }).to_string(),
+    };
+    let key = Uuid::new_v4().to_string();
+    let start = Instant::now();
+    emit(&env.tx, AgentEvent::Started { agent: to.title.clone(), task: format!("{from} asks: {}", question.chars().take(140).collect::<String>()), depth, key: key.clone() });
+    env.agents.set_active(&to.title, true);
+    let situation = format!("Another agent, {from}, asks you something while it works. Answer it briefly and directly from what you know; you have no tools here.");
+    let r = say(env, &to, &situation, &question);
+    env.agents.set_active(&to.title, false);
+    let ms = start.elapsed().as_millis() as u64;
+    let (ok, text, tokens) = match &r {
+        Ok((t, n)) => (true, t.clone(), *n),
+        Err(e) => (false, e.clone(), 0),
+    };
+    record(env, from, &to, &question, "message", ok, &text, ms, tokens, run);
+    emit(&env.tx, AgentEvent::Finished { agent: to.title.clone(), status: if ok { DelegationStatus::Completed } else { DelegationStatus::Failed }, confidence: None, ms, output: text.clone(), depth, key });
+    if ok { json!({ "agent": to.name, "answer": text }) } else { json!({ "agent": to.name, "error": text }) }.to_string()
+}
+
+/// The main agent's tool for a group chat between agents.
+pub fn huddle_tool(agents: &[AgentProfile]) -> Value {
+    let list: Vec<String> = agents.iter().map(|a| format!("{} ({})", a.name, a.description)).collect();
+    json!({
+        "type": "function",
+        "function": {
+            "name": "agent_huddle",
+            "description": format!("A group discussion between two to four agents on a question (they take turns, each seeing what the others said), when it needs several points of view before you decide. You get the transcript; it goes on the task board too. Agents: {}", list.join("; ")),
+            "parameters": { "type": "object", "properties": {
+                "agents": { "type": "array", "items": { "type": "string" }, "description": "Two to four agents' names." },
+                "topic": { "type": "string", "description": "The question to discuss, self-contained, with what they need to know." },
+                "rounds": { "type": "integer", "description": "Turns each (1 to 3; 2 if not given)." },
+            }, "required": ["agents", "topic"] },
+        },
+    })
+}
+
+/// Group chats: agents take turns on a topic, moderated by lyra; each sees
+/// the transcript so far and adds its part (no tools, one call a turn). The
+/// transcript comes back to the main agent and goes on the board as a note.
+pub fn huddle(env: &Env, args: &str, run: Option<Uuid>) -> String {
+    let a: Value = serde_json::from_str(args).unwrap_or(json!({}));
+    let topic = a["topic"].as_str().unwrap_or("").trim().to_string();
+    let rounds = a["rounds"].as_u64().unwrap_or(2).clamp(1, 3);
+    let mut who: Vec<AgentProfile> = Vec::new();
+    for name in a["agents"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        match reachable(env, name, MAIN) {
+            Ok(p) if !who.iter().any(|w| w.name == p.name) => who.push(p),
+            Ok(_) => {}
+            Err(e) => return json!({ "error": e }).to_string(),
+        }
+    }
+    if topic.is_empty() || !(2..=4).contains(&who.len()) {
+        return json!({ "error": "a huddle needs a topic and two to four different agents" }).to_string();
+    }
+    let names: Vec<String> = who.iter().map(|p| p.title.clone()).collect();
+    let title = format!("Huddle · {}", names.join(", "));
+    let key = Uuid::new_v4().to_string();
+    let start = Instant::now();
+    emit(&env.tx, AgentEvent::Started { agent: title.clone(), task: topic.chars().take(160).collect(), depth: 1, key: key.clone() });
+    let mut said: Vec<(String, String)> = Vec::new();
+    let mut failed = None;
+    'talk: for round in 1..=rounds {
+        for p in &who {
+            if crate::stopped(&env.cancel) {
+                failed = Some("stopped by the user".to_string());
+                break 'talk;
+            }
+            let others: Vec<&str> = names.iter().filter(|n| **n != p.title).map(String::as_str).collect();
+            let situation = format!(
+                "You're in a group discussion with {} about the topic below, moderated by lyra (the main agent), who decides afterwards. \
+                 Say your part in a few sentences: add what you know, agree or disagree with what's been said, build on it, and don't repeat others. \
+                 This is round {round} of {rounds}.",
+                others.join(", ")
+            );
+            let so_far = if said.is_empty() { "Nobody has spoken yet.".to_string() } else { said.iter().map(|(w, t)| format!("{w}: {t}")).collect::<Vec<_>>().join("\n\n") };
+            let id = format!("{key}-{round}-{}", p.name);
+            emit(&env.tx, AgentEvent::Tool { agent: title.clone(), tool: p.title.clone(), id: id.clone(), args: json!({ "round": round }).to_string(), key: key.clone() });
+            env.agents.set_active(&p.title, true);
+            let t0 = Instant::now();
+            let r = say(env, p, &situation, &format!("Topic: {topic}\n\nSo far:\n{so_far}"));
+            env.agents.set_active(&p.title, false);
+            match r {
+                Ok((text, tokens)) => {
+                    record(env, MAIN, p, &topic, "huddle", true, &text, t0.elapsed().as_millis() as u64, tokens, run);
+                    emit(&env.tx, AgentEvent::ToolResult { agent: title.clone(), id, output: text.clone() });
+                    said.push((p.title.clone(), text));
+                }
+                Err(e) => {
+                    emit(&env.tx, AgentEvent::ToolResult { agent: title.clone(), id, output: format!("couldn't answer: {e}") });
+                    failed = Some(e);
+                    break 'talk;
+                }
+            }
+        }
+    }
+    let transcript = said.iter().map(|(w, t)| format!("{w}: {t}")).collect::<Vec<_>>().join("\n\n");
+    let note = crate::board::post(&env.session, "lyra", &format!("Huddle: {}", topic.chars().take(120).collect::<String>()), &transcript, None, true).ok().map(|t| t.id);
+    let ms = start.elapsed().as_millis() as u64;
+    let status = if said.is_empty() { DelegationStatus::Failed } else { DelegationStatus::Completed };
+    emit(&env.tx, AgentEvent::Finished { agent: title, status, confidence: None, ms, output: transcript.clone(), depth: 1, key });
+    json!({
+        "topic": topic,
+        "transcript": said.iter().map(|(w, t)| json!({ "agent": w, "said": t })).collect::<Vec<_>>(),
+        "stopped_early": failed,
+        "board_note": note,
+    })
+    .to_string()
 }
 
 /// A delegation that takes a board task (`board_task`): it's marked working,
@@ -637,8 +863,9 @@ pub fn delegate_call(env: &Env, args: &str, run: Uuid) -> String {
     if env.member && admin_only(&to.name) {
         return json!({ "error": format!("{} works on machines and code: that's for admins", to.title) }).to_string();
     }
+    let since = Utc::now();
     let r = on_board(env, &to, &a, || delegate(env, &to, MAIN, a["task"].as_str().unwrap_or(""), a["input"].as_str(), a["expected_output"].as_str(), 1, "tool", None, Some(run)));
-    result_json(&to, &r).to_string()
+    with_handed_on(result_json(&to, &r), hand_on(env, &to, 1, since, Some(run))).to_string()
 }
 
 /// How the main agent sees itself once there are specialists (A1).
@@ -1108,8 +1335,15 @@ impl crate::App {
                 self.messages.push(Message::new("agent", format!("{agent} · working on it for {from}{}", if depth > 1 { " (nested)" } else { "" })));
                 // Its tool calls and the result go on this card.
                 self.agent_cards.push((key, self.messages.len() - 1));
-                if !self.handled_by.contains(&agent) {
-                    self.handled_by.push(agent);
+                // A huddle: each of its agents.
+                let names: Vec<String> = match agent.strip_prefix("Huddle · ") {
+                    Some(list) => list.split(", ").map(str::to_string).collect(),
+                    None => vec![agent],
+                };
+                for name in names {
+                    if !self.handled_by.contains(&name) {
+                        self.handled_by.push(name);
+                    }
                 }
             }
             AgentEvent::Tool { agent, tool, id, args, key } => {
@@ -1686,6 +1920,99 @@ mod tests {
             _ => None,
         }).collect();
         assert_eq!(keys.len(), 2, "two cards, though it's the same agent");
+        assert!(f.env.agents.active.lock().unwrap().is_empty());
+    }
+
+    /// A chat server that answers every request at once (each on its own
+    /// thread) with what `answer` makes of it, and hands back the bodies.
+    fn scripted_model(answer: fn(&Value) -> Value) -> (String, mpsc::Receiver<Value>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    let mut stream = stream;
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut length = 0;
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        if let Some(v) = line.to_lowercase().strip_prefix("content-length:") {
+                            length = v.trim().parse().unwrap();
+                        }
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                    let mut body = vec![0; length];
+                    reader.read_exact(&mut body).unwrap();
+                    let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                    let reply = answer(&body);
+                    let _ = tx.send(body);
+                    let out = json!({ "choices": [{ "message": reply }], "usage": { "total_tokens": 10 } }).to_string();
+                    let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}", out.len());
+                });
+            }
+        });
+        (url, rx)
+    }
+
+    fn system_of(body: &Value) -> String {
+        body["messages"][0]["content"].as_str().unwrap_or("").to_string()
+    }
+
+    #[test]
+    fn a_task_one_agent_posts_for_another_starts_when_it_is_done() {
+        let (url, requests) = scripted_model(|b| {
+            let worked = b["messages"].as_array().is_some_and(|m| m.iter().any(|x| x["role"] == "tool"));
+            if system_of(b).contains("You are Writer") && !worked {
+                json!({ "role": "assistant", "content": "", "tool_calls": [{ "id": "p1", "type": "function", "function": { "name": "board_post", "arguments": "{\"title\":\"Check the server's disk\",\"agent\":\"operator\"}" } }] })
+            } else if system_of(b).contains("You are Writer") {
+                json!({ "role": "assistant", "content": "Draft written; asked the Operator about the disk.\nCONFIDENCE: 0.9" })
+            } else {
+                json!({ "role": "assistant", "content": "Disk is 40% full.\nCONFIDENCE: 0.8" })
+            }
+        });
+        let mut f = fixture(&url);
+        f.env.session = format!("handon-{}", Uuid::new_v4().simple());
+        edit(&f.env.agents, "writer delegates yes").unwrap();
+        let out: Value = serde_json::from_str(&delegate_call(&f.env, r#"{"agent":"writer","task":"Write the status note"}"#, Uuid::new_v4())).unwrap();
+        assert!(out["output"].as_str().unwrap().contains("Draft written"), "{out}");
+        // The Operator started on the Writer's task by itself, and it's done on the board.
+        assert!(out["handed_on"][0]["output"].as_str().unwrap().contains("40% full"), "{out}");
+        let t = &crate::board::read(&f.env.session).tasks[0];
+        assert_eq!((t.status, t.by.as_str(), t.taken_by.as_deref()), (crate::board::Status::Done, "writer", Some("operator")));
+        assert!(requests.try_iter().any(|b| system_of(&b).contains("You are Operator")));
+        // Not further than max_depth: from depth 2, nothing more starts.
+        let writer = f.env.agents.registry.get("writer").unwrap();
+        crate::board::post(&f.env.session, "writer", "Another", "", Some("operator"), false).unwrap();
+        assert!(hand_on(&f.env, &writer, 2, Utc::now() - chrono::Duration::minutes(1), None).is_empty());
+    }
+
+    #[test]
+    fn agents_ask_each_other_and_talk_in_a_huddle() {
+        let (url, requests) = scripted_model(|b| {
+            let who = if system_of(b).contains("You are Writer") { "Writer" } else { "Operator" };
+            let heard = b["messages"][1]["content"].as_str().unwrap_or("").contains("Writer: ");
+            json!({ "role": "assistant", "content": format!("{who} here{}", if heard { ", after Writer" } else { "" }) })
+        });
+        let mut f = fixture(&url);
+        f.env.session = format!("huddle-{}", Uuid::new_v4().simple());
+        // A direct question, one answer.
+        let a: Value = serde_json::from_str(&ask_agent(&f.env, "writer", r#"{"agent":"operator","question":"Is the server up?"}"#, 2, None)).unwrap();
+        assert_eq!(a["answer"], "Operator here");
+        assert!(ask_agent(&f.env, "writer", r#"{"agent":"writer","question":"me?"}"#, 2, None).contains("error"), "not itself");
+        let _ = requests.try_iter().count();
+        // A huddle: turns in order, each hearing the others; on the board after.
+        let h: Value = serde_json::from_str(&huddle(&f.env, r#"{"agents":["writer","operator"],"topic":"Should we move the backup to 2am?","rounds":2}"#, None)).unwrap();
+        let said: Vec<String> = h["transcript"].as_array().unwrap().iter().map(|t| format!("{}: {}", t["agent"].as_str().unwrap(), t["said"].as_str().unwrap())).collect();
+        assert_eq!(said, ["Writer: Writer here", "Operator: Operator here, after Writer", "Writer: Writer here, after Writer", "Operator: Operator here, after Writer"]);
+        assert_eq!(requests.try_iter().count(), 4, "one call a turn");
+        let note = crate::board::read(&f.env.session).tasks.into_iter().find(|t| t.status == crate::board::Status::Note).unwrap();
+        assert!(note.title.starts_with("Huddle: Should we move") && note.detail.contains("Operator: Operator here"));
+        assert!(huddle(&f.env, r#"{"agents":["writer"],"topic":"x"}"#, None).contains("two to four"));
         assert!(f.env.agents.active.lock().unwrap().is_empty());
     }
 

@@ -26,7 +26,7 @@ How to read it:
 | Agent identities and lifecycle | strong | — | strong | **Same** (no avatars, no sharing) |
 | Long-term memory | yes | yes | strong (LanceDB, dreaming) | **Leads** (typed, versioned, curated, per person) |
 | Skills and self-improvement | from demonstrations | built-in skills | SKILL.md, workshop | **Leads** on self-evolution; **behind** on learning from demonstrations |
-| Multi-agent orchestration | strong | — | strong (A2A, ACP, swarms) | **Same** for parallel and nested delegation with a shared task board; **behind** on group chats and outside protocols |
+| Multi-agent orchestration | strong | — | strong (A2A, ACP, swarms) | **Same**: parallel and nested delegation, a shared task board, direct questions between agents, group huddles, agents starting each other's work; **gap** only for outside protocols (A2A, ACP) |
 | Computer and browser use | cloud computer | secure VM | browser automation | **Gap** for the browser; **leads** for real machines (nodes) |
 | Goals | — | strong | standing instructions | **Same / leads** (goal manager, plans, autonomy policy) |
 | Proactivity and routines | routines | monitoring | cron, heartbeat, webhooks | **Same** (routines, briefing, watches, proactive); **gap** for webhooks |
@@ -54,6 +54,7 @@ How to read it:
 
 | What | lyra |
 |---|---|
+| Agent-to-agent coordination (since 0.62–0.63): delegations side by side and nested; direct questions between agents; group huddles of two to four agents; a task board per conversation where agents post tasks and notes for each other, and posted tasks start the other agent's work by themselves | `agents.rs` (`delegate_many`, `ask_agent`, `huddle`, `hand_on`), `board.rs`; `[agents] max_parallel`, `board_autostart` |
 | Named, persistent agents with roles, instructions, routing and a conversational creation wizard with templates | `agents/` (profiles as TOML, versions, rule / semantic / model routing, `builder`, `templates`) |
 | Separate memory per agent (its own `agent:<name>` scope, or none, read-only, or scoped) | `agents/src/model.rs` memory modes |
 | Persistent sessions: saved conversations, resume (`-c` / `-r`), folders, pins, archive, search across them, age limits | `sessions.rs`, `retention.rs` |
@@ -78,7 +79,6 @@ How to read it:
 
 | What | The others | lyra today | What closing it would take |
 |---|---|---|---|
-| **Agent-to-agent coordination** (partly closed in 0.62) | Direct messaging between agents, group chats with several agents, agents starting work with each other, nested and parallel subagents, swarms (Grok, OpenClaw) | Now: several delegations in one turn run side by side (`max_parallel`, for lyra and for agents that delegate), nested up to `max_depth`; each conversation has a task board where lyra and the agents post tasks for each other, leave notes, take tasks (`board_task`) and record results; every delegation keeps its contract, budget, approvals and record. Still missing: group chats with several agents talking at once, and agents that start work without the main agent handing it out | A group-chat mode where the main agent moderates turns between agents; letting a finished delegation's board posts start the next agent automatically, within the depth and budget |
 | **Learning from demonstrations** | Watch a person do it, turn it into a skill (Grok) | Skills come from corrections and successful runs, not from watching | A "show me" recording in the app (steps typed or picked) that the skill evaluator turns into a proposed skill |
 | **Dynamic tool building** | Builds tools when integrations fall short (Muse) | Evolution proposes composite tools and workflows, benchmarked and approved; OpenAPI and MCP providers are added by an admin | Let the evolver propose an OpenAPI provider from a URL; still behind approval |
 | **Channels** | WhatsApp, Telegram, Discord, Slack, Signal, iMessage, Teams (OpenClaw); WhatsApp (Muse) | The PWA, the TUI, push and email to yourself; Teams is read (and watched), not answered | A Teams bot or chat reply path first (it's already connected); other channels would need their own sign-in and isolation per person |
@@ -105,9 +105,9 @@ How to read it:
 
 In order of value for lyra's users, keeping its rules:
 
-1. ~~**Parallel delegation and a shared task board.**~~ Done in 0.62: several
-   delegations side by side, and a task board per conversation. Group chats
-   between agents remain.
+1. ~~**Agent-to-agent coordination.**~~ Done in 0.62–0.63: delegations side
+   by side, a task board per conversation, direct questions between agents,
+   group huddles, and agents starting each other's work.
 2. **Context compaction** for long conversations. It's cheap and helps every
    chat, especially on local models with small contexts.
 3. **Answering in Teams.** lyra already reads and watches Teams per person.
