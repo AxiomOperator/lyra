@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.67.0.214",
+    "date": "2026-10-10",
+    "title": "Agents with a look of their own",
+    "new": [
+      "A new Agents page (Automation) shows every agent with its own colour and icon, which you can change. Their cards in the chat and their names in the terminal use that colour too.",
+      "Duplicate an agent to start a new one from it, with the same instructions, tools and look (on the page, or /agent duplicate).",
+      "Admins choose which agents members may use (the Operator and the Coder are always admins' only). Members only see and reach the agents shared with them."
+    ]
+  },
+  {
     "version": "0.66.0.213",
     "date": "2026-10-10",
     "title": "Choose how hard the model thinks",

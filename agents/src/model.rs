@@ -160,6 +160,12 @@ pub struct AgentProfile {
     pub delegation: DelegationProfile,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// How it looks in the app: its colour and icon (empty: picked from its kind).
+    #[serde(default)]
+    pub look: Look,
+    /// Members may use it (an admin's choice; the Operator and the Coder never are).
+    #[serde(default = "yes")]
+    pub shared: bool,
     /// The template it was made from.
     #[serde(default)]
     pub template: Option<String>,
@@ -180,7 +186,47 @@ fn one() -> u32 {
     1
 }
 
+/// An agent's colour and icon in the app (one of `COLORS`, one of `ICONS`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Look {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub color: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
+}
+
+/// The colours an agent can have.
+pub const COLORS: &[&str] = &["sky", "teal", "emerald", "amber", "orange", "rose", "violet", "fuchsia", "slate"];
+/// The icons an agent can have.
+pub const ICONS: &[&str] = &["bot", "pen", "search", "archive", "server", "code", "briefcase", "calendar", "chart", "shield", "book", "sparkles"];
+
 impl AgentProfile {
+    /// Its colour: its own, else one picked from its name (the same every time).
+    pub fn color(&self) -> &str {
+        if COLORS.contains(&self.look.color.as_str()) {
+            return &self.look.color;
+        }
+        let n = self.name.bytes().fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize));
+        COLORS[n % (COLORS.len() - 1)]
+    }
+
+    /// Its icon: its own, else one for its kind.
+    pub fn icon(&self) -> &str {
+        if ICONS.contains(&self.look.icon.as_str()) {
+            return &self.look.icon;
+        }
+        let kind = self.template.as_deref().unwrap_or(&self.name);
+        match kind {
+            "writer" => "pen",
+            "researcher" => "search",
+            "archivist" => "archive",
+            "operator" => "server",
+            "coder" => "code",
+            "project-manager" => "briefcase",
+            _ => "bot",
+        }
+    }
+
     pub fn new(name: &str, title: &str, description: &str) -> Self {
         let now = Utc::now();
         Self {
@@ -198,6 +244,8 @@ impl AgentProfile {
             permission_policy: PermissionPolicy::default(),
             delegation: DelegationProfile::default(),
             enabled: true,
+            look: Look::default(),
+            shared: true,
             template: None,
             test_task: None,
             version: 1,

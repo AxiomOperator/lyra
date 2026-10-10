@@ -602,6 +602,21 @@ fn plan_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
 
 /// The main agent and its specialists: who's working right now (A1, and
 /// "the TUI must show when the main agent is interacting with subagents").
+/// An agent's colour in the terminal.
+fn agent_color(name: &str) -> Color {
+    match name {
+        "sky" => Color::LightBlue,
+        "teal" => Color::Cyan,
+        "emerald" => Color::LightGreen,
+        "amber" => Color::Yellow,
+        "orange" => Color::LightRed,
+        "rose" => Color::Red,
+        "violet" => Color::LightMagenta,
+        "fuchsia" => Color::Magenta,
+        _ => Color::Gray,
+    }
+}
+
 pub(crate) fn agents_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
     let dim = Style::default().fg(Color::DarkGray);
     let Some(agents) = &app.agents else { return (String::new(), Vec::new()) };
@@ -633,7 +648,9 @@ pub(crate) fn agents_panel(app: &App, width: usize) -> (String, Vec<Line<'static
             info = " working…".into();
         }
         let name_width = width.saturating_sub(2 + info.chars().count());
-        lines.push(Line::from(vec![Span::styled(mark, style), Span::styled(truncate(&a.title, name_width), style), Span::styled(info, dim)]));
+        // Its own colour (as in the app), unless it's off.
+        let named = if a.enabled && !working { style.fg(agent_color(&a.color)) } else { style };
+        lines.push(Line::from(vec![Span::styled(mark, style), Span::styled(truncate(&a.title, name_width), named), Span::styled(info, dim)]));
     }
     // This conversation's task board.
     if let Some(board) = crate::board::line(&app.session_id) {

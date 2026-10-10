@@ -160,6 +160,7 @@ function UserMessage({ m, editable }: { m: ChatMessage; editable?: boolean }) {
 }
 
 function MessageView({ m, results, streaming, asking, asks, max, model, turn, id, editable, retry }: { m: ChatMessage; results: Map<string, string>; streaming: boolean; asking: Asking; asks: ChatAsk[]; max: number; model?: string; turn?: ChatMessage[]; id: string; editable?: boolean; retry?: boolean }) {
+  const { status } = useLyra();
   // A call, and the approval (or question) it waits for when it's this one.
   const call = (c: ChatMessage["calls"][number]) => {
     const ask = asks.find((a) => a.call_id === c.id);
@@ -198,7 +199,7 @@ function MessageView({ m, results, streaming, asking, asks, max, model, turn, id
       const working = m.content.includes("· working on it");
       const [head, ...rest] = m.content.split("\n");
       return (
-        <AgentTask head={head} working={working} steps={m.calls?.length ? m.calls.map(call) : <div className="text-muted-foreground text-xs">{working ? "starting…" : "no steps"}</div>}>
+        <AgentTask head={head} working={working} look={(status.agents ?? []).find((a) => head.startsWith(`${a.title} `))} steps={m.calls?.length ? m.calls.map(call) : <div className="text-muted-foreground text-xs">{working ? "starting…" : "no steps"}</div>}>
           {rest.join("\n").trim() && (
             <div className="mt-3 text-sky-100/90">
               <MessageResponse>{rest.join("\n")}</MessageResponse>

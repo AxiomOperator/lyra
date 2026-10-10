@@ -399,7 +399,7 @@ pub fn delegate(
     let mut defs: Vec<Value> = allowed.iter().map(lyra_capabilities::Capability::definition).collect();
     let can_delegate = profile.permission_policy.can_delegate && depth < s.max_depth;
     // A member's agents can't hand work to the Operator or the Coder.
-    let others: Vec<AgentProfile> = env.agents.registry.enabled().into_iter().filter(|a| a.name != profile.name && !(env.member && admin_only(&a.name))).collect();
+    let others: Vec<AgentProfile> = env.agents.registry.enabled().into_iter().filter(|a| a.name != profile.name && env.may_use(a)).collect();
     if can_delegate && !others.is_empty() {
         defs.push(delegate_tool(&others));
     }
@@ -568,8 +568,8 @@ fn nested(env: &Env, from: &AgentProfile, args: &str, depth: u32, run: Option<Uu
     let Some(to) = a["agent"].as_str().and_then(|n| env.agents.registry.find(n).ok()).filter(|p| p.enabled && p.name != from.name) else {
         return json!({ "error": "no such agent" }).to_string();
     };
-    if env.member && admin_only(&to.name) {
-        return json!({ "error": format!("{} works on machines and code: that's for admins", to.title) }).to_string();
+    if let Err(why) = env.check(&to) {
+        return json!({ "error": why }).to_string();
     }
     let since = Utc::now();
     let r = on_board(env, &to, &a, || delegate(env, &to, &from.name, a["task"].as_str().unwrap_or(""), a["input"].as_str(), a["expected_output"].as_str(), depth + 1, "agent", None, run));
@@ -654,9 +654,7 @@ fn record(env: &Env, from: &str, p: &AgentProfile, task: &str, method: &str, ok:
 /// Find an agent another may talk to (enabled, not itself; a member's never the Operator or the Coder).
 fn reachable(env: &Env, name: &str, from: &str) -> Result<AgentProfile, String> {
     let to = env.agents.registry.find(name).ok().filter(|p| p.enabled && p.name != from).ok_or_else(|| format!("no agent called {name:?}"))?;
-    if env.member && admin_only(&to.name) {
-        return Err(format!("{} works on machines and code: that's for admins", to.title));
-    }
+    env.check(&to)?;
     Ok(to)
 }
 
@@ -914,8 +912,8 @@ pub fn delegate_call(env: &Env, args: &str, run: Uuid) -> String {
     let Some(to) = a["agent"].as_str().and_then(|n| env.agents.registry.find(n).ok()).filter(|p| p.enabled) else {
         return json!({ "error": "no such agent; /agents lists them" }).to_string();
     };
-    if env.member && admin_only(&to.name) {
-        return json!({ "error": format!("{} works on machines and code: that's for admins", to.title) }).to_string();
+    if let Err(why) = env.check(&to) {
+        return json!({ "error": why }).to_string();
     }
     let since = Utc::now();
     let r = on_board(env, &to, &a, || delegate(env, &to, MAIN, a["task"].as_str().unwrap_or(""), a["input"].as_str(), a["expected_output"].as_str(), 1, "tool", None, Some(run)));
@@ -966,6 +964,7 @@ pub const COMMANDS: &str = "\
 /agent ask <name> <task>     hand it a task (or just write @writer … in a message)
 /agent edit <name> <field> <value>   instructions, role, description, tools, memory, auto, model, max_risk, example
 /agent enable|disable|delete <name> · history <name> · rollback <name> [version]
+/agent duplicate <name> <new name>   a copy to change · look <name> <colour> [icon] · share <name> on|off (members may use it)
 /agent skill <skill> <agent|global>  make a skill an agent's own, or shared again";
 
 pub fn list(agents: &Agents) -> String {
@@ -1081,7 +1080,14 @@ pub fn edit(agents: &Agents, rest: &str) -> Result<String, String> {
 /// One row of the Agents panel.
 #[derive(Debug, Clone)]
 pub struct PanelRow {
+    pub name: String,
     pub title: String,
+    /// Its colour and icon in the app.
+    pub color: String,
+    pub icon: String,
+    /// Members may use it.
+    pub shared: bool,
+    pub description: String,
     pub enabled: bool,
     pub auto: bool,
     pub delegations: u32,
@@ -1098,7 +1104,18 @@ pub fn panel(agents: &Agents) -> Vec<PanelRow> {
         .into_iter()
         .map(|a| {
             let s = stats.get(&a.name).cloned().unwrap_or_default();
-            PanelRow { title: a.title, enabled: a.enabled, auto: a.delegation.auto_delegate, delegations: s.delegations, corrected: s.corrected }
+            PanelRow {
+                color: a.color().to_string(),
+                icon: a.icon().to_string(),
+                shared: a.shared && !admin_only(&a.name),
+                name: a.name,
+                title: a.title,
+                description: a.description,
+                enabled: a.enabled,
+                auto: a.delegation.auto_delegate,
+                delegations: s.delegations,
+                corrected: s.corrected,
+            }
         })
         .collect()
 }
@@ -1126,7 +1143,7 @@ pub fn auto_delegate(env: &Env, message: &str, run: Uuid, history: &mut Vec<Valu
     };
     let profile = env.agents.registry.get(&d.agent)?;
     // Machines and coding are admins' (the tools refuse them anyway).
-    if env.member && admin_only(&profile.name) {
+    if !env.may_use(&profile) {
         return None;
     }
     emit(&env.tx, AgentEvent::Routed { agent: profile.title.clone(), method: d.method, confidence: d.confidence, reason: d.reason.clone() });
@@ -1146,6 +1163,23 @@ pub fn auto_delegate(env: &Env, message: &str, run: Uuid, history: &mut Vec<Valu
 /// lyra itself, when the main conversation asks the user to approve something.
 pub fn main_profile() -> AgentProfile {
     AgentProfile::new("lyra", "lyra", "the main conversation")
+}
+
+impl Env {
+    /// Whether this turn may use `p`: an admin's may use any; a member's only
+    /// those an admin shared, and never the Operator or the Coder.
+    pub fn may_use(&self, p: &AgentProfile) -> bool {
+        !self.member || (p.shared && !admin_only(&p.name))
+    }
+
+    /// The same, with why not.
+    pub fn check(&self, p: &AgentProfile) -> Result<(), String> {
+        match self.may_use(p) {
+            true => Ok(()),
+            false if admin_only(&p.name) => Err(format!("{} works on machines and code: that's for admins", p.title)),
+            false => Err(format!("{} isn't shared with members (an admin decides that)", p.title)),
+        }
+    }
 }
 
 /// Agents that work on machines or code: only for admins.
@@ -1617,6 +1651,44 @@ impl crate::App {
             "enable" | "disable" => {
                 let p = agents.registry.set_enabled(rest, sub == "enable")?;
                 changed(self, format!("{} {}d", p.title, sub))
+            }
+            // A copy to change: `/agent duplicate writer Formal writer`.
+            "duplicate" | "copy" => {
+                let (key, title) = rest.split_once(' ').ok_or("/agent duplicate <name> <new name>")?;
+                let p = agents.registry.duplicate(key, title)?;
+                changed(self, format!("{} made, a copy of {key} ({}): change it with /agent edit {} …", p.title, p.name, p.name))
+            }
+            // Its colour and icon in the app.
+            "look" => {
+                let mut parts = rest.split_whitespace();
+                let (key, color, icon) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+                let mut p = agents.registry.find(key)?;
+                if !color.is_empty() && color != "-" {
+                    if !lyra_agents::COLORS.contains(&color) {
+                        return Err(format!("colours: {}", lyra_agents::COLORS.join(", ")));
+                    }
+                    p.look.color = color.into();
+                }
+                if !icon.is_empty() {
+                    if !lyra_agents::ICONS.contains(&icon) {
+                        return Err(format!("icons: {}", lyra_agents::ICONS.join(", ")));
+                    }
+                    p.look.icon = icon.into();
+                }
+                let p = agents.registry.update(p, "look")?;
+                changed(self, format!("{} is {} with the {} icon", p.title, p.color(), p.icon()))
+            }
+            // Whether members may use it (the Operator and the Coder never).
+            "share" => {
+                let (key, on) = rest.split_once(' ').map_or((rest, "on"), |(k, v)| (k, v.trim()));
+                let mut p = agents.registry.find(key)?;
+                if admin_only(&p.name) && on != "off" {
+                    return Err(format!("{} works on machines and code: it stays with admins", p.title));
+                }
+                p.shared = !matches!(on, "off" | "no" | "false");
+                let reason = if p.shared { "shared with members" } else { "kept to admins" };
+                let p = agents.registry.update(p, reason)?;
+                changed(self, format!("{} {}", p.title, if p.shared { "is shared with members" } else { "is for admins only now" }))
             }
             "delete" => {
                 let what = agents.registry.delete(rest)?;
@@ -2148,6 +2220,41 @@ mod tests {
         let panel = crate::ui::agents_panel(&app, 60).1;
         let text: Vec<String> = panel.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect()).collect();
         assert!(text.iter().any(|l| l.contains("board: 1 open")), "{text:#?}");
+    }
+
+    #[test]
+    fn agents_have_a_look_can_be_copied_and_members_get_only_shared_ones() {
+        let (url, _requests) = scripted_model(|_| json!({ "role": "assistant", "content": "done\nCONFIDENCE: 0.9" }));
+        let mut f = fixture(&url);
+        let mut app = app_with(f.env.agents.clone(), "look-conv");
+        // A look of its own kind until one is chosen; then its own.
+        let writer = f.env.agents.registry.get("writer").unwrap();
+        assert_eq!(writer.icon(), "pen");
+        assert!(lyra_agents::COLORS.contains(&writer.color()));
+        assert!(app.agents_command("/agent", "look writer violet sparkles").unwrap().contains("violet"));
+        let writer = f.env.agents.registry.get("writer").unwrap();
+        assert_eq!((writer.color(), writer.icon()), ("violet", "sparkles"));
+        assert!(app.agents_command("/agent", "look writer plaid").is_err(), "only the app's colours");
+        // A copy: its own agent, the same instructions and look.
+        assert!(app.agents_command("/agent", "duplicate writer Formal writer").unwrap().contains("Formal writer made"));
+        let copy = f.env.agents.registry.get("formal-writer").unwrap();
+        assert_eq!((copy.instructions == writer.instructions, copy.color(), copy.version), (true, "violet", 1));
+        assert_ne!(copy.id, writer.id);
+        assert!(app.agents_command("/agent", "duplicate writer Formal writer").is_err(), "the name is taken");
+        // Shared with members: an admin's choice; the Operator never.
+        app.agents_command("/agent", "share writer off").unwrap();
+        assert!(app.agents_command("/agent", "share operator on").is_err());
+        f.env.member = true;
+        let writer = f.env.agents.registry.get("writer").unwrap();
+        assert!(!f.env.may_use(&writer) && f.env.may_use(&copy));
+        assert!(delegate_call(&f.env, r#"{"agent":"writer","task":"x"}"#, Uuid::new_v4()).contains("isn't shared with members"));
+        assert!(delegate_call(&f.env, r#"{"agent":"operator","task":"x"}"#, Uuid::new_v4()).contains("for admins"));
+        assert!(delegate_call(&f.env, r#"{"agent":"formal-writer","task":"x"}"#, Uuid::new_v4()).contains("done"));
+        f.env.member = false;
+        assert!(f.env.may_use(&writer), "admins use any");
+        // The app's view of them carries the look and who may use them.
+        let row = panel(&f.env.agents).into_iter().find(|r| r.name == "writer").unwrap();
+        assert_eq!((row.color.as_str(), row.icon.as_str(), row.shared), ("violet", "sparkles", false));
     }
 
     #[test]

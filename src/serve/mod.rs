@@ -231,7 +231,10 @@ fn status(app: &App, machines: &[String]) -> Value {
             g.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
             g
         }),
-        "agents": app.agents_panel.iter().map(|a| json!({ "title": a.title, "working": active.contains(&a.title), "enabled": a.enabled })).collect::<Vec<_>>(),
+        "agents": app.agents_panel.iter().map(|a| json!({
+            "name": a.name, "title": a.title, "description": a.description, "working": active.contains(&a.title), "enabled": a.enabled,
+            "color": a.color, "icon": a.icon, "shared": a.shared, "admin_only": crate::agents::admin_only(&a.name), "delegations": a.delegations,
+        })).collect::<Vec<_>>(),
     })
     .as_object()
     .map(|m| {

@@ -59,6 +59,7 @@ import {
   Pin,
   PinOff,
   Sun,
+  Bot,
 } from "lucide-react";
 import { loadOpen, onOpenChange, setOpen } from "./lyra/rail";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ComponentType, type FormEvent, type ReactNode } from "react";
@@ -129,6 +130,7 @@ const AboutMePage = page(() => import("./lyra/aboutme"), "AboutMePage");
 const ProjectsPage = page(() => import("./lyra/projects"), "ProjectsPage");
 const StatusPage = page(() => import("./lyra/status"), "StatusPage");
 const TodayPage = page(() => import("./lyra/today"), "TodayPage");
+const AgentsPage = page(() => import("./lyra/agents"), "AgentsPage");
 const ActivityPage = page(() => import("./lyra/pages"), "ActivityPage");
 const DevicesPage = page(() => import("./lyra/pages"), "DevicesPage");
 const MachinesPage = page(() => import("./lyra/pages"), "MachinesPage");
@@ -142,8 +144,8 @@ function Loading() {
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "today" | "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "me" | "running" | "profile";
-const manage: Manage[] = ["today", "me", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings", "running", "profile"];
+type Manage = "today" | "agents" | "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "me" | "running" | "profile";
+const manage: Manage[] = ["today", "agents", "me", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings", "running", "profile"];
 /** What a member (not an admin) has: their chats, day, tasks, activity, skills (Status is admins'). */
 const forMembers: string[] = ["chat", "today", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage", "meetings", "me", "profile"];
 
@@ -160,7 +162,7 @@ const railGroups: { id: string; label: string; icon: typeof MessageSquare; pages
   { id: "chat", label: "Chat", icon: MessageSquare, pages: ["chat"] },
   { id: "work", label: "Work", icon: Briefcase, pages: ["today", "tasks", "meetings", "notes", "projects"] },
   { id: "knowledge", label: "Knowledge", icon: Brain, pages: ["memory", "skills"] },
-  { id: "automation", label: "Automation", icon: Zap, pages: ["routines", "goals", "coding"] },
+  { id: "automation", label: "Automation", icon: Zap, pages: ["agents", "routines", "goals", "coding"] },
   { id: "system", label: "System", icon: Shield, pages: ["status", "machines", "devices", "users", "usage", "running", "model", "activity", "settings"] },
   { id: "help", label: "Help", icon: CircleHelp, pages: ["qa", "feedback", "whatsnew"] },
 ];
@@ -513,6 +515,7 @@ function Shell() {
   const pmiWaiting = (status.pmi?.waiting.task_transfers?.length ?? 0) + (status.pmi?.waiting.project_transfers?.length ?? 0) + (status.pmi?.waiting.approvals?.length ?? 0);
   const more: TabItem[] = ([
     { id: "today", label: "Today", icon: Sun },
+    { id: "agents", label: "Agents", icon: Bot },
     { id: "tasks", label: "Tasks", icon: ListTodo, badge: (status.pmi?.tasks ?? []).filter((t) => t.due && t.due < todayKey).length + pmiWaiting },
     { id: "meetings", label: "Meetings", icon: CalendarDays },
     { id: "notes", label: "Notes", icon: NotebookPen },
@@ -617,6 +620,7 @@ function Shell() {
           {tab === "chat" && <ChatPage />}
           {tab === "status" && admin && <StatusPage toMachines={() => setTab("machines")} toChat={() => setTab("chat")} />}
           {tab === "today" && <TodayPage go={(p) => setTab(p as Tab)} />}
+          {tab === "agents" && admin && <AgentsPage onBack={toMore} />}
           {tab === "machines" && <MachinesPage mention={mention} toStatus={() => setTab("status")} toChat={() => setTab("chat")} />}
           {tab === "devices" && <DevicesPage />}
           {tab === "activity" && <ActivityPage />}

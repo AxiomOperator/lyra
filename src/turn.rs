@@ -680,7 +680,8 @@ pub(crate) fn converse(
             };
             // The main agent can hand work to a specialist itself.
             if let Some(env) = agents {
-                let enabled = env.agents.registry.enabled();
+                // A member's turn: only the agents shared with members.
+                let enabled: Vec<_> = env.agents.registry.enabled().into_iter().filter(|a| env.may_use(a)).collect();
                 if !enabled.is_empty() {
                     definitions.push(agents::delegate_tool(&enabled));
                     // The conversation's task board, shared with the agents.
@@ -688,7 +689,7 @@ pub(crate) fn converse(
                         definitions.extend(crate::board::definitions());
                     }
                     // A group discussion between agents.
-                    let talkers: Vec<_> = enabled.iter().filter(|a| !(env.member && agents::admin_only(&a.name))).cloned().collect();
+                    let talkers = enabled.clone();
                     if talkers.len() >= 2 && !matches!(how.offer, Offer::Nothing) {
                         definitions.push(agents::huddle_tool(&talkers));
                         definitions.push(agents::swarm_tool(&talkers));

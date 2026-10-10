@@ -12,8 +12,9 @@ import { Suggestion } from "@/components/ai-elements/suggestion";
 import { Task, TaskContent, TaskTrigger } from "@/components/ai-elements/task";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { cn } from "@/lib/utils";
-import { Bot, Brain, ChevronDown, Globe, ShieldAlert } from "lucide-react";
+import { Brain, ChevronDown, Globe, ShieldAlert } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
+import { agentLook } from "./agents";
 import { useLyra } from "./store";
 import type { Approval, ChatMessage } from "./types";
 
@@ -183,14 +184,16 @@ export function approvalCall(messages: ChatMessage[], results: Map<string, strin
 // ---- an agent's work
 
 /** One delegation: what it's doing (live), its steps, how it went. */
-export function AgentTask({ head, working, steps, children }: { head: string; working: boolean; steps: ReactNode; children?: ReactNode }) {
+export function AgentTask({ head, working, steps, children, look }: { head: string; working: boolean; steps: ReactNode; children?: ReactNode; look?: { color?: string; icon?: string } }) {
+  // The agent's own colour and icon (a huddle: the group's bot).
+  const { colors, Icon } = agentLook(look);
   return (
-    <Task defaultOpen className="rounded-lg border border-sky-900/60 bg-sky-950/30 p-3 text-sm">
+    <Task defaultOpen className={cn("rounded-lg border p-3 text-sm", colors.card)}>
       <TaskTrigger title={head}>
         <div className="group flex w-full cursor-pointer items-start gap-2 text-left">
-          <Bot className="mt-0.5 size-4 shrink-0 text-sky-400" />
-          <div className="min-w-0 flex-1">{working ? <Shimmer className="text-sky-200">{head}</Shimmer> : <span className="font-medium text-sky-200">{head}</span>}</div>
-          <ChevronDown className="mt-0.5 size-4 shrink-0 text-sky-400/70 transition-transform group-data-[state=open]:rotate-180" />
+          <Icon className={cn("mt-0.5 size-4 shrink-0", colors.icon)} />
+          <div className="min-w-0 flex-1">{working ? <Shimmer className={colors.text}>{head}</Shimmer> : <span className={cn("font-medium", colors.text)}>{head}</span>}</div>
+          <ChevronDown className={cn("mt-0.5 size-4 shrink-0 opacity-70 transition-transform group-data-[state=open]:rotate-180", colors.icon)} />
         </div>
       </TaskTrigger>
       <TaskContent>

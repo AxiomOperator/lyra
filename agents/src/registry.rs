@@ -179,6 +179,23 @@ impl AgentRegistry {
         Ok(p)
     }
 
+    /// A copy of an agent under a new name (`title`): its instructions, tools,
+    /// policies and look, as a new agent of its own (version 1, its own record).
+    pub fn duplicate(&self, key: &str, title: &str) -> Result<AgentProfile, String> {
+        let from = self.find(key)?;
+        let title = title.trim();
+        if title.is_empty() {
+            return Err("give the copy a name".into());
+        }
+        let fresh = AgentProfile::new(&AgentProfile::slug(title), title, &from.description);
+        let mut p = from.clone();
+        p.id = fresh.id;
+        p.name = fresh.name;
+        p.title = fresh.title;
+        p.template = from.template.clone().or_else(|| Some(from.name.clone()));
+        self.create(p, &format!("duplicated from {}", from.name))
+    }
+
     /// Save a changed agent as a new version (A13).
     pub fn update(&self, mut p: AgentProfile, reason: &str) -> Result<AgentProfile, String> {
         validate(&p)?;

@@ -114,7 +114,7 @@ export interface Status {
   title?: string | null;
   approvals?: Approval[];
   machines?: string[];
-  agents?: { title: string; working: boolean; enabled: boolean }[];
+  agents?: { name: string; title: string; description: string; working: boolean; enabled: boolean; color: string; icon: string; shared: boolean; admin_only: boolean; delegations: number }[];
   online?: { id: string; name: string }[];
   pairing?: PairRequest[];
   machines_detail?: Machine[];
