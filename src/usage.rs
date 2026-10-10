@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Mutex, RwLock};
+use std::sync::{LazyLock, Mutex, RwLock};
 
 use chrono::{DateTime, Datelike, Duration, Local, Utc};
 use serde::{Deserialize, Serialize};
@@ -47,8 +47,41 @@ pub fn job() -> Option<String> {
     JOB.with(|j| j.borrow().clone())
 }
 
-/// What one conversation's calls cost since `since`: tokens, time, money.
+/// Each conversation's calls since lyra started, in memory: what's running
+/// costs so far without reading the month's file (Running now asks every few seconds).
+static RECENT: LazyLock<Mutex<HashMap<String, Vec<Call>>>> = LazyLock::new(Default::default);
+
+fn remember(c: &Call) {
+    let Some(job) = c.job.clone() else { return };
+    let mut all = RECENT.lock().unwrap_or_else(|e| e.into_inner());
+    // Conversations not heard from for two days go (it's for what's running).
+    if all.len() > 200 {
+        let old = Utc::now() - Duration::days(2);
+        all.retain(|_, calls| calls.last().is_some_and(|l| l.at > old));
+    }
+    let calls = all.entry(job).or_default();
+    calls.push(c.clone());
+    if calls.len() > 5_000 {
+        calls.drain(..1_000);
+    }
+}
+
+/// What one conversation's calls cost since `since`, from memory only (no file read).
+pub fn spent_now(job: &str, since: DateTime<Utc>) -> Total {
+    let p = prices();
+    let mut t = Total::default();
+    for c in RECENT.lock().unwrap_or_else(|e| e.into_inner()).get(job).into_iter().flatten().filter(|c| c.at >= since) {
+        t.add(c, &p);
+    }
+    t
+}
+
+/// What one conversation's calls cost since `since`: from memory when lyra
+/// has been up since then, else from the month files (off the loop only).
 pub fn spent(job: &str, since: DateTime<Utc>) -> Total {
+    if since >= *STARTED {
+        return spent_now(job, since);
+    }
     let p = prices();
     let mut t = Total::default();
     for c in self::since(since).iter().filter(|c| c.job.as_deref() == Some(job)) {
@@ -56,6 +89,9 @@ pub fn spent(job: &str, since: DateTime<Utc>) -> Total {
     }
     t
 }
+
+/// When this lyra started (calls since then are in memory).
+static STARTED: LazyLock<DateTime<Utc>> = LazyLock::new(Utc::now);
 
 /// Prices per million tokens (`input_cost_per_mtok` …), for an estimate:
 /// the chat model's, and each other model's from its own section.
@@ -113,6 +149,7 @@ static PRICES: RwLock<Option<Prices>> = RwLock::new(None);
 static WRITE: Mutex<()> = Mutex::new(());
 
 pub fn configure(p: Prices) {
+    LazyLock::force(&STARTED);
     *PRICES.write().unwrap_or_else(|e| e.into_inner()) = Some(p);
 }
 
@@ -130,6 +167,8 @@ pub fn record(kind: &str, model: &str, input: u64, cached: u64, output: u64, ms:
         return;
     }
     let c = Call { at: Utc::now(), user: crate::acting::current(), kind: kind.into(), model: model.into(), input, cached, output, ms, job: job() };
+    LazyLock::force(&STARTED);
+    remember(&c);
     let Some(d) = dir() else { return };
     let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let _ = std::fs::create_dir_all(&d);

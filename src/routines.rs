@@ -361,9 +361,9 @@ pub fn record(name: &str, run: Run) {
     let _guard = RUNS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut all = runs();
     let list = all.entry(name.to_string()).or_default();
-    // The finished run takes the place of its "running" entry (read as
-    // "interrupted" once it's no longer running, a moment before this).
-    list.retain(|x| !(x.session == run.session && x.seconds == 0 && matches!(x.outcome.as_str(), "running" | "interrupted")));
+    // A run is one conversation: what's kept for it now (its "running" entry,
+    // its first record before the check and the email) gives way to this.
+    list.retain(|x| x.session != run.session);
     list.insert(0, run);
     list.truncate(KEEP_RUNS);
     save_runs(&all);

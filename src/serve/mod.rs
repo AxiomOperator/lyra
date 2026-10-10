@@ -108,6 +108,41 @@ impl crate::caps::Remote for HubRemote {
     }
 }
 
+/// Each person's quiet time (outside work hours, in a meeting), worked out
+/// off the loop (it asks their Outlook calendar, which can take a while) and
+/// kept for 5 minutes; the loop only reads what's known.
+pub(crate) struct QuietTimes {
+    seen: std::collections::HashMap<String, (bool, Instant)>,
+    asking: std::collections::HashSet<String>,
+    tx: std::sync::mpsc::Sender<(String, bool)>,
+    rx: std::sync::mpsc::Receiver<(String, bool)>,
+}
+
+impl QuietTimes {
+    pub(crate) fn new() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        Self { seen: Default::default(), asking: Default::default(), tx, rx }
+    }
+
+    /// Whether they're in quiet time: what's known (asked again after 5
+    /// minutes, off the loop), `None` while it's first being looked up.
+    pub(crate) fn now(&mut self, user: &str) -> Option<bool> {
+        while let Ok((u, q)) = self.rx.try_recv() {
+            self.asking.remove(&u);
+            self.seen.insert(u, (q, Instant::now()));
+        }
+        let fresh = self.seen.get(user).is_some_and(|(_, at)| at.elapsed() < Duration::from_secs(300));
+        if !fresh && self.asking.insert(user.to_string()) {
+            let (tx, user) = (self.tx.clone(), user.to_string());
+            std::thread::spawn(move || {
+                let q = crate::planner::quiet(&user);
+                let _ = tx.send((user, q));
+            });
+        }
+        self.seen.get(user).map(|(q, _)| *q)
+    }
+}
+
 /// lyra was asked to stop (SIGTERM, Ctrl-C): nothing new starts while what's
 /// running finishes (up to [`drain`]); runs still going start again after.
 pub(crate) static STOPPING: std::sync::LazyLock<std::sync::Arc<std::sync::atomic::AtomicBool>> = std::sync::LazyLock::new(Default::default);

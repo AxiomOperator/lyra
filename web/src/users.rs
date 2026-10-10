@@ -167,12 +167,21 @@ impl Users {
         Users { path: dir.join("users.json") }
     }
 
+    /// Everyone (none when the file can't be read: nothing is overwritten then).
     pub fn list(&self) -> Vec<User> {
-        std::fs::read_to_string(&self.path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        self.load().unwrap_or_else(|e| {
+            eprintln!("{e}");
+            Vec::new()
+        })
     }
 
     fn save(&self, users: &[User]) -> Result<(), String> {
-        crate::devices::write_private(&self.path, &serde_json::to_string_pretty(users).map_err(|e| e.to_string())?)
+        crate::jsonfile::write(&self.path, users, true)
+    }
+
+    /// Everyone, or why the file can't be read (a change then doesn't happen).
+    fn load(&self) -> Result<Vec<User>, String> {
+        crate::jsonfile::read(&self.path)
     }
 
     pub fn get(&self, id: &str) -> Option<User> {
@@ -187,7 +196,8 @@ impl Users {
 
     /// The first user (an admin) when there are none yet. Returns whether one was made.
     pub fn ensure_owner(&self, name: &str) -> Result<bool, String> {
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.path);
+        let mut all = self.load()?;
         if !all.is_empty() {
             return Ok(false);
         }
@@ -197,7 +207,8 @@ impl Users {
 
     /// A new user (or the same one again: their details refreshed).
     pub fn upsert(&self, user: User) -> Result<User, String> {
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.path);
+        let mut all = self.load()?;
         match all.iter_mut().find(|u| u.id == user.id) {
             Some(u) => {
                 u.name = user.name;
@@ -217,7 +228,8 @@ impl Users {
 
     /// Change someone: role and/or status. The last active admin stays one.
     pub fn update(&self, key: &str, role: Option<Role>, status: Option<Status>) -> Result<User, String> {
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.path);
+        let mut all = self.load()?;
         let i = index(&all, key).ok_or_else(|| format!("no user {key:?} (or more than one by that name: use their email)"))?;
         let admins = all.iter().filter(|u| u.role == Role::Admin && u.status == Status::Active).count();
         let losing = all[i].role == Role::Admin && all[i].status == Status::Active && (role == Some(Role::Member) || status.is_some_and(|s| s != Status::Active));
@@ -237,7 +249,8 @@ impl Users {
 
     /// Set (or clear, with `None`) someone's own tool-call limit.
     pub fn set_tool_rounds(&self, key: &str, rounds: Option<u32>) -> Result<User, String> {
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.path);
+        let mut all = self.load()?;
         let i = index(&all, key).ok_or_else(|| format!("no user {key:?} (or more than one by that name: use their email)"))?;
         all[i].tool_rounds = rounds;
         let u = all[i].clone();
@@ -250,7 +263,8 @@ impl Users {
     /// which). Their old password keeps working until the link is used.
     pub fn start_reset(&self, username: &str) -> Result<Option<(User, String)>, String> {
         let key = username.trim().to_lowercase();
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.path);
+        let mut all = self.load()?;
         let Some(i) = all.iter().position(|u| !u.username.is_empty() && u.username == key) else { return Ok(None) };
         if all[i].status != Status::Active || !all[i].email.contains('@') {
             return Ok(None);
@@ -267,7 +281,8 @@ impl Users {
     pub fn finish_reset(&self, token: &str, new: &str) -> Result<User, String> {
         check_strength(new)?;
         let wanted = sha(token);
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.path);
+        let mut all = self.load()?;
         let i = all.iter().position(|u| !u.reset.is_empty() && u.reset == wanted).ok_or("that link has been used or replaced: ask for a new one")?;
         if all[i].reset_until.is_none_or(|t| t < Utc::now()) {
             all[i].reset.clear();
@@ -294,7 +309,8 @@ impl Users {
         if !email.is_empty() && !(email.contains('@') && email.split('@').nth(1).is_some_and(|d| d.contains('.')) && !email.contains(char::is_whitespace)) {
             return Err(format!("{email:?} doesn't look like an email address"));
         }
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.path);
+        let mut all = self.load()?;
         let i = index_or_username(&all, key).ok_or_else(|| format!("no user {key:?} (or more than one by that name: use their email)"))?;
         if !email.is_empty() && all.iter().enumerate().any(|(j, u)| j != i && u.email.eq_ignore_ascii_case(email)) {
             return Err(format!("{email} is someone else's address here"));
@@ -314,7 +330,8 @@ impl Users {
         if name.is_empty() {
             return Err("give their name too (shown in lyra)".into());
         }
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.path);
+        let mut all = self.load()?;
         if all.iter().any(|u| u.username == username) {
             return Err(format!("someone already signs in as {username}"));
         }
@@ -330,7 +347,8 @@ impl Users {
     /// the owner, who'd like to sign in without Microsoft too. Or reset a
     /// forgotten password. The one-time password comes back.
     pub fn reset_password(&self, key: &str, username: Option<&str>) -> Result<(User, String), String> {
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.path);
+        let mut all = self.load()?;
         let i = index_or_username(&all, key).ok_or_else(|| format!("no user {key:?} (or more than one by that name: use their email or username)"))?;
         if let Some(n) = username {
             let n = valid_username(n)?;
@@ -353,7 +371,8 @@ impl Users {
     /// Their own new password (the old one first, unless they're changing a one-time one just after signing in with it).
     pub fn change_password(&self, id: &str, old: Option<&str>, new: &str) -> Result<User, String> {
         check_strength(new)?;
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.path);
+        let mut all = self.load()?;
         let i = all.iter().position(|u| u.id == id).ok_or("no such user")?;
         if all[i].username.is_empty() {
             return Err("ask an admin for a username first (Users → Set password)".into());
@@ -377,7 +396,8 @@ impl Users {
     pub fn sign_in(&self, username: &str, password: &str) -> Result<User, String> {
         let wrong = "that username and password don't match";
         let n = username.trim().to_lowercase();
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.path);
+        let mut all = self.load()?;
         let Some(i) = all.iter().position(|u| !u.username.is_empty() && u.username == n) else {
             // The same work either way: no telling which usernames exist by timing.
             static DUMMY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -408,7 +428,8 @@ impl Users {
     /// refreshed), the owner if it's the owner's email and the owner hasn't
     /// signed in yet, or a new member waiting for an admin.
     pub fn signed_in(&self, oid: &str, tenant: &str, name: &str, email: &str, owner_email: &str) -> Result<User, String> {
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.path);
+        let mut all = self.load()?;
         let is_owner_email = !owner_email.trim().is_empty() && email.eq_ignore_ascii_case(owner_email.trim());
         let i = match all.iter().position(|u| u.oid == oid) {
             Some(i) => i,

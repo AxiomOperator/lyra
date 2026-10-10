@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.51.1.194",
+    "date": "2026-10-09",
+    "title": "Sturdier under trouble",
+    "fixed": [
+      "A model that takes a request and then says nothing no longer leaves a conversation stuck. After 3 minutes of silence the fallback answers instead; if the model went quiet part way through an answer, lyra says so.",
+      "The paired devices and users lists can't be wiped by two changes at once or by a damaged file. Changes wait their turn, the last good copy is kept, and a file that won't read is never taken as empty.",
+      "Conversations stay quick while lyra looks things up: checking your calendar for quiet time, finding a saved conversation, the Usage and Past results pages, and Running now's costs no longer hold up everyone else.",
+      "A backup cut off part way (a restart, a crash) is never mistaken for a good one or used to throw away an older good one, and a restart waits for a backup in progress.",
+      "A routine that finished just before a restart keeps its result and is marked done, not interrupted, even if its check or email hadn't happened yet."
+    ]
+  },
+  {
     "version": "0.51.0.193",
     "date": "2026-10-09",
     "title": "Groups that stay open",

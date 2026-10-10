@@ -17,11 +17,6 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
         // A routine made or changed on the Routines page (its prompt as written).
         "routine_save" => page(crate::acting::run(&app.owner, || crate::routines::put(arg))),
         // Past results: every routine's, or one's, searchable; and one in full.
-        "routine_results" => crate::acting::run(&app.owner, || crate::routines::results_page(arg["name"].as_str().filter(|n| !n.is_empty()), arg["q"].as_str().unwrap_or(""))),
-        "routine_result" => crate::acting::run(&app.owner, || match crate::routines::result(arg["name"].as_str().unwrap_or(""), arg["at"].as_str().unwrap_or("")) {
-            Ok(text) => json!({ "text": text }),
-            Err(e) => json!({ "error": e }),
-        }),
         "briefing" => crate::briefing::last_for(&app.owner).map_or(Value::Null, |b| json!(b)),
         "recap" => crate::recap::last_for(&app.owner).map_or(Value::Null, |r| json!(r)),
         // A page of releases at a time, newest first.
@@ -108,18 +103,6 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
             },
             _ => json!([]),
         },
-        "usage" => {
-            let days = arg["days"].as_i64().unwrap_or(7);
-            let mut v = crate::usage::summary(days, (!app.admin).then_some(app.owner.as_str()));
-            let users = hub.users().list();
-            if let Some(list) = v["users"].as_array_mut() {
-                for u in list {
-                    let id = u["user"].as_str().unwrap_or("").to_string();
-                    u["name"] = json!(users.iter().find(|x| x.id == id).map_or(id, |x| x.name.clone()));
-                }
-            }
-            v
-        }
         // Their notes and lists.
         "notes" => crate::acting::run(&app.owner, crate::notes::page),
         "mail" => mail_page(&app.owner),
@@ -274,6 +257,38 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
 pub(crate) fn slow(app: &App, what: &str, arg: &Value, loaded: &Loaded) -> Option<Box<dyn FnOnce() -> Value + Send>> {
     let (owner, current) = (app.owner.clone(), app.session_id.clone());
     Some(match what {
+        // AI usage: up to a year of month files read (off the loop).
+        "usage" => {
+            let days = arg["days"].as_i64().unwrap_or(7);
+            let only = (!app.admin).then(|| owner.clone());
+            Box::new(move || {
+                let mut v = crate::usage::summary(days, only.as_deref());
+                let users = lyra_web::Users::open(&crate::config::home().unwrap_or_default().join("web")).list();
+                if let Some(list) = v["users"].as_array_mut() {
+                    for u in list {
+                        let id = u["user"].as_str().unwrap_or("").to_string();
+                        u["name"] = json!(users.iter().find(|x| x.id == id).map_or(id, |x| x.name.clone()));
+                    }
+                }
+                v
+            })
+        }
+        // Past results: every routine's, or one's, searchable (whole files read: off the loop).
+        "routine_results" | "routine_result" => {
+            let (what, arg) = (what.to_string(), arg.clone());
+            Box::new(move || {
+                crate::acting::run(&owner, || {
+                    if what == "routine_results" {
+                        crate::routines::results_page(arg["name"].as_str().filter(|n| !n.is_empty()), arg["q"].as_str().unwrap_or(""))
+                    } else {
+                        match crate::routines::result(arg["name"].as_str().unwrap_or(""), arg["at"].as_str().unwrap_or("")) {
+                            Ok(text) => json!({ "text": text }),
+                            Err(e) => json!({ "error": e }),
+                        }
+                    }
+                })
+            })
+        }
         "sessions" => {
             let loaded = loaded.clone();
             Box::new(move || sessions_page(&owner, &current, &loaded))

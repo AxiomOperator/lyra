@@ -735,6 +735,13 @@ pub(crate) fn converse(
     Ok((finish(total), true, current.1.clone()))
 }
 
+/// How long the model may say nothing (not a token, not a keep-alive) before
+/// lyra gives up on it: 3 minutes (a long prompt takes a while to read), or
+/// `LYRA_MODEL_SILENCE_SECONDS`.
+pub(crate) fn silence() -> Duration {
+    Duration::from_secs(std::env::var("LYRA_MODEL_SILENCE_SECONDS").ok().and_then(|s| s.parse().ok()).filter(|s| *s > 0).unwrap_or(180))
+}
+
 /// How a failure before the model said anything starts (the fallback may take over then).
 pub(crate) const UNREACHED: &str = "couldn't reach the chat model: ";
 
@@ -775,12 +782,27 @@ pub(crate) fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: 
     });
     let mut logged_first = false;
     let mut was_stopped = false;
+    // A model that took the request and then says nothing: given up on after a
+    // while, as unreachable when it said nothing at all (the fallback answers).
+    let mut heard = Instant::now();
+    let quiet_for = silence();
     loop {
         let line = match lines.recv_timeout(Duration::from_millis(150)) {
-            Ok(line) => line,
+            Ok(line) => {
+                heard = Instant::now();
+                line
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) if stopped(cancel) => {
                 was_stopped = true;
                 break;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if heard.elapsed() >= quiet_for => {
+                let secs = quiet_for.as_secs();
+                return Err(if chunks == 0 && tool_calls.is_empty() && content.is_empty() {
+                    format!("{UNREACHED}timed out: the model took the request but said nothing for {secs}s")
+                } else {
+                    format!("the model stopped part way through its answer (nothing for {secs}s)")
+                });
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,

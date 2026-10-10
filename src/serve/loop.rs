@@ -69,7 +69,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut last_plan = Instant::now() - Duration::from_secs(3600);
     let mut planning: std::collections::HashSet<String> = Default::default();
     let mut held: std::collections::HashMap<String, Vec<String>> = Default::default();
-    let mut quiet_seen: std::collections::HashMap<String, (bool, Instant)> = Default::default();
+    let mut quiet = QuietTimes::new();
     let mut last_held = Instant::now();
     // Proactive help: a pass every 5 minutes in the working day (mail every other one).
     let (pro_tx, pro_rx) = std::sync::mpsc::channel::<(String, crate::proactive::Pass)>();
@@ -103,6 +103,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 .filter(|c| c.app.waiting || c.app.plan_busy)
                 .map(|c| c.routine.as_ref().map_or_else(|| if c.diagnosis.is_some() { "a problem write-up".to_string() } else { format!("a reply for {}", c.app.owner) }, |(r, _)| format!("routine {}", r.name)))
                 .chain((finishing > 0).then(|| format!("{finishing} routine result(s) being recorded")))
+                .chain(crate::backup::running().then(|| "a backup".to_string()))
                 .collect();
             let since = *draining.get_or_insert_with(|| {
                 println!("stopping: {}", if busy.is_empty() { "nothing running".to_string() } else { format!("waiting up to {}s for {}", drain().as_secs(), busy.join(", ")) });
@@ -526,7 +527,6 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         std::thread::spawn(move || {
                             // Its checks count for the run too.
                             crate::usage::set_job(Some(session.clone()));
-                            let (needs_user, decided_by) = if outcome == "ok" { crate::routines::needs_user(&url, &model, &r, &text) } else { (true, "it didn't finish".into()) };
                             let summary: String = text.trim().chars().take(400).collect();
                             // The whole result, for its page and the next run.
                             if outcome == "ok"
@@ -534,6 +534,16 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                             {
                                 eprintln!("routine {}: its result wasn't kept: {e}", r.name);
                             }
+                            // Kept as done at once (a stop during the check or the email
+                            // leaves this, not "interrupted"); the full record replaces it.
+                            let early = crate::routines::Run {
+                                at: chrono::Utc::now(), seconds: started.elapsed().as_secs(), needs_user: outcome != "ok", outcome: outcome.into(), summary: summary.clone(), session: session.clone(),
+                                decided_by: if outcome == "ok" { "not checked: lyra stopped first".into() } else { "it didn't finish".into() },
+                                emailed: if r.email && outcome == "ok" { "not emailed: lyra stopped first".into() } else { String::new() },
+                                calls: 0, tokens_in: 0, tokens_out: 0, cost: 0.0,
+                            };
+                            crate::acting::run(&whose, || crate::routines::record(&r.name, early));
+                            let (needs_user, decided_by) = if outcome == "ok" { crate::routines::needs_user(&url, &model, &r, &text) } else { (true, "it didn't finish".into()) };
                             // Its result by email, to its person only.
                             let emailed = if !r.email {
                                 String::new()
@@ -761,15 +771,8 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             let owner = convs[0].app.owner.clone();
             for (user, p) in pmi.iter_mut().filter(|(_, p)| p.state.at.is_some() && p.state.error.is_none()) {
                 // Not in their quiet time (outside work hours, in a meeting): nags wait.
-                let quiet = match quiet_seen.get(user) {
-                    Some((q, at)) if at.elapsed() < Duration::from_secs(300) => *q,
-                    _ => {
-                        let q = crate::planner::quiet(user);
-                        quiet_seen.insert(user.clone(), (q, Instant::now()));
-                        q
-                    }
-                };
-                if quiet {
+                // Not known yet: it's being looked up, and they wait until it is.
+                if quiet.now(user) != Some(false) {
                     continue;
                 }
                 let (due, changed) = p.nags.due(&p.state, &s, chrono::Utc::now());
@@ -949,10 +952,9 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         // What the planner did, told once they're out of quiet time.
         if !held.is_empty() && last_held.elapsed() >= Duration::from_secs(60) {
             last_held = Instant::now();
-            let ready: Vec<String> = held.keys().filter(|u| !quiet_seen.get(*u).is_some_and(|(q, at)| *q && at.elapsed() < Duration::from_secs(300))).cloned().collect();
+            let ready: Vec<String> = held.keys().cloned().collect();
             for user in ready {
-                if crate::planner::quiet(&user) {
-                    quiet_seen.insert(user.clone(), (true, Instant::now()));
+                if quiet.now(&user) != Some(false) {
                     continue;
                 }
                 let did = held.remove(&user).unwrap_or_default();
@@ -1324,7 +1326,7 @@ fn running_view(convs: &[Conv], hub: &Hub) -> Value {
             ("reply", title(&c.app).unwrap_or_default(), None)
         };
         let since = since.or_else(|| c.app.started.map(|s| chrono::Utc::now() - chrono::Duration::from_std(s.elapsed()).unwrap_or_default()));
-        let spent = crate::usage::spent(&c.app.session_id, since.unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::hours(24)));
+        let spent = crate::usage::spent_now(&c.app.session_id, since.unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::hours(24)));
         out.push(json!({
             "session": c.app.session_id, "who": who, "kind": kind, "what": what, "since": since,
             "doing": crate::ui::doing_text(&c.app), "calls": spent.calls, "tokens_in": spent.input, "tokens_out": spent.output, "cost": spent.cost,

@@ -5,6 +5,7 @@
 //! comes from the reverse proxy in front (Zoraxy, Caddy, nginx).
 
 pub mod devices;
+pub mod jsonfile;
 pub mod oidc;
 pub mod users;
 pub mod uploads;

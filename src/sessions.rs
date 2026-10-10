@@ -149,7 +149,27 @@ pub fn list_for(dir: &Path, owner: &str) -> Vec<Session> {
 /// One of the user's own sessions by id or the start of one.
 pub fn find_for(dir: &Path, key: &str, owner: &str) -> Result<Session, String> {
     let key = key.trim();
-    let matches: Vec<Session> = list_for(dir, owner).into_iter().filter(|s| s.id.starts_with(key) || s.id.ends_with(key)).collect();
+    let mine = |s: &Session| s.owner == owner && s.user_turns() > 0;
+    // A whole id: its own file, read on its own (not every saved session).
+    if !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && let Ok(s) = load_file(&dir.join(format!("{key}.json")))
+        && mine(&s)
+    {
+        return Ok(s);
+    }
+    // Part of one: only the files whose names fit are read.
+    let matches: Vec<Session> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let id = name.strip_suffix(".json")?;
+            (!key.is_empty() && !id.starts_with('.') && id != "meta" && (id.starts_with(key) || id.ends_with(key))).then(|| e.path())
+        })
+        .filter_map(|p| load_file(&p).ok())
+        .filter(|s| mine(s) && (s.id.starts_with(key) || s.id.ends_with(key)))
+        .collect();
     match matches.len() {
         0 => Err(format!("no saved session {key:?} (lyra -r lists them)")),
         1 => Ok(matches.into_iter().next().expect("one")),

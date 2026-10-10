@@ -72,16 +72,25 @@ pub struct Devices {
     dir: PathBuf,
 }
 
-/// Write a file only its owner can read, atomically.
+/// Write a file only its owner can read, atomically (a temp file of its own,
+/// flushed before it replaces the real one).
 pub(crate) fn write_private(path: &Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let tmp = path.with_extension("tmp");
-    {
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).map_err(|e| e.to_string())?;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".tmp-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let tmp = PathBuf::from(tmp);
+    let result = (|| {
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp).map_err(|e| e.to_string())?;
         f.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+        f.sync_all().map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    result
 }
 
 impl Devices {
@@ -96,12 +105,25 @@ impl Devices {
         &self.dir
     }
 
+    fn file(&self) -> PathBuf {
+        self.dir.join("devices.json")
+    }
+
+    /// Every device (none when the file can't be read: nobody gets in, and nothing is overwritten).
     pub fn list(&self) -> Vec<Device> {
-        std::fs::read_to_string(self.dir.join("devices.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        self.load().unwrap_or_else(|e| {
+            eprintln!("{e}");
+            Vec::new()
+        })
+    }
+
+    /// Every device, or why the file can't be read (a change then doesn't happen).
+    fn load(&self) -> Result<Vec<Device>, String> {
+        crate::jsonfile::read(&self.file())
     }
 
     fn save(&self, devices: &[Device]) -> Result<(), String> {
-        write_private(&self.dir.join("devices.json"), &serde_json::to_string_pretty(devices).map_err(|e| e.to_string())?)
+        crate::jsonfile::write(&self.file(), devices, true)
     }
 
     /// A new pairing code (valid for `minutes`); replaces any earlier one.
@@ -151,7 +173,8 @@ impl Devices {
         }
         let token = random(43, b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
         let name: String = name.trim().chars().take(60).collect();
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.file());
+        let mut all = self.load()?;
         // A machine's name is how lyra addresses it: one node per name.
         if kind == "node" && all.iter().any(|d| d.kind == "node" && d.name.eq_ignore_ascii_case(&name)) {
             return Err(format!("a machine called {name:?} is already paired (lyra devices remove {name})"));
@@ -183,19 +206,23 @@ impl Devices {
             return None;
         }
         let h = hash(token);
-        let mut all = self.list();
-        let d = all.iter_mut().find(|d| d.token_hash == h)?;
-        if Utc::now() - d.last_seen > Duration::minutes(5) {
-            d.last_seen = Utc::now();
-            let found = d.clone();
-            let _ = self.save(&all);
-            return Some(found);
+        // Every request asks: read without the lock; take it only to note "seen".
+        let d = self.load().ok()?.into_iter().find(|d| d.token_hash == h)?;
+        if Utc::now() - d.last_seen <= Duration::minutes(5) {
+            return Some(d);
         }
-        Some(d.clone())
+        let _held = crate::jsonfile::hold(&self.file());
+        let Ok(mut all) = self.load() else { return Some(d) };
+        let now = all.iter_mut().find(|x| x.token_hash == h)?;
+        now.last_seen = Utc::now();
+        let found = now.clone();
+        let _ = self.save(&all);
+        Some(found)
     }
 
     pub fn set_last_session(&self, id: &str, session: &str) -> Result<(), String> {
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.file());
+        let mut all = self.load()?;
         let d = all.iter_mut().find(|d| d.id == id).ok_or("no such device")?;
         if d.last_session.as_deref() == Some(session) {
             return Ok(());
@@ -205,7 +232,8 @@ impl Devices {
     }
 
     pub fn set_push(&self, id: &str, sub: Option<Subscription>) -> Result<(), String> {
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.file());
+        let mut all = self.load()?;
         let d = all.iter_mut().find(|d| d.id == id).ok_or("no such device")?;
         d.push = sub;
         self.save(&all)
@@ -213,7 +241,8 @@ impl Devices {
 
     /// Devices from before users existed belong to the owner. Returns how many.
     pub fn adopt(&self, user: &str) -> Result<usize, String> {
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.file());
+        let mut all = self.load()?;
         let mut n = 0;
         for d in all.iter_mut().filter(|d| d.kind == "device" && d.user.is_none()) {
             d.user = Some(user.to_string());
@@ -227,7 +256,8 @@ impl Devices {
 
     /// Move every device of one user to another id (the owner signing in with Microsoft).
     pub fn reassign(&self, from: &str, to: &str) -> Result<(), String> {
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.file());
+        let mut all = self.load()?;
         for d in all.iter_mut().filter(|d| d.user.as_deref() == Some(from)) {
             d.user = Some(to.to_string());
         }
@@ -235,7 +265,8 @@ impl Devices {
     }
 
     pub fn remove(&self, key: &str) -> Result<Device, String> {
-        let mut all = self.list();
+        let _held = crate::jsonfile::hold(&self.file());
+        let mut all = self.load()?;
         let i = all.iter().position(|d| d.id == key || d.name.eq_ignore_ascii_case(key)).ok_or(format!("no device {key:?}"))?;
         let d = all.remove(i);
         self.save(&all)?;

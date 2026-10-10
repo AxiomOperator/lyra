@@ -187,6 +187,15 @@ fn make(home: &Path, settings: &Settings, memory: Memory) -> Made {
         return Err(format!("[backup] dir {} is inside {}; put it outside", dir.display(), home.display()));
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // What an interrupted one left (one runs at a time, so none of it is live).
+    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.starts_with(".staging-") {
+            let _ = std::fs::remove_dir_all(e.path());
+        } else if name.ends_with(".partial") {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
     let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
     let stage = dir.join(format!(".staging-{stamp}"));
     let mut notes = Vec::new();
@@ -219,16 +228,21 @@ fn make(home: &Path, settings: &Settings, memory: Memory) -> Made {
         Ok::<usize, String>(files)
     })();
     let archive = dir.join(format!("lyra-{stamp}.tar.gz"));
+    // Written under a name `list` doesn't count, and named a backup only when
+    // whole: one cut off part way is never taken for the newest good one.
+    let partial = dir.join(format!(".lyra-{stamp}.tar.gz.partial"));
     let packed = staged.and_then(|_| {
-        let file = std::fs::File::create(&archive).map_err(|e| e.to_string())?;
+        let file = std::fs::File::create(&partial).map_err(|e| e.to_string())?;
         let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(file, flate2::Compression::default()));
         tar.follow_symlinks(false);
         tar.append_dir_all(".", &stage).map_err(|e| e.to_string())?;
-        tar.into_inner().and_then(|gz| gz.finish()).map(|_| ()).map_err(|e| e.to_string())
+        let file = tar.into_inner().and_then(|gz| gz.finish()).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        std::fs::rename(&partial, &archive).map_err(|e| e.to_string())
     });
     let _ = std::fs::remove_dir_all(&stage);
     if let Err(e) = packed {
-        let _ = std::fs::remove_file(&archive);
+        let _ = std::fs::remove_file(&partial);
         return Err(e);
     }
     // Only its owner reads it: it holds tokens' hashes, keys and conversations.
@@ -306,6 +320,18 @@ pub fn describe(dir: &Path, settings: &Settings) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_backup_cut_off_part_way_is_never_listed() {
+        let dir = std::env::temp_dir().join(format!("lyra-backup-partial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lyra-20261001-033000.tar.gz"), b"whole").unwrap();
+        std::fs::write(dir.join(".lyra-20261009-033000.tar.gz.partial"), b"half").unwrap();
+        let names: Vec<String> = list(&dir).into_iter().map(|b| b.name).collect();
+        assert_eq!(names, ["lyra-20261001-033000.tar.gz"], "the half-written one isn't a backup");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn nightly_backups_are_due_once_after_their_time() {
