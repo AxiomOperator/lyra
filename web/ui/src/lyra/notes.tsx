@@ -1,18 +1,23 @@
-// Notes and lists: the person's own (Markdown files on the server). Changes
-// go through lyra's commands; lists tick off with a tap.
+// Notes: the person's own notes, lists and documents (Markdown files on the
+// server). A quick line adds a note or to a list; lists tick off with a tap;
+// any note opens in the editor, where lyra drafts and revises it and it goes
+// to Word, OneDrive or a mail draft.
 
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { CheckSquare, Plus, Square, Trash2 } from "lucide-react";
+import { ArrowLeft, CheckSquare, FilePlus, Plus, Square, SquarePen, Trash2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
+import { Editor } from "./documents";
 import { takeIntent } from "./intent";
 import { Back, Failed, Page, useAction, useConfirm } from "./parts";
-import { useData } from "./store";
+import { useData, useLyra } from "./store";
 
 interface NoteView {
+  slug: string;
   title: string;
+  words: number;
   updated: string;
   list: boolean;
   items: { done: boolean; text: string }[];
@@ -20,7 +25,11 @@ interface NoteView {
 }
 
 export function NotesPage({ onBack }: { onBack: () => void }) {
+  const { call } = useLyra();
   const [data, reload] = useData<NoteView[] | { error: string }>("notes");
+  // The note open in the editor (its file name), if any.
+  const [open, setOpen] = useState<string | null>(null);
+  const [failed, setFailed] = useState("");
   const { act, busy, note } = useAction(reload);
   const [confirm, dialog] = useConfirm();
   const [text, setText] = useState("");
@@ -38,14 +47,36 @@ export function NotesPage({ onBack }: { onBack: () => void }) {
     const ok = list && body ? await act(`/list ${head.trim()} add ${body}`) : await act(`/note ${t}`);
     if (ok) setText("");
   };
+  const create = async () => {
+    const r = await call<{ id?: string; error?: string }>("document_save", { id: "", text: "# Untitled\n\n" });
+    if (r?.id) {
+      reload();
+      setOpen(r.id);
+    } else setFailed(r?.error ?? "couldn't make one");
+  };
+  if (open)
+    return (
+      <Page title="Notes" description="Write it yourself, or ask lyra to draft or change it. Save it to OneDrive as Word, or attach it to an email." action={<Back onBack={onBack} />}>
+        <div className="space-y-2">
+          <Button size="sm" variant="ghost" onClick={() => (setOpen(null), reload())}>
+            <ArrowLeft /> All notes
+          </Button>
+          <Editor key={open} id={open} onSaved={reload} onGone={() => (setOpen(null), reload())} />
+        </div>
+      </Page>
+    );
   return (
-    <Page title="Notes" description={'Your notes and lists. Or just tell lyra: "add milk to groceries", "note that the gate code is 4411".'} action={<Back onBack={onBack} />}>
+    <Page title="Notes" description={'Your notes, lists and documents. Or just tell lyra: "add milk to groceries", "note that the gate code is 4411". Open one to write it with lyra.'} action={<Back onBack={onBack} />}>
       {data && !Array.isArray(data) && <Failed error={data.error} />}
+      <Failed error={failed || undefined} />
       {note}
       <form onSubmit={add} className="flex gap-2">
         <Input value={text} onChange={(e) => setText(e.target.value)} placeholder="ideas: new laptop policy  ·  groceries: milk, eggs" disabled={busy} autoFocus={addFocus} />
         <Button type="submit" disabled={busy || !text.trim()}>
           <Plus /> Add
+        </Button>
+        <Button type="button" variant="secondary" onClick={() => void create()} title="A new note in the editor: a letter, memo or one-pager, written with lyra">
+          <FilePlus /> <span className="hidden sm:inline">New document</span>
         </Button>
       </form>
       {data && notes.length === 0 && <p className="text-muted-foreground text-sm">No notes yet.</p>}
@@ -53,9 +84,16 @@ export function NotesPage({ onBack }: { onBack: () => void }) {
         {notes.map((n) => (
           <Card key={n.title} className="gap-1 py-3">
             <CardHeader className="px-4">
-              <CardTitle className="text-sm">{n.title}</CardTitle>
+              <CardTitle className="min-w-0 text-sm">
+                <button type="button" className="truncate text-left hover:underline" onClick={() => setOpen(n.slug)}>
+                  {n.title}
+                </button>
+              </CardTitle>
               <CardAction className="flex items-center gap-1">
                 <span className="text-muted-foreground text-xs">{n.updated}</span>
+                <Button size="icon" variant="ghost" className="size-7" aria-label="Open in the editor" onClick={() => setOpen(n.slug)}>
+                  <SquarePen />
+                </Button>
                 <Button
                   size="icon"
                   variant="ghost"
@@ -84,7 +122,10 @@ export function NotesPage({ onBack }: { onBack: () => void }) {
                   ))}
                 </div>
               ) : (
-                <p className="whitespace-pre-wrap">{n.text}</p>
+                <button type="button" className="line-clamp-6 w-full whitespace-pre-wrap text-left" onClick={() => setOpen(n.slug)}>
+                  {n.text || <span className="text-muted-foreground">Empty</span>}
+                  {n.words > 120 && <span className="block text-muted-foreground text-xs">{n.words} words</span>}
+                </button>
               )}
             </CardContent>
           </Card>

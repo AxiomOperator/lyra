@@ -25,7 +25,6 @@ import {
   Activity,
   CalendarDays,
   ChevronDown,
-  FileText,
   UserRound,
   ChevronUp,
   Code2,
@@ -126,7 +125,6 @@ const RunningPage = page(() => import("./lyra/running"), "RunningPage");
 const ProfilePage = page(() => import("./lyra/profile"), "ProfilePage");
 const SettingsPage = page(() => import("./lyra/settings"), "SettingsPage");
 const MeetingsPage = page(() => import("./lyra/meetings"), "MeetingsPage");
-const DocumentsPage = page(() => import("./lyra/documents"), "DocumentsPage");
 const AboutMePage = page(() => import("./lyra/aboutme"), "AboutMePage");
 const ProjectsPage = page(() => import("./lyra/projects"), "ProjectsPage");
 const StatusPage = page(() => import("./lyra/status"), "StatusPage");
@@ -144,10 +142,10 @@ function Loading() {
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "today" | "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "documents" | "me" | "running" | "profile";
-const manage: Manage[] = ["today", "me", "documents", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings", "running", "profile"];
+type Manage = "today" | "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "me" | "running" | "profile";
+const manage: Manage[] = ["today", "me", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings", "running", "profile"];
 /** What a member (not an admin) has: their chats, day, tasks, activity, skills (Status is admins'). */
-const forMembers: string[] = ["chat", "today", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage", "meetings", "documents", "me", "profile"];
+const forMembers: string[] = ["chat", "today", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage", "meetings", "me", "profile"];
 
 type TabItem = {
   id: Tab;
@@ -160,7 +158,7 @@ type TabItem = {
  *  alone opens at once). Badges add up on the group. */
 const railGroups: { id: string; label: string; icon: typeof MessageSquare; pages: Tab[] }[] = [
   { id: "chat", label: "Chat", icon: MessageSquare, pages: ["chat"] },
-  { id: "work", label: "Work", icon: Briefcase, pages: ["today", "tasks", "meetings", "notes", "documents", "projects"] },
+  { id: "work", label: "Work", icon: Briefcase, pages: ["today", "tasks", "meetings", "notes", "projects"] },
   { id: "knowledge", label: "Knowledge", icon: Brain, pages: ["memory", "skills"] },
   { id: "automation", label: "Automation", icon: Zap, pages: ["routines", "goals", "coding"] },
   { id: "system", label: "System", icon: Shield, pages: ["status", "machines", "devices", "users", "usage", "running", "model", "activity", "settings"] },
@@ -474,6 +472,8 @@ function Shell() {
   // Opened from a notification for a page (the briefing → Today): go there.
   useEffect(() => {
     const go = (page: string | null) => {
+      // Documents are notes now.
+      if (page === "documents") page = "notes";
       if (page && (["status", "machines", "devices", "activity", "more", ...manage] as string[]).includes(page)) setTab(page as Tab);
     };
     const asked = new URLSearchParams(location.search).get("page");
@@ -516,7 +516,6 @@ function Shell() {
     { id: "tasks", label: "Tasks", icon: ListTodo, badge: (status.pmi?.tasks ?? []).filter((t) => t.due && t.due < todayKey).length + pmiWaiting },
     { id: "meetings", label: "Meetings", icon: CalendarDays },
     { id: "notes", label: "Notes", icon: NotebookPen },
-    { id: "documents", label: "Documents", icon: FileText },
     { id: "whatsnew", label: "What's new", icon: Sparkles },
     { id: "feedback", label: "Feedback", icon: MessageSquareWarning, badge: status.feedback_news ?? 0 },
     { id: "qa", label: "Q&A", icon: CircleHelp },
@@ -639,7 +638,6 @@ function Shell() {
           {tab === "users" && <UsersPage onBack={toMore} />}
           {tab === "settings" && <SettingsPage onBack={toMore} />}
           {tab === "meetings" && <MeetingsPage onBack={toMore} />}
-          {tab === "documents" && <DocumentsPage onBack={toMore} />}
           {tab === "me" && <AboutMePage onBack={toMore} onProfile={() => setTab("profile")} />}
           {tab === "profile" && <ProfilePage onBack={toMore} toAboutMe={() => setTab("me")} />}
           </Suspense>

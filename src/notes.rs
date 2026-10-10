@@ -1,6 +1,8 @@
-//! Each person's notes and lists: one Markdown file each (the owner's in
-//! `~/.lyra/notes`, anyone else's in `~/.lyra/users/<id>/notes`). A list is a
-//! note of checklist lines (`- [ ] milk`). Said or typed in chat, kept here,
+//! Each person's notes, lists and documents: one Markdown file each (the
+//! owner's in `~/.lyra/notes`, anyone else's in `~/.lyra/users/<id>/notes`),
+//! its `# Title` first. A list is a note of checklist lines (`- [ ] milk`); a
+//! document is a longer note written with lyra in the editor (`documents.rs`:
+//! drafts, Word, OneDrive, mail). Said or typed in chat, kept here,
 //! searchable; all theirs alone.
 
 use std::path::PathBuf;
@@ -10,8 +12,12 @@ use lyra_capabilities::{Capability, CapabilityKind, RiskLevel};
 use serde_json::{Value, json};
 
 fn dir() -> Option<PathBuf> {
-    let user = crate::acting::current();
-    if crate::acting::is_owner(&user) { Some(crate::config::home()?.join("notes")) } else { Some(crate::context::user_dir(&user)?.join("notes")) }
+    dir_for(&crate::acting::current())
+}
+
+/// Someone's notes folder.
+pub fn dir_for(user: &str) -> Option<PathBuf> {
+    if crate::acting::is_owner(user) { Some(crate::config::home()?.join("notes")) } else { Some(crate::context::user_dir(user)?.join("notes")) }
 }
 
 /// A title's file name.
@@ -163,7 +169,7 @@ pub fn search(query: &str) -> Vec<Note> {
 fn view(n: &Note) -> Value {
     let items = n.items();
     json!({
-        "title": n.title, "updated": n.updated, "list": !items.is_empty(),
+        "slug": n.slug, "title": n.title, "updated": n.updated, "list": !items.is_empty(), "words": n.text.split_whitespace().count(),
         "items": items.iter().map(|(d, t)| json!({ "done": d, "text": t })).collect::<Vec<_>>(),
         "text": if items.is_empty() { n.text.chars().take(4000).collect::<String>() } else { String::new() },
     })

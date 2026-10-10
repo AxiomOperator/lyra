@@ -5,6 +5,9 @@
 //!    Files are copied, so the originals stay as a backup.
 //! 2. SOUL/USER/AGENT.md from `~/.lyra/config` into `~/.lyra/context`. These
 //!    are moved: both places are lyra's own, and a stale copy would mislead.
+//! 3. Documents (`documents/`, and each person's) into their notes folder:
+//!    notes and documents are one thing now. Moved, each under a name of its
+//!    own, its `# Title` first.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -17,8 +20,40 @@ pub fn run() -> Result<Vec<String>, String> {
     let notes = [
         migrate(&home, old_config_dir().as_deref(), old_data_dir().as_deref())?,
         context_out_of_config(&home)?,
+        documents_into_notes(&home)?,
     ];
     Ok(notes.into_iter().flatten().collect())
+}
+
+/// Move each person's documents into their notes folder.
+fn documents_into_notes(home: &Path) -> Result<Option<String>, String> {
+    let mut places = vec![(home.join("documents"), home.join("notes"))];
+    for person in std::fs::read_dir(home.join("users")).into_iter().flatten().flatten() {
+        places.push((person.path().join("documents"), person.path().join("notes")));
+    }
+    let mut moved = 0;
+    for (from, to) in places.into_iter().filter(|(f, _)| f.is_dir()) {
+        for e in std::fs::read_dir(&from).map_err(|e| format!("reading {}: {e}", from.display()))?.flatten() {
+            let p = e.path();
+            if p.extension().is_none_or(|x| x != "md") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&p).map_err(|e| format!("reading {}: {e}", p.display()))?;
+            let title = crate::documents::title_of(&text);
+            // Its title as a heading first (a note's title), the rest after.
+            let text = match text.trim_start().strip_prefix('#') {
+                Some(_) => text.trim_start().to_string(),
+                None => format!("# {title}\n\n{}", text.trim_start().split_once('\n').map_or("", |(_, rest)| rest).trim_start()),
+            };
+            std::fs::create_dir_all(&to).map_err(|e| format!("creating {}: {e}", to.display()))?;
+            let id = crate::documents::free_id(&to, &title, None);
+            crate::store::write_text(&to.join(format!("{id}.md")), &text)?;
+            std::fs::remove_file(&p).map_err(|e| format!("moving {}: {e}", p.display()))?;
+            moved += 1;
+        }
+        let _ = std::fs::remove_dir(&from);
+    }
+    Ok((moved > 0).then(|| format!("moved {moved} document{} into notes", if moved == 1 { "" } else { "s" })))
 }
 
 /// Move the global SOUL/USER/AGENT.md from `config/` to `context/`, unless a
@@ -198,5 +233,25 @@ mod tests {
         assert_eq!(std::fs::read_to_string(home.join("context/USER.md")).unwrap(), "user");
         assert!(!home.join("junk").exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn documents_become_notes_without_overwriting_one() {
+        let home = temp("documents");
+        std::fs::create_dir_all(home.join("documents")).unwrap();
+        std::fs::create_dir_all(home.join("notes")).unwrap();
+        std::fs::create_dir_all(home.join("users/dana/documents")).unwrap();
+        std::fs::write(home.join("notes/memo.md"), "# Memo\n\nthe note\n").unwrap();
+        std::fs::write(home.join("documents/memo-1a2b.md"), "# Memo\n\nthe document\n").unwrap();
+        std::fs::write(home.join("users/dana/documents/x.md"), "Dear all,\nThe office closes early.\n").unwrap();
+        let said = documents_into_notes(&home).unwrap();
+        assert_eq!(said.as_deref(), Some("moved 2 documents into notes"));
+        assert_eq!(std::fs::read_to_string(home.join("notes/memo.md")).unwrap(), "# Memo\n\nthe note\n", "the note stays");
+        assert!(std::fs::read_to_string(home.join("notes/memo-2.md")).unwrap().contains("the document"));
+        // No heading: its first line is the title.
+        assert_eq!(std::fs::read_to_string(home.join("users/dana/notes/dear-all.md")).unwrap(), "# Dear all,\n\nThe office closes early.\n");
+        assert!(!home.join("documents").exists() && !home.join("users/dana/documents").exists());
+        assert_eq!(documents_into_notes(&home).unwrap(), None, "once");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

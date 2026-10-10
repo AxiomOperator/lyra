@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.59.0.205",
+    "date": "2026-10-10",
+    "title": "Notes and documents are one",
+    "improved": [
+      "Notes and Documents are now one Notes page. Quick notes, lists and longer documents sit together, and any note opens in the editor, where lyra drafts or revises it and it goes to Word, OneDrive or an email draft.",
+      "A note's file follows its title: retitle it in the editor and it's renamed, without ever replacing another note.",
+      "Your existing documents were moved into your notes, so lyra's note tools and search now find them too."
+    ]
+  },
+  {
     "version": "0.58.0.204",
     "date": "2026-10-10",
     "title": "Devices by person",

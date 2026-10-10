@@ -339,8 +339,7 @@ pub(crate) fn slow(app: &App, what: &str, arg: &Value, loaded: &Loaded) -> Optio
             Ok(text) => json!({ "ok": true, "text": text }),
             Err(e) => json!({ "error": e }),
         }),
-        // The document workspace: their documents, lyra's drafts, Word to OneDrive or a mail.
-        "documents" => Box::new(move || crate::documents::list(&owner)),
+        // The note editor: one note, lyra's drafts, Word to OneDrive or a mail.
         "document" | "document_save" | "document_remove" | "document_download" | "document_onedrive" | "document_mail" | "document_ask" => {
             let (what, arg) = (what.to_string(), arg.clone());
             let (url, model) = (format!("{}/chat/completions", app.base_url.trim_end_matches('/')), app.model.clone());
@@ -488,7 +487,7 @@ fn pmi_page(owner: &str) -> Value {
 
 /// What lyra keeps about the person this conversation is for: memories, how
 /// they write, connected accounts, their devices, what lyra did and why.
-/// `export`: everything (notes, documents, saved prompts and every action too).
+/// `export`: everything (notes and documents, saved prompts and every action too).
 fn about_me(app: &App, hub: &Hub, export: bool) -> Value {
     let user = app.owner.clone();
     let u = hub.users().get(&user);
@@ -515,7 +514,6 @@ fn about_me(app: &App, hub: &Hub, export: bool) -> Value {
         v["exported"] = json!(chrono::Utc::now().to_rfc3339());
         v["actions"] = json!(crate::actions::all(&user));
         v["notes"] = crate::acting::run(&user, crate::notes::page);
-        v["documents"] = json!(crate::documents::list(&user).as_array().into_iter().flatten().filter_map(|d| crate::documents::read(&user, d["id"].as_str()?).ok()).collect::<Vec<_>>());
         v["templates"] = crate::templates::page(&user, false)["mine"].clone();
     }
     v

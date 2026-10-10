@@ -1,9 +1,10 @@
-//! The document workspace: letters, memos and one-pagers written side by side
-//! with lyra. Each person's documents are Markdown files in their own folder
-//! (`documents/<id>.md`); lyra drafts or revises one on request (the whole
-//! text back, in the person's writing style), and a finished one goes to their
-//! OneDrive as a Word file, onto a mail draft as an attachment, or downloads.
-//! Nothing is sent: a mail stays a draft until they send it.
+//! The note editor: a note (or a letter, memo or one-pager) written side by
+//! side with lyra. Notes are Markdown files in each person's notes folder
+//! (`notes.rs`); here one opens by its file name, is saved as it's typed (a
+//! new title renames its file), lyra drafts or revises it on request (the
+//! whole text back, in the person's writing style), and a finished one goes
+//! to their OneDrive as a Word file, onto a mail draft as an attachment, or
+//! downloads. Nothing is sent: a mail stays a draft until they send it.
 
 use std::path::PathBuf;
 
@@ -11,13 +12,13 @@ use base64::Engine;
 use serde_json::{Value, json};
 
 fn dir(user: &str) -> Option<PathBuf> {
-    if user == lyra_web::users::OWNER { Some(crate::config::home()?.join("documents")) } else { Some(crate::context::user_dir(user)?.join("documents")) }
+    crate::notes::dir_for(user)
 }
 
 fn safe_id(id: &str) -> Result<String, String> {
     let id = id.trim();
-    if id.is_empty() || id.len() > 80 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-        return Err("that isn't a document".into());
+    if id.is_empty() || id.len() > 120 || !id.chars().all(|c| c.is_alphanumeric() || c == '-') {
+        return Err("that isn't a note".into());
     }
     Ok(id.to_string())
 }
@@ -27,55 +28,41 @@ fn path(user: &str, id: &str) -> Result<PathBuf, String> {
 }
 
 /// A document's title: its first heading, else its first line.
-fn title_of(text: &str) -> String {
+pub fn title_of(text: &str) -> String {
     let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("Untitled");
     first.trim_start_matches('#').trim().chars().take(80).collect::<String>()
 }
 
-fn new_id(title: &str) -> String {
-    let s: String = title.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-    let s = s.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
-    format!("{}-{}", s.chars().take(40).collect::<String>().trim_end_matches('-'), &lyra_learning::Uuid::new_v4().simple().to_string()[..4]).trim_start_matches('-').to_string()
-}
-
-/// Their documents, newest first.
-pub fn list(user: &str) -> Value {
-    let mut rows: Vec<(std::time::SystemTime, Value)> = std::fs::read_dir(match dir(user) {
-        Some(d) => d,
-        None => return json!([]),
-    })
-    .into_iter()
-    .flatten()
-    .flatten()
-    .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
-    .filter_map(|e| {
-        let text = std::fs::read_to_string(e.path()).ok()?;
-        let modified = e.metadata().ok()?.modified().ok()?;
-        let id = e.path().file_stem()?.to_string_lossy().into_owned();
-        Some((modified, json!({ "id": id, "title": title_of(&text), "words": text.split_whitespace().count(), "updated": chrono::DateTime::<chrono::Utc>::from(modified).to_rfc3339() })))
-    })
-    .collect();
-    rows.sort_by_key(|r| std::cmp::Reverse(r.0));
-    json!(rows.into_iter().map(|r| r.1).collect::<Vec<_>>())
+/// A file name for `title` in `dir` that isn't another note's (`keep`: this note's own).
+pub fn free_id(dir: &std::path::Path, title: &str, keep: Option<&str>) -> String {
+    let base = Some(crate::notes::slug(title)).filter(|s| !s.is_empty()).unwrap_or_else(|| "untitled".into());
+    let taken = |id: &str| Some(id) != keep && dir.join(format!("{id}.md")).exists();
+    (1..).map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") }).find(|id| !taken(id)).unwrap_or(base)
 }
 
 pub fn read(user: &str, id: &str) -> Result<Value, String> {
-    let text = std::fs::read_to_string(path(user, id)?).map_err(|_| "no such document".to_string())?;
+    let text = std::fs::read_to_string(path(user, id)?).map_err(|_| "no such note".to_string())?;
     Ok(json!({ "id": id, "title": title_of(&text), "text": text }))
 }
 
-/// Keep it (`id` empty: a new one); its id back.
+/// Keep it (`id` empty: a new one); its id back, which follows its title
+/// (a new title renames the file, unless another note has that name).
 pub fn save(user: &str, id: &str, text: &str) -> Result<String, String> {
     if text.chars().count() > 200_000 {
-        return Err("that document is too long (200,000 characters at most)".into());
+        return Err("that note is too long (200,000 characters at most)".into());
     }
-    let id = if id.trim().is_empty() { new_id(&title_of(text)) } else { safe_id(id)? };
-    crate::store::write_text(&path(user, &id)?, text)?;
-    Ok(id)
+    let d = dir(user).ok_or("no lyra home")?;
+    let old = (!id.trim().is_empty()).then(|| safe_id(id)).transpose()?;
+    let new = free_id(&d, &title_of(text), old.as_deref());
+    crate::store::write_text(&path(user, &new)?, text)?;
+    if let Some(old) = old.filter(|o| *o != new) {
+        let _ = std::fs::remove_file(path(user, &old)?);
+    }
+    Ok(new)
 }
 
 pub fn remove(user: &str, id: &str) -> Result<(), String> {
-    std::fs::remove_file(path(user, id)?).map_err(|_| "no such document".to_string())
+    std::fs::remove_file(path(user, id)?).map_err(|_| "no such note".to_string())
 }
 
 const EDIT: &str = "You write and revise documents (letters, memos, one-pagers, notices) with the person you work for. You get the document as it is now (it may be empty) and what they want. Answer with the whole document after the change, in Markdown (# for the title, ## for sections, - for lists, **bold**), and nothing else: no comments before or after, no code fences. Keep what they didn't ask to change. Write as they would.";
@@ -111,7 +98,7 @@ const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessing
 
 /// The Word file, for downloading: its name and bytes (base64).
 pub fn download(user: &str, id: &str) -> Result<Value, String> {
-    let text = std::fs::read_to_string(path(user, id)?).map_err(|_| "no such document".to_string())?;
+    let text = std::fs::read_to_string(path(user, id)?).map_err(|_| "no such note".to_string())?;
     let bytes = crate::docx::from_markdown(&text)?;
     Ok(json!({ "name": file_name(&title_of(&text)), "mime": DOCX, "base64": base64::engine::general_purpose::STANDARD.encode(bytes) }))
 }
@@ -121,7 +108,7 @@ pub fn to_onedrive(user: &str, id: &str) -> Result<Value, String> {
     if !crate::graph::connected_for(user) {
         return Err("your Outlook isn't connected: Profile → Connections → Outlook → Connect".into());
     }
-    let text = std::fs::read_to_string(path(user, id)?).map_err(|_| "no such document".to_string())?;
+    let text = std::fs::read_to_string(path(user, id)?).map_err(|_| "no such note".to_string())?;
     let name = file_name(&title_of(&text));
     let bytes = crate::docx::from_markdown(&text)?;
     let item = crate::graph::graph_put(&format!("/me/drive/root:/lyra/{}:/content", lyra_web::oidc::encode(&name)), bytes, DOCX)?;
@@ -133,7 +120,7 @@ pub fn attach_to_mail(user: &str, id: &str, to: &[String]) -> Result<Value, Stri
     if !crate::mail::connected_for(user) {
         return Err("your Outlook mail isn't connected: Profile → Connections → Outlook → Connect".into());
     }
-    let text = std::fs::read_to_string(path(user, id)?).map_err(|_| "no such document".to_string())?;
+    let text = std::fs::read_to_string(path(user, id)?).map_err(|_| "no such note".to_string())?;
     let title = title_of(&text);
     let bytes = crate::docx::from_markdown(&text)?;
     let recipients: Vec<Value> = to.iter().map(|a| a.trim()).filter(|a| a.contains('@')).map(|a| json!({ "emailAddress": { "address": a } })).collect();
@@ -155,8 +142,27 @@ mod tests {
     fn titles_ids_and_file_names() {
         assert_eq!(title_of("\n# Office closed Friday\n\nDear all,"), "Office closed Friday");
         assert_eq!(title_of(""), "Untitled");
-        assert!(new_id("Office closed: Friday!").starts_with("office-closed-friday-"));
         assert!(safe_id("../etc/passwd").is_err() && safe_id("memo-1a2b").is_ok());
         assert_eq!(file_name("Q4 / budget: draft?"), "Q4 budget draft.docx");
     }
+
+    #[test]
+    fn a_note_follows_its_title_and_never_takes_anothers_name() {
+        crate::config::with_test_home(|home| {
+            let d = home.join("notes");
+            let id = save("owner", "", "# Untitled\n\n").unwrap();
+            assert_eq!(id, "untitled");
+            assert_eq!(save("owner", "", "# Untitled\n").unwrap(), "untitled-2", "a second untitled one");
+            // Retitled: the file follows, and the old name is gone.
+            let id = save("owner", &id, "# Office closed Friday\n\nDear all,").unwrap();
+            assert_eq!(id, "office-closed-friday");
+            assert!(d.join("office-closed-friday.md").exists() && !d.join("untitled.md").exists());
+            // It reads as a note (title and text).
+            let n = crate::acting::run("owner", || crate::notes::find("Office closed Friday")).unwrap();
+            assert_eq!(n.text, "Dear all,");
+            // Another note's title: a name of its own.
+            assert_eq!(save("owner", "untitled-2", "# Office closed Friday\n").unwrap(), "office-closed-friday-2");
+        });
+    }
+
 }

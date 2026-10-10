@@ -1,7 +1,8 @@
-// Documents: write a letter, memo or one-pager side by side with lyra. Your
-// text on one side (saved as you type); on the other, ask lyra to draft or
-// change it and look at its version before using it. A finished one goes to
-// your OneDrive as Word, onto a mail draft, or downloads (nothing is sent).
+// The note editor (on the Notes page): write a note, letter, memo or
+// one-pager side by side with lyra. Your text on one side (saved as you type;
+// a new title renames it); on the other, ask lyra to draft or change it and
+// look at its version before using it. A finished one goes to your OneDrive
+// as Word, onto a mail draft, or downloads (nothing is sent).
 
 import { MessageResponse } from "@/components/ai-elements/message";
 import { Button } from "@/components/ui/button";
@@ -9,22 +10,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { ArrowLeft, Check, CloudUpload, Download, Eye, FilePlus, Mail, Pencil, Sparkles, Trash2, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Back, Failed, Page, useConfirm } from "./parts";
-import { ago } from "./push";
+import { Check, CloudUpload, Download, Eye, Mail, Pencil, Sparkles, Trash2, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { useConfirm } from "./parts";
 import { useLyra } from "./store";
-
-interface Doc {
-  id: string;
-  title: string;
-  words: number;
-  updated: string;
-}
 
 const QUICK = ["Make it more formal", "Shorten it", "Fix the grammar and spelling", "Add a short closing", "Turn it into bullet points"];
 
-function Editor({ id, onSaved, onGone }: { id: string; onSaved: () => void; onGone: () => void }) {
+/** One note in full, by its file name (`id`). Its name follows its title as it's saved. */
+export function Editor({ id: opened, onSaved, onGone }: { id: string; onSaved: () => void; onGone: () => void }) {
   const { call } = useLyra();
   const [text, setText] = useState<string | null>(null);
   const [saved, setSaved] = useState("");
@@ -36,22 +30,28 @@ function Editor({ id, onSaved, onGone }: { id: string; onSaved: () => void; onGo
   const [to, setTo] = useState("");
   const [confirm, dialog] = useConfirm();
   const loaded = useRef(false);
+  // Its file name now (a new title renames it while it's open).
+  const name = useRef(opened);
 
   useEffect(() => {
     loaded.current = false;
-    void call<{ text?: string; error?: string }>("document", { id }).then((d) => {
+    name.current = opened;
+    void call<{ text?: string; error?: string }>("document", { id: opened }).then((d) => {
       setText(d?.text ?? "");
       loaded.current = true;
     });
-  }, [id, call]);
+  }, [opened, call]);
   // Saved a second after typing stops.
   useEffect(() => {
     if (text === null || !loaded.current) return;
     setSaved("Saving…");
     const t = window.setTimeout(() => {
-      void call<{ id?: string; error?: string }>("document_save", { id, text }).then((r) => {
+      void call<{ id?: string; error?: string }>("document_save", { id: name.current, text }).then((r) => {
         setSaved(r?.id ? "Saved" : r?.error ?? "Not saved");
-        if (r?.id) onSaved();
+        if (r?.id) {
+          name.current = r.id;
+          onSaved();
+        }
       });
     }, 1000);
     return () => window.clearTimeout(t);
@@ -70,7 +70,7 @@ function Editor({ id, onSaved, onGone }: { id: string; onSaved: () => void; onGo
   const act = async (what: "document_onedrive" | "document_mail" | "document_download") => {
     setBusy(what === "document_onedrive" ? "Saving to OneDrive…" : what === "document_mail" ? "Making the mail draft…" : "Making the Word file…");
     setNote(null);
-    const r = await call<{ error?: string; url?: string; name?: string; base64?: string; mime?: string; subject?: string }>(what, { id, to: to.split(/[,;\s]+/).filter(Boolean) });
+    const r = await call<{ error?: string; url?: string; name?: string; base64?: string; mime?: string; subject?: string }>(what, { id: name.current, to: to.split(/[,;\s]+/).filter(Boolean) });
     setBusy("");
     if (r?.error) return setNote({ ok: false, text: r.error });
     if (what === "document_download" && r?.base64) {
@@ -105,9 +105,9 @@ function Editor({ id, onSaved, onGone }: { id: string; onSaved: () => void; onGo
             <Button
               size="sm"
               variant="ghost"
-              aria-label="Delete the document"
+              aria-label="Delete the note"
               onClick={() =>
-                confirm({ title: "Delete this document?", text: "It's gone for good (copies saved to OneDrive or mail stay).", action: "Delete", run: () => void call("document_remove", { id }).then(onGone) })
+                confirm({ title: "Delete this note?", text: "It's gone for good (copies saved to OneDrive or mail stay).", action: "Delete", run: () => void call("document_remove", { id: name.current }).then(onGone) })
               }
             >
               <Trash2 />
@@ -119,7 +119,7 @@ function Editor({ id, onSaved, onGone }: { id: string; onSaved: () => void; onGo
             <MessageResponse>{text || "_Nothing yet._"}</MessageResponse>
           </div>
         ) : (
-          <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={22} className="max-h-[70dvh] font-mono text-sm" placeholder={"# Title\n\nWrite here, or ask lyra to draft it →"} aria-label="Document" />
+          <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={22} className="min-h-[24rem] max-h-[70dvh] font-mono text-sm" placeholder={"# Title\n\nWrite here, or ask lyra to draft it →"} aria-label="Note" />
         )}
         <div className="flex flex-wrap items-center gap-2">
           <Input value={to} onChange={(e) => setTo(e.target.value)} placeholder="To (optional): dana@fbcad.org" className="max-w-xs" aria-label="Mail it to" />
@@ -193,53 +193,5 @@ function Editor({ id, onSaved, onGone }: { id: string; onSaved: () => void; onGo
       </Card>
       {dialog}
     </div>
-  );
-}
-
-export function DocumentsPage({ onBack }: { onBack: () => void }) {
-  const { call, ready } = useLyra();
-  const [docs, setDocs] = useState<Doc[] | null>(null);
-  const [open, setOpen] = useState<string | null>(null);
-  const [error, setError] = useState("");
-  const load = useCallback(() => void call<Doc[]>("documents").then((d) => setDocs(Array.isArray(d) ? d : [])), [call]);
-  useEffect(() => {
-    if (ready) load();
-  }, [ready, load]);
-  const create = async () => {
-    const r = await call<{ id?: string; error?: string }>("document_save", { id: "", text: "# Untitled\n\n" });
-    if (r?.id) {
-      load();
-      setOpen(r.id);
-    } else setError(r?.error ?? "couldn't make one");
-  };
-  return (
-    <Page title="Documents" description="Letters, memos and one-pagers, written with lyra. Save them to OneDrive as Word, or attach them to an email." action={<Back onBack={onBack} />}>
-      <Failed error={error || undefined} />
-      {open ? (
-        <div className="space-y-2">
-          <Button size="sm" variant="ghost" onClick={() => setOpen(null)}>
-            <ArrowLeft /> All documents
-          </Button>
-          <Editor id={open} onSaved={load} onGone={() => (setOpen(null), load())} />
-        </div>
-      ) : (
-        <div className="space-y-2">
-          <Button onClick={() => void create()}>
-            <FilePlus /> New document
-          </Button>
-          {docs && !docs.length && <p className="text-muted-foreground text-sm">None yet. Start one, then ask lyra to draft it.</p>}
-          <div className="grid gap-2 md:grid-cols-2">
-            {(docs ?? []).map((d) => (
-              <button key={d.id} type="button" onClick={() => setOpen(d.id)} className="rounded-md border px-3 py-2 text-left hover:bg-accent/60">
-                <div className="truncate font-medium text-sm">{d.title}</div>
-                <div className="text-muted-foreground text-xs">
-                  {d.words} words · {ago(d.updated)}
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </Page>
   );
 }

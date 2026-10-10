@@ -400,7 +400,7 @@ export function Notifications() {
   );
 }
 
-export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "devices" | "usage" | "projects" | "users" | "settings" | "meetings" | "documents" | "me" | "profile") => void; update: () => void }) {
+export function MorePage({ toChat, open, update }: { toChat: () => void; open: (page: "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "devices" | "usage" | "projects" | "users" | "settings" | "meetings" | "notes" | "me" | "profile") => void; update: () => void }) {
   const { say, unpaired, token, serverVersion, status, user } = useLyra();
   const admin = user?.admin ?? true;
   const [sessions] = useData<Session[]>("sessions");
@@ -499,8 +499,8 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
           <Button variant="secondary" onClick={() => open("me")}>
             <Brain /> About me
           </Button>
-          <Button variant="secondary" onClick={() => open("documents")}>
-            <FileText /> Documents
+          <Button variant="secondary" onClick={() => open("notes")}>
+            <FileText /> Notes
           </Button>
           <Button variant="secondary" onClick={() => open("projects")}>
             <FolderOpen /> Projects

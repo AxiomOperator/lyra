@@ -113,7 +113,7 @@ impl crate::caps::Remote for HubRemote {
 /// The pages a member (not an admin) may ask for: their own conversations,
 /// data and settings. Everything else is an admin's (machines, users, devices,
 /// the server's settings, email services, Running now…).
-pub(crate) const MEMBER_PAGES: &[&str] = &["sessions", "search", "agents", "skills", "activity", "about", "models", "do", "pmi", "routines", "routine_save", "routine_results", "routine_result", "goals", "memory", "calendar", "mail", "notes", "usage", "recap", "briefing", "watches", "everything", "templates", "template_put", "template_remove", "meetings", "meeting", "meeting_notes", "meeting_followup", "meeting_draft", "documents", "document", "document_save", "document_remove", "document_download", "document_onedrive", "document_mail", "document_ask", "me", "me_export", "me_clear_actions", "changelog", "feedback", "feedback_submit", "feedback_comment", "feedback_update", "feedback_seen", "feedback_analyze", "feedback_enhance", "qa", "qa_put", "qa_remove", "qa_promote", "email", "email_set", "email_test"];
+pub(crate) const MEMBER_PAGES: &[&str] = &["sessions", "search", "agents", "skills", "activity", "about", "models", "do", "pmi", "routines", "routine_save", "routine_results", "routine_result", "goals", "memory", "calendar", "mail", "notes", "usage", "recap", "briefing", "watches", "everything", "templates", "template_put", "template_remove", "meetings", "meeting", "meeting_notes", "meeting_followup", "meeting_draft", "document", "document_save", "document_remove", "document_download", "document_onedrive", "document_mail", "document_ask", "me", "me_export", "me_clear_actions", "changelog", "feedback", "feedback_submit", "feedback_comment", "feedback_update", "feedback_seen", "feedback_analyze", "feedback_enhance", "qa", "qa_put", "qa_remove", "qa_promote", "email", "email_set", "email_test"];
 
 pub(crate) fn member_may_get(what: &str) -> bool {
     MEMBER_PAGES.contains(&what)
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn members_get_their_own_pages_and_never_an_admins() {
-        for own in ["sessions", "routines", "routine_save", "me", "email", "email_set", "changelog", "documents", "templates"] {
+        for own in ["sessions", "routines", "routine_save", "me", "email", "email_set", "changelog", "notes", "document_save", "templates"] {
             assert!(member_may_get(own), "{own} is a member's own");
         }
         for admin in [
