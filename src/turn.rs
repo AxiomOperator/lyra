@@ -124,7 +124,7 @@ impl App {
         let last_reply: String = self.messages.iter().rev().skip(1).find(|m| m.role == "assistant").map(|m| m.content.chars().take(400).collect()).unwrap_or_default();
         let looks = std::mem::take(&mut self.attach_looks);
         // Cards in the chat (forms, steps) need someone looking at the app.
-        let (chat_only, steps_wait, interactive, unattended) = (self.chat_only, self.steps_wait, self.hub.is_some() && !self.unattended, self.unattended);
+        let (chat_only, steps_wait, interactive, unattended, effort) = (self.chat_only, self.steps_wait, self.hub.is_some() && !self.unattended, self.unattended, self.effort);
         // Their own tool-call limit, else the shared one (evolved, or behavior.toml).
         let max_rounds = limits::tool_rounds(&owner, self.evolution.as_ref().map(|e| e.behavior().max_tool_rounds)) as usize;
         self.can_continue = false;
@@ -193,7 +193,7 @@ impl App {
                 Offer::All
             };
             let chatting = offer != Offer::All;
-            let how = How { offer, asks: interactive, steps: interactive && steps_wait, finish: unattended };
+            let how = How { offer, asks: interactive, steps: interactive && steps_wait, finish: unattended, effort };
             // What this turn's changes come from (for "What lyra knows about me" → Why?).
             crate::actions::because(crate::actions::Why { source: "chat".into(), detail: content.chars().take(300).collect(), skills });
             // A specialist may take it first; the main agent checks and presents
@@ -419,6 +419,53 @@ pub(crate) enum Offer {
 }
 
 /// How a turn goes about tools.
+/// How hard the model thinks (a conversation's `/effort`), for servers that
+/// take it: OpenAI-style `reasoning_effort`, and the chat template's
+/// switches (llama.cpp and vLLM: `enable_thinking`, `reasoning_effort`).
+/// Servers that don't know them ignore them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Effort {
+    Off,
+    Low,
+    Medium,
+    High,
+}
+
+impl Effort {
+    pub(crate) fn parse(s: &str) -> Option<Effort> {
+        Some(match s.trim() {
+            "off" | "none" => Effort::Off,
+            "low" => Effort::Low,
+            "medium" | "med" => Effort::Medium,
+            "high" => Effort::High,
+            _ => return None,
+        })
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Effort::Off => "off",
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+        }
+    }
+
+    /// Put it in a chat request.
+    pub(crate) fn apply(self, body: &mut Value) {
+        match self {
+            Effort::Off => {
+                body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+                body["reasoning_effort"] = json!("low");
+            }
+            e => {
+                body["chat_template_kwargs"] = json!({ "enable_thinking": true, "reasoning_effort": e.as_str() });
+                body["reasoning_effort"] = json!(e.as_str());
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct How {
     pub offer: Offer,
@@ -429,6 +476,8 @@ pub(crate) struct How {
     /// At the tool-call limit, one more reply without tools: the answer from
     /// what was found (nobody is there to press Continue).
     pub finish: bool,
+    /// How hard the model thinks (none: its default).
+    pub effort: Option<Effort>,
 }
 
 /// Room for the conversation, in characters: most of the model's context
@@ -620,6 +669,9 @@ pub(crate) fn converse(
             "stream": true,
             "stream_options": { "include_usage": true },
         });
+        if let Some(e) = how.effort {
+            e.apply(&mut body);
+        }
         if let Some(caps) = caps {
             let mut definitions = match how.offer {
                 Offer::All => caps.definitions(request, &found),
@@ -828,7 +880,10 @@ pub(crate) fn converse(
         fit(&mut history, room());
         history.push(json!({ "role": "user", "content": "You've used all your tool calls for this run. Don't call any more tools: write the complete answer now from what you found, and say what you couldn't get to." }));
         let _ = tx.send(StreamEvent::Log("tool-call limit: writing the answer from what was found".into()));
-        let body = json!({ "model": current.1, "messages": history, "stream": true, "stream_options": { "include_usage": true } });
+        let mut body = json!({ "model": current.1, "messages": history, "stream": true, "stream_options": { "include_usage": true } });
+        if let Some(e) = how.effort {
+            e.apply(&mut body);
+        }
         let round = stream(&current.0, &body, tx, cancel)?;
         usage::record("chat", &current.1, round.stats.input, round.stats.cached, round.stats.output, round.stats.elapsed.as_millis() as u64);
         match &mut total {
@@ -986,8 +1041,20 @@ pub(crate) fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: 
 
 #[cfg(test)]
 mod tests {
-    use super::{compact, fit, small_talk};
+    use super::{Effort, compact, fit, small_talk};
     use serde_json::json;
+
+    #[test]
+    fn effort_goes_in_the_request_the_ways_servers_read_it() {
+        assert_eq!(["off", "low", "medium", "high", "none"].map(|s| Effort::parse(s).map(Effort::as_str)), [Some("off"), Some("low"), Some("medium"), Some("high"), Some("off")]);
+        assert_eq!(Effort::parse("max"), None);
+        let mut body = json!({ "model": "m" });
+        Effort::High.apply(&mut body);
+        assert_eq!((body["reasoning_effort"].as_str(), body["chat_template_kwargs"]["reasoning_effort"].as_str(), body["chat_template_kwargs"]["enable_thinking"].as_bool()), (Some("high"), Some("high"), Some(true)));
+        let mut body = json!({ "model": "m" });
+        Effort::Off.apply(&mut body);
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false, "thinking switched off in the template");
+    }
 
     #[test]
     fn the_oldest_turns_become_one_note_when_the_conversation_nears_the_context() {

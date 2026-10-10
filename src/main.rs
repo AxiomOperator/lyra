@@ -409,6 +409,8 @@ struct App {
     asks: Vec<asks::Request>,
     /// This conversation is just talk: no tools at all (the app's switch, `/chat-only`).
     chat_only: bool,
+    /// How hard the model thinks in this conversation (`/effort`; none: its default).
+    effort: Option<turn::Effort>,
     /// A round of several calls shows its steps first (off: "don't wait next time").
     steps_wait: bool,
     /// The next reply comes from this model (`/retry other`): base URL and name.
@@ -599,6 +601,7 @@ impl App {
             continue_after_error: false,
             asks: Vec::new(),
             chat_only: false,
+            effort: None,
             steps_wait: true,
             next_model: None,
             unattended: false,
@@ -1943,6 +1946,7 @@ impl App {
         s.owner = self.owner.clone();
         s.chat_only = self.chat_only;
         s.summary = self.compacted.clone();
+        s.effort = self.effort.map(|e| e.as_str().to_string());
         if let Err(e) = sessions::save(&dir, &s) {
             self.log(Level::Error, format!("couldn't save the session: {e}"));
         }
@@ -1955,6 +1959,7 @@ impl App {
         self.session_started = s.started;
         self.chat_only = s.chat_only;
         self.compacted = s.summary.clone();
+        self.effort = s.effort.as_deref().and_then(turn::Effort::parse);
         self.messages = s.into_messages();
         self.agent_cards.clear();
         self.messages.push(Message::new("info", format!("resumed session {id} · {turns} turns · last active {when}")));
@@ -1973,6 +1978,7 @@ impl App {
         self.session_started = chrono::Utc::now();
         self.messages.clear();
         self.compacted = None;
+        self.effort = None;
         self.agent_cards.clear();
         self.last_run = None;
         self.scroll = None;

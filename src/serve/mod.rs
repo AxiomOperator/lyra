@@ -190,6 +190,7 @@ fn status(app: &App, machines: &[String]) -> Value {
             (true, false) => "retry",
         },
         "chat_only": app.chat_only,
+        "effort": app.effort.map(|e| e.as_str()),
         "steps_wait": app.steps_wait,
         // The other model a reply can be asked again from.
         "other_model": app.other_model().map(|(_, m)| m),

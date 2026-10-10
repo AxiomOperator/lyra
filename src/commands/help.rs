@@ -20,6 +20,7 @@ pub(crate) const COMMANDS: &str = "\
 /edit <text>                 change your last message and send it again; its reply is replaced
 /email [test | via lyra|outlook|auto | briefing|recap on|off]  email from lyra, to you only
 /chat-only [on|off]          just talk in this conversation: no tools (nothing looked up, sent or changed)
+/effort [default|off|low|medium|high]  how hard the model thinks in this conversation
 /steps [on|off]              when lyra does several things at once, show them first to skip any (in the app)
 /machines [update|remove <name>]  machines lyra works on (lyra-node): online, version, update, remove
 /machines health [name|server]  disks, memory, load, failed units and updates (alerts: [health])

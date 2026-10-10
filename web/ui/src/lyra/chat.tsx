@@ -20,7 +20,7 @@ import { loadDraft, saveDraft, type Queued } from "./outbox";
 import { TemplatesButton } from "./templates";
 import { useLyra } from "./store";
 import type { Approval, ChatAsk, ChatMessage, PairRequest } from "./types";
-import { AskCard, ChatOnlyButton, EditButton, EditLast, FoldedTries, RetryButtons, foldFailures } from "./chat-asks";
+import { AskCard, ChatOnlyButton, EditButton, EffortButton, EditLast, FoldedTries, RetryButtons, foldFailures } from "./chat-asks";
 import { BoardCard, ComposerModel, PlanCard, ToolFileContent, ToolFileTree, ToolTerminal, type BoardView, type PlanView } from "./chat-parts2";
 import { SpeakButton, VoiceButton, useAutoRead } from "./voice";
 import { AgentTask, ApprovalAt, ApprovalDetail, ComposerAttachments, ReplyContext, ReplySources, SentAttachments, StarterSuggestions, approvalCall, splitAttached, webSources } from "./chat-parts";
@@ -543,6 +543,7 @@ function Composer() {
             <VoiceButton />
             <TemplatesButton text={text} use={(prompt) => setText(prompt)} />
             <ChatOnlyButton />
+            <EffortButton />
             <ComposerModel admin={user?.admin ?? true} />
           </PromptInputTools>
           {/* While a reply is being written the button stops it. */}

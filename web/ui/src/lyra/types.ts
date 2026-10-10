@@ -102,6 +102,8 @@ export interface Status {
   continue_kind?: "limit" | "error" | "retry";
   /** This conversation is chat only: no tools. */
   chat_only?: boolean;
+  /** How hard the model thinks in this conversation (none: its default). */
+  effort?: "off" | "low" | "medium" | "high" | null;
   /** Several steps at once show first, to skip any. */
   steps_wait?: boolean;
   /** The other model a reply can come from (the fallback). */

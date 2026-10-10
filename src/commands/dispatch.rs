@@ -152,6 +152,20 @@ impl App {
                 self.save_session();
                 Ok(if self.chat_only { "Chat only: on. lyra answers in words here, with no tools (nothing is looked up, sent or changed).".into() } else { "Chat only: off. lyra uses tools again when a message needs them.".into() })
             }
+            "/effort" => {
+                let a = arg.trim().to_lowercase();
+                if !a.is_empty() {
+                    self.effort = match a.as_str() {
+                        "default" | "auto" => None,
+                        other => Some(crate::turn::Effort::parse(other).ok_or("/effort [default|off|low|medium|high]")?),
+                    };
+                    self.save_session();
+                }
+                Ok(match self.effort {
+                    None => "Thinking: the model's default in this conversation.".into(),
+                    Some(e) => format!("Thinking: {} in this conversation (servers that don't support it ignore it).", e.as_str()),
+                })
+            }
             "/steps" => {
                 self.steps_wait = match arg.trim() {
                     "" => !self.steps_wait,
@@ -307,7 +321,7 @@ pub(crate) const PAGE_COMMANDS: &[&str] = &[
 /// tools, coding, devices, backups, agents and skills' approval stay admins'.
 pub(crate) fn member_may(name: &str, arg: &str) -> bool {
     match name {
-        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" | "/feedback" | "/templates" | "/chat-only" | "/steps" | "/retry" | "/edit" | "/email" => true,
+        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" | "/feedback" | "/templates" | "/chat-only" | "/effort" | "/steps" | "/retry" | "/edit" | "/email" => true,
         // Their own skills (the commands check whose each one is).
         "/approve" | "/reject" | "/deprecate" => true,
         // Their own PMI account, routines and goals.

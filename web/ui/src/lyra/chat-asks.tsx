@@ -5,10 +5,11 @@
 import { PromptInputButton } from "@/components/ai-elements/prompt-input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { ChevronDown, ChevronRight, CircleHelp, ListChecks, MessagesSquare, Pencil, RefreshCw, RotateCcw, SkipForward, X } from "lucide-react";
+import { Brain, ChevronDown, ChevronRight, CircleHelp, ListChecks, MessagesSquare, Pencil, RefreshCw, RotateCcw, SkipForward, X } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useLyra } from "./store";
 import type { ChatAsk, ChatMessage } from "./types";
@@ -233,6 +234,48 @@ export function ChatOnlyButton() {
       <MessagesSquare className="size-4" />
       {on && <span className="text-xs">Chat only</span>}
     </PromptInputButton>
+  );
+}
+
+const EFFORTS = [
+  ["default", "Model's default"],
+  ["off", "Off: answer straight away"],
+  ["low", "Low"],
+  ["medium", "Medium"],
+  ["high", "High: think it through"],
+] as const;
+
+/** The composer's thinking setting: how hard the model thinks in this conversation. */
+export function EffortButton() {
+  const { status, say, connected } = useLyra();
+  const effort = status.effort ?? "default";
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <PromptInputButton
+          aria-label="Thinking"
+          title={effort === "default" ? "Thinking: the model's default. Choose how hard it thinks in this conversation." : `Thinking: ${effort} in this conversation`}
+          disabled={!connected || !!status.waiting}
+          className={cn(effort !== "default" && "bg-violet-900/40 text-violet-200 hover:bg-violet-900/60")}
+        >
+          <Brain className="size-4" />
+          {effort !== "default" && <span className="text-xs capitalize">{effort}</span>}
+        </PromptInputButton>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-56">
+        <DropdownMenuLabel>Thinking in this conversation</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuRadioGroup value={effort} onValueChange={(v) => say(`/effort ${v}`)}>
+          {EFFORTS.map(([v, label]) => (
+            <DropdownMenuRadioItem key={v} value={v}>
+              {label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        <p className="px-2 py-1 text-muted-foreground text-xs">Sent to models that support it; others ignore it.</p>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
