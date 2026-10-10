@@ -44,7 +44,7 @@ impl EvolutionStore {
 
     pub async fn save_run(&self, r: &RunRecord) -> Result<()> {
         sqlx::query(
-            "INSERT OR REPLACE INTO runs (id, kind, outcome, corrected, generation, record, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO runs (id, kind, outcome, corrected, generation, record, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET kind = excluded.kind, outcome = excluded.outcome, corrected = excluded.corrected, generation = excluded.generation, record = excluded.record, created_at = excluded.created_at",
         )
         .bind(r.id.to_string())
         .bind(r.kind.as_str())
@@ -76,7 +76,7 @@ impl EvolutionStore {
 
     pub async fn save_candidate(&self, c: &Candidate) -> Result<()> {
         sqlx::query(
-            "INSERT OR REPLACE INTO candidates (id, grp, status, candidate, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO candidates (id, grp, status, candidate, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET grp = excluded.grp, status = excluded.status, candidate = excluded.candidate, created_at = excluded.created_at, updated_at = excluded.updated_at",
         )
         .bind(c.id.to_string())
         .bind(c.group.to_string())
@@ -143,7 +143,7 @@ impl EvolutionStore {
 
     /// Newest first.
     pub async fn events(&self, limit: usize) -> Result<Vec<EvolutionEvent>> {
-        let rows = sqlx::query("SELECT * FROM evolution_events ORDER BY created_at DESC, rowid DESC LIMIT ?")
+        let rows = sqlx::query("SELECT * FROM evolution_events ORDER BY created_at DESC, id DESC LIMIT ?")
             .bind(limit as i64)
             .fetch_all(&self.pool)
             .await?;

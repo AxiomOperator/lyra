@@ -187,7 +187,7 @@ impl MemoryStore for SqliteStore {
              WHERE (? IS NULL OR m.scope = ?)
                AND (? = '' OR instr(?, ',' || m.status || ',') > 0)
                AND (? IS NULL OR m.kind = ?)
-             ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?",
+             ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
         )
         .bind(&filter.scope)
         .bind(&filter.scope)
@@ -214,8 +214,8 @@ impl MemoryStore for SqliteStore {
     async fn set_embedding(&self, id: Uuid, model: &str, vector: &[f32]) -> Result<()> {
         let blob: Vec<u8> = vector.iter().flat_map(|x| x.to_le_bytes()).collect();
         sqlx::query(
-            "INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dims, vector, created_at)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO memory_embeddings (memory_id, model, dims, vector, created_at)
+             VALUES (?, ?, ?, ?, ?) ON CONFLICT (memory_id, model) DO UPDATE SET dims = excluded.dims, vector = excluded.vector, created_at = excluded.created_at",
         )
         .bind(id.to_string())
         .bind(model)
@@ -303,8 +303,8 @@ impl MemoryStore for SqliteStore {
 
     async fn relate(&self, from: Uuid, to: Uuid, relationship: Relationship, reason: &str) -> Result<()> {
         sqlx::query(
-            "INSERT OR REPLACE INTO memory_relationships (from_id, to_id, relationship, reason, created_at)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO memory_relationships (from_id, to_id, relationship, reason, created_at)
+             VALUES (?, ?, ?, ?, ?) ON CONFLICT (from_id, to_id, relationship) DO UPDATE SET reason = excluded.reason, created_at = excluded.created_at",
         )
         .bind(from.to_string())
         .bind(to.to_string())
@@ -360,7 +360,7 @@ impl MemoryStore for SqliteStore {
         let id = id.map(|i| i.to_string());
         let rows = sqlx::query(
             "SELECT * FROM memory_events WHERE ? IS NULL OR memory_id = ?
-             ORDER BY created_at DESC, rowid DESC LIMIT ?",
+             ORDER BY created_at DESC, id DESC LIMIT ?",
         )
         .bind(&id)
         .bind(&id)
@@ -372,7 +372,7 @@ impl MemoryStore for SqliteStore {
 
     async fn last_event(&self, kind: &str) -> Result<Option<Event>> {
         let row =
-            sqlx::query("SELECT * FROM memory_events WHERE kind = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
+            sqlx::query("SELECT * FROM memory_events WHERE kind = ? ORDER BY created_at DESC, id DESC LIMIT 1")
                 .bind(kind)
                 .fetch_optional(&self.pool)
                 .await?;

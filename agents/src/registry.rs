@@ -110,7 +110,20 @@ impl AgentRegistry {
 
     fn write(&self, p: &AgentProfile) -> Result<(), String> {
         let text = toml::to_string_pretty(p).map_err(|e| e.to_string())?;
-        std::fs::write(self.path(&p.name), text).map_err(|e| e.to_string())
+        // Atomically: a temp file, flushed, renamed over it.
+        let path = self.path(&p.name);
+        let tmp = path.with_extension(format!("toml.tmp-{}", std::process::id()));
+        let done = (|| {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(text.as_bytes())?;
+            f.sync_all()?;
+            std::fs::rename(&tmp, &path)
+        })();
+        if done.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        done.map_err(|e| e.to_string())
     }
 
     /// Every agent (the main one isn't a file), by name; files that don't
@@ -218,7 +231,7 @@ impl AgentRegistry {
     fn record_version(&self, p: &AgentProfile, reason: &str) -> Result<(), String> {
         let snapshot = serde_json::to_string(p).map_err(|e| e.to_string())?;
         self.db(async {
-            sqlx::query("INSERT OR REPLACE INTO agent_versions (name, agent_id, version, snapshot, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+            sqlx::query("INSERT INTO agent_versions (name, agent_id, version, snapshot, reason, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (name, version) DO UPDATE SET agent_id = excluded.agent_id, snapshot = excluded.snapshot, reason = excluded.reason, created_at = excluded.created_at")
                 .bind(&p.name)
                 .bind(p.id.to_string())
                 .bind(p.version as i64)
@@ -370,7 +383,7 @@ impl AgentRegistry {
 
     pub fn save_draft(&self, draft: &serde_json::Value) -> Result<(), String> {
         self.db(async {
-            sqlx::query("INSERT OR REPLACE INTO agent_drafts (id, draft, updated_at) VALUES ('current', ?, ?)")
+            sqlx::query("INSERT INTO agent_drafts (id, draft, updated_at) VALUES ('current', ?, ?) ON CONFLICT (id) DO UPDATE SET draft = excluded.draft, updated_at = excluded.updated_at")
                 .bind(draft.to_string())
                 .bind(time(Utc::now()))
                 .execute(&self.pool)

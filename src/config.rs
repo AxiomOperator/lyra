@@ -458,22 +458,16 @@ pub fn update(edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), Strin
 }
 
 pub fn update_file(path: &std::path::Path, edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), String>) -> Result<(), String> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{} doesn't parse: {e}", path.display()))?;
-    edit(&mut doc)?;
-    let out = doc.to_string();
-    // Never write something lyra couldn't read back.
-    toml::from_str::<Config>(&out).map_err(|e| format!("the change would break {}: {e}", path.display()))?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, out).map_err(|e| format!("couldn't write {}: {e}", tmp.display()))?;
-    // It may hold keys: keep its permissions.
-    if let Ok(meta) = std::fs::metadata(path) {
-        let _ = std::fs::set_permissions(&tmp, meta.permissions());
-    }
-    std::fs::rename(&tmp, path).map_err(|e| format!("couldn't replace {}: {e}", path.display()))
+    // Under the file's lock (two changes at once can't lose each other),
+    // atomically, its permissions kept (it may hold keys).
+    crate::store::update_text(path, |text| {
+        let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{} doesn't parse: {e}", path.display()))?;
+        edit(&mut doc)?;
+        let out = doc.to_string();
+        // Never write something lyra couldn't read back.
+        toml::from_str::<Config>(&out).map_err(|e| format!("the change would break {}: {e}", path.display()))?;
+        Ok(out)
+    })
 }
 
 /// A list of strings as a TOML array.

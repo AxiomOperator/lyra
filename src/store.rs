@@ -32,7 +32,13 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = dir.join(format!(".{name}.tmp-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-    let done = std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, path));
+    let done = (|| {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
     if done.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -53,6 +59,22 @@ pub fn write_json<V: Serialize + ?Sized>(path: &Path, v: &V) -> Result<(), Strin
 /// doesn't read is moved aside and logged.
 pub fn read_json<T: DeserializeOwned + Default>(path: &Path) -> T {
     JsonStore::<T>::new(path).read()
+}
+
+/// Change a text file (config.toml, behavior.toml) under its lock: read it
+/// (empty when missing), `change` it, write it atomically, keeping its
+/// permissions (it may hold keys). Two changes at once can't lose each other.
+pub fn update_text(path: &Path, change: impl FnOnce(String) -> Result<String, String>) -> Result<(), String> {
+    let lock = lock_for(path);
+    let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let out = change(text)?;
+    let before = std::fs::metadata(path).ok().map(|m| m.permissions());
+    write_atomic(path, out.as_bytes())?;
+    if let Some(p) = before {
+        let _ = std::fs::set_permissions(path, p);
+    }
+    Ok(())
 }
 
 /// A text file (Markdown, TOML), written atomically.
@@ -131,6 +153,38 @@ impl<T: Serialize + DeserializeOwned + Default> JsonStore<T> {
 
 #[cfg(test)]
 mod tests {
+    use super::update_text;
+
+    #[test]
+    fn text_changes_at_once_lose_nothing_and_keep_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("lyra-update-text-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = std::sync::Arc::new(dir.join("config.toml"));
+        std::fs::write(&*path, "").unwrap();
+        std::fs::set_permissions(&*path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let threads: Vec<_> = (0..12)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    update_text(&path, |t| {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        Ok(format!("{t}k{i} = {i}\n"))
+                    })
+                    .unwrap()
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let text = std::fs::read_to_string(&*path).unwrap();
+        assert_eq!(text.lines().count(), 12, "every change kept:\n{text}");
+        assert_eq!(std::fs::metadata(&*path).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     fn dir(name: &str) -> PathBuf {

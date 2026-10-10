@@ -329,14 +329,15 @@ fn set_in(path: &std::path::Path, changes: &Value) -> Result<Vec<String>, String
 /// behavior.toml changed the same way: its other keys and comments kept,
 /// never a file that doesn't read back.
 fn write_behavior(path: &std::path::Path, writes: Vec<(&Field, toml_edit::Item)>) -> Result<(), String> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{} doesn't parse: {e}", path.display()))?;
-    for (f, item) in writes {
-        put(doc.as_table_mut(), f.key.trim_start_matches("behavior."), item);
-    }
-    let out = doc.to_string();
-    Behavior::parse(&out).map_err(|e| format!("the change would break {}: {e}", path.display()))?;
-    crate::store::write_text(path, &out)
+    crate::store::update_text(path, |text| {
+        let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{} doesn't parse: {e}", path.display()))?;
+        for (f, item) in writes {
+            put(doc.as_table_mut(), f.key.trim_start_matches("behavior."), item);
+        }
+        let out = doc.to_string();
+        Behavior::parse(&out).map_err(|e| format!("the change would break {}: {e}", path.display()))?;
+        Ok(out)
+    })
 }
 
 /// Set `key`, keeping what's around the old value (a comment after it on its line).

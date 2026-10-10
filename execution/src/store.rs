@@ -58,9 +58,9 @@ impl PlanStore {
 
     pub async fn save_goal(&self, g: &Goal) -> Result<()> {
         sqlx::query(
-            "INSERT OR REPLACE INTO goals (id, request, description, success_criteria, constraints, outputs,
+            "INSERT INTO goals (id, request, description, success_criteria, constraints, outputs,
                 destructive, ambiguities, status, evaluation, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT evaluation FROM goals WHERE id = ?), ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT evaluation FROM goals WHERE id = ?), ?, ?) ON CONFLICT (id) DO UPDATE SET request = excluded.request, description = excluded.description, success_criteria = excluded.success_criteria, constraints = excluded.constraints, outputs = excluded.outputs, destructive = excluded.destructive, ambiguities = excluded.ambiguities, status = excluded.status, evaluation = excluded.evaluation, created_at = excluded.created_at, updated_at = excluded.updated_at",
         )
         .bind(g.id.to_string())
         .bind(&g.request)
@@ -117,8 +117,8 @@ impl PlanStore {
     /// Insert or update (persist before and after every change).
     pub async fn save_plan(&self, p: &Plan) -> Result<()> {
         sqlx::query(
-            "INSERT OR REPLACE INTO plans (id, goal_id, version, status, steps, budget, usage, note, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO plans (id, goal_id, version, status, steps, budget, usage, note, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET goal_id = excluded.goal_id, version = excluded.version, status = excluded.status, steps = excluded.steps, budget = excluded.budget, usage = excluded.usage, note = excluded.note, created_at = excluded.created_at, updated_at = excluded.updated_at",
         )
         .bind(p.id.to_string())
         .bind(p.goal_id.to_string())
@@ -303,7 +303,7 @@ impl PlanStore {
 
     /// Oldest first.
     pub async fn events(&self, plan: Uuid) -> Result<Vec<ExecutionEvent>> {
-        let rows = sqlx::query("SELECT * FROM execution_events WHERE plan_id = ? ORDER BY created_at, rowid")
+        let rows = sqlx::query("SELECT * FROM execution_events WHERE plan_id = ? ORDER BY created_at, id")
             .bind(plan.to_string())
             .fetch_all(&self.pool)
             .await?;

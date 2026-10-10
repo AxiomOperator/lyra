@@ -157,7 +157,7 @@ impl EvolutionManager {
             let _ = std::fs::remove_file(self.behavior_path());
         } else {
             std::fs::create_dir_all(self.home.join("config")).map_err(io)?;
-            std::fs::write(self.behavior_path(), &s.behavior).map_err(io)?;
+            write_atomic(&self.behavior_path(), &s.behavior)?;
         }
         for (dir, files) in [("workflows", &s.workflows), ("tools", &s.tools)] {
             let dir = self.dir(dir);
@@ -168,7 +168,7 @@ impl EvolutionManager {
                 }
             }
             for (name, text) in files {
-                std::fs::write(dir.join(format!("{name}.toml")), text).map_err(io)?;
+                write_atomic(&dir.join(format!("{name}.toml")), text)?;
             }
         }
         Ok(())
@@ -627,6 +627,25 @@ fn read_dir<T>(dir: &Path, parse: impl Fn(&str) -> Result<T, String>) -> (Vec<T>
         }
     }
     (ok, errors)
+}
+
+/// Write a file atomically: a temp file of its own, flushed, then renamed over
+/// it (a snapshot cut off part way never leaves a half-written behavior.toml).
+fn write_atomic(path: &std::path::Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.tmp-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let done = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if done.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    done.map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[cfg(test)]

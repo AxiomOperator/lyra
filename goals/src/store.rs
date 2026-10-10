@@ -256,7 +256,7 @@ impl GoalStore {
 
     /// Newest first; one goal's or all.
     pub async fn events(&self, goal: Option<Uuid>, limit: usize) -> Result<Vec<GoalEvent>> {
-        let rows = sqlx::query("SELECT * FROM goal_events WHERE ? IS NULL OR goal_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?")
+        let rows = sqlx::query("SELECT * FROM goal_events WHERE ? IS NULL OR goal_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
             .bind(goal.map(|g| g.to_string()))
             .bind(goal.map(|g| g.to_string()))
             .bind(limit as i64)

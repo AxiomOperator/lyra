@@ -234,8 +234,8 @@ impl Ledger {
 
     pub async fn relate(&self, from: Uuid, to: Uuid, kind: Relationship, reason: &str) -> Result<()> {
         sqlx::query(
-            "INSERT OR REPLACE INTO skill_relationships (from_id, to_id, kind, reason, created_at)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO skill_relationships (from_id, to_id, kind, reason, created_at)
+             VALUES (?, ?, ?, ?, ?) ON CONFLICT (from_id, to_id, kind) DO UPDATE SET reason = excluded.reason, created_at = excluded.created_at",
         )
         .bind(from.to_string())
         .bind(to.to_string())
@@ -341,7 +341,7 @@ impl Ledger {
         let skill = skill_id.map(|s| s.to_string());
         let rows = sqlx::query(
             "SELECT * FROM skill_events WHERE ? IS NULL OR skill_id = ?
-             ORDER BY created_at DESC, rowid DESC LIMIT ?",
+             ORDER BY created_at DESC, id DESC LIMIT ?",
         )
         .bind(&skill)
         .bind(&skill)
@@ -354,7 +354,7 @@ impl Ledger {
     /// The most recent event of a kind, e.g. the last curation.
     pub async fn last_event(&self, kind: &str) -> Result<Option<Event>> {
         let row = sqlx::query(
-            "SELECT * FROM skill_events WHERE kind = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            "SELECT * FROM skill_events WHERE kind = ? ORDER BY created_at DESC, id DESC LIMIT 1",
         )
         .bind(kind)
         .fetch_optional(&self.pool)

@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.51.3.197",
+    "date": "2026-10-09",
+    "title": "Safer saving everywhere",
+    "fixed": [
+      "Two changes to the settings at once (from the Settings page, a command, lyra's own tuning) can no longer lose one of them, and config.toml keeps its private permissions.",
+      "lyra's tuned behavior, workflows, tools and agent files are saved whole or not at all, so a restart part way never leaves a half-written file."
+    ],
+    "improved": [
+      "The databases now use only SQL that PostgreSQL also understands, for an easier move later."
+    ]
+  },
+  {
     "version": "0.51.2.196",
     "date": "2026-10-09",
     "title": "Background work always knows whose it is",
