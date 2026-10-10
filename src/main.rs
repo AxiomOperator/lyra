@@ -258,6 +258,9 @@ enum StreamEvent {
     Log(String),
     /// What the vision model read off a file the user attached: kept with their message.
     Seen(String),
+    /// The conversation's oldest turns were summarized to fit the model's
+    /// context: how many history messages the note now stands for, and the note.
+    Compacted { upto: usize, summary: String },
     /// Something to say in the chat (a remote update finished, …).
     Notice(String),
     /// Health check results for the embedding/reranker models.
@@ -526,6 +529,9 @@ struct App {
     last_schedule_check: Instant,
     /// When this session began (episodes start here).
     session_started: chrono::DateTime<chrono::Utc>,
+    /// The oldest turns as one note (how many history messages it stands
+    /// for, and the note), once the conversation neared the model's context.
+    compacted: Option<(usize, String)>,
     /// Tools plan steps may never use (`[planning] forbidden_tools`).
     forbidden_tools: Vec<String>,
     /// A plan is being created or run in the background.
@@ -660,6 +666,7 @@ impl App {
             evolving: None,
             evolution_review_every: config.evolution.review.every_days(),
             session_started: chrono::Utc::now(),
+            compacted: None,
             last_schedule_check: Instant::now(),
             forbidden_tools: config.planning.forbidden_tools.clone(),
             plan_busy: false,
@@ -814,6 +821,13 @@ impl App {
             StreamEvent::Notice(text) => {
                 self.log(Level::Agent, text.clone());
                 self.messages.push(Message::new("info", text));
+            }
+            StreamEvent::Compacted { upto, summary } => {
+                let words = summary.split_whitespace().count();
+                self.log(Level::Memory, format!("conversation compacted: its first {upto} messages summarized in {words} words to fit the model's context"));
+                self.messages.push(Message::new("info", format!("The older part of this conversation was summarized ({upto} messages, {words} words) so it fits the model's context; everything stays here.")));
+                self.compacted = Some((upto, summary));
+                self.save_session();
             }
             StreamEvent::Models(results) => {
                 for result in &results {
@@ -1928,6 +1942,7 @@ impl App {
         let mut s = sessions::Session::from_messages(&self.session_id, self.session_started, &self.messages);
         s.owner = self.owner.clone();
         s.chat_only = self.chat_only;
+        s.summary = self.compacted.clone();
         if let Err(e) = sessions::save(&dir, &s) {
             self.log(Level::Error, format!("couldn't save the session: {e}"));
         }
@@ -1939,6 +1954,7 @@ impl App {
         self.session_id = id.clone();
         self.session_started = s.started;
         self.chat_only = s.chat_only;
+        self.compacted = s.summary.clone();
         self.messages = s.into_messages();
         self.agent_cards.clear();
         self.messages.push(Message::new("info", format!("resumed session {id} · {turns} turns · last active {when}")));
@@ -1956,6 +1972,7 @@ impl App {
         self.session_id = sessions::new_id();
         self.session_started = chrono::Utc::now();
         self.messages.clear();
+        self.compacted = None;
         self.agent_cards.clear();
         self.last_run = None;
         self.scroll = None;

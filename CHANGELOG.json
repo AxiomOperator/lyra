@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.65.0.212",
+    "date": "2026-10-10",
+    "title": "Long conversations keep going",
+    "new": [
+      "When a conversation nears what the model can take in, lyra now summarizes its oldest turns into one short note and carries on from that and the latest turns. The chat says when it happens, every message stays on screen, and the note is kept with the conversation for next time."
+    ]
+  },
+  {
     "version": "0.64.0.211",
     "date": "2026-10-10",
     "title": "Agent swarms",

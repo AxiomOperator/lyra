@@ -44,6 +44,11 @@ pub struct Session {
     /// Just talk: no tools in this conversation.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub chat_only: bool,
+    /// Its oldest turns, summarized when it neared the model's context: how
+    /// many messages (user, assistant and tool ones, from the start) the
+    /// note stands for, and the note. The messages themselves stay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<(usize, String)>,
     pub messages: Vec<SavedMessage>,
 }
 
@@ -78,6 +83,7 @@ impl Session {
             title,
             owner: owner(),
             chat_only: false,
+            summary: None,
             messages: messages
                 .iter()
                 .map(|m| SavedMessage {
@@ -342,7 +348,7 @@ mod tests {
                 agents: vec![],
             })
             .collect();
-        Session { id: id.into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: lines[0].1.into(), owner: owner(), chat_only: false, messages }
+        Session { id: id.into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: lines[0].1.into(), owner: owner(), chat_only: false, summary: None, messages }
     }
 
     #[test]
@@ -372,7 +378,9 @@ mod tests {
         let mut call = Message::new("assistant", String::new());
         call.tool_calls = vec![ToolCall::default()];
         a.push(call);
-        save(&dir, &Session::from_messages("20260101-000000-aaaaaa", Utc::now(), &a)).unwrap();
+        let mut first = Session::from_messages("20260101-000000-aaaaaa", Utc::now(), &a);
+        first.summary = Some((2, "- they asked about the firewall".into()));
+        save(&dir, &first).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         let b = vec![Message::new("user", "second chat".into())];
         save(&dir, &Session::from_messages("20260102-000000-bbbbbb", Utc::now(), &b)).unwrap();
@@ -382,6 +390,7 @@ mod tests {
         assert_eq!(latest(&dir).unwrap().id, "20260102-000000-bbbbbb");
         let back = find_for(&dir, "20260101", "owner").unwrap();
         assert_eq!(back.title, "first question");
+        assert_eq!(back.summary, Some((2, "- they asked about the firewall".into())), "the compacted note comes back with it");
         assert_eq!(back.kind(), "chat");
         let messages = back.into_messages();
         assert_eq!((messages.len(), messages[1].agents.clone(), messages[2].tool_calls.len()), (3, vec!["Writer".to_string()], 1));
@@ -504,7 +513,7 @@ mod keep_tests {
     fn pins_folders_and_archive_are_kept_apart_and_only_for_the_owner() {
         let dir = std::env::temp_dir().join(format!("lyra-sessions-meta-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut s = Session { id: "20261008-090000-abc123".into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: "Firewall rules".into(), owner: "dana".into(), chat_only: false, messages: vec![] };
+        let mut s = Session { id: "20261008-090000-abc123".into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: "Firewall rules".into(), owner: "dana".into(), chat_only: false, summary: None, messages: vec![] };
         s.messages.push(SavedMessage { role: "user".into(), content: "Firewall rules".into(), tool_calls: vec![], tool_call_id: None, reasoning: String::new(), memories: vec![], skills: vec![], agents: vec![] });
         save(&dir, &s).unwrap();
         assert!(keep_command(&dir, "dana", "folder abc123 Network").unwrap().contains("moved to Network"));

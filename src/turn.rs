@@ -79,9 +79,16 @@ impl App {
         let (base, model) = self.next_model.take().unwrap_or_else(|| (self.base_url.clone(), self.model.clone()));
         let url = format!("{}/chat/completions", base.trim_end_matches('/'));
         let system = self.system_prompt.clone().map(|p| Message::new("system", p));
+        // The oldest turns already summarized: the note goes instead of them
+        // (dropped if the conversation was cut back before them: /retry, /edit).
+        let kept = self.messages.iter().filter(|m| m.is_history()).count();
+        if self.compacted.as_ref().is_some_and(|(upto, _)| *upto >= kept) {
+            self.compacted = None;
+        }
+        let (already, prior) = self.compacted.clone().map_or((0, None), |(n, s)| (n, Some(s)));
         let history: Vec<Value> = system
             .iter()
-            .chain(self.messages.iter().filter(|m| m.is_history()))
+            .chain(self.messages.iter().filter(|m| m.is_history()).skip(already))
             .map(|m| {
                 let mut v = serde_json::to_value(m).expect("message serializes");
                 // A model that can see gets the images as parts of the message.
@@ -127,6 +134,16 @@ impl App {
             pmi::set_user(&owner);
             usage::set_job(Some(job));
             let mut history = history;
+            // Nearing the model's context: the oldest turns become one note.
+            let mut summary = prior;
+            let summarize = |text: &str| crate::learn::complete_light(&url, &model, SUMMARIZE, text).map(|(s, _)| s);
+            if let Some((n, note)) = compact(&mut history, summary.as_deref(), room(), summarize) {
+                let _ = tx.send(StreamEvent::Compacted { upto: already + n, summary: note.clone() });
+                summary = Some(note);
+            }
+            if let Some(note) = &summary {
+                add_to_system(&mut history, &format!("{EARLIER}\n{note}"));
+            }
             // Pictures and scans the chat model can't see: the vision model reads
             // them first, and what it saw goes with the message.
             if !looks.is_empty() {
@@ -420,6 +437,64 @@ fn room() -> usize {
     let window = crate::stats::CONTEXT_WINDOW.load(std::sync::atomic::Ordering::Relaxed) as usize;
     let tokens = if window == 0 { 32_768 } else { window };
     tokens * 7 / 2 * 6 / 10
+}
+
+/// How many of the latest exchanges always stay whole when a conversation is compacted.
+const KEEP_TURNS: usize = 4;
+
+/// Asked of the background model when a conversation is compacted.
+const SUMMARIZE: &str = "You condense the older part of a conversation between a person and their assistant, lyra, into a note lyra reads instead of it from now on. \
+Keep what matters for carrying on: what the person asked for and decided, facts, names, numbers, dates, file names, commands, what was done and what came of it, \
+open questions and anything promised. Drop greetings, repetition and raw tool output beyond what it showed. Write short bullet points, at most about 400 words, nothing else.";
+
+/// Heads the note in the system prompt.
+const EARLIER: &str = "Earlier in this conversation (its older turns, summarized to fit; the latest turns follow in full):";
+
+/// When the conversation nears the model's context (80% of the room), its
+/// oldest turns — all but the latest `KEEP_TURNS` exchanges, cut where a
+/// person spoke so no tool call loses its result — become one note, with any
+/// earlier note folded in. `history` loses those turns; the note and how many
+/// messages it took come back (the caller puts the note in the system prompt
+/// and keeps both with the conversation). Nothing happens when it fits, when
+/// there's too little to summarize, or when the summary fails (then `fit`
+/// still shortens old tool results).
+fn compact(history: &mut Vec<Value>, prior: Option<&str>, room: usize, summarize: impl FnOnce(&str) -> Result<String, String>) -> Option<(usize, String)> {
+    let size: usize = history.iter().map(|m| m["content"].as_str().map_or(0, str::len) + m["tool_calls"].to_string().len()).sum();
+    if size <= room * 8 / 10 {
+        return None;
+    }
+    let start = usize::from(history.first().is_some_and(|m| m["role"] == "system"));
+    let people: Vec<usize> = history.iter().enumerate().skip(start).filter(|(_, m)| m["role"] == "user").map(|(i, _)| i).collect();
+    if people.len() <= KEEP_TURNS {
+        return None;
+    }
+    let cut = people[people.len() - KEEP_TURNS];
+    let mut text = String::new();
+    if let Some(p) = prior {
+        text += &format!("The note so far:\n{p}\n\nWhat came after it:\n");
+    }
+    for m in &history[start..cut] {
+        let body = m["content"].as_str().unwrap_or("");
+        let line = match m["role"].as_str().unwrap_or("") {
+            "user" => format!("Person: {body}"),
+            "tool" => format!("(a tool returned: {})", body.chars().take(600).collect::<String>()),
+            _ => {
+                let calls: Vec<&str> = m["tool_calls"].as_array().into_iter().flatten().filter_map(|c| c["function"]["name"].as_str()).collect();
+                let used = if calls.is_empty() { String::new() } else { format!(" [used {}]", calls.join(", ")) };
+                format!("lyra{used}: {body}")
+            }
+        };
+        text += &line.chars().take(4000).collect::<String>();
+        text += "\n\n";
+    }
+    let text: String = text.chars().take(80_000).collect();
+    let note = summarize(&text).ok()?;
+    let note = note.rsplit("</think>").next().unwrap_or(&note).trim().to_string();
+    if note.is_empty() {
+        return None;
+    }
+    history.drain(start..cut);
+    Some((cut - start, note))
 }
 
 /// Older tool results shortened when the conversation outgrows the model's
@@ -911,8 +986,42 @@ pub(crate) fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: 
 
 #[cfg(test)]
 mod tests {
-    use super::{fit, small_talk};
+    use super::{compact, fit, small_talk};
     use serde_json::json;
+
+    #[test]
+    fn the_oldest_turns_become_one_note_when_the_conversation_nears_the_context() {
+        let mut history = vec![json!({ "role": "system", "content": "You are lyra." })];
+        for n in 0..8 {
+            history.push(json!({ "role": "user", "content": format!("question {n} {}", "x".repeat(400)) }));
+            history.push(json!({ "role": "assistant", "content": "", "tool_calls": [{ "id": format!("c{n}"), "type": "function", "function": { "name": "web_search", "arguments": "{}" } }] }));
+            history.push(json!({ "role": "tool", "tool_call_id": format!("c{n}"), "content": "found it" }));
+            history.push(json!({ "role": "assistant", "content": format!("answer {n}") }));
+        }
+        // It fits: nothing happens, and the summary isn't asked for.
+        let mut same = history.clone();
+        assert!(compact(&mut same, None, 1_000_000, |_| panic!("not asked")).is_none());
+        // Near the limit: the oldest four exchanges become the note; the last four stay whole.
+        let mut seen = String::new();
+        let (n, note) = compact(&mut history, Some("- they use Fedora"), 4_000, |text| {
+            seen = text.to_string();
+            Ok("- asked questions 0 to 3\n- they use Fedora".into())
+        })
+        .unwrap();
+        assert_eq!(n, 16, "four exchanges of four messages");
+        assert!(note.contains("they use Fedora"));
+        assert!(seen.starts_with("The note so far:\n- they use Fedora") && seen.contains("Person: question 0") && seen.contains("[used web_search]") && !seen.contains("question 4"));
+        assert_eq!(history.len(), 1 + 16);
+        assert_eq!(history[0]["content"], "You are lyra.");
+        assert!(history[1]["content"].as_str().unwrap().starts_with("question 4"), "cut where the person spoke");
+        // A failed summary leaves it as it was (fit still shortens tool results).
+        let mut kept = history.clone();
+        assert!(compact(&mut kept, None, 100, |_| Err("down".into())).is_none());
+        assert_eq!(kept.len(), history.len());
+        // Too few turns to summarize: left alone.
+        let mut short = history[..9].to_vec();
+        assert!(compact(&mut short, None, 10, |_| Ok("x".into())).is_none());
+    }
 
     #[test]
     fn long_research_is_shortened_to_fit_oldest_first() {
