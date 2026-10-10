@@ -152,6 +152,9 @@ export interface Device {
   created: string;
   last_seen: string;
   push: boolean;
+  /** Whose it is (none: a machine, or from before people). */
+  user?: string | null;
+  user_name?: string | null;
 }
 
 export interface Session {

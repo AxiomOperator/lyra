@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.58.0.204",
+    "date": "2026-10-10",
+    "title": "Devices by person",
+    "improved": [
+      "The Devices page now groups phones, browsers and terminals by the person they belong to, most recently used first, with machines in their own group. Each group shows how many there are and how many are online, and a long list folds after five."
+    ],
+    "fixed": [
+      "A link to the Devices page (from a notification or an address) now opens it."
+    ]
+  },
+  {
     "version": "0.57.0.203",
     "date": "2026-10-10",
     "title": "Each person's usage",

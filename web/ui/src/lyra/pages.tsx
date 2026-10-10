@@ -207,58 +207,97 @@ export function MachinesPage({ mention, toStatus, toChat }: { mention: (name: st
 
 // ---- devices
 
+/** How many of a person's devices show before "Show all". */
+const FIRST_DEVICES = 5;
+
 export function DevicesPage() {
   const { status, say, device } = useLyra();
   const [confirm, dialog] = useConfirm();
   // Follows who's online (not every status tick).
   const who = JSON.stringify([status.online ?? [], (status.machines_detail ?? []).map((m) => [m.name, m.online])]);
   const [devices, refresh] = useData<Device[]>("devices", [who]);
+  const [all, setAll] = useState<Record<string, boolean>>({});
+  // One group per person (most recently active first), machines last.
+  const newest = [...(devices ?? [])].sort((a, b) => b.last_seen.localeCompare(a.last_seen));
+  const groups: { key: string; title: string; machines: boolean; list: Device[] }[] = [];
+  for (const d of newest) {
+    const machines = d.kind === "node";
+    const key = machines ? "machines" : (d.user ?? "nobody");
+    let g = groups.find((x) => x.key === key);
+    if (!g) {
+      g = { key, title: machines ? "Machines" : (d.user_name ?? "Not anyone's"), machines, list: [] };
+      groups.push(g);
+    }
+    g.list.push(d);
+  }
+  groups.sort((a, b) => Number(a.machines) - Number(b.machines));
+  const row = (d: Device) => {
+    const mine = device?.id === d.id;
+    const Icon = d.kind === "node" ? Server : d.name.toLowerCase().includes("terminal") ? Terminal : Smartphone;
+    return (
+      <div key={d.id} className={cn("flex items-center gap-2 py-2", mine && "rounded-md bg-teal-500/10 px-2 -mx-2")}>
+        <Dot on={d.online} />
+        <Icon className="size-4 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm">{d.name}</div>
+          <div className="truncate text-muted-foreground text-xs">
+            paired {ago(d.created)} · last seen {ago(d.last_seen)}
+            {d.push && " · notifications on"}
+            {mine && " · this device"}
+          </div>
+        </div>
+        {!mine && (
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-label={`Unpair ${d.name}`}
+            className="shrink-0 text-red-400 hover:text-red-300"
+            onClick={() =>
+              confirm({
+                title: `Unpair ${d.name}?`,
+                text: "It will need to pair again to use lyra.",
+                action: "Unpair",
+                run: () => {
+                  say(`/devices remove ${d.id}`);
+                  setTimeout(refresh, 800);
+                },
+              })
+            }
+          >
+            <Unplug /> <span className="hidden sm:inline">Unpair</span>
+          </Button>
+        )}
+      </div>
+    );
+  };
   return (
-    <Page title="Devices" description="Phones, browsers, terminals and machines paired with lyra.">
+    <Page title="Devices" description="Phones, browsers, terminals and machines paired with lyra, by person.">
       {(status.pairing ?? []).map((p) => (
         <PairCard key={p.id} p={p} />
       ))}
-      {(devices ?? []).map((d) => {
-        const mine = device?.id === d.id;
-        const Icon = d.kind === "node" ? Server : d.name.toLowerCase().includes("terminal") ? Terminal : Smartphone;
+      {groups.map((g) => {
+        const shown = all[g.key] ? g.list : g.list.slice(0, FIRST_DEVICES);
+        const online = g.list.filter((d) => d.online).length;
         return (
-          <Card key={d.id} className={cn("py-4", mine && "border-teal-500/60")}>
+          <Card key={g.key} className="gap-1 py-3">
             <CardHeader className="px-4">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Dot on={d.online} />
-                <Icon className="size-4 text-muted-foreground" /> {d.name}
+              <CardTitle className="flex items-center gap-2 text-sm">
+                {g.machines ? <Server className="size-4 text-muted-foreground" /> : <UserRound className="size-4 text-muted-foreground" />}
+                {g.title}
               </CardTitle>
               <CardDescription>
-                paired {ago(d.created)} · last seen {ago(d.last_seen)}
-                {d.push && " · notifications on"}
-                {mine && " · this device"}
+                {g.list.length} {g.machines ? (g.list.length === 1 ? "machine" : "machines") : g.list.length === 1 ? "device" : "devices"}
+                {online > 0 && ` · ${online} online`}
               </CardDescription>
-              <CardAction className="flex gap-1.5">
-                <Badge variant="secondary">{d.kind === "node" ? "machine" : "device"}</Badge>
-              </CardAction>
             </CardHeader>
-            {!mine && (
-              <CardContent className="px-4">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="text-red-400 hover:text-red-300"
-                  onClick={() =>
-                    confirm({
-                      title: `Unpair ${d.name}?`,
-                      text: "It will need to pair again to use lyra.",
-                      action: "Unpair",
-                      run: () => {
-                        say(`/devices remove ${d.id}`);
-                        setTimeout(refresh, 800);
-                      },
-                    })
-                  }
-                >
-                  <Unplug /> Unpair
-                </Button>
-              </CardContent>
-            )}
+            <CardContent className="divide-y px-4">
+              {shown.map(row)}
+              {g.list.length > FIRST_DEVICES && (
+                <button type="button" className="w-full py-2 text-left text-muted-foreground text-xs hover:text-foreground" onClick={() => setAll((x) => ({ ...x, [g.key]: !x[g.key] }))}>
+                  {all[g.key] ? "Show fewer" : `Show all ${g.list.length}`}
+                </button>
+              )}
+            </CardContent>
           </Card>
         );
       })}

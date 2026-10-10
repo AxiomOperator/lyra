@@ -183,8 +183,11 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
         "devices" => {
             let online: Vec<String> = hub.online_devices().into_iter().map(|(id, _)| id).collect();
             let machines: Vec<String> = hub.machines().into_iter().map(|m| m.name.to_lowercase()).collect();
+            let users = hub.users().list();
             json!(hub.devices().list().into_iter().map(|d| json!({
                 "id": d.id, "name": d.name, "kind": d.kind,
+                // Whose it is (a machine is nobody's): grouped by person on the page.
+                "user": d.user, "user_name": d.user.as_deref().map(|u| users.iter().find(|x| x.id == u).map_or_else(|| u.to_string(), |x| x.name.clone())),
                 "online": if d.kind == "node" { machines.contains(&d.name.to_lowercase()) } else { online.contains(&d.id) },
                 "created": d.created, "last_seen": d.last_seen, "push": d.push.is_some(),
             })).collect::<Vec<_>>())
