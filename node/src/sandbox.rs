@@ -370,6 +370,59 @@ pub fn stop(key: &str) -> bool {
     }
 }
 
+/// The browser containers running here (all of them, even ones a restart
+/// left behind): name, how long, and with `stats` their CPU and memory now
+/// (that takes a second or two), plus the session each belongs to.
+pub fn containers(stats: bool) -> Vec<Value> {
+    let Ok(out) = docker(&["ps", "--filter", "name=lyra-sb-", "--format", "{{json .}}"]) else { return Vec::new() };
+    let mut list: Vec<Value> = out.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|c| c["Names"].as_str().is_some_and(|n| n.starts_with("lyra-sb-"))).collect();
+    let usage: HashMap<String, Value> = if stats && !list.is_empty() {
+        let names: Vec<String> = list.iter().filter_map(|c| c["Names"].as_str().map(str::to_string)).collect();
+        let mut args = vec!["stats", "--no-stream", "--format", "{{json .}}"];
+        args.extend(names.iter().map(String::as_str));
+        docker(&args).unwrap_or_default().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter_map(|v| Some((v["Name"].as_str()?.to_string(), v))).collect()
+    } else {
+        HashMap::new()
+    };
+    let all = sessions().lock().unwrap_or_else(|e| e.into_inner());
+    for c in list.iter_mut() {
+        let name = c["Names"].as_str().unwrap_or("").to_string();
+        let session = all.iter().find(|(_, s)| s.container == name);
+        let u = usage.get(&name);
+        *c = json!({
+            "name": name,
+            "id": c["ID"],
+            "running_for": c["RunningFor"],
+            "status": c["Status"],
+            "session": session.map(|(k, _)| k.clone()),
+            "url": session.map(|(_, s)| s.url.clone()),
+            "title": session.map(|(_, s)| s.title.clone()),
+            "idle_seconds": session.map(|(_, s)| s.last.elapsed().as_secs()),
+            "cpu": u.and_then(|u| u["CPUPerc"].as_str().map(str::to_string)),
+            "memory": u.and_then(|u| u["MemUsage"].as_str().map(str::to_string)),
+        });
+    }
+    list
+}
+
+/// Stop one container by its name (only lyra's: `lyra-sb-…`), and forget
+/// its session. The session it was for, if any.
+pub fn kill(name: &str) -> Result<Option<String>, String> {
+    let name = name.trim();
+    if !name.starts_with("lyra-sb-") || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("only lyra's browser containers (lyra-sb-…)".into());
+    }
+    let key = {
+        let mut all = sessions().lock().unwrap_or_else(|e| e.into_inner());
+        let key = all.iter().find(|(_, s)| s.container == name).map(|(k, _)| k.clone());
+        if let Some(mut s) = key.as_ref().and_then(|k| all.remove(k)) {
+            end(&mut s);
+        }
+        key
+    };
+    docker(&["rm", "-f", name]).map(|_| key)
+}
+
 /// Every open session: its key, page and since when.
 pub fn list() -> Vec<Value> {
     sessions()
@@ -474,7 +527,7 @@ for line in sys.stdin:
 "#;
         std::fs::write(dir.join("driver.py"), driver).unwrap();
         let script = format!(
-            "#!/bin/sh\ncase \"$1\" in\n  version) echo 29.0.0 ;;\n  image|network|rm) echo ok ;;\n  run) exec python3 -u {} ;;\n  *) exit 1 ;;\nesac\n",
+            "#!/bin/sh\ncase \"$1\" in\n  version) echo 29.0.0 ;;\n  image|network|rm) echo ok ;;\n  run) exec python3 -u {} ;;\n  ps) echo '{{\"Names\":\"lyra-sb-left-1\",\"ID\":\"abc123\",\"RunningFor\":\"20 minutes ago\",\"Status\":\"Up 20 minutes\"}}'; echo '{{\"Names\":\"someone-else\",\"ID\":\"def\"}}' ;;\n  stats) echo '{{\"Name\":\"lyra-sb-left-1\",\"CPUPerc\":\"1.5%\",\"MemUsage\":\"300MiB / 2GiB\"}}' ;;\n  *) exit 1 ;;\nesac\n",
             dir.join("driver.py").display()
         );
         let docker = dir.join("docker");
@@ -523,6 +576,12 @@ default via 192.1.2.10 dev ens19 proto dhcp src 192.1.1.227 metric 101\n\
         std::thread::sleep(Duration::from_millis(300));
         let pid = std::fs::read_to_string(&pids).unwrap().lines().next().unwrap().trim().to_string();
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists() || std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| st.contains(") Z ")), "its process ended");
+        // Every lyra container here (only lyra's), with its CPU and memory; and stopping one.
+        let running = containers(true);
+        assert_eq!(running.len(), 1, "{running:?}");
+        assert_eq!((running[0]["name"].as_str(), running[0]["cpu"].as_str(), running[0]["session"].is_null()), (Some("lyra-sb-left-1"), Some("1.5%"), true), "a left-over one");
+        assert_eq!(kill("lyra-sb-left-1"), Ok(None));
+        assert!(kill("someone-else").is_err() && kill("lyra-sb-x; rm -rf /").is_err(), "only lyra's, by a plain name");
         // Idle: closed by itself.
         step(&s, "conv-2", "read", &json!({}), false).unwrap();
         assert_eq!(reap(Duration::ZERO), vec!["conv-2".to_string()]);

@@ -617,7 +617,18 @@ async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System
                         tokio::task::spawn_blocking(move || {
                             let mut st = sandbox::status(&settings);
                             st["sessions"] = json!(sandbox::list());
+                            st["containers"] = json!(sandbox::containers(true));
                             let _ = out.send((reply(&v["id"], Ok(st)), None));
+                        });
+                    }
+                    // Stop one of the sandbox's containers (Running now's Stop).
+                    "sandbox_kill" => {
+                        let out = out_tx.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let name = v["container"].as_str().unwrap_or("");
+                            let result = sandbox::kill(name).map(|session| json!({ "stopped": name, "session": session }));
+                            println!("sandbox: stop {name} → {}", if result.is_ok() { "done" } else { "refused/failed" });
+                            let _ = out.send((reply(&v["id"], result), None));
                         });
                     }
                     "sandbox_setup" => {

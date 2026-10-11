@@ -332,7 +332,45 @@ fn login(s: &Settings, remote: Option<&dyn Remote>, key: &str, args: &Value, app
     Ok(out)
 }
 
-/// `/sandbox [setup|stop <session|all>]`.
+/// The sandbox's containers right now (Running now, admins): its machine's
+/// status and every `lyra-sb-` container there with its session, page, how
+/// long, CPU and memory.
+pub fn live(remote: Option<&dyn Remote>) -> Result<Value, String> {
+    let s = settings();
+    if !s.enabled {
+        return Ok(json!({ "enabled": false }));
+    }
+    let mut v = if on_server(&s) {
+        let mut v = lyra_node::sandbox::status(&s.here);
+        v["containers"] = json!(lyra_node::sandbox::containers(true));
+        v
+    } else {
+        let remote = remote.ok_or("machines aren't connected here")?;
+        remote.call(&s.machine, json!({ "type": "sandbox_status" }), Duration::from_secs(30))?
+    };
+    v["enabled"] = json!(true);
+    v["machine"] = json!(if on_server(&s) { "server".to_string() } else { s.machine.clone() });
+    Ok(v)
+}
+
+/// Stop one container (by its name) on the sandbox's machine, and forget the
+/// conversation's browser it was. The session it was for, if any.
+pub fn kill(remote: Option<&dyn Remote>, container: &str) -> Result<Option<String>, String> {
+    let s = settings();
+    let session = if on_server(&s) {
+        lyra_node::sandbox::kill(container)?
+    } else {
+        let remote = remote.ok_or("machines aren't connected here")?;
+        let v = remote.call(&s.machine, json!({ "type": "sandbox_kill", "container": container }), Duration::from_secs(30))?;
+        v["session"].as_str().map(str::to_string)
+    };
+    if let Some(k) = &session {
+        with_open(|all| all.remove(k));
+    }
+    Ok(session)
+}
+
+/// `/sandbox [setup|stop <session|all>|kill <container>]`.
 pub fn command(remote: Option<&dyn Remote>, arg: &str) -> Result<String, String> {
     let s = settings();
     if !s.enabled {
@@ -353,6 +391,13 @@ pub fn command(remote: Option<&dyn Remote>, arg: &str) -> Result<String, String>
             };
             Ok(format!("sandbox on {}: {}", if on_server(&s) { "the server" } else { &s.machine }, v["said"].as_str().unwrap_or("done").replace(" · ", "\n")))
         }
+        "kill" => {
+            let name = rest.trim();
+            if name.is_empty() {
+                return Err("/sandbox kill <container> (its name from Running now: lyra-sb-…)".into());
+            }
+            kill(remote, name).map(|session| format!("stopped {name}{}", session.map(|k| format!(" (the browser of conversation {k})")).unwrap_or_default()))
+        }
         "stop" => {
             let keys: Vec<String> = if rest.trim() == "all" || rest.trim().is_empty() { with_open(|all| all.keys().cloned().collect()) } else { vec![rest.trim().to_string()] };
             let n = keys.iter().filter(|k| end(remote, k)).count();
@@ -370,7 +415,7 @@ pub fn command(remote: Option<&dyn Remote>, arg: &str) -> Result<String, String>
             }
             Ok(lines.join("\n"))
         }
-        _ => Err("/sandbox [setup | stop <session|all>]".into()),
+        _ => Err("/sandbox [setup | stop <session|all> | kill <container>]".into()),
     }
 }
 

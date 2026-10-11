@@ -690,8 +690,8 @@ mod tests {
             assert!(member_may_get(own), "{own} is a member's own");
         }
         for admin in [
-            "status", "users", "user_add", "user_password", "user_email", "settings", "settings_set", "email_providers", "email_provider_put", "email_provider_test", "running",
-            "running_stop", "known_down_set", "devices", "machines", "rules", "set_rules", "backups",
+            "status", "sandbox_containers", "sandbox_kill", "users", "user_add", "user_password", "user_email", "settings", "settings_set", "email_providers", "email_provider_put", "email_provider_test", "running",
+            "running_stop", "known_down_set", "devices", "machines", "rules", "set_rules", "backups", "sandbox_containers", "sandbox_kill",
         ] {
             assert!(!member_may_get(admin), "{admin} is an admin's");
         }

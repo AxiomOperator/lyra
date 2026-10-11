@@ -48,6 +48,47 @@ pub(crate) fn get_page(
         everyone = true;
         return everyone;
     }
+    // The browser sandbox's containers (admins: this isn't a member's page), asked of its machine off the loop.
+    if what == "sandbox_containers" {
+        let users = hub.users();
+        let named = |owner: &str| users.get(owner).map_or_else(|| owner.to_string(), |u| u.name);
+        let open: Vec<(String, String, String)> = convs.iter().map(|c| (c.app.session_id.clone(), super::title(&c.app).unwrap_or_default(), named(&c.app.owner))).collect();
+        let names: Vec<(String, String)> = users.list().into_iter().map(|u| (u.id, u.name)).collect();
+        let hub = hub.clone();
+        crate::acting::spawn(move || {
+            let remote = HubRemote(hub);
+            let mut v = crate::sandbox::live(Some(&remote)).unwrap_or_else(|e| json!({ "error": e }));
+            let dir = crate::sessions::dir();
+            if let Some(list) = v["containers"].as_array_mut() {
+                for c in list.iter_mut() {
+                    let Some(key) = c["session"].as_str().map(str::to_string) else { continue };
+                    // Its conversation: open now, else its saved file.
+                    let found = open.iter().find(|(id, ..)| *id == key).map(|(_, t, w)| (t.clone(), w.clone())).or_else(|| {
+                        let s = dir.as_ref().and_then(|d| crate::sessions::list(d).into_iter().find(|s| s.id == key))?;
+                        Some((s.label(), names.iter().find(|(id, _)| *id == s.owner).map_or_else(|| s.owner.clone(), |(_, n)| n.clone())))
+                    });
+                    if let Some((title, who)) = found {
+                        c["conversation"] = json!(title);
+                        c["who"] = json!(who);
+                    }
+                }
+            }
+            let _ = reply.send(v);
+        });
+        return everyone;
+    }
+    if what == "sandbox_kill" {
+        let (hub, name, by) = (hub.clone(), arg["container"].as_str().unwrap_or("").to_string(), who.name.clone());
+        convs[0].app.log(Level::Agent, format!("{by} stops browser container {name} (Running now)"));
+        crate::acting::spawn(move || {
+            let r = crate::sandbox::kill(Some(&HubRemote(hub)), &name);
+            let _ = reply.send(match r {
+                Ok(_) => json!({ "ok": true }),
+                Err(e) => json!({ "error": e }),
+            });
+        });
+        return true;
+    }
     let loaded: Loaded = convs.iter().filter(|c| c.app.owner == who.user).map(|c| (c.app.session_id.clone(), c.app.waiting)).collect();
     let i = conv_for(convs, &session, &who);
     let machine = arg["machine"].as_str().unwrap_or("server").to_string();

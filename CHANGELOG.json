@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.70.0.220",
+    "date": "2026-10-11",
+    "title": "See the sandbox's containers",
+    "new": [
+      "Running now (admins) shows the browser sandbox's containers live: which conversation each is for and whose, the page it's on, how long it's been up, and its CPU and memory. Each has a Stop, and containers left over from a restart show too so you can remove them.",
+      "/sandbox kill <container> stops one from the chat or the terminal."
+    ]
+  },
+  {
     "version": "0.69.2.219",
     "date": "2026-10-11",
     "title": "A browser that never opened a page still closes",
