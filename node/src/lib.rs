@@ -49,8 +49,10 @@ pub struct NodeConfig {
     /// This machine's rules: what may run without asking, what's off limits.
     #[serde(default)]
     pub system: lyra_system::Settings,
-    /// Its browser sandbox (Docker), when it lends one.
-    #[serde(default)]
+    /// Its browser sandbox (Docker), when it lends one. Written only when
+    /// changed from the defaults, so a later version's better defaults (its
+    /// container limit) apply to machines paired before it.
+    #[serde(default, skip_serializing_if = "sandbox::Settings::is_default")]
     pub sandbox: sandbox::Settings,
 }
 

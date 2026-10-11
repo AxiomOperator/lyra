@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.71.1.222",
+    "date": "2026-10-11",
+    "title": "Machines get the new sandbox limit",
+    "fixed": [
+      "A machine paired before the sandbox worked out its own limit kept the old fixed 4, because pairing had saved every sandbox setting. Pairing now saves only settings you changed, so newer defaults reach your machines."
+    ]
+  },
+  {
     "version": "0.71.0.221",
     "date": "2026-10-11",
     "title": "Browsers wait their turn",

@@ -73,6 +73,12 @@ fn docker(args: &[&str]) -> Result<String, String> {
     }
 }
 
+impl Settings {
+    pub fn is_default(&self) -> bool {
+        *self == Settings::default()
+    }
+}
+
 /// How many containers this machine runs at once: `max_sessions`, or, left
 /// at 0, what its cores and memory allow with each container's share
 /// (`cpus` cores, `memory`) and room kept for the machine itself: 32 cores
@@ -575,6 +581,9 @@ for line in sys.stdin:
         assert_eq!(room(2, 4, &s), 1, "a small machine still runs one");
         assert_eq!(room(256, 1024, &s), 32, "never more than 32");
         assert_eq!(limit(&Settings { max_sessions: 5, ..Default::default() }), 5, "set by hand");
+        // A paired machine's settings don't carry the defaults (so better ones reach it).
+        let config = crate::NodeConfig { url: "u".into(), token: "t".into(), name: "n".into(), system: Default::default(), sandbox: Settings::default() };
+        assert!(!toml::to_string_pretty(&config).unwrap().contains("max_sessions"));
     }
 
     #[test]
