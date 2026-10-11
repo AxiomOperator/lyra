@@ -255,6 +255,9 @@ pub fn call(remote: Option<&dyn Remote>, name: &str, args: &Value, approved: boo
     if matches!(action, "open" | "click" | "submit" | "back") {
         args["shot"] = json!(true);
     }
+    // Known before the machine starts its container: the turn's end closes it,
+    // even when every step failed (a page that didn't load still started one).
+    track(&key);
     let mut v = send(&s, remote, &key, action, &args, approved)?;
     // What was typed, kept with its field: the yes for sending the form shows it.
     if matches!(action, "fill" | "select") {
@@ -266,6 +269,13 @@ pub fn call(remote: Option<&dyn Remote>, name: &str, args: &Value, approved: boo
         });
     }
     Ok(kept(&key, &mut v))
+}
+
+/// This conversation has a browser (open, or being started).
+fn track(key: &str) {
+    with_open(|all| {
+        all.entry(key.to_string()).or_default().since.get_or_insert_with(chrono::Utc::now);
+    });
 }
 
 /// A page's answer kept for the session (its elements, page), its picture
@@ -368,6 +378,9 @@ pub fn command(remote: Option<&dyn Remote>, arg: &str) -> Result<String, String>
 mod tests {
     use super::*;
 
+    /// The settings are process-wide: tests that change them take turns.
+    static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn a_page_is_kept_its_picture_goes_to_the_person_and_saved_passwords_never_come_back() {
         let key = "test-keep";
@@ -401,7 +414,21 @@ mod tests {
     }
 
     #[test]
+    fn a_browser_that_never_loaded_a_page_is_still_closed_at_the_end() {
+        let _one = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        configure(Settings { enabled: true, machine: "sandbox1".into(), here: Default::default() });
+        crate::usage::set_job(Some("test-failed-open".into()));
+        // No machine to reach: the step fails, but the session is known.
+        assert!(call(None, "browser_open", &json!({ "url": "https://example.com" }), false, false).is_err());
+        assert!(sessions().iter().any(|s| s["session"] == "test-failed-open"));
+        assert!(end(None, "test-failed-open"), "the turn's end closes it");
+        assert!(!sessions().iter().any(|s| s["session"] == "test-failed-open"));
+        configure(Settings::default());
+    }
+
+    #[test]
     fn members_and_an_off_sandbox_never_get_a_browser() {
+        let _one = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         assert!(call(None, "browser_open", &json!({ "url": "https://example.com" }), false, true).unwrap_err().contains("admins"));
         configure(Settings::default());
         assert!(call(None, "browser_open", &json!({ "url": "https://example.com" }), false, false).unwrap_err().contains("off"));

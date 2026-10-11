@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.69.2.219",
+    "date": "2026-10-11",
+    "title": "A browser that never opened a page still closes",
+    "fixed": [
+      "When every page a browser tried failed to load, its container on the sandbox machine stayed until it went idle. It now closes when the reply ends, like any other."
+    ]
+  },
+  {
     "version": "0.69.1.218",
     "date": "2026-10-11",
     "title": "The sandbox blocks your own network too",
