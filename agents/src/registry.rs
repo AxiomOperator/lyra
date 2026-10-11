@@ -58,6 +58,9 @@ pub struct AgentRegistry {
     dir: PathBuf,
     pool: SqlitePool,
     rt: Handle,
+    /// Changes (create, update, delete, sync) one at a time, so a sync
+    /// that read a profile before a change can't write the old one back.
+    changing: std::sync::Mutex<()>,
 }
 
 impl AgentRegistry {
@@ -72,7 +75,7 @@ impl AgentRegistry {
             sqlx::migrate!("./migrations").run(&pool).await?;
             anyhow::Ok(pool)
         })?;
-        let r = Self { dir: dir.to_path_buf(), pool, rt };
+        let r = Self { dir: dir.to_path_buf(), pool, rt, changing: std::sync::Mutex::new(()) };
         if r.files()?.is_empty() {
             for name in crate::templates::DEFAULTS {
                 if let Some(p) = crate::templates::template(name) {
@@ -167,6 +170,7 @@ impl AgentRegistry {
     /// Add a new agent (version 1).
     pub fn create(&self, mut p: AgentProfile, reason: &str) -> Result<AgentProfile, String> {
         validate(&p)?;
+        let _one = self.changing.lock().unwrap_or_else(|e| e.into_inner());
         if self.path(&p.name).exists() {
             return Err(format!("an agent named {} already exists", p.name));
         }
@@ -199,6 +203,7 @@ impl AgentRegistry {
     /// Save a changed agent as a new version (A13).
     pub fn update(&self, mut p: AgentProfile, reason: &str) -> Result<AgentProfile, String> {
         validate(&p)?;
+        let _one = self.changing.lock().unwrap_or_else(|e| e.into_inner());
         let current = self.get(&p.name).ok_or_else(|| format!("no agent {}", p.name))?;
         p.version = self.latest_version(&p.name)?.max(current.version) + 1;
         p.created_at = current.created_at;
@@ -211,7 +216,10 @@ impl AgentRegistry {
     /// Files edited by hand since their last recorded version get a version.
     pub fn sync(&self) -> Vec<String> {
         let mut notes = Vec::new();
-        for p in self.list().0 {
+        for listed in self.list().0 {
+            // Read again under the lock: a change made since the list stands.
+            let _one = self.changing.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(p) = self.get(&listed.name) else { continue };
             let latest = self.versions(&p.name).ok().and_then(|v| v.into_iter().next());
             let changed = latest.as_ref().is_none_or(|v| {
                 let mut snap: AgentProfile = match serde_json::from_value(v.profile_snapshot.clone()) {
@@ -241,6 +249,7 @@ impl AgentRegistry {
     /// Remove the file; its versions stay, so it can be restored.
     pub fn delete(&self, key: &str) -> Result<String, String> {
         let p = self.find(key)?;
+        let _one = self.changing.lock().unwrap_or_else(|e| e.into_inner());
         std::fs::remove_file(self.path(&p.name)).map_err(|e| e.to_string())?;
         Ok(p.name)
     }

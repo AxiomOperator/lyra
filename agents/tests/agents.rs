@@ -145,3 +145,39 @@ fn delegation_contract_and_permissions() {
     assert_eq!(writer.memory_policy.read_scopes("writer").unwrap(), ["user", "agent:writer"]);
     assert!(templates::template("researcher").unwrap().memory_policy.read_scopes("researcher").is_none(), "shared read: every scope");
 }
+
+#[test]
+fn a_sync_running_meanwhile_never_undoes_a_change() {
+    let (_rt, r, _dir) = registry();
+    let r = std::sync::Arc::new(r);
+    let name = r.list().0[0].name.clone();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let syncing = {
+        let (r, stop) = (r.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                r.sync();
+            }
+        })
+    };
+    for i in 0..30 {
+        let mut p = r.find(&name).unwrap();
+        p.shared = i % 2 == 1;
+        r.update(p, "test").unwrap();
+        assert_eq!(r.get(&name).unwrap().shared, i % 2 == 1, "change {i} stands");
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    syncing.join().unwrap();
+    assert!(r.get(&name).unwrap().shared, "the last change stands");
+}
+
+#[test]
+fn a_duplicate_is_its_own_agent_with_the_same_work() {
+    let (_rt, r, _dir) = registry();
+    let from = r.list().0[0].clone();
+    let copy = r.duplicate(&from.name, "Second opinion").unwrap();
+    assert_eq!((copy.name.as_str(), copy.version, copy.instructions == from.instructions), ("second-opinion", 1, true));
+    assert_ne!(copy.id, from.id);
+    assert!(r.duplicate(&from.name, "Second opinion").is_err(), "a name of its own");
+    assert!(r.duplicate(&from.name, " ").is_err());
+}

@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.68.1.216",
+    "date": "2026-10-10",
+    "title": "Agent changes always stick",
+    "fixed": [
+      "Two quick changes to an agent (its colour, then who may use it, say) could undo the first, because lyra's background check of agent files wrote an older copy back. Changes and that check now take turns, so every change stands."
+    ]
+  },
+  {
     "version": "0.68.0.215",
     "date": "2026-10-10",
     "title": "Tell me when a page changes",
