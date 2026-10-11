@@ -119,6 +119,15 @@ pub trait Remote: Send + Sync {
     fn harnesses(&self) -> Vec<(String, Value)> {
         Vec::new()
     }
+    /// A machine's browser sandbox, as it last said.
+    fn sandbox(&self, machine: &str) -> Option<Value> {
+        let _ = machine;
+        None
+    }
+    /// Remember what a machine's sandbox says now (after a setup).
+    fn set_sandbox(&self, machine: &str, sandbox: Value) {
+        let _ = (machine, sandbox);
+    }
     /// Connected machines running Windows (their commands are PowerShell).
     fn windows_machines(&self) -> Vec<String> {
         Vec::new()
@@ -626,6 +635,10 @@ impl Caps {
         if crate::coding::settings().enabled {
             caps.push(crate::coding::capability());
         }
+        // The browser sandbox, once its machine is ready.
+        if crate::sandbox::ready(self.remote.get().map(|r| r.as_ref())) {
+            caps.extend(crate::sandbox::capabilities());
+        }
         if crate::pmi::anyone() {
             caps.extend(crate::pmi::capabilities());
         }
@@ -737,6 +750,9 @@ impl Caps {
         }
         if c.source == "projects" {
             return crate::projects::approval(self.remote.get().map(|r| r.as_ref()), &c.name, &args);
+        }
+        if c.source == "sandbox" {
+            return crate::sandbox::approval(&c.name, &args);
         }
         // Another machine decides for itself (its own rules), and says what it would do.
         if c.source == "system"
@@ -981,6 +997,8 @@ impl Caps {
                 None => crate::projects::call(self.remote.get().map(|r| r.as_ref()), &c.name, &args, true),
             },
             _ if c.source == "style" => crate::style::call(&c.name, &args),
+            // The browser sandbox (admins; a form waits for the user's yes, on both sides).
+            _ if c.source == "sandbox" => crate::sandbox::call(self.remote.get().map(|r| r.as_ref()), &c.name, &args, approved, ctx.member),
             // What the person this turn is for asked to be told about.
             _ if c.source == "watches" => crate::watches::call(&c.name, &args),
             _ if c.source == "meetings" => crate::meetings::call(&c.name, &args),

@@ -462,6 +462,11 @@ fn draw_chat(f: &mut Frame, s: &mut Screen, area: Rect) {
     for (i, m) in s.view.messages.iter().enumerate() {
         let role = m["role"].as_str().unwrap_or("info");
         let content = m["content"].as_str().unwrap_or("");
+        if role == "picture" {
+            lines.push(Line::styled("  ↳ [a picture of the browser's page: shown in the app]", dim));
+            lines.push(Line::default());
+            continue;
+        }
         if role == "tool" || role == "agent_tool" {
             match crate::ui::tool_lines(content) {
                 Some(each) => lines.extend(each.into_iter().map(|(ok, text)| Line::styled(text, if ok { dim } else { Style::default().fg(Color::Red) }))),

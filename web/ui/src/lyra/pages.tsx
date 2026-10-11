@@ -130,6 +130,21 @@ export function MachinesPage({ mention, toStatus, toChat }: { mention: (name: st
               <HealthRow h={m.health} machine={m.name} toChat={toChat} />
             </CardContent>
           )}
+          {m.online && m.sandbox && (
+            <CardContent className="flex flex-wrap items-center gap-2 px-4 text-sm">
+              <Badge variant="outline" className={m.sandbox.ready ? "border-emerald-700/60 text-emerald-300" : "border-amber-700/60 text-amber-300"}>
+                Sandbox: {m.sandbox.ready ? "ready" : "not ready"}
+              </Badge>
+              <span className="text-muted-foreground text-xs">
+                {[`Docker ${m.sandbox.docker}`, m.sandbox.image ?? "no image yet", m.sandbox.running ? `${m.sandbox.running} running` : "", m.sandbox_in_use ? "lyra's browser sandbox" : "not in use ([sandbox] machine)", m.sandbox.why].filter(Boolean).join(" · ")}
+              </span>
+              {m.sandbox_in_use && (
+                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => say("/sandbox setup")} title="Build the image, block the LAN, check (a few minutes)">
+                  Set up
+                </Button>
+              )}
+            </CardContent>
+          )}
           <CardContent className="flex flex-wrap gap-2 px-4">
             {m.online && (
               <Button size="sm" variant="secondary" onClick={() => mention(m.name)}>

@@ -433,6 +433,15 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
     if let Some(home) = crate::config::home() {
         let devices = lyra_web::Devices::open(&home.join("web")).ok();
         let sizes = crate::retention::sizes(&home, devices.as_ref());
+        // The browser sandbox: its machine there, the image built, the LAN blocked.
+        if let Some(v) = crate::sandbox::status(i.caps.as_ref().and_then(|c| c.remote()).as_deref()) {
+            let running = v["sessions"].as_array().map_or(0, Vec::len);
+            let (state, detail) = match v["ready"] == true {
+                true => (State::Up, format!("ready · {} · {running} browser{} open{}", v["image"].as_str().unwrap_or("image"), if running == 1 { "" } else { "s" }, if v["allow_lan"] == true { " · LAN not blocked (testing)" } else { " · LAN blocked" })),
+                false => (State::Down, v["why"].as_str().unwrap_or("not ready").to_string()),
+            };
+            out.push(probe("sandbox", "Tools & APIs", "Browser sandbox", v["machine"].as_str().unwrap_or(""), state, None, detail));
+        }
         out.push(probe("files", "lyra", "Lyra's files", "tidied daily ([retention])", State::Up, None, crate::retention::line(&sizes)));
     }
     // Things that went wrong with nobody watching (emails, files set aside).
@@ -496,7 +505,7 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
     }
     let order = ["Models", "Tools & APIs", "lyra", "Machines"];
     // Groups in order; the fixed checks in this order of the fixed checks within a group.
-    let fixed = ["chat", "fallback", "fallback2", "embedding", "reranker", "decide", "search", "lyra", "public", "push", "storage", "backup", "routines", "files", "problems"];
+    let fixed = ["chat", "fallback", "fallback2", "embedding", "reranker", "decide", "search", "sandbox", "lyra", "public", "push", "storage", "backup", "routines", "files", "problems"];
     // Marked known down: say so; and say when one answers again (only a person clears it).
     let marks = crate::known_down::all();
     for p in out.iter_mut() {

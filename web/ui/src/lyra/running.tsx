@@ -23,6 +23,8 @@ interface Job {
   tokens_out: number;
   cost: number;
   stoppable: boolean;
+  /** Its browser in the sandbox, when it has one open. */
+  browser?: { url: string; title: string } | null;
 }
 
 const KIND: Record<Job["kind"], string> = { routine: "routine", diagnosis: "problem write-up", plan: "plan", reply: "reply" };
@@ -73,6 +75,11 @@ export function RunningPage({ onBack }: { onBack: () => void }) {
               {j.calls > 0 && ` · ${j.calls} model call${j.calls === 1 ? "" : "s"} · ${tokens(j.tokens_in)} in / ${tokens(j.tokens_out)} out`}
               {j.cost > 0 && ` · ${j.cost < 0.01 ? "<0.01" : j.cost.toFixed(2)} so far`}
             </div>
+            {j.browser && (
+              <div className="w-full text-sky-300 text-xs" title={j.browser.url}>
+                in the browser sandbox: {j.browser.title || j.browser.url} (Stop closes it too)
+              </div>
+            )}
           </CardContent>
         </Card>
       ))}

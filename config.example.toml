@@ -329,6 +329,22 @@ currency = "$"
 
 # Web search (see README): web_search asks a SearXNG instance (JSON format on),
 # web_fetch reads a page as text. Both only read; replies cite their sources.
+# The browser sandbox: lyra's agents use a real browser in a throw-away
+# container (sign in, fill in and send forms, sites without an API). It runs
+# on the paired machine named here (a lyra-node with Docker; set it up there
+# with `lyra-node sandbox setup` as root, or /sandbox setup from lyra), or on
+# this server ("server"). Sending a form always waits for your Allow; card and
+# payment fields and file uploads never happen. Saved sign-ins:
+# `lyra secret site-example-com` (username:password). Admins only.
+# [sandbox]
+# enabled = true
+# machine = "sandbox1"
+# idle_minutes = 10            # a browser nobody used for this long closes
+# max_sessions = 4             # containers at once
+# memory = "2g"                # each container's limits
+# cpus = "2"
+# allow_lan = false            # true lets pages reach your LAN: testing only
+
 # [search]
 # enabled = true
 # searxng_url = "http://127.0.0.1:8080"

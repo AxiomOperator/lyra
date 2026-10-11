@@ -139,6 +139,8 @@ pub struct MachineInfo {
     pub health: Option<Value>,
     /// Coding harnesses it has and their versions ({"claude": "2.1.291", …}).
     pub harnesses: Value,
+    /// Its browser sandbox, as it last said (`lyra_node::sandbox::status`).
+    pub sandbox: Value,
 }
 
 type Pending = Arc<Mutex<HashMap<u64, std::sync::mpsc::Sender<Result<Value, String>>>>>;
@@ -465,6 +467,13 @@ impl Hub {
     }
 
     /// The machines connected right now (`lyra node`), by name.
+    /// A machine's browser sandbox, as it says now (after a setup or a status check).
+    pub fn set_sandbox(&self, name: &str, sandbox: Value) {
+        if let Some(m) = self.shared.machines.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&name.to_lowercase()) {
+            m.info.sandbox = sandbox;
+        }
+    }
+
     pub fn machines(&self) -> Vec<MachineInfo> {
         let mut all: Vec<MachineInfo> = self.shared.machines.lock().unwrap_or_else(|e| e.into_inner()).values().map(|m| m.info.clone()).collect();
         all.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1590,6 +1599,7 @@ async fn node_connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
         self_update: hello["self_update"] == true,
         health: None,
         harnesses: hello["harnesses"].clone(),
+        sandbox: hello["sandbox"].clone(),
     };
     let conn = s.next_conn.fetch_add(1, Ordering::SeqCst);
     let (to_node, mut outgoing) = tokio::sync::mpsc::unbounded_channel::<String>();

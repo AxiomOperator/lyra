@@ -88,7 +88,7 @@ pub fn install(url: &str, name: &str) -> Result<String, String> {
     let config = crate::config_path();
     if !config.exists() {
         let token = crate::request_pairing(url, name, "node")?;
-        let c = crate::NodeConfig { url: url.trim_end_matches('/').to_string(), token, name: name.to_string(), system: lyra_system::Settings::default() };
+        let c = crate::NodeConfig { url: url.trim_end_matches('/').to_string(), token, name: name.to_string(), system: lyra_system::Settings::default(), sandbox: Default::default() };
         let text = toml::to_string_pretty(&c).map_err(|e| e.to_string())?;
         crate::write_private(&config, &text)?;
         notes.push(format!("paired as {name}; settings in {}", config.display()));

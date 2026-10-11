@@ -4,6 +4,7 @@ mod alerts;
 mod asks;
 mod trouble;
 mod retention;
+mod sandbox;
 mod mailout;
 mod agents;
 mod board;
@@ -261,6 +262,8 @@ enum StreamEvent {
     /// The conversation's oldest turns were summarized to fit the model's
     /// context: how many history messages the note now stands for, and the note.
     Compacted { upto: usize, summary: String },
+    /// The browser sandbox's page after a step: shown under that call, never sent to the model.
+    Picture { id: String, data: String },
     /// Something to say in the chat (a remote update finished, …).
     Notice(String),
     /// Health check results for the embedding/reranker models.
@@ -824,6 +827,11 @@ impl App {
             StreamEvent::Notice(text) => {
                 self.log(Level::Agent, text.clone());
                 self.messages.push(Message::new("info", text));
+            }
+            StreamEvent::Picture { id, data } => {
+                let mut m = Message::new("picture", data);
+                m.tool_call_id = Some(id);
+                self.messages.push(m);
             }
             StreamEvent::Compacted { upto, summary } => {
                 let words = summary.split_whitespace().count();

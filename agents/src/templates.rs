@@ -27,6 +27,11 @@ pub const NAMES: &[&str] = &[
 /// The templates installed when there are no agents yet.
 pub const DEFAULTS: &[&str] = &["researcher", "archivist"];
 
+/// The browser sandbox's tools (only offered once lyra has a sandbox): the
+/// Operator's all of them; the Researcher's only those that read.
+pub const BROWSER_TOOLS: &[&str] = &["browser_open", "browser_read", "browser_click", "browser_fill", "browser_select", "browser_submit", "browser_back", "browser_screenshot", "browser_login", "browser_close"];
+pub const BROWSER_READING: &[&str] = &["browser_open", "browser_read", "browser_back", "browser_screenshot", "browser_close"];
+
 /// How the Operator handles "every morning …" (also added to existing Operators).
 pub const ROUTINE_NOTE: &str = "Work on the server (machine \"server\") unless the user names another machine; never pick one yourself. \
     For @all or a group of machines, use fleet_run (one approval, a result per machine). \
@@ -125,6 +130,7 @@ pub fn template(name: &str) -> Option<AgentProfile> {
             p.tools = strs(&[
                 "system_info", "shell_run", "file_read", "file_list", "file_write", "file_delete", "upload_place", "fleet_run", "http_request", "ssh_run", "routine_create", "routine_list", "memory_recall",
             ]);
+            p.tools.extend(strs(BROWSER_TOOLS));
             p.permission_policy.max_risk = "destructive".into();
             p.test_task = Some("Report this machine's OS, uptime, CPU count and free disk space.".into());
             p
@@ -203,6 +209,7 @@ pub fn template(name: &str) -> Option<AgentProfile> {
             };
             p.memory_policy = MemoryPolicy { mode: MemoryMode::SharedReadOnly, ..Default::default() };
             p.tools = strs(&["memory_recall", "memory_list", "memory_inspect", "web_search", "web_fetch", "who_is", "note_find", "project_folders", "project_list", "project_read", "project_search"]);
+            p.tools.extend(strs(BROWSER_READING));
             p.test_task = Some("What do we know about the user's preferences?".into());
             p
         }

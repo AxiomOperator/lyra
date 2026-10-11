@@ -1,6 +1,6 @@
 // What `lyra serve` sends (see src/serve.rs on the Rust side).
 
-export type Role = "user" | "assistant" | "tool" | "agent_tool" | "info" | "error" | "agent" | "approval";
+export type Role = "user" | "assistant" | "tool" | "agent_tool" | "info" | "error" | "agent" | "approval" | "picture";
 
 export interface ToolCall {
   id: string;
@@ -66,6 +66,10 @@ export interface Machine {
   health?: Health | null;
   /** Coding agents it has: {"claude": "2.1.291 (Claude Code)", "opencode": "1.18.29"}. */
   harnesses?: Record<string, string> | null;
+  /** Its browser sandbox (Docker), as it last said. */
+  sandbox?: { docker: string; image: string | null; network: boolean; lan_blocked: boolean | null; ready: boolean; why: string; running: number } | null;
+  /** lyra's [sandbox] machine is this one. */
+  sandbox_in_use?: boolean;
 }
 
 export interface Health {

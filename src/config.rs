@@ -89,6 +89,9 @@ pub struct Config {
     pub web: lyra_web::Settings,
     /// `[search]` table: web search (SearXNG) and reading pages.
     pub search: crate::websearch::Settings,
+    /// `[sandbox]`: disposable browser containers on a machine with Docker.
+    #[serde(default)]
+    pub sandbox: crate::sandbox::Settings,
 }
 
 #[derive(Deserialize)]
@@ -365,6 +368,7 @@ impl Default for Config {
             system: lyra_system::Settings::default(),
             web: lyra_web::Settings::default(),
             search: crate::websearch::Settings::default(),
+            sandbox: crate::sandbox::Settings::default(),
         }
     }
 }

@@ -6,6 +6,7 @@
 //! (batch mode, no passwords) and HTTP headers can name environment
 //! variables (`$TOKEN`).
 
+pub mod browser;
 pub mod powershell;
 pub mod shell;
 

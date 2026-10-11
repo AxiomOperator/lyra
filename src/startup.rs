@@ -74,6 +74,7 @@ pub(crate) fn configure(config: &Config) {
     vision::configure(config.vision_model.clone());
     fallback::configure(config.fallback_model.clone(), config.second_fallback_model.clone());
     crate::websearch::configure(config.search.clone());
+    crate::sandbox::configure(config.sandbox.clone());
     proactive::configure(config.proactive.clone());
     recap::configure(config.recap.clone());
     mailout::configure(config.email.clone());
@@ -766,6 +767,15 @@ pub(crate) fn open_agents(config: &Config, runtime: &tokio::runtime::Handle) -> 
                 {
                     p.tools.extend(["project_folders", "project_list", "project_read", "project_search"].map(String::from));
                     let _ = a.registry.update(p, "new tools: project folders (read)");
+                }
+            }
+            // The browser sandbox: the Operator uses it, the Researcher reads with it.
+            for (name, tools) in [("operator", lyra_agents::templates::BROWSER_TOOLS), ("researcher", lyra_agents::templates::BROWSER_READING)] {
+                if let Some(mut p) = a.registry.get(name).filter(|p| p.template.as_deref() == Some(name))
+                    && !p.tools.iter().any(|t| t == "browser_open")
+                {
+                    p.tools.extend(tools.iter().map(|t| t.to_string()));
+                    let _ = a.registry.update(p, "new tools: the browser sandbox");
                 }
             }
             // The Coder's instructions as its template has them now (work stays on the server).

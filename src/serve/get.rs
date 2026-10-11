@@ -209,6 +209,8 @@ fn running_view(convs: &[Conv], hub: &Hub) -> Value {
             "session": c.app.session_id, "who": who, "kind": kind, "what": what, "since": since,
             "doing": crate::ui::doing_text(&c.app), "calls": spent.calls, "tokens_in": spent.input, "tokens_out": spent.output, "cost": spent.cost,
             "stoppable": c.app.waiting || c.app.plan_busy,
+            // Its browser in the sandbox, if it has one open (Stop ends the reply, and the browser with it).
+            "browser": crate::sandbox::sessions().into_iter().find(|s| s["session"].as_str() == Some(c.app.session_id.as_str())),
         }));
     }
     json!(out)

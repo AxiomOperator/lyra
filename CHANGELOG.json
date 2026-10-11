@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.69.0.217",
+    "date": "2026-10-11",
+    "title": "A browser sandbox for agents",
+    "new": [
+      "lyra's agents can now use a real web browser: sign in to a portal, fill in and send forms, and use sites that have no API or need JavaScript. Each task gets a throw-away container on a machine with Docker, removed when the reply ends, after 10 idle minutes, or when you press Stop.",
+      "Sending a form always waits for your Allow, which shows the page, the button and what was filled in. Card and payment fields and file uploads never happen, and the containers can't reach your network.",
+      "Saved sign-ins for a site (lyra secret site-example-com) are filled in by lyra itself, so the model never sees the password.",
+      "Each step's picture of the page shows in the chat for you (not for the model). Machines shows the sandbox's state with a Set up button, Status has a Browser sandbox row, and Running now shows which conversations have a browser open.",
+      "Set it up with [sandbox] in config.toml (which machine), then lyra-node sandbox setup on that machine, or /sandbox setup. Admins only."
+    ]
+  },
+  {
     "version": "0.68.1.216",
     "date": "2026-10-10",
     "title": "Agent changes always stick",

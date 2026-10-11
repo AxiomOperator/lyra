@@ -159,6 +159,17 @@ function UserMessage({ m, editable }: { m: ChatMessage; editable?: boolean }) {
   );
 }
 
+/** A picture of the browser's page: small, bigger on a tap. */
+function BrowserPicture({ src }: { src: string }) {
+  const [big, setBig] = useState(false);
+  if (!src.startsWith("data:image/")) return null;
+  return (
+    <button type="button" onClick={() => setBig(!big)} className="block w-fit" title={big ? "Smaller" : "Bigger"}>
+      <img src={src} alt="The browser's page" className={cn("rounded-md border border-sky-900/60", big ? "max-w-full" : "max-h-40")} />
+    </button>
+  );
+}
+
 function MessageView({ m, results, streaming, asking, asks, max, model, turn, id, editable, retry }: { m: ChatMessage; results: Map<string, string>; streaming: boolean; asking: Asking; asks: ChatAsk[]; max: number; model?: string; turn?: ChatMessage[]; id: string; editable?: boolean; retry?: boolean }) {
   const { status } = useLyra();
   // A call, and the approval (or question) it waits for when it's this one.
@@ -225,6 +236,9 @@ function MessageView({ m, results, streaming, asking, asks, max, model, turn, id
           <AlertDescription className="whitespace-pre-wrap break-words">{m.content}</AlertDescription>
         </Alert>
       );
+    case "picture":
+      // The browser sandbox's page after a step (for the person; the model never gets it).
+      return <BrowserPicture src={m.content} />;
     case "tool":
     case "agent_tool":
       // Shown with its call; a stray one (no call to attach to) stays small.

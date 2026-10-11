@@ -132,7 +132,7 @@ impl App {
         crate::acting::spawn(move || {
             // This turn works in its person's PMI account; its calls count for this conversation.
             pmi::set_user(&owner);
-            usage::set_job(Some(job));
+            usage::set_job(Some(job.clone()));
             let mut history = history;
             // Nearing the model's context: the oldest turns become one note.
             let mut summary = prior;
@@ -206,7 +206,12 @@ impl App {
                     add_to_system(&mut history, agents::MAIN_NOTE);
                 }
             }
-            let event = match converse(&url, &model, history, caps.as_deref(), agent_env.as_ref().filter(|_| !chatting), &content, how, max_rounds, run, &tx, &cancel, viewer.as_deref(), member) {
+            let result = converse(&url, &model, history, caps.as_deref(), agent_env.as_ref().filter(|_| !chatting), &content, how, max_rounds, run, &tx, &cancel, viewer.as_deref(), member);
+            // The turn's browser, if it opened one: its container goes now.
+            if crate::sandbox::end(caps.as_ref().and_then(|c| c.remote()).as_deref(), &job) {
+                let _ = tx.send(StreamEvent::Log("browser closed (its container is gone)".into()));
+            }
+            let event = match result {
                 Ok((stats, limited, _answered)) => {
                     // The turn's model calls were recorded round by round (agents' and lyra's separately).
                     let _ = tx.send(StreamEvent::Done(stats));
@@ -858,7 +863,7 @@ pub(crate) fn converse(
                 let (text, names) = caps.search(arguments);
                 found.extend(names);
                 text
-            } else if let Some(ask) = caps.manager.get(&call.function.name).filter(|c| matches!(c.source.as_str(), "calendar" | "mail" | "projects")).and_then(|_| caps.approval(&call.function.name, arguments)) {
+            } else if let Some(ask) = caps.manager.get(&call.function.name).filter(|c| matches!(c.source.as_str(), "calendar" | "mail" | "projects" | "sandbox")).and_then(|_| caps.approval(&call.function.name, arguments)) {
                 // Changes others see, and files on their PC: the person approves them right here.
                 match agents.map(|env| agents::approve(env, &agents::main_profile(), &call.function.name, ask)) {
                     Some(Ok(())) => caps.invoke(&call.function.name, arguments, ctx, true, true),
@@ -872,6 +877,12 @@ pub(crate) fn converse(
                 caps.invoke(&call.function.name, arguments, ctx, false, true)
             };
             history.push(json!({ "role": "tool", "tool_call_id": call.id, "content": content }));
+            // The browser's page, for the person (never the model).
+            if call.function.name.starts_with("browser_")
+                && let Some(picture) = crate::sandbox::take_picture()
+            {
+                let _ = tx.send(StreamEvent::Picture { id: call.id.clone(), data: picture });
+            }
             let (id, name) = (call.id.clone(), call.function.name.clone());
             tx.send(StreamEvent::ToolResult { id, name, content }).map_err(|e| e.to_string())?;
         }

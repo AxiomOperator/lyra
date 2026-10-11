@@ -59,6 +59,7 @@ How to read it:
 | Reasoning effort (since 0.66): per conversation, off / low / medium / high or the model's default, sent as `reasoning_effort` and the chat template's switches | `turn.rs` (`Effort`), `/effort`, the composer's Thinking button |
 | Agent look and sharing (since 0.67): a colour and icon per agent (its cards in the chat, the terminal's panel); duplicate an agent to start a new one; admins choose which agents members may use (never the Operator or the Coder) | `agents/` (`Look`, `shared`, `duplicate`), `agents.rs` (`Env::may_use`), the Agents page |
 | Monitoring the web (since 0.68): "tell me when this page changes, a price drops below 500, it says in stock, or a search finds something new", checked every few hours and told once | `watches.rs` (`web_page`, `web_search`, `check_web`) |
+| Browser use in a sandbox (since 0.69): a real browser in a throw-away container on one machine with Docker, for signing in, filling in and sending forms and sites without an API. It works on the page's structure (links, buttons and fields by number), so text models can use it. Sending a form waits for an Allow; payment fields and uploads never happen; saved sign-ins never reach the model; the containers can't reach the LAN | `sandbox.rs`, `node/src/sandbox.rs`, `lyra_system::browser` |
 | Named, persistent agents with roles, instructions, routing and a conversational creation wizard with templates | `agents/` (profiles as TOML, versions, rule / semantic / model routing, `builder`, `templates`) |
 | Separate memory per agent (its own `agent:<name>` scope, or none, read-only, or scoped) | `agents/src/model.rs` memory modes |
 | Persistent sessions: saved conversations, resume (`-c` / `-r`), folders, pins, archive, search across them, age limits | `sessions.rs`, `retention.rs` |
@@ -92,13 +93,11 @@ How to read it:
 
 | What | Who has it | Note |
 |---|---|---|
-| **Browser automation and computer use** (driving websites without APIs, forms, bookings, customer service) | Grok, Muse, OpenClaw | lyra reads pages (`web_fetch`) but doesn't drive them. The safest fit would be a headless browser on a named node, every submit behind an Allow. |
 | **Inbound webhooks and event triggers from outside** | OpenClaw | Nothing receives events from other systems. Goals have triggers, and watches poll, but no URL accepts a push. It would need per-person tokens and an Allow before acting. |
 | **Plugin marketplace** | OpenClaw (ClawHub) | Capabilities, skills, agents and MCP providers are added locally; there is no catalogue to install from. |
 | **Agent Client Protocol and Agent-to-Agent protocols** | OpenClaw | lyra speaks MCP (both ways) only. |
 | **Image generation and presentations** | Muse (images), Grok (presentations) | Documents go to Word; no images or slides are made. |
 | **Purchases, payments, one-time cards, secure payment forms** | Muse, Grok | By design: lyra doesn't spend money or collect payment details. |
-| **A sandboxed computer per agent** (VM or container) | Muse (secure VM), Grok (shared cloud computer), OpenClaw (sandbox options) | lyra works on real machines through nodes, with rules and approvals instead of a sandbox. A container per job would add isolation for coding and diagnoses. |
 | **Mobile device control** | OpenClaw | The PWA runs on phones, but lyra doesn't control them. |
 
 ## What would matter most next
@@ -114,7 +113,7 @@ In order of value for lyra's users, keeping its rules:
    Replies would be drafts or behind an Allow, like mail.
 4. ~~**A web watch**~~ ("tell me when this page or price changes"; done in 0.68). It fits the
    existing watches and routines.
-5. **A browser on a named node**, read-first, with every submit behind an
+5. ~~**A browser on a named node**~~ (done in 0.69, as a Docker sandbox), read-first, with every submit behind an
    Allow. It closes the largest functional gap while keeping approvals in Rust
    and nothing off the host unless named.
 6. **Hands-free voice**, by joining dictation and read-aloud.

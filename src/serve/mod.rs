@@ -89,6 +89,14 @@ impl crate::caps::Remote for HubRemote {
         self.0.machines().into_iter().filter(|m| m.harnesses.as_object().is_some_and(|h| !h.is_empty())).map(|m| (m.name, m.harnesses)).collect()
     }
 
+    fn sandbox(&self, machine: &str) -> Option<Value> {
+        self.0.machines().into_iter().find(|m| m.name.eq_ignore_ascii_case(machine)).map(|m| m.sandbox)
+    }
+
+    fn set_sandbox(&self, machine: &str, sandbox: Value) {
+        self.0.set_sandbox(machine, sandbox);
+    }
+
     fn folders(&self, user: &str) -> Vec<(String, lyra_web::Folder)> {
         self.0.folders(user)
     }
@@ -555,6 +563,9 @@ pub(crate) fn machines_detail(hub: &Hub, node_build: Option<&str>) -> Vec<Value>
                 "build": m.map(|m| m.build.chars().take(12).collect::<String>()),
                 "self_update": m.is_some_and(|m| m.self_update),
                 "update_available": update,
+                // Its browser sandbox (Docker), as it said; and whether lyra uses it.
+                "sandbox": m.map(|m| m.sandbox.clone()).filter(|v| v["docker"].is_string()),
+                "sandbox_in_use": crate::sandbox::settings().enabled && crate::sandbox::settings().machine.eq_ignore_ascii_case(&d.name),
                 "last_seen": d.last_seen,
                 "health": m.and_then(|m| m.health.as_ref()).map(crate::health::view),
                 "harnesses": m.map(|m| m.harnesses.clone()),

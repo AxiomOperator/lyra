@@ -11,6 +11,7 @@
 
 pub mod coding;
 pub mod health;
+pub mod sandbox;
 #[cfg(windows)]
 pub mod windows;
 
@@ -48,6 +49,9 @@ pub struct NodeConfig {
     /// This machine's rules: what may run without asking, what's off limits.
     #[serde(default)]
     pub system: lyra_system::Settings,
+    /// Its browser sandbox (Docker), when it lends one.
+    #[serde(default)]
+    pub sandbox: sandbox::Settings,
 }
 
 // ---- small helpers (shared with `lyra connect`)
@@ -433,7 +437,7 @@ fn uninstall_unix() -> Vec<String> {
 
 // ---- the connection
 
-fn hello() -> Value {
+fn hello(config: &NodeConfig) -> Value {
     json!({
         "type": "hello",
         "hostname": hostname(),
@@ -443,6 +447,7 @@ fn hello() -> Value {
         "build": own_hash(),
         "self_update": standalone(),
         "harnesses": coding::available(),
+        "sandbox": sandbox::status(&config.sandbox),
     })
 }
 
@@ -471,7 +476,7 @@ async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System
         Err(e) => return End::Lost(e.to_string()),
     };
     let (mut sink, mut stream) = ws.split();
-    if let Err(e) = sink.send(Message::Text(hello().to_string().into())).await {
+    if let Err(e) = sink.send(Message::Text(hello(config).to_string().into())).await {
         return End::Lost(e.to_string());
     }
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<(String, Option<bool>)>();
@@ -485,8 +490,13 @@ async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System
         tokio::select! {
             _ = checkup.tick() => {
                 let out = out_tx.clone();
+                let idle = Duration::from_secs(config.sandbox.idle_minutes.max(1) * 60);
                 tokio::task::spawn_blocking(move || {
                     let _ = out.send((json!({ "type": "health", "health": health::report() }).to_string(), None));
+                    // Browser sessions nobody closed.
+                    for key in sandbox::reap(idle) {
+                        println!("sandbox: closed idle session {key}");
+                    }
                 });
             }
             _ = ping.tick() => {
@@ -585,6 +595,33 @@ async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System
                             let _ = out.send((reply(&v["id"], result), None));
                         });
                     }
+                    // The browser sandbox: one action in a session (its container starts on the first).
+                    "browser" => {
+                        let (out, settings) = (out_tx.clone(), config.sandbox.clone());
+                        tokio::task::spawn_blocking(move || {
+                            let key = v["session"].as_str().unwrap_or("");
+                            let action = v["action"].as_str().unwrap_or("");
+                            let result = sandbox::step(&settings, key, action, &v["args"], v["approved"] == true);
+                            println!("browser {action} → {}", if result.is_ok() { "done" } else { "refused/failed" });
+                            let _ = out.send((reply(&v["id"], result), None));
+                        });
+                    }
+                    "sandbox_status" => {
+                        let (out, settings) = (out_tx.clone(), config.sandbox.clone());
+                        tokio::task::spawn_blocking(move || {
+                            let mut st = sandbox::status(&settings);
+                            st["sessions"] = json!(sandbox::list());
+                            let _ = out.send((reply(&v["id"], Ok(st)), None));
+                        });
+                    }
+                    "sandbox_setup" => {
+                        let (out, settings) = (out_tx.clone(), config.sandbox.clone());
+                        tokio::task::spawn_blocking(move || {
+                            let result = sandbox::setup(&settings).map(|said| json!({ "said": said, "status": sandbox::status(&settings) }));
+                            println!("sandbox setup: {}", match &result { Ok(v) => v["said"].to_string(), Err(e) => e.clone() });
+                            let _ = out.send((reply(&v["id"], result), None));
+                        });
+                    }
                     "code_stop" => {
                         if let Some(c) = jobs.lock().unwrap_or_else(|e| e.into_inner()).get(&v["job"].as_u64().unwrap_or(0)) {
                             c.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -598,7 +635,7 @@ async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System
                         let out = out_tx.clone();
                         let (url, token, name) = (config.url.clone(), config.token.clone(), config.name.clone());
                         tokio::task::spawn_blocking(move || {
-                            let config = NodeConfig { url, token, name, system: Default::default() };
+                            let config = NodeConfig { url, token, name, system: Default::default(), sandbox: Default::default() };
                             let result = update(&config);
                             let restart = result.as_ref().is_ok_and(|v| v["updated"] == true);
                             println!("update: {}", match &result { Ok(v) => v.to_string(), Err(e) => e.clone() });
@@ -629,6 +666,8 @@ pub(crate) fn run() {
     };
     tls_provider();
     let system = std::sync::Arc::new(lyra_system::System::new(config.system.clone(), expand));
+    // The browser sandbox's firewall rules again (they don't outlive a reboot), and its LAN check.
+    sandbox::prepare(&config.sandbox);
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let mut pause = 1;
     loop {
@@ -695,6 +734,7 @@ lyra-node — let lyra (lyra serve) work on this machine
   lyra-node pair <url> [code] [--name NAME]   pair; without a code, approve the request in lyra
   lyra-node                                   connect and serve lyra's requests (Ctrl-C stops)
   lyra-node service [--enable]                install the service that keeps it running
+  lyra-node sandbox [setup]                   the browser sandbox (Docker): build it, block the LAN, check
   lyra-node version
 
 Rules for this machine are in ~/.config/lyra/node.toml ([system]: allow_commands,
@@ -723,7 +763,7 @@ pub fn main(args: &[String]) {
             match token {
                 Ok(token) => {
                     let path = config_path();
-                    let config = NodeConfig { url: url.trim_end_matches('/').to_string(), token, name: name.clone(), system: lyra_system::Settings::default() };
+                    let config = NodeConfig { url: url.trim_end_matches('/').to_string(), token, name: name.clone(), system: lyra_system::Settings::default(), sandbox: Default::default() };
                     match toml::to_string_pretty(&config).map_err(|e| e.to_string()).and_then(|t| write_private(&path, &t)) {
                         Ok(()) => println!("paired as {name}; settings in {}\nnext: lyra-node service --enable (or just: lyra-node)", path.display()),
                         Err(e) => {
@@ -770,6 +810,21 @@ pub fn main(args: &[String]) {
         }
         #[cfg(windows)]
         Some("uninstall") => println!("removed: {}", uninstall().join(", ")),
+        Some("sandbox") => {
+            let settings: sandbox::Settings = std::fs::read_to_string(config_path()).ok().and_then(|t| toml::from_str::<NodeConfig>(&t).ok()).map(|c| c.sandbox).unwrap_or_default();
+            if args.get(1).map(String::as_str) == Some("setup") {
+                match sandbox::setup(&settings) {
+                    Ok(said) => println!("{}", said.replace(" · ", "\n")),
+                    Err(e) => {
+                        eprintln!("lyra-node: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                sandbox::prepare(&settings);
+            }
+            println!("{}", serde_json::to_string_pretty(&sandbox::status(&settings)).unwrap_or_default());
+        }
         Some("version" | "--version") => println!("lyra-node {VERSION} ({})", &own_hash()[..12.min(own_hash().len())]),
         Some("-h" | "--help" | "help") => println!("{USAGE}"),
         None => run(),
@@ -840,8 +895,10 @@ mod tests {
 
     #[test]
     fn hello_says_who_and_which_build() {
-        let h = hello();
+        let config = NodeConfig { url: "https://lyra.example".into(), token: "t".into(), name: "box".into(), system: Default::default(), sandbox: Default::default() };
+        let h = hello(&config);
         assert_eq!(h["type"], "hello");
+        assert!(h["sandbox"].is_object() && h["sandbox"]["ready"].is_boolean(), "says what its browser sandbox can do");
         assert_eq!(h["version"], VERSION);
         // A test binary isn't the standalone lyra-node: no build to compare.
         assert_eq!(h["self_update"], false);

@@ -185,6 +185,17 @@ impl App {
             "/recap" => recap::command(&self.owner),
             "/email" => mailout::command(&self.owner, arg),
             "/watches" | "/watch" => watches::command(&self.owner, arg),
+            // The browser sandbox: how it is, set it up, close sessions (admins).
+            "/sandbox" => {
+                let remote = self.caps.as_ref().and_then(|c| c.remote());
+                let out = crate::sandbox::command(remote.as_deref(), arg);
+                if arg.trim().starts_with("setup")
+                    && let Some(c) = &self.caps
+                {
+                    c.refresh();
+                }
+                out
+            }
             "/feedback" => Ok(feedback::command(&feedback::Who { user: self.owner.clone(), name: String::new(), admin: self.admin })),
             "/memory" => {
                 let mem = self.mem().ok_or_else(|| match &self.memory_status {
@@ -313,7 +324,7 @@ impl App {
 /// Commands the app's pages and buttons may run (each still checked by role).
 pub(crate) const PAGE_COMMANDS: &[&str] = &[
     "/memory", "/approve", "/reject", "/deprecate", "/goal", "/goals", "/model", "/backup", "/routine", "/routines", "/status", "/diagnose", "/coding",
-    "/briefing", "/tasks", "/task", "/pmi", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami", "/usage", "/sessions", "/plan", "/recap", "/watches", "/feedback", "/settings", "/agent",
+    "/briefing", "/tasks", "/task", "/pmi", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami", "/usage", "/sessions", "/plan", "/recap", "/watches", "/feedback", "/settings", "/agent", "/sandbox",
 ];
 
 /// Commands a member (not an admin) may use. Their own memories, goals,
