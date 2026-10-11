@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.69.1.218",
+    "date": "2026-10-11",
+    "title": "The sandbox blocks your own network too",
+    "fixed": [
+      "The browser sandbox now also blocks the networks its machine is on and its routers, not only the usual private ranges. A LAN that uses addresses that look public (like 172.99.x.x) is kept out too. More inside networks can be added with [sandbox] block on the sandbox machine.",
+      "Sandbox setup now says which addresses it tried and how each answered. A setup run on the machine itself now counts straight away, without restarting it, and lyra hears the machine's sandbox status every few minutes.",
+      "If the machine's firewall drops the sandbox's rules (a firewalld reload), they're put back before the next browser starts, or the browser doesn't start."
+    ]
+  },
+  {
     "version": "0.69.0.217",
     "date": "2026-10-11",
     "title": "A browser sandbox for agents",

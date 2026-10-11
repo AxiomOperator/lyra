@@ -491,8 +491,14 @@ async fn session(config: &NodeConfig, system: std::sync::Arc<lyra_system::System
             _ = checkup.tick() => {
                 let out = out_tx.clone();
                 let idle = Duration::from_secs(config.sandbox.idle_minutes.max(1) * 60);
+                let settings = config.sandbox.clone();
                 tokio::task::spawn_blocking(move || {
                     let _ = out.send((json!({ "type": "health", "health": health::report() }).to_string(), None));
+                    // Its browser sandbox as it is now (a setup run here since shows up in lyra).
+                    let sandbox = sandbox::status(&settings);
+                    if !sandbox["docker"].is_null() {
+                        let _ = out.send((json!({ "type": "sandbox", "sandbox": sandbox }).to_string(), None));
+                    }
                     // Browser sessions nobody closed.
                     for key in sandbox::reap(idle) {
                         println!("sandbox: closed idle session {key}");

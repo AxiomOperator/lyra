@@ -344,6 +344,9 @@ currency = "$"
 # memory = "2g"                # each container's limits
 # cpus = "2"
 # allow_lan = false            # true lets pages reach your LAN: testing only
+# On the sandbox machine itself, the same keys go in [sandbox] in its
+# node.toml; there `block = ["10.20.0.0/16"]` adds inside networks behind the
+# router (its own networks and routers are blocked by themselves).
 
 # [search]
 # enabled = true

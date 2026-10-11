@@ -30,7 +30,9 @@ const NETWORK: &str = "lyra-sandbox";
 const BRIDGE: &str = "br-lyra";
 /// The firewall chain the network's traffic goes through.
 const CHAIN: &str = "LYRA-SANDBOX";
-/// Private and local addresses the containers may not reach.
+/// Private and local addresses the containers may not reach (and, besides
+/// these, every network this machine is on and its routers: a LAN can use
+/// addresses that look public, such as 172.99.x.x).
 const BLOCKED: [&str; 6] = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10", "127.0.0.0/8"];
 
 /// `[sandbox]` (in node.toml, or lyra's config for the server's own).
@@ -47,11 +49,14 @@ pub struct Settings {
     /// The most containers at once.
     pub max_sessions: usize,
     pub image: String,
+    /// More networks the containers may not reach (inside ones behind the
+    /// router that this machine isn't on, e.g. "10.20.0.0/16").
+    pub block: Vec<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { allow_lan: false, memory: "2g".into(), cpus: "2".into(), idle_minutes: 10, max_sessions: 4, image: IMAGE.into() }
+        Self { allow_lan: false, memory: "2g".into(), cpus: "2".into(), idle_minutes: 10, max_sessions: 4, image: IMAGE.into(), block: Vec::new() }
     }
 }
 
@@ -72,7 +77,7 @@ pub fn status(s: &Settings) -> Value {
     let version = docker(&["version", "--format", "{{.Server.Version}}"]);
     let image = version.is_ok() && docker(&["image", "inspect", "--format", "{{.Id}}", &s.image]).is_ok();
     let network = version.is_ok() && docker(&["network", "inspect", "--format", "{{.Id}}", NETWORK]).is_ok();
-    let blocked = *LAN_BLOCKED.lock().unwrap_or_else(|e| e.into_inner());
+    let blocked = LAN_BLOCKED.lock().unwrap_or_else(|e| e.into_inner()).or_else(|| saved_check().map(|c| c.blocked));
     let lan_ok = s.allow_lan || blocked == Some(true);
     let why = match (&version, image, network, lan_ok) {
         (Err(e), ..) => e.clone(),
@@ -111,32 +116,79 @@ pub fn setup(s: &Settings) -> Result<String, String> {
         docker(&["network", "create", "--driver", "bridge", "-o", &format!("com.docker.network.bridge.name={BRIDGE}"), NETWORK])?;
         said.push(format!("network {NETWORK} made"));
     }
-    match firewall() {
-        Ok(()) => said.push("the LAN and this machine are blocked from the containers".into()),
+    match firewall(s) {
+        Ok(nets) => said.push(format!("blocked from the containers: {}", nets.join(", "))),
         Err(e) => said.push(format!("couldn't block the LAN: {e}")),
     }
-    let blocked = lan_check(s);
-    said.push(match blocked {
-        true => "checked: a container can't reach the LAN".into(),
+    let check = lan_check(s);
+    for (target, how) in &check.seen {
+        said.push(format!("  {target}: {how}"));
+    }
+    said.push(match check.blocked {
+        true => "checked: a container can't reach this machine, its routers or its networks".into(),
         false if s.allow_lan => "LAN not blocked (allow_lan is on: for testing only)".into(),
-        false => "a container could still reach the LAN: the sandbox stays off until it can't".into(),
+        false => "a container could still reach the LAN (above): the sandbox stays off until it can't. Networks lyra doesn't know go in [sandbox] block in node.toml".into(),
     });
     Ok(said.join(" · "))
 }
 
-/// Firewall rules for the sandbox's bridge: nothing private, nothing on this machine.
-fn firewall() -> Result<(), String> {
+/// The networks this machine is directly on (`ip -4 route` lines with
+/// `scope link`, not the sandbox's own) and the routers it uses.
+fn local_nets(routes: &str) -> (Vec<String>, Vec<String>) {
+    let mut nets = Vec::new();
+    let mut routers = Vec::new();
+    for line in routes.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        if words.first() == Some(&"default") {
+            if let Some(i) = words.iter().position(|w| *w == "via")
+                && let Some(gw) = words.get(i + 1)
+                && !routers.contains(&gw.to_string())
+            {
+                routers.push(gw.to_string());
+            }
+        } else if words.contains(&"link") && !words.contains(&BRIDGE) && words.first().is_some_and(|n| n.contains('/') || n.parse::<std::net::Ipv4Addr>().is_ok()) {
+            let n = words[0].to_string();
+            if !nets.contains(&n) {
+                nets.push(n);
+            }
+        }
+    }
+    (nets, routers)
+}
+
+fn routes() -> String {
+    Command::new("ip").args(["-4", "route", "show"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default()
+}
+
+/// Everything the containers may not reach: the private ranges, this
+/// machine's networks and routers, and `[sandbox] block`.
+fn blocked_nets(s: &Settings) -> Vec<String> {
+    let (nets, routers) = local_nets(&routes());
+    let mut all: Vec<String> = BLOCKED.iter().map(|n| n.to_string()).collect();
+    for n in nets.into_iter().chain(routers.into_iter().map(|r| format!("{r}/32"))).chain(s.block.iter().map(|b| b.trim().to_string())) {
+        if !n.is_empty() && !all.contains(&n) {
+            all.push(n);
+        }
+    }
+    all
+}
+
+fn ipt(args: &[&str]) -> Result<(), String> {
+    let out = Command::new("iptables").args(args).stdin(Stdio::null()).output().map_err(|e| format!("iptables: {e}"))?;
+    if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
+}
+
+/// Firewall rules for the sandbox's bridge: nothing private, nothing this
+/// machine is on, nothing on this machine. The networks blocked.
+fn firewall(s: &Settings) -> Result<Vec<String>, String> {
     if !cfg!(target_os = "linux") {
         return Err("only on Linux".into());
     }
-    let ipt = |args: &[&str]| -> Result<(), String> {
-        let out = Command::new("iptables").args(args).stdin(Stdio::null()).output().map_err(|e| format!("iptables: {e}"))?;
-        if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
-    };
     let _ = ipt(&["-N", CHAIN]);
     ipt(&["-F", CHAIN]).map_err(|e| if e.contains("ermission") { "needs root".to_string() } else { e })?;
-    for net in BLOCKED {
-        ipt(&["-A", CHAIN, "-d", net, "-j", "DROP"])?;
+    let nets = blocked_nets(s);
+    for net in &nets {
+        ipt(&["-A", CHAIN, "-d", net, "-j", "DROP"]).map_err(|e| format!("blocking {net}: {e}"))?;
     }
     ipt(&["-A", CHAIN, "-j", "RETURN"])?;
     if ipt(&["-C", "DOCKER-USER", "-i", BRIDGE, "-j", CHAIN]).is_err() {
@@ -146,22 +198,71 @@ fn firewall() -> Result<(), String> {
     if ipt(&["-C", "INPUT", "-i", BRIDGE, "-j", "DROP"]).is_err() {
         ipt(&["-I", "INPUT", "-i", BRIDGE, "-j", "DROP"])?;
     }
-    Ok(())
+    Ok(nets)
 }
 
-/// From inside a container: this machine (the network's gateway) and its
-/// router must time out, not answer. Kept for `status`.
-fn lan_check(s: &Settings) -> bool {
+/// The rules are in place (a firewall reload drops them): put back if not.
+fn firewall_in_place(s: &Settings) -> Result<(), String> {
+    if s.allow_lan || (ipt(&["-C", "DOCKER-USER", "-i", BRIDGE, "-j", CHAIN]).is_ok() && ipt(&["-C", "INPUT", "-i", BRIDGE, "-j", "DROP"]).is_ok()) {
+        return Ok(());
+    }
+    firewall(s).map(|_| ()).map_err(|e| format!("the sandbox's firewall rules are gone and couldn't be put back: {e}"))
+}
+
+/// What the LAN check found: blocked, and each address and how it answered.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LanCheck {
+    pub blocked: bool,
+    pub seen: Vec<(String, String)>,
+    pub at: String,
+}
+
+fn check_path() -> Option<std::path::PathBuf> {
+    crate::config_dir().map(|d| d.join("sandbox-check.json"))
+}
+
+/// The last check, kept on disk (so a `lyra-node sandbox setup` run counts for the service).
+fn saved_check() -> Option<LanCheck> {
+    serde_json::from_str(&std::fs::read_to_string(check_path()?).ok()?).ok()
+}
+
+/// From inside a container: this machine (the network's gateway), its
+/// routers and an address on each network it's on must time out, not
+/// answer (a refusal counts as reached). Kept for `status`.
+fn lan_check(s: &Settings) -> LanCheck {
     let gateway = docker(&["network", "inspect", "--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}", NETWORK]).unwrap_or_default();
-    let router = Command::new("sh").args(["-c", "ip route show default | awk '{print $3; exit}'"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    let targets: Vec<String> = [gateway, router].into_iter().filter(|t| !t.is_empty()).collect();
+    let (nets, routers) = local_nets(&routes());
+    let mut targets: Vec<String> = std::iter::once(gateway).chain(routers).filter(|t| !t.is_empty()).collect();
+    // On each network this machine is on: its first address (often the router, else a neighbour).
+    for n in &nets {
+        if let Some(first) = n.split('/').next().and_then(|a| a.parse::<std::net::Ipv4Addr>().ok()).map(|a| std::net::Ipv4Addr::from(u32::from(a) + 1).to_string())
+            && !targets.contains(&first)
+        {
+            targets.push(first);
+        }
+    }
     let probe = format!(
-        "import socket\nfor h in {targets:?}:\n    s = socket.socket(); s.settimeout(3)\n    try:\n        s.connect((h, 53)); print('reached', h)\n    except ConnectionRefusedError:\n        print('reached', h)\n    except Exception:\n        print('blocked', h)\n"
+        "import socket\nfor h in {targets:?}:\n    s = socket.socket(); s.settimeout(3)\n    try:\n        s.connect((h, 53)); print('reached', h, 'answered')\n    except ConnectionRefusedError:\n        print('reached', h, 'refused (so it got there)')\n    except Exception as e:\n        print('blocked', h, type(e).__name__)\n"
     );
-    let out = docker(&["run", "--rm", "--network", NETWORK, "--entrypoint", "python3", &s.image, "-c", &probe]).unwrap_or_else(|e| format!("reached ({e})"));
-    let blocked = !targets.is_empty() && !out.contains("reached");
+    let out = docker(&["run", "--rm", "--network", NETWORK, "--entrypoint", "python3", &s.image, "-c", &probe]);
+    let mut seen: Vec<(String, String)> = Vec::new();
+    match &out {
+        Ok(text) => {
+            for line in text.lines() {
+                let mut w = line.splitn(3, ' ');
+                let (how, host, why) = (w.next().unwrap_or(""), w.next().unwrap_or(""), w.next().unwrap_or(""));
+                seen.push((host.to_string(), if how == "blocked" { format!("blocked ({why})") } else { format!("reached: {why}") }));
+            }
+        }
+        Err(e) => seen.push(("the check".into(), format!("couldn't run: {e}"))),
+    }
+    let blocked = out.is_ok() && !targets.is_empty() && seen.len() == targets.len() && seen.iter().all(|(_, h)| h.starts_with("blocked"));
+    let check = LanCheck { blocked, seen, at: chrono::Utc::now().to_rfc3339() };
     *LAN_BLOCKED.lock().unwrap_or_else(|e| e.into_inner()) = Some(blocked);
-    blocked
+    if let Some(p) = check_path() {
+        let _ = std::fs::write(p, serde_json::to_string_pretty(&check).unwrap_or_default());
+    }
+    check
 }
 
 /// At the node's start: the rules again (they don't survive a reboot), and the check.
@@ -169,7 +270,7 @@ pub fn prepare(s: &Settings) {
     if docker(&["image", "inspect", &s.image]).is_err() || docker(&["network", "inspect", NETWORK]).is_err() {
         return;
     }
-    let _ = firewall();
+    let _ = firewall(s);
     lan_check(s);
 }
 
@@ -307,6 +408,7 @@ pub fn step(s: &Settings, key: &str, action: &str, args: &Value, approved: bool)
     // Its session: this one's, or a new container.
     let mut taken = sessions().lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
     if taken.is_none() {
+        firewall_in_place(s)?;
         let st = status(s);
         if st["ready"] != true {
             return Err(format!("the sandbox isn't ready here: {}", st["why"].as_str().unwrap_or("")));
@@ -380,6 +482,19 @@ for line in sys.stdin:
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
         dir
+    }
+
+    #[test]
+    fn this_machines_networks_and_routers_are_blocked_too() {
+        let routes = "default via 172.99.99.1 dev ens18 proto static metric 100\n\
+default via 192.1.2.10 dev ens19 proto dhcp src 192.1.1.227 metric 101\n\
+172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1 linkdown\n\
+172.18.0.0/16 dev br-lyra proto kernel scope link src 172.18.0.1\n\
+172.99.99.0/24 dev ens18 proto kernel scope link src 172.99.99.40 metric 100\n\
+192.1.0.0/22 dev ens19 proto kernel scope link src 192.1.1.227 metric 101\n";
+        let (nets, routers) = local_nets(routes);
+        assert_eq!(nets, ["172.17.0.0/16", "172.99.99.0/24", "192.1.0.0/22"], "its own networks, not the sandbox's");
+        assert_eq!(routers, ["172.99.99.1", "192.1.2.10"]);
     }
 
     #[test]

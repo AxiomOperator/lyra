@@ -1647,6 +1647,12 @@ async fn node_connection(s: Arc<Shared>, d: Device, mut socket: WebSocket) {
                         }
                         let _ = s.inbound.send(Inbound::MachineHealth { name: d.name.clone(), health: v["health"].clone() });
                     }
+                    // Its browser sandbox now (it says every few minutes; a setup run there shows up).
+                    "sandbox" if v["sandbox"].is_object() => {
+                        if let Some(m) = s.machines.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&d.name.to_lowercase()).filter(|m| m.conn == conn) {
+                            m.info.sandbox = v["sandbox"].clone();
+                        }
+                    }
                     _ => {}
                 }
             }
