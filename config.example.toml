@@ -340,7 +340,8 @@ currency = "$"
 # enabled = true
 # machine = "sandbox1"
 # idle_minutes = 10            # a browser nobody used for this long closes
-# max_sessions = 4             # containers at once
+# max_sessions = 0             # containers at once (0: what the machine has room for, from its cores
+#                              # and memory, 2 cores and 3 GB each; past it, browsers wait in line)
 # memory = "2g"                # each container's limits
 # cpus = "2"
 # allow_lan = false            # true lets pages reach your LAN: testing only

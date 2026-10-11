@@ -56,7 +56,11 @@ interface SandboxLive {
   why?: string;
   image?: string | null;
   lan_blocked?: boolean | null;
+  /** How many it runs at once (from the machine's cores and memory, or set). */
+  limit?: number;
   containers?: SandboxContainer[];
+  /** Conversations waiting in line for a browser, in order. */
+  queued?: { session: string; position: number; since: string; conversation?: string; who?: string }[];
   error?: string;
 }
 
@@ -89,7 +93,15 @@ function SandboxContainers() {
         <CardDescription>
           {data.error
             ? `Couldn't ask it: ${data.error}`
-            : [data.ready ? "ready" : `not ready (${data.why})`, data.image, data.lan_blocked ? "LAN blocked" : null, `${list.length} container${list.length === 1 ? "" : "s"} running`].filter(Boolean).join(" · ")}
+            : [
+                data.ready ? "ready" : `not ready (${data.why})`,
+                data.image,
+                data.lan_blocked ? "LAN blocked" : null,
+                data.limit ? `${list.length} of ${data.limit} in use` : `${list.length} container${list.length === 1 ? "" : "s"} running`,
+                data.queued?.length ? `${data.queued.length} waiting` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
         </CardDescription>
         <CardAction>
           <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={load}>
@@ -99,7 +111,18 @@ function SandboxContainers() {
       </CardHeader>
       <CardContent className="divide-y px-4">
         {said && <p className="py-1 text-muted-foreground text-xs">{said}</p>}
-        {!data.error && !list.length && <p className="py-2 text-muted-foreground text-sm">No browser containers running.</p>}
+        {!data.error && !list.length && !data.queued?.length && <p className="py-2 text-muted-foreground text-sm">No browser containers running.</p>}
+        {(data.queued ?? []).map((q) => (
+          <div key={q.session} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
+            <span className="size-2 shrink-0 rounded-full border border-sky-400" title="waiting for a browser" />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm">{q.conversation || `conversation ${q.session}`}</div>
+              <div className="truncate text-muted-foreground text-xs">
+                {[q.who && `for ${q.who}`, `waiting for a browser: ${q.position === 1 ? "next in line" : `number ${q.position} in line`}`, `since ${ago(q.since)}`].filter(Boolean).join(" · ")}
+              </div>
+            </div>
+          </div>
+        ))}
         {list.map((c) => (
           <div key={c.name} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
             <span className={cn("size-2 shrink-0 rounded-full", c.session ? "bg-emerald-500" : "bg-amber-400")} title={c.session ? "in use by a conversation" : "not tied to a conversation (left over): Stop removes it"} />

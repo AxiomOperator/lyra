@@ -2085,6 +2085,8 @@ impl App {
             return Err("nothing is running".into());
         }
         self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Waiting in line for a browser: not any more.
+        crate::sandbox::leave(&self.session_id);
         // A question waiting in the chat is dropped: the run carries on to its stop.
         self.asks.clear();
         // An agent waiting for a yes gets a no, so it can stop too.

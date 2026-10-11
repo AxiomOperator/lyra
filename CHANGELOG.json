@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.71.0.221",
+    "date": "2026-10-11",
+    "title": "Browsers wait their turn",
+    "new": [
+      "The browser sandbox now runs as many browsers at once as its machine has room for, from its cores and memory (16 on a 32-core, 128 GB machine), instead of a fixed 4. You can still set a number with [sandbox] max_sessions.",
+      "Once they're all in use, other conversations wait in line for one, first come first served, instead of failing. A stopped reply leaves the line, and nobody waits more than 15 minutes.",
+      "Running now shows how many browsers are in use out of the limit, and who's waiting and in what place."
+    ]
+  },
+  {
     "version": "0.70.0.220",
     "date": "2026-10-11",
     "title": "See the sandbox's containers",

@@ -7,6 +7,12 @@
 //! signs in with a saved password the model never sees (`site-<host>` in
 //! secrets.toml: `username:password`), and hands each page's picture to the
 //! person (the chat), not the model. Admins only.
+//!
+//! The machine runs as many browsers at once as it has room for (its
+//! `limit`, from its cores and memory, or `max_sessions`). A conversation
+//! that needs one when they're all in use waits in line, first come first
+//! served, until one ends (up to `QUEUE_WAIT`, or until its reply is
+//! stopped); Running now shows the line.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, RwLock};
@@ -142,8 +148,83 @@ pub fn end(remote: Option<&dyn Remote>, session: &str) -> bool {
     if with_open(|all| all.remove(&key)).is_none() {
         return false;
     }
+    // One is free: the next in line may go.
+    FREED.notify_all();
     let _ = send(&settings(), remote, &key, "close", &json!({}), true);
     true
+}
+
+// ---- the line for a browser
+
+/// The longest a conversation waits in line for a browser.
+const QUEUE_WAIT: Duration = Duration::from_secs(15 * 60);
+
+struct Waiting {
+    key: String,
+    since: chrono::DateTime<chrono::Utc>,
+    gave_up: bool,
+}
+
+static LINE: Mutex<Vec<Waiting>> = Mutex::new(Vec::new());
+static FREED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// How many browsers the sandbox's machine runs at once.
+fn limit(remote: Option<&dyn Remote>) -> usize {
+    let s = settings();
+    if on_server(&s) {
+        return lyra_node::sandbox::limit(&s.here);
+    }
+    remote.and_then(|r| r.sandbox(&s.machine)).and_then(|v| v["limit"].as_u64()).map_or(4, |n| n as usize).max(1)
+}
+
+/// Those waiting for a browser, in order (Running now).
+pub fn queued() -> Vec<Value> {
+    LINE.lock().unwrap_or_else(|e| e.into_inner()).iter().enumerate().map(|(i, w)| json!({ "session": w.key, "position": i + 1, "since": w.since.to_rfc3339() })).collect()
+}
+
+/// A conversation stops waiting (its reply was stopped).
+pub fn leave(key: &str) {
+    let mut line = LINE.lock().unwrap_or_else(|e| e.into_inner());
+    for w in line.iter_mut().filter(|w| w.key == key) {
+        w.gave_up = true;
+    }
+    FREED.notify_all();
+}
+
+/// Wait for a browser for `key`: at once when one is free and nobody is
+/// ahead; else in line until one ends. `busy` says how many are in use;
+/// `claim` takes the one that's free, in the same moment it's found free (so
+/// two can't both take the last one).
+fn wait_turn(key: &str, most: usize, busy: impl Fn() -> usize, claim: impl Fn(), wait: Duration) -> Result<(), String> {
+    let started = Instant::now();
+    let mut line = LINE.lock().unwrap_or_else(|e| e.into_inner());
+    if !line.iter().any(|w| w.key == key) {
+        line.push(Waiting { key: key.to_string(), since: chrono::Utc::now(), gave_up: false });
+    }
+    loop {
+        let i = line.iter().position(|w| w.key == key).unwrap_or(0);
+        if line[i].gave_up {
+            line.remove(i);
+            FREED.notify_all();
+            return Err("stopped while waiting for a browser".into());
+        }
+        if i == 0 && busy() < most {
+            claim();
+            line.remove(0);
+            FREED.notify_all();
+            return Ok(());
+        }
+        if started.elapsed() >= wait {
+            line.remove(i);
+            FREED.notify_all();
+            return Err(format!("all {most} browsers stayed in use for {} minutes: try again later", wait.as_secs() / 60));
+        }
+        line = FREED.wait_timeout(line, Duration::from_secs(2)).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0);
+    }
+}
+
+fn open_count() -> usize {
+    with_open(|all| all.len())
 }
 
 // ---- the tools
@@ -255,10 +336,24 @@ pub fn call(remote: Option<&dyn Remote>, name: &str, args: &Value, approved: boo
     if matches!(action, "open" | "click" | "submit" | "back") {
         args["shot"] = json!(true);
     }
+    // A new browser: its turn in line first (all of them may be in use).
+    let new = !with_open(|all| all.contains_key(&key));
+    if new {
+        wait_turn(&key, limit(remote), open_count, || track(&key), QUEUE_WAIT)?;
+    }
     // Known before the machine starts its container: the turn's end closes it,
     // even when every step failed (a page that didn't load still started one).
     track(&key);
-    let mut v = send(&s, remote, &key, action, &args, approved)?;
+    let mut v = match send(&s, remote, &key, action, &args, approved) {
+        // The machine is full after all (a browser lyra lost track of): back in line, once.
+        Err(e) if new && e.contains(lyra_node::sandbox::FULL) => {
+            with_open(|all| all.remove(&key));
+            wait_turn(&key, limit(remote).saturating_sub(1).max(1), open_count, || track(&key), QUEUE_WAIT)?;
+            track(&key);
+            send(&s, remote, &key, action, &args, approved)?
+        }
+        other => other?,
+    };
     // What was typed, kept with its field: the yes for sending the form shows it.
     if matches!(action, "fill" | "select") {
         let (n, text) = (args["n"].as_u64(), args["text"].as_str().or(args["value"].as_str()).unwrap_or(""));
@@ -350,6 +445,7 @@ pub fn live(remote: Option<&dyn Remote>) -> Result<Value, String> {
     };
     v["enabled"] = json!(true);
     v["machine"] = json!(if on_server(&s) { "server".to_string() } else { s.machine.clone() });
+    v["queued"] = json!(queued());
     Ok(v)
 }
 
@@ -367,6 +463,7 @@ pub fn kill(remote: Option<&dyn Remote>, container: &str) -> Result<Option<Strin
     if let Some(k) = &session {
         with_open(|all| all.remove(k));
     }
+    FREED.notify_all();
     Ok(session)
 }
 
@@ -469,6 +566,58 @@ mod tests {
         assert!(end(None, "test-failed-open"), "the turn's end closes it");
         assert!(!sessions().iter().any(|s| s["session"] == "test-failed-open"));
         configure(Settings::default());
+    }
+
+    #[test]
+    fn past_the_limit_conversations_wait_in_line_first_come_first_served() {
+        let in_use = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(2));
+        let busy = |n: &std::sync::Arc<std::sync::atomic::AtomicUsize>| {
+            let n = n.clone();
+            move || n.load(std::sync::atomic::Ordering::SeqCst)
+        };
+        let claim = |n: &std::sync::Arc<std::sync::atomic::AtomicUsize>| {
+            let n = n.clone();
+            move || {
+                n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        };
+        // A free one: at once.
+        assert!(wait_turn("q-free", 3, busy(&in_use), claim(&in_use), Duration::from_secs(1)).is_ok());
+        // All in use: two wait, in the order they came.
+        in_use.store(3, std::sync::atomic::Ordering::SeqCst);
+        let order = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let mut waiting = Vec::new();
+        for key in ["q-first", "q-second"] {
+            let (b, c, order) = (busy(&in_use), claim(&in_use), order.clone());
+            waiting.push(std::thread::spawn(move || {
+                let r = wait_turn(key, 3, b, c, Duration::from_secs(20));
+                order.lock().unwrap().push(key);
+                r
+            }));
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        let mine: Vec<String> = queued().into_iter().filter_map(|q| q["session"].as_str().filter(|k| k.starts_with("q-")).map(str::to_string)).collect();
+        assert_eq!(mine, ["q-first", "q-second"], "the line, in order");
+        // One ends: the first goes; then another: the second.
+        in_use.store(2, std::sync::atomic::Ordering::SeqCst);
+        FREED.notify_all();
+        std::thread::sleep(Duration::from_millis(400));
+        assert_eq!(*order.lock().unwrap(), ["q-first"], "only the first, while that one is taken again");
+        in_use.store(2, std::sync::atomic::Ordering::SeqCst);
+        FREED.notify_all();
+        for w in waiting {
+            assert!(w.join().unwrap().is_ok());
+        }
+        assert_eq!(*order.lock().unwrap(), ["q-first", "q-second"]);
+        // A stopped reply leaves the line; and nobody waits forever.
+        in_use.store(9, std::sync::atomic::Ordering::SeqCst);
+        let (b, c) = (busy(&in_use), claim(&in_use));
+        let stopped = std::thread::spawn(move || wait_turn("q-stopped", 3, b, c, Duration::from_secs(20)));
+        std::thread::sleep(Duration::from_millis(150));
+        leave("q-stopped");
+        assert!(stopped.join().unwrap().unwrap_err().contains("stopped"));
+        assert!(wait_turn("q-late", 3, busy(&in_use), claim(&in_use), Duration::from_millis(300)).unwrap_err().contains("in use"));
+        assert!(!queued().iter().any(|q| q["session"].as_str().is_some_and(|k| k.starts_with("q-"))), "nobody left in line");
     }
 
     #[test]

@@ -22,6 +22,9 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+/// What the machine says when it's full (lyra then waits in its queue and tries again).
+pub const FULL: &str = "the sandbox is full";
+
 /// The image (bumped when the Dockerfile or the driver changes).
 pub const IMAGE: &str = "lyra-sandbox:1";
 const DOCKERFILE: &str = include_str!("../sandbox/Dockerfile");
@@ -46,7 +49,8 @@ pub struct Settings {
     pub cpus: String,
     /// A session nobody used for this long is closed.
     pub idle_minutes: u64,
-    /// The most containers at once.
+    /// The most containers at once (0: as many as this machine has room for,
+    /// see `limit`). More wait in lyra's queue.
     pub max_sessions: usize,
     pub image: String,
     /// More networks the containers may not reach (inside ones behind the
@@ -56,7 +60,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { allow_lan: false, memory: "2g".into(), cpus: "2".into(), idle_minutes: 10, max_sessions: 4, image: IMAGE.into(), block: Vec::new() }
+        Self { allow_lan: false, memory: "2g".into(), cpus: "2".into(), idle_minutes: 10, max_sessions: 0, image: IMAGE.into(), block: Vec::new() }
     }
 }
 
@@ -67,6 +71,30 @@ fn docker(args: &[&str]) -> Result<String, String> {
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().lines().last().unwrap_or("docker failed").to_string())
     }
+}
+
+/// How many containers this machine runs at once: `max_sessions`, or, left
+/// at 0, what its cores and memory allow with each container's share
+/// (`cpus` cores, `memory`) and room kept for the machine itself: 32 cores
+/// and 128 GB with 2 cores and 2 GB each come to 16.
+pub fn limit(s: &Settings) -> usize {
+    if s.max_sessions > 0 {
+        return s.max_sessions;
+    }
+    let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+    let mem_gb = std::fs::read_to_string("/proc/meminfo").ok().and_then(|m| m.lines().find(|l| l.starts_with("MemTotal:")).and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())).map_or(4, |kb| kb / 1_048_576);
+    room(cores, mem_gb, s)
+}
+
+/// The containers that fit: cores over each one's share, memory (less 8 GB
+/// for the machine, 1 GB over each one's limit for its browser's spikes),
+/// at least 1 and at most 32.
+fn room(cores: usize, mem_gb: u64, s: &Settings) -> usize {
+    let per_cpu = s.cpus.trim().parse::<f64>().unwrap_or(2.0).max(0.5);
+    let per_gb = s.memory.trim().trim_end_matches(['g', 'G']).parse::<f64>().unwrap_or(2.0).max(0.5) + 1.0;
+    let by_cpu = (cores as f64 / per_cpu).floor();
+    let by_mem = ((mem_gb as f64 - 8.0).max(0.0) / per_gb).floor();
+    (by_cpu.min(by_mem) as usize).clamp(1, 32)
 }
 
 /// Whether containers here can't reach the LAN (checked at setup and at start).
@@ -96,6 +124,7 @@ pub fn status(s: &Settings) -> Value {
         "ready": why.is_empty(),
         "why": why,
         "running": sessions().lock().unwrap_or_else(|e| e.into_inner()).len(),
+        "limit": limit(s),
     })
 }
 
@@ -466,8 +495,9 @@ pub fn step(s: &Settings, key: &str, action: &str, args: &Value, approved: bool)
         if st["ready"] != true {
             return Err(format!("the sandbox isn't ready here: {}", st["why"].as_str().unwrap_or("")));
         }
-        if sessions().lock().unwrap_or_else(|e| e.into_inner()).len() >= s.max_sessions.max(1) {
-            return Err(format!("{} browser sessions are open already: try again when one ends", s.max_sessions));
+        let most = limit(s);
+        if sessions().lock().unwrap_or_else(|e| e.into_inner()).len() >= most {
+            return Err(format!("{FULL}: {most} browser sessions are open already"));
         }
         taken = Some(start(s, &key)?);
     }
@@ -535,6 +565,16 @@ for line in sys.stdin:
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
         dir
+    }
+
+    #[test]
+    fn as_many_containers_as_the_machine_has_room_for() {
+        let s = Settings::default();
+        assert_eq!(room(32, 128, &s), 16, "32 cores, 128 GB, 2 cores and 2 GB each: the cores decide");
+        assert_eq!(room(32, 32, &s), 8, "less memory: the memory decides ((32 - 8) / 3)");
+        assert_eq!(room(2, 4, &s), 1, "a small machine still runs one");
+        assert_eq!(room(256, 1024, &s), 32, "never more than 32");
+        assert_eq!(limit(&Settings { max_sessions: 5, ..Default::default() }), 5, "set by hand");
     }
 
     #[test]

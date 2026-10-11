@@ -59,7 +59,8 @@ pub(crate) fn get_page(
             let remote = HubRemote(hub);
             let mut v = crate::sandbox::live(Some(&remote)).unwrap_or_else(|e| json!({ "error": e }));
             let dir = crate::sessions::dir();
-            if let Some(list) = v["containers"].as_array_mut() {
+            for field in ["containers", "queued"] {
+                let Some(list) = v[field].as_array_mut() else { continue };
                 for c in list.iter_mut() {
                     let Some(key) = c["session"].as_str().map(str::to_string) else { continue };
                     // Its conversation: open now, else its saved file.
