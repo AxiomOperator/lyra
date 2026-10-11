@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.68.0.215",
+    "date": "2026-10-10",
+    "title": "Tell me when a page changes",
+    "new": [
+      "\"Tell me when …\" now works for the web too: a page changing, a price dropping below a number (\"below 500\"), words showing up (\"in stock\"), or a search turning up something new. lyra looks every few hours (you can say how often) and tells you once, by notification, when it happens. Your watches show on the Today page."
+    ],
+    "fixed": [
+      "Watches are offered whenever web search is on, not only when Microsoft 365 or PMI is set up."
+    ]
+  },
+  {
     "version": "0.67.0.214",
     "date": "2026-10-10",
     "title": "Agents with a look of their own",

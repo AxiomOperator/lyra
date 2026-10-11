@@ -192,6 +192,29 @@ fn read(url: &str, title: &str, text: &str, focus: &str) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
+static CONFIGURED: std::sync::RwLock<Option<Settings>> = std::sync::RwLock::new(None);
+
+/// `[search]` as configured, for work outside a chat (web watches).
+pub fn configure(s: Settings) {
+    *CONFIGURED.write().unwrap_or_else(|e| e.into_inner()) = Some(s);
+}
+
+pub fn configured() -> Settings {
+    CONFIGURED.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default()
+}
+
+/// A page's whole text and title, as it is (never condensed: watches compare it).
+pub fn page(url: &str) -> Result<(String, String), String> {
+    let v = call(&configured(), "web_fetch", &json!({ "url": url, "full": true }))?;
+    Ok((v["title"].as_str().unwrap_or("").to_string(), v["text"].as_str().unwrap_or("").to_string()))
+}
+
+/// A search's results: (title, url).
+pub fn found(query: &str) -> Result<Vec<(String, String)>, String> {
+    let v = call(&configured(), "web_search", &json!({ "query": query, "count": 10 }))?;
+    Ok(v["results"].as_array().into_iter().flatten().filter_map(|r| Some((r["title"].as_str()?.to_string(), r["url"].as_str()?.to_string()))).collect())
+}
+
 pub fn call(s: &Settings, name: &str, args: &Value) -> Result<Value, String> {
     if !s.enabled {
         return Err("web search is off ([search] enabled)".into());

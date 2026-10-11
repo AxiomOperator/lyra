@@ -615,8 +615,8 @@ impl Caps {
         caps.extend(crate::mailout::capabilities());
         // lyra's own release history ("when did X come in?").
         caps.extend(crate::changelog::capabilities());
-        // "Tell me when …" (mail, PMI, Teams).
-        if crate::graph::available() || crate::pmi::anyone() {
+        // "Tell me when …" (mail, PMI, Teams, and web pages and searches).
+        if crate::graph::available() || crate::pmi::anyone() || crate::websearch::configured().enabled {
             caps.extend(crate::watches::capabilities());
         }
         // Folders lent by people's open pages (only through lyra serve).

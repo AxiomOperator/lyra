@@ -73,6 +73,7 @@ pub(crate) fn configure(config: &Config) {
     usage::configure(prices(config));
     vision::configure(config.vision_model.clone());
     fallback::configure(config.fallback_model.clone(), config.second_fallback_model.clone());
+    crate::websearch::configure(config.search.clone());
     proactive::configure(config.proactive.clone());
     recap::configure(config.recap.clone());
     mailout::configure(config.email.clone());

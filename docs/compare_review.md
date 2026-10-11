@@ -55,6 +55,10 @@ How to read it:
 | What | lyra |
 |---|---|
 | Agent-to-agent coordination (since 0.62–0.63): delegations side by side and nested; direct questions between agents; group huddles of two to four agents; a task board per conversation where agents post tasks and notes for each other, and posted tasks start the other agent's work by themselves; swarms, one task to two to six agents at once, each tracked on the board | `agents.rs` (`delegate_many`, `ask_agent`, `huddle`, `swarm`, `hand_on`), `board.rs`; `[agents] max_parallel`, `board_autostart` |
+| Context compaction (since 0.65): near the model's context, the oldest turns become one note the model reads instead, kept with the conversation; every message stays on screen | `turn.rs` (`compact`), `sessions.rs` (`summary`) |
+| Reasoning effort (since 0.66): per conversation, off / low / medium / high or the model's default, sent as `reasoning_effort` and the chat template's switches | `turn.rs` (`Effort`), `/effort`, the composer's Thinking button |
+| Agent look and sharing (since 0.67): a colour and icon per agent (its cards in the chat, the terminal's panel); duplicate an agent to start a new one; admins choose which agents members may use (never the Operator or the Coder) | `agents/` (`Look`, `shared`, `duplicate`), `agents.rs` (`Env::may_use`), the Agents page |
+| Monitoring the web (since 0.68): "tell me when this page changes, a price drops below 500, it says in stock, or a search finds something new", checked every few hours and told once | `watches.rs` (`web_page`, `web_search`, `check_web`) |
 | Named, persistent agents with roles, instructions, routing and a conversational creation wizard with templates | `agents/` (profiles as TOML, versions, rule / semantic / model routing, `builder`, `templates`) |
 | Separate memory per agent (its own `agent:<name>` scope, or none, read-only, or scoped) | `agents/src/model.rs` memory modes |
 | Persistent sessions: saved conversations, resume (`-c` / `-r`), folders, pins, archive, search across them, age limits | `sessions.rs`, `retention.rs` |
@@ -83,10 +87,6 @@ How to read it:
 | **Dynamic tool building** | Builds tools when integrations fall short (Muse) | Evolution proposes composite tools and workflows, benchmarked and approved; OpenAPI and MCP providers are added by an admin | Let the evolver propose an OpenAPI provider from a URL; still behind approval |
 | **Channels** | WhatsApp, Telegram, Discord, Slack, Signal, iMessage, Teams (OpenClaw); WhatsApp (Muse) | The PWA, the TUI, push and email to yourself; Teams is read (and watched), not answered | A Teams bot or chat reply path first (it's already connected); other channels would need their own sign-in and isolation per person |
 | **Voice** | Voice calls and spoken conversation (Grok, OpenClaw) | Dictation in and read-aloud out, per device | A hands-free mode that chains the two (listen, send, speak, listen) |
-| **Context compaction** | Session compaction and pruning (OpenClaw) | Long tool results are shortened to fit; older turns aren't summarized | Summarize the oldest turns into one note when a conversation nears the model's context |
-| **Agent sharing and look** | Avatars, colors, duplicate and share templates, Team Bots (Grok) | Agents are the owner's, set up from templates; no avatar or color; no sharing between people | A colour and icon per agent profile; "duplicate" in the wizard; shared agents for members stay an admin's choice |
-| **Reasoning effort** | Configurable per run (OpenClaw) | Not exposed; the model's defaults apply | A per-conversation setting passed to servers that support it |
-| **Monitoring the web** | Prices and activities (Muse) | Watches cover mail, replies, PMI and Teams; a routine with web search can do it, without a "tell me when the price drops" | A web watch kind (a page or a search, checked on a schedule, told once on change) |
 
 ## Full gaps
 
@@ -108,11 +108,11 @@ In order of value for lyra's users, keeping its rules:
 1. ~~**Agent-to-agent coordination.**~~ Done in 0.62–0.63: delegations side
    by side, a task board per conversation, direct questions between agents,
    group huddles, and agents starting each other's work.
-2. **Context compaction** for long conversations. It's cheap and helps every
+2. ~~**Context compaction**~~ for long conversations (done in 0.65). It's cheap and helps every
    chat, especially on local models with small contexts.
 3. **Answering in Teams.** lyra already reads and watches Teams per person.
    Replies would be drafts or behind an Allow, like mail.
-4. **A web watch** ("tell me when this page or price changes"). It fits the
+4. ~~**A web watch**~~ ("tell me when this page or price changes"; done in 0.68). It fits the
    existing watches and routines.
 5. **A browser on a named node**, read-first, with every submit behind an
    Allow. It closes the largest functional gap while keeping approvals in Rust
