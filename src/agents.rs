@@ -967,6 +967,90 @@ pub fn finish_draft(env: &Env, mut draft: AgentCreationDraft) -> (AgentCreationD
     (draft, notes)
 }
 
+// ---- the Agents page's New agent form
+
+/// The templates the form offers (the Operator and the Coder work on
+/// machines and code, and are set up already).
+pub const FORM_TEMPLATES: &[&str] = &["writer", "developer", "researcher", "analyst", "project-manager", "assistant", "reviewer", "data-analyst", "archivist"];
+
+/// The form's answers as the wizard's draft: each question answered as the
+/// interview would be (the same choices, the same checks).
+pub fn draft_from_form(form: &Value) -> Result<AgentCreationDraft, String> {
+    let s = |k: &str| form[k].as_str().unwrap_or("").trim().to_string();
+    let template = s("template");
+    if !template.is_empty() && template != "custom" && !FORM_TEMPLATES.contains(&template.as_str()) {
+        return Err(format!("no template {template}"));
+    }
+    let mut draft = AgentCreationDraft::start(if template == "custom" { "" } else { &template });
+    let name = s("name");
+    if draft.template.is_none() && name.is_empty() {
+        return Err("give it a name".into());
+    }
+    if draft.template.is_none() && s("purpose").is_empty() {
+        return Err("say what it should handle".into());
+    }
+    let tone: Vec<String> = form["tone"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
+    while let Some(q) = draft.next_question() {
+        let answer = match q.key {
+            "name" => name.clone(),
+            "purpose" => s("purpose"),
+            "tone" if tone.is_empty() => "skip".into(),
+            "tone" => tone.join(", "),
+            "behavior" if s("behavior").is_empty() => "skip".into(),
+            "behavior" => s("behavior"),
+            "tools" => match s("tools").as_str() {
+                "read" => "Read memory".into(),
+                "write" => "Read and write memory".into(),
+                _ => "None".into(),
+            },
+            "memory" => match s("memory").as_str() {
+                "none" => "Nothing",
+                "preferences" => "Your preferences only",
+                "write" => "Shared memory, read and write",
+                _ => "Shared memory, read-only",
+            }
+            .into(),
+            "delegation" => if form["auto"].as_bool().unwrap_or(false) { "Yes, automatically" } else { "No, only when asked" }.into(),
+            "model" if s("model").is_empty() => "The same as the main agent".into(),
+            "model" => s("model"),
+            _ => "skip".into(),
+        };
+        draft.answer(&answer).map_err(|e| format!("{}: {e}", q.key))?;
+    }
+    // A template under a name of its own ("Email writer").
+    if draft.template.is_some() && !name.is_empty() {
+        if lyra_agents::AgentProfile::slug(&name).is_empty() || lyra_agents::AgentProfile::slug(&name) == MAIN {
+            return Err("that name doesn't work; try another".into());
+        }
+        draft.name = Some(name);
+    }
+    if !s("purpose").is_empty() && draft.template.is_some() {
+        draft.purpose = Some(s("purpose"));
+    }
+    Ok(draft)
+}
+
+/// Agents built on the Agents page, waiting for Activate (by draft id).
+static FORM_DRAFTS: Mutex<Vec<(String, AgentProfile)>> = Mutex::new(Vec::new());
+
+/// Keep a built agent for Activate; its id.
+pub fn keep_form_draft(p: AgentProfile) -> String {
+    let id = Uuid::new_v4().to_string();
+    let mut all = FORM_DRAFTS.lock().unwrap_or_else(|e| e.into_inner());
+    if all.len() >= 20 {
+        all.remove(0);
+    }
+    all.push((id.clone(), p));
+    id
+}
+
+/// A built agent, taken for Activate (or dropped for Discard).
+pub fn take_form_draft(id: &str) -> Option<AgentProfile> {
+    let mut all = FORM_DRAFTS.lock().unwrap_or_else(|e| e.into_inner());
+    let i = all.iter().position(|(k, _)| k == id)?;
+    Some(all.remove(i).1)
+}
+
 pub const REVIEW_HELP: &str = "activate · modify <tone|behavior|tools|memory|delegation|model|name|purpose> · test · cancel";
 
 // ---- commands
@@ -2045,6 +2129,27 @@ mod tests {
         let (tx, events) = mpsc::channel();
         let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx, machine: None, fleet: None, cancel: Default::default(), member: false, viewer: None, owner: "owner".into(), session: "test-conv".into() };
         Fixture { _rt: rt, env, events }
+    }
+
+    #[test]
+    fn the_agents_pages_form_fills_the_wizards_draft() {
+        let d = draft_from_form(&json!({
+            "template": "custom", "name": "Support", "purpose": "Customer emails", "tone": ["Friendly", "Concise"],
+            "behavior": "Never promise refunds", "tools": "read", "memory": "preferences", "auto": true,
+        }))
+        .unwrap();
+        assert!(d.next_question().is_none(), "every question answered");
+        let p = d.profile();
+        assert_eq!((p.title.as_str(), p.name.as_str()), ("Support", "support"));
+        assert!(p.description.contains("customer emails") && p.instructions.contains("Never promise refunds") && p.instructions.contains("friendly"), "{p:?}");
+        assert!(p.tools.iter().all(|t| !t.starts_with("memory_remember")) && p.delegation.auto_delegate && p.model_policy.model.is_none());
+        // A template, renamed: its tools kept.
+        let w = draft_from_form(&json!({ "template": "writer", "name": "Email writer", "memory": "none" })).unwrap();
+        assert_eq!(w.profile().title, "Email writer");
+        assert!(!w.profile().delegation.auto_delegate);
+        assert!(draft_from_form(&json!({ "template": "custom", "purpose": "x" })).is_err(), "a name is needed");
+        assert!(draft_from_form(&json!({ "template": "operator" })).is_err(), "not offered on the form");
+        assert!(draft_from_form(&json!({ "template": "custom", "name": "main", "purpose": "x" })).is_err());
     }
 
     #[test]

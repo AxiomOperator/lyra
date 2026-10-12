@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.86.0.244",
+    "date": "2026-10-12",
+    "title": "New agents from the Agents page",
+    "new": [
+      "Admins can make a new agent on the Agents page: press New agent, start from a template or from scratch, say what it handles, how it should work and what it may remember, and press Build and try it. lyra writes its instructions, tries it on a test task and shows you the result, then you activate it, change it or discard it."
+    ]
+  },
+  {
     "version": "0.85.0.243",
     "date": "2026-10-12",
     "title": "Quicker to start a reply",

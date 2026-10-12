@@ -12,6 +12,25 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
     let page = |r: Result<Value, String>| r.unwrap_or_else(|e| json!({ "error": e }));
     match what {
         "sessions" => sessions_page(&app.owner, &app.session_id, loaded),
+        // A New agent built on the Agents page: made real, or dropped.
+        "agent_activate" | "agent_discard" => {
+            let Some(profile) = crate::agents::take_form_draft(arg["id"].as_str().unwrap_or("")) else {
+                return json!({ "error": "that draft is gone (lyra restarted, or it was used): build it again" });
+            };
+            if what == "agent_discard" {
+                return json!({ "ok": true, "text": format!("discarded {}", profile.title) });
+            }
+            let Some(agents) = app.agents.clone() else { return json!({ "error": "agents are off" }) };
+            match agents.registry.create(profile, "created on the Agents page") {
+                Ok(p) => {
+                    app.sync_agents();
+                    app.refresh_agents();
+                    app.log(crate::Level::Agent, format!("created agent {} (v{}) on the Agents page", p.title, p.version));
+                    json!({ "ok": true, "text": format!("{} is active. Try @{} … in the chat.", p.title, p.name) })
+                }
+                Err(e) => json!({ "error": e }),
+            }
+        }
         "search" => search_page(&app.owner, &app.session_id, arg["query"].as_str().unwrap_or("")),
         "routines" => crate::acting::run(&app.owner, || crate::routines::view(10)),
         // A routine made or changed on the Routines page (its prompt as written).
@@ -352,6 +371,24 @@ pub(crate) fn slow(app: &App, what: &str, arg: &Value, loaded: &Loaded) -> Optio
         "sessions" => {
             let loaded = loaded.clone();
             Box::new(move || sessions_page(&owner, &current, &loaded))
+        }
+        // The Agents page's New agent: drafted by the model and tried on a
+        // test task (a minute or two: off the loop), then kept for Activate.
+        "agent_draft" => {
+            let draft = crate::agents::draft_from_form(arg);
+            let env = app.agent_env();
+            Box::new(move || {
+                let (Ok(draft), Some(env)) = (draft.clone(), env) else {
+                    return json!({ "error": draft.err().unwrap_or_else(|| "agents are off".into()) });
+                };
+                let (built, notes) = crate::agents::finish_draft(&env, draft);
+                let Some(profile) = built.profile.clone() else { return json!({ "error": "nothing was built" }) };
+                json!({
+                    "id": crate::agents::keep_form_draft(profile.clone()),
+                    "title": profile.title, "name": profile.name,
+                    "summary": built.summary(), "test": built.test_output, "notes": notes,
+                })
+            })
         }
         "search" => {
             let query = arg["query"].as_str().unwrap_or("").to_string();
