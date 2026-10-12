@@ -49,7 +49,7 @@ mod notes;
 mod people;
 mod plan;
 mod planner;
-mod pmi;
+mod tasks;
 mod proactive;
 mod migrate;
 mod retrieval;
@@ -542,6 +542,10 @@ struct App {
     palette_hidden: bool,
     /// When goals were last checked, and how often to.
     goals_checked: Instant,
+    /// The person's tasks in a line ("2 overdue · 1 today"), for the Goals
+    /// panel, and when it was read (the tasks' revision, the time).
+    tasks_line: Option<String>,
+    tasks_read: (u64, Instant),
     goals_every: Duration,
     /// Plans started by autonomy (their spending counts against the session).
     autonomous_plans: std::collections::HashSet<Uuid>,
@@ -691,6 +695,8 @@ impl App {
             palette: 0,
             palette_hidden: false,
             goals_checked: Instant::now(),
+            tasks_line: None,
+            tasks_read: (0, Instant::now()),
             goals_every: Duration::from_secs(config.goals.tick_seconds.max(10)),
             autonomous_plans: Default::default(),
             autonomy_note: String::new(),
@@ -2470,6 +2476,12 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
         }
         if !app.waiting && !app.plan_busy && app.goals_checked.elapsed() > app.goals_every {
             app.goals_tick();
+        }
+        // Their tasks in a line: read again when they change, and each minute (days turn).
+        if app.tasks_read.0 != tasks::revision() || app.tasks_read.1.elapsed() > Duration::from_secs(60) {
+            app.tasks_read = (tasks::revision(), Instant::now());
+            let today = chrono::Local::now().date_naive();
+            app.tasks_line = tasks::settings().enabled.then(|| tasks::as_user(&app.owner, tasks::snapshot).map_or_else(|e| format!("⚠ {e}"), |s| s.line(today)));
         }
 
         terminal.draw(|f| ui::draw(f, app))?;

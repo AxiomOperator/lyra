@@ -709,6 +709,11 @@ fn goals_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
     };
     let title = format!(" Goals · {} open · {} ", s.open, s.mode.as_str());
     let mut lines = Vec::new();
+    // Their tasks first: what's overdue, due today, waiting for their answer.
+    if let Some(t) = &app.tasks_line {
+        let style = if t.contains("overdue") || t.contains("accept") || t.starts_with('⚠') { Style::default().fg(Color::Yellow) } else { dim };
+        lines.push(Line::from(vec![Span::styled("Tasks ", Style::default().bold()), Span::styled(truncate(t, width.saturating_sub(6)), style)]));
+    }
     if s.ranked.is_empty() {
         lines.push(Line::styled("none — /goal new <title>", dim));
     }

@@ -1,6 +1,6 @@
 //! "Who is Dana?": everything lyra has on a person, for the user asking: what
 //! their memory says, recent mail from them, meetings with them (the last
-//! and next few weeks) and PMI tasks they share. Read-only, the asker's own
+//! and next few weeks) and tasks they share. Read-only, the asker's own
 //! accounts only.
 
 use chrono::{Duration, Utc};
@@ -11,7 +11,7 @@ pub fn capabilities() -> Vec<Capability> {
     let mut c = Capability::new(
         "who_is",
         CapabilityKind::NativeTool,
-        "Everything known about a person for the user: what they remember about them, recent mail from them, meetings with them (past and coming), PMI tasks they share. Use for \"who is …\", \"what do I have with …\", \"prep me for …\".",
+        "Everything known about a person for the user: what they remember about them, recent mail from them, meetings with them (past and coming), tasks they share. Use for \"who is …\", \"what do I have with …\", \"prep me for …\".",
         RiskLevel::ReadOnly,
     );
     c.input_schema = json!({ "type": "object", "properties": { "who": { "type": "string", "description": "A name or email address." } }, "required": ["who"] });
@@ -137,15 +137,15 @@ pub fn call(name: &str, args: &Value, mem: Option<&crate::mem::Mem>) -> Result<V
             }
         }
     }
-    if crate::pmi::configured_for(&user) {
-        if let Ok(v) = crate::pmi::call("pmi_search", &json!({ "query": who }))
-            && let Some(p) = v["people"].as_array().and_then(|p| p.first())
-        {
-            out["in_pmi"] = json!({ "name": p["name"], "username": p["username"] });
+    {
+        // Someone who uses lyra: their name there, and the tasks you share.
+        if let Ok(id) = crate::tasks::person(&who) {
+            out["in_lyra"] = json!({ "name": crate::tasks::name_of(&id) });
         }
-        if let Ok(v) = crate::pmi::call("pmi_tasks", &json!({})) {
+        if let Ok(v) = crate::tasks::tools::call("task_list", &json!({ "scope": "all" })) {
             let w = who.to_lowercase();
-            let shared: Vec<Value> = v["tasks"].as_array().into_iter().flatten().filter(|t| t["assignees"].as_array().is_some_and(|a| a.iter().any(|n| n.as_str().is_some_and(|n| n.to_lowercase().contains(&w))))).map(|t| json!({ "title": t["title"], "due": t["due"], "where": t["where"] })).take(6).collect();
+            let named = |n: &Value| n.as_str().is_some_and(|n| n.to_lowercase().contains(&w));
+            let shared: Vec<Value> = v["tasks"].as_array().into_iter().flatten().filter(|t| t["assignees"].as_array().is_some_and(|a| a.iter().any(|x| named(&x["name"]))) || named(&t["owner"])).map(|t| json!({ "title": t["title"], "due": t["due"], "where": t["where"] })).take(6).collect();
             if !shared.is_empty() {
                 out["shared_tasks"] = json!(shared);
             }

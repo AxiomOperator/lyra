@@ -1,6 +1,6 @@
 // Meetings: one page per meeting. Before, the prep (who's coming, the last
 // mail with them, open tasks); during, your notes (saved as you type); after,
-// the follow-up: a summary, decisions, your action items (each one a PMI
+// the follow-up: a summary, decisions, your action items (each one a
 // task with a tap) and a mail to the attendees (a draft in your Outlook:
 // nothing is sent from here).
 

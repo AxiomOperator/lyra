@@ -67,8 +67,8 @@ pub struct Config {
     pub email: crate::mailout::Settings,
     /// `[retention]`: how long conversations, uploads, logs and unused devices are kept.
     pub retention: crate::retention::Settings,
-    /// `[pmi]` table: PMI, the project-management app (its token is in secrets.toml).
-    pub pmi: crate::pmi::Settings,
+    /// `[tasks]` table: lyra's own tasks (reminders pushed again while a task is open).
+    pub tasks: crate::tasks::Settings,
     /// `[groups]` table: named sets of machines (web = ["web1", "web2"]) for @group and fleet_run.
     pub groups: std::collections::HashMap<String, Vec<String>>,
     /// `[backup]` table: nightly backups of the lyra home.
@@ -365,7 +365,7 @@ impl Default for Config {
             recap: Default::default(),
             email: Default::default(),
             retention: Default::default(),
-            pmi: Default::default(),
+            tasks: Default::default(),
             status: Default::default(),
             diagnose: Default::default(),
             coding: Default::default(),

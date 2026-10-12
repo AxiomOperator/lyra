@@ -282,7 +282,7 @@ currency = "$"
 # name = "pm"
 # spec = "~/.lyra/capabilities/pm.yaml"   # or a URL (fetched daily, cached)
 # auth_env = "PM_TOKEN"     # the environment variable holding the credential
-# # auth_secret = "pmi"     # or a token in config/secrets.toml
+# # auth_secret = "pm"      # or a token in config/secrets.toml
 # # include_tags = ["tasks", "projects"]   exclude_tags = []   exclude = ["/v1/admin/*"]
 # # defaults = { orgId = "…" }             # filled in, never asked of the model
 # # approve_writes = true                  # changes ask first
@@ -506,15 +506,14 @@ currency = "$"
 # drafts = true             # …and gets a draft reply in Drafts
 # followup_days = 3         # sent mail unanswered this long gets a nudge
 
-# PMI, the project-management app (see README): tasks, reminders, projects.
-# Its access token goes in config/secrets.toml with `lyra pmi token` or /pmi token.
-# [pmi]
-# url = "https://pmi.fbcad.org/api"
-# org = ""            # an organization's slug; empty: the first one
+# lyra's own tasks, reminders and projects (tasks/tasks.db), for everyone.
+# A reminder is pushed at its time, and again while the task is still open
+# (outside the person's quiet time).
+# [tasks]
+# enabled = true
 # nag = true          # push again when a reminder went off and the task is still open
 # nag_minutes = 30
 # nag_max = 3
-# enabled = true
 
 # How long lyra keeps what grows by itself, tidied once a day; 0 keeps that
 # kind forever. Pinned conversations always stay; paired machines never expire

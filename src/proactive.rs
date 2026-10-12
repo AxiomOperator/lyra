@@ -1,8 +1,8 @@
 //! Proactive help (`[proactive]`), per person with Outlook connected:
 //! - meeting prep: a push shortly before a meeting with other people (who,
-//!   the latest mail with them, open PMI tasks about it);
+//!   the latest mail with them, open tasks about it);
 //! - mail triage: new mail from people that asks something of them becomes a
-//!   personal PMI task (with its due date), is flagged, and gets a reply
+//!   task of their own (with its due date), is flagged, and gets a reply
 //!   drafted into Drafts (never sent) — all theirs alone, done and then told;
 //! - follow-ups: mail they sent that asked something and got no answer.
 //!
@@ -23,7 +23,7 @@ pub struct Settings {
     pub enabled: bool,
     /// Meeting prep this many minutes before.
     pub prep_minutes: i64,
-    /// New mail that asks something becomes a personal task (PMI), is flagged, gets a draft reply.
+    /// New mail that asks something becomes a task of their own, is flagged, gets a draft reply.
     pub mail_tasks: bool,
     pub flag: bool,
     pub drafts: bool,
@@ -141,10 +141,10 @@ pub(crate) fn prep(e: &Value, me: &str) -> (String, String) {
             lines.push(format!("Last from {}: {} ({})", name.split_whitespace().next().unwrap_or(name), m["subject"].as_str().unwrap_or(""), m["received"].as_str().unwrap_or("")));
         }
     }
-    // Open PMI tasks that share a word with the meeting.
-    if crate::pmi::configured_for(&crate::acting::current()) {
+    // Open tasks that share a word with the meeting.
+    {
         let words: Vec<String> = subject.split(|c: char| !c.is_alphanumeric()).filter(|w| w.len() >= 5).map(str::to_lowercase).collect();
-        if let Ok(v) = crate::pmi::call("pmi_tasks", &json!({})) {
+        if let Ok(v) = crate::tasks::tools::call("task_list", &json!({})) {
             let related: Vec<String> = v["tasks"].as_array().into_iter().flatten().filter(|t| t["title"].as_str().is_some_and(|tt| words.iter().any(|w| tt.to_lowercase().contains(w)))).filter_map(|t| t["title"].as_str().map(str::to_string)).take(3).collect();
             if !related.is_empty() {
                 lines.push(format!("Open: {}", related.join(" · ")));
@@ -219,16 +219,15 @@ pub fn triage_mail(seen: &mut Seen, url: &str, model: &str) -> Vec<String> {
         let who = full["from"].as_str().unwrap_or("someone").split(" <").next().unwrap_or("someone").to_string();
         let subject = full["subject"].as_str().unwrap_or("").to_string();
         if s.mail_tasks
-            && crate::pmi::configured_for(&user)
             && let Some(task) = t.task.as_deref().filter(|x| !x.trim().is_empty())
         {
-            let mut args = json!({ "title": task, "description": format!("From {who}'s email \"{subject}\"") });
+            let mut args = json!({ "title": task, "notes": format!("From {who}'s email \"{subject}\"") });
             if let Some(d) = t.due.as_deref().filter(|d| !d.trim().is_empty() && crate::when::parse(d, Local::now()).is_some()) {
                 args["due"] = json!(d);
             }
-            if crate::pmi::call("pmi_add_task", &args).is_ok() {
+            if crate::tasks::add(crate::tasks::New { title: task.to_string(), notes: args["notes"].as_str().unwrap_or("").into(), due: args["due"].as_str().unwrap_or("").into(), source: "mail".into(), source_ref: Some(id.to_string()), ..Default::default() }).is_ok() {
                 did.push(format!("task from {who}'s email: {task}{}", t.due.as_deref().map(|d| format!(" (due {d})")).unwrap_or_default()));
-                crate::actions::record("pmi_add_task", &format!("a task: {task}"), triage_why(&who, &subject));
+                crate::actions::record("task_add", &format!("a task: {task}"), triage_why(&who, &subject));
             }
         }
         if s.flag && crate::mail::call("mail_tidy", &json!({ "id": id, "action": "flag" })).is_ok() {

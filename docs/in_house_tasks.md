@@ -1,5 +1,11 @@
 # In-house task management (replacing PMI)
 
+> **Status (2026-10-12):** Phases 1–4 are done (0.87.0.247). lyra keeps tasks itself and PMI
+> is gone. Since nothing was imported and everyone switched at once (decisions 3 and 4), the
+> two-backend switch of §2.1 wasn't needed: the code moved straight to lyra's tasks and
+> production was updated once, with everything in place. Phase 5 (the To Do sync) is still to
+> do, so this doc stays here.
+
 **Goal:** lyra keeps tasks, reminders and projects itself, for everyone who
 uses lyra, so it no longer depends on PMI.
 

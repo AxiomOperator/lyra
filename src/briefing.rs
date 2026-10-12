@@ -100,8 +100,8 @@ pub struct Inputs {
     pub jobs: Vec<Record>,
     pub goals: Vec<Goal>,
     pub goal_events: Vec<GoalEvent>,
-    /// The user's PMI: tasks, what waits on them, projects.
-    pub pmi: Option<crate::pmi::State>,
+    /// The user's tasks: theirs, what waits for their answer, projects.
+    pub tasks: Option<crate::tasks::State>,
     /// Their Outlook calendar today (`calendar::today`), when connected.
     pub calendar: Option<Value>,
     /// Their mail since the last briefing (`mail::glance`), when connected.
@@ -205,12 +205,12 @@ fn routines(i: &Inputs) -> Vec<Item> {
     out
 }
 
-/// PMI: overdue and today's tasks, what waits on the user, projects off track.
+/// Tasks: overdue and today's, what waits for their answer, projects off track.
 fn tasks(i: &Inputs) -> Vec<Item> {
-    let Some(p) = &i.pmi else { return vec![] };
+    let Some(p) = &i.tasks else { return vec![] };
     let mut out = Vec::new();
     if let Some(e) = &p.error {
-        out.push(item(Level::Note, "tasks", format!("PMI couldn't be read: {e}")));
+        out.push(item(Level::Note, "tasks", format!("your tasks couldn't be read: {e}")));
     }
     let today = i.now.with_timezone(&Local).date_naive();
     let due = |t: &Value| t["due"].as_str().and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
@@ -221,13 +221,8 @@ fn tasks(i: &Inputs) -> Vec<Item> {
     for t in p.tasks.iter().filter(|t| due(t) == Some(today)) {
         out.push(item(Level::Note, "tasks", format!("due today: {}", title(t))));
     }
-    for (key, what) in [("task_transfers", "task"), ("project_transfers", "project")] {
-        for w in p.waiting[key].as_array().into_iter().flatten() {
-            out.push(item(Level::Attention, "tasks", format!("a {what} is being handed to you: {}", w[what].as_str().unwrap_or("?"))));
-        }
-    }
-    for a in p.waiting["approvals"].as_array().into_iter().flatten() {
-        out.push(item(Level::Attention, "tasks", format!("approval asked: {}", a["task"]["title"].as_str().unwrap_or("a task"))));
+    for w in &p.waiting {
+        out.push(item(Level::Attention, "tasks", format!("{} gave you a task to accept: {}", w["owner"].as_str().unwrap_or("someone"), w["title"].as_str().unwrap_or("?"))));
     }
     for pr in &p.projects {
         if matches!(pr["health"].as_str(), Some("at_risk" | "off_track")) {
@@ -235,7 +230,7 @@ fn tasks(i: &Inputs) -> Vec<Item> {
         }
     }
     if p.inbox_unread > 0 {
-        out.push(item(Level::Note, "tasks", format!("{} in your PMI inbox", plural(p.inbox_unread as usize, "unread item", "unread items"))));
+        out.push(item(Level::Note, "tasks", format!("{} on your tasks", plural(p.inbox_unread as usize, "new thing from others", "new things from others"))));
     }
     if out.is_empty() {
         out.push(item(Level::Ok, "tasks", format!("{} open, nothing due today", plural(p.tasks.len(), "task", "tasks"))));
@@ -630,28 +625,28 @@ mod tests {
     }
 
     #[test]
-    fn tasks_from_pmi_lead() {
+    fn tasks_lead() {
         let now = Utc::now();
         let today = now.with_timezone(&Local).date_naive();
-        let pmi = crate::pmi::State {
+        let tasks = crate::tasks::State {
             tasks: vec![
                 json!({ "title": "Renew the cert", "where": "personal", "due": (today - Duration::days(2)).to_string() }),
                 json!({ "title": "Order phones", "where": "project Phones", "due": today.to_string() }),
                 json!({ "title": "Someday", "where": "personal", "due": null }),
             ],
-            waiting: json!({ "task_transfers": [{ "task": "Budget review" }], "project_transfers": [], "approvals": [] }),
+            waiting: vec![json!({ "title": "Budget review", "owner": "Dana" })],
             projects: vec![json!({ "name": "Website", "health": "at_risk" }), json!({ "name": "Phones", "health": "on_track" })],
             inbox_unread: 2,
             ..Default::default()
         };
-        let b = gather(&Inputs { now, since: now - Duration::days(1), pmi: Some(pmi), ..Default::default() });
+        let b = gather(&Inputs { now, since: now - Duration::days(1), tasks: Some(tasks), ..Default::default() });
         assert_eq!(b.sections[0].name, "Tasks");
         let texts: Vec<&str> = b.sections[0].items.iter().map(|i| i.text.as_str()).collect();
         assert!(texts[0].starts_with("overdue since") && texts[0].ends_with("Renew the cert"), "{texts:?}");
-        assert!(texts.contains(&"a task is being handed to you: Budget review"));
+        assert!(texts.contains(&"Dana gave you a task to accept: Budget review"));
         assert!(texts.contains(&"due today: Order phones (project Phones)"));
         assert!(texts.contains(&"project Website is at risk"));
-        assert!(texts.contains(&"2 unread items in your PMI inbox"));
+        assert!(texts.contains(&"2 new things from others on your tasks"));
         assert_eq!(b.attention, 2);
     }
 

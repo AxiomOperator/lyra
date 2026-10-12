@@ -553,14 +553,14 @@ function Shell() {
 
   const day = new Date();
   const todayKey = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
-  const pmiWaiting = (status.pmi?.waiting.task_transfers?.length ?? 0) + (status.pmi?.waiting.project_transfers?.length ?? 0) + (status.pmi?.waiting.approvals?.length ?? 0);
+  const tasksWaiting = status.tasks?.waiting.length ?? 0;
   const more: TabItem[] = ([
     { id: "talk", label: "Talk", icon: AudioLines },
     { id: "today", label: "Today", icon: Sun },
     { id: "agents", label: "Agents", icon: Bot },
     { id: "proposals", label: "Proposals", icon: Lightbulb },
     { id: "health", label: "How lyra is doing", icon: TrendingUp },
-    { id: "tasks", label: "Tasks", icon: ListTodo, badge: (status.pmi?.tasks ?? []).filter((t) => t.due && t.due < todayKey).length + pmiWaiting },
+    { id: "tasks", label: "Tasks", icon: ListTodo, badge: (status.tasks?.tasks ?? []).filter((t) => t.due && t.due < todayKey).length + tasksWaiting },
     { id: "meetings", label: "Meetings", icon: CalendarDays },
     { id: "notes", label: "Notes", icon: NotebookPen },
     { id: "whatsnew", label: "What's new", icon: Sparkles },

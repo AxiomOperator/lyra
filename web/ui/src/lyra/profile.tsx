@@ -1,5 +1,5 @@
 // Your profile: who you are and how lyra reaches you, in a few tabs —
-// account (password, devices), connections (Outlook, PMI), email from lyra,
+// account (password, devices), connections (Outlook), email from lyra,
 // this device's notifications, and privacy (what lyra knows about you).
 
 import { Badge } from "@/components/ui/badge";

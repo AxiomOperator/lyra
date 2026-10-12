@@ -679,8 +679,8 @@ impl Caps {
         caps.extend(crate::mailout::capabilities());
         // lyra's own release history ("when did X come in?").
         caps.extend(crate::changelog::capabilities());
-        // "Tell me when …" (mail, PMI, Teams, and web pages and searches).
-        if crate::graph::available() || crate::pmi::anyone() || crate::websearch::configured().enabled {
+        // "Tell me when …" (mail, tasks, Teams, and web pages and searches).
+        if crate::graph::available() || crate::tasks::settings().enabled || crate::websearch::configured().enabled {
             caps.extend(crate::watches::capabilities());
         }
         // Folders lent by people's open pages (only through lyra serve).
@@ -698,8 +698,9 @@ impl Caps {
         if crate::sandbox::ready(self.remote.get().map(|r| r.as_ref())) {
             caps.extend(crate::sandbox::capabilities());
         }
-        if crate::pmi::anyone() {
-            caps.extend(crate::pmi::capabilities());
+        // lyra's own tasks, reminders and projects (everyone's, members' too).
+        if crate::tasks::settings().enabled {
+            caps.extend(crate::tasks::tools::capabilities());
         }
         if crate::graph::available() {
             caps.extend(crate::calendar::capabilities());
@@ -790,8 +791,13 @@ impl Caps {
 
     /// Whether this call needs the user's approval first, and for what: the
     /// policy's approval rule, or a system call that changes things.
+    /// A capability by name; the old `pmi_*` names give their tasks tools.
+    fn cap(&self, name: &str) -> Option<Capability> {
+        self.manager.get(name).or_else(|| crate::tasks::tools::alias(name).and_then(|a| self.manager.get(a)))
+    }
+
     pub fn approval(&self, name: &str, arguments: &str) -> Option<Ask> {
-        let c = self.manager.get(name)?;
+        let c = self.cap(name)?;
         let args: Value = serde_json::from_str(if arguments.trim().is_empty() { "{}" } else { arguments }).unwrap_or(json!({}));
         if c.name == "fleet_run" {
             return self.fleet_approval(&args);
@@ -799,8 +805,8 @@ impl Caps {
         if c.source == "coding" {
             return Some(crate::coding::approval(&args));
         }
-        if c.source == "pmi" {
-            return crate::pmi::approval(&c.name, &args);
+        if c.source == "tasks" {
+            return crate::tasks::tools::approval(&c.name, &args);
         }
         if c.source == "calendar" {
             return crate::calendar::approval(&c.name, &args);
@@ -919,7 +925,7 @@ impl Caps {
     /// What only the user knows (`fill`) is asked for in a small form; the rest
     /// goes back to the model, which should ask rather than guess.
     pub fn problem(&self, name: &str, arguments: &str) -> Option<Problem> {
-        let c = self.manager.get(name)?;
+        let c = self.cap(name)?;
         let plain = |text: String| Some(Problem { text, fill: Vec::new() });
         let args: Value = if arguments.trim().is_empty() {
             json!({})
@@ -984,7 +990,7 @@ impl Caps {
     /// `approved` means a person approved this call (a plan step's approval).
     /// `verify` is off when the caller verifies itself (the plan engine).
     pub fn invoke(&self, name: &str, arguments: &str, ctx: CallContext, approved: bool, verify: bool) -> String {
-        let Some(c) = self.manager.get(name) else {
+        let Some(c) = self.cap(name) else {
             return json!({ "error": format!("unknown tool {name}") }).to_string();
         };
         if !c.kind.callable() {
@@ -1062,11 +1068,10 @@ impl Caps {
                     Ok(crate::coding::run(self, &args, &std::sync::atomic::AtomicBool::new(false), &|_| {}, None))
                 }
             }
-            // PMI: what others would see waits for the user's yes (asked in an agent's delegation).
-            _ if c.source == "pmi" => match crate::pmi::approval(&c.name, &args) {
-                Some(ask) if !approved && ctx.agent.is_none() => Err(format!("{} changes something others see ({}): delegate it to the Project Manager, which asks the user", c.name, ask.what)),
-                Some(_) if !approved => Err("needs the user's approval".into()),
-                _ => crate::pmi::call(&c.name, &args),
+            // Tasks: what others would see waits for the user's Allow.
+            _ if c.source == "tasks" => match crate::tasks::tools::approval(&c.name, &args) {
+                Some(ask) if !approved => Err(format!("{} needs the user's approval ({})", c.name, ask.what)),
+                _ => crate::tasks::tools::call(&c.name, &args),
             },
             // The calendar of whoever this turn is for; what others see needs their yes.
             _ if c.source == "calendar" => match crate::calendar::approval(&c.name, &args) {
@@ -1250,12 +1255,12 @@ impl Caps {
 
     /// A capability's risk level, by name.
     pub fn risk_level(&self, name: &str) -> Option<RiskLevel> {
-        self.manager.get(name).map(|c| c.risk)
+        self.cap(name).map(|c| c.risk)
     }
 
     /// The planner's risk for a tool, by name.
     pub fn risk_of(&self, name: &str) -> Risk {
-        self.manager.get(name).map_or_else(|| crate::plan::risk(name), |c| plan_risk(c.risk))
+        self.cap(name).map_or_else(|| crate::plan::risk(name), |c| plan_risk(c.risk))
     }
 
     /// Every callable capability for the planner (argument filling, validation).

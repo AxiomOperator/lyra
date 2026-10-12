@@ -344,7 +344,7 @@ export function StarterSuggestions({ admin }: { admin: boolean }) {
     "Plan my day",
     "What's on my calendar today?",
     "Anything in my inbox that needs me?",
-    ...(status.pmi ? ["What are my tasks due this week?"] : []),
+    ...(status.tasks?.tasks.length ? ["What are my tasks due this week?"] : []),
     "Show my notes and lists",
     "What do you remember about me?",
     ...(admin ? ["How are my machines doing?"] : []),

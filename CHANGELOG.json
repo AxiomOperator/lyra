@@ -1,5 +1,25 @@
 [
   {
+    "version": "0.87.0.247",
+    "date": "2026-10-12",
+    "title": "Tasks live in lyra",
+    "new": [
+      "lyra keeps your tasks itself, for everyone who uses it: no PMI account needed. Add them on the Tasks page or just say \"remind me Friday at 3 to call the vendor\". Tasks can have notes, a checklist, a priority, a project and a repeat (daily, weekdays, weekly, every two weeks, monthly, yearly).",
+      "Give a task to someone: they get a push with Accept and Decline, and it waits on their Tasks page. Accepted, it's on their list and under Given to others on yours; declined, it comes back to you. Comments and a history show on each task.",
+      "Projects: make one, add people, and its members see its tasks. Each project has a health (on track, at risk, off track) and status updates, with a draft made from its tasks.",
+      "Reminders come from lyra: a push at the time you set, with Done, In 1 hour and Tomorrow, and again while the task is still open (outside your quiet time). Each person's reminder is their own, on any task they can see.",
+      "/tasks, /task (add, done, snooze, accept, decline, give, reopen, delete) and /project in the chat and the terminal."
+    ],
+    "improved": [
+      "The briefing, plan my day, meeting prep, mail triage (a mail that asks something becomes a task), the recap, \"who is …\" and \"tell me when this task changes\" all use your lyra tasks.",
+      "The Project Manager agent works with lyra's tasks, and anything others would see waits for your Allow.",
+      "The TUI's Goals panel and lyra connect show a Tasks line; the Status page has a Tasks row."
+    ],
+    "fixed": [
+      "PMI is gone: its connection, page and tokens are removed (nothing was brought over), and those who used it are told their tasks live in lyra now. Old habits still work: the PMI tool names are the new task tools."
+    ]
+  },
+  {
     "version": "0.86.0.246",
     "date": "2026-10-12",
     "title": "lyra's own tasks: the plan settled",

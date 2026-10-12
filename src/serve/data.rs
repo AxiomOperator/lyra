@@ -126,7 +126,8 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
         "notes" => crate::acting::run(&app.owner, crate::notes::page),
         "mail" => mail_page(&app.owner),
         "calendar" => calendar_page(&app.owner),
-        "pmi" => pmi_page(&app.owner),
+        // Their tasks and projects (their own clicks: they act at once).
+        w if TASK_PAGES.contains(&w) => crate::tasks::as_user(&app.owner, || tasks_page(w, arg)).unwrap_or_else(|e| json!({ "error": e })),
         "coding" => json!(crate::coding::jobs()),
         // The people who use lyra (admins: the gate is in the loop).
         "users" => {
@@ -449,7 +450,6 @@ pub(crate) fn slow(app: &App, what: &str, arg: &Value, loaded: &Loaded) -> Optio
             Box::new(move || crate::acting::run(&owner, || crate::meetings::draft_mail(&id)).map_or_else(|e| json!({ "error": e }), |d| json!({ "draft": d })))
         }
         "calendar" => Box::new(move || calendar_page(&owner)),
-        "pmi" => Box::new(move || pmi_page(&owner)),
         _ => return None,
     })
 }
@@ -550,9 +550,106 @@ fn calendar_page(owner: &str) -> Value {
     }
 }
 
-/// Their PMI: tasks, projects, what waits.
-fn pmi_page(owner: &str) -> Value {
-    crate::pmi::as_user(owner, crate::pmi::snapshot).map_or_else(|e| json!({ "error": e }), |s| json!(s))
+/// The Tasks page's requests.
+const TASK_PAGES: &[&str] = &["tasks", "task", "task_save", "task_done", "task_reopen", "task_delete", "task_answer", "task_comment", "task_remind", "task_assign", "projects", "project", "project_save", "project_update", "project_draft", "project_delete"];
+
+/// The Tasks page: the person's tasks and projects, and what they change on
+/// it (their own clicks, so nothing waits for an Allow).
+fn tasks_page(what: &str, arg: &Value) -> Result<Value, String> {
+    use crate::tasks::*;
+    let s = |k: &str| arg[k].as_str().unwrap_or("").to_string();
+    let opt = |k: &str| arg[k].as_str().map(str::to_string);
+    let strings = |k: &str| arg[k].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>();
+    let id = s("id");
+    Ok(match what {
+        "tasks" => {
+            let mut v = json!(snapshot()?);
+            // Who a task can be given to (everyone else who uses lyra).
+            let me = crate::acting::current();
+            v["people"] = json!(crate::config::home().map(|h| lyra_web::Users::open(&h.join("web")).list()).unwrap_or_default().into_iter().filter(|u| u.id != me && u.status == lyra_web::Status::Active).map(|u| json!({ "id": u.id, "name": u.name })).collect::<Vec<_>>());
+            v["done"] = json!(done_since(chrono::Utc::now() - chrono::Duration::days(14))?.iter().map(brief).collect::<Vec<_>>());
+            v
+        }
+        "task" => full(&get(&id)?),
+        "task_save" => {
+            let items: Option<Vec<Item>> = arg.get("checklist").map(|c| serde_json::from_value(c.clone()).unwrap_or_default());
+            let t = if id.is_empty() {
+                add(New {
+                    title: s("title"),
+                    notes: s("notes"),
+                    due: s("due"),
+                    remind: s("remind"),
+                    priority: s("priority"),
+                    repeat: s("repeat"),
+                    project: s("project"),
+                    assignees: strings("assignees"),
+                    checklist: items.unwrap_or_default().into_iter().map(|i| i.text).collect(),
+                    source: "page".into(),
+                    ..Default::default()
+                })?
+            } else {
+                let t = update(&id, Change { title: opt("title"), notes: opt("notes"), due: opt("due"), priority: opt("priority"), status: opt("status"), repeat: opt("repeat"), project: opt("project"), checklist: items })?;
+                if let Some(r) = arg.get("remind").filter(|r| !r.is_null()) {
+                    let r = r.as_str().unwrap_or("");
+                    remind(&t.id, (!r.trim().is_empty()).then_some(r))?;
+                }
+                t
+            };
+            json!({ "ok": true, "task": full(&t) })
+        }
+        "task_done" => {
+            let (t, next) = complete(&id, &s("note"))?;
+            json!({ "ok": true, "text": format!("done: {}{}", t.title, next.and_then(|n| n.due).map(|d| format!(" · next on {d}")).unwrap_or_default()) })
+        }
+        "task_reopen" => json!({ "ok": true, "text": format!("open again: {}", reopen(&id)?.title) }),
+        "task_delete" => json!({ "ok": true, "text": format!("deleted: {}", delete(&id)?.title) }),
+        "task_answer" => {
+            let accept = arg["accept"] == true;
+            let t = answer(&id, accept, &s("note"))?;
+            json!({ "ok": true, "text": format!("{}: {}", if accept { "accepted" } else { "declined" }, t.title) })
+        }
+        "task_comment" => {
+            comment(&id, &s("text"))?;
+            json!({ "ok": true, "task": full(&get(&id)?) })
+        }
+        "task_remind" => {
+            let w = s("when");
+            let (t, at) = remind(&id, (!w.trim().is_empty()).then_some(w.as_str()))?;
+            json!({ "ok": true, "text": match at { Some(a) => format!("reminder: {} · {}", t.title, a.format("%a %b %-d %H:%M")), None => format!("no reminder on {}", t.title) } })
+        }
+        "task_assign" => {
+            let (t, who) = assign(&id, &s("person"), arg["remove"] == true)?;
+            json!({ "ok": true, "text": if arg["remove"] == true { format!("taken back from {who}") } else { format!("{who} was asked to accept it") }, "task": full(&t) })
+        }
+        "projects" => json!(projects()?.iter().map(project_brief).collect::<Vec<_>>()),
+        "project" => {
+            let p = project(&id)?;
+            let mut v = project_brief(&p);
+            v["open_tasks"] = json!(list(&Scope::Project(p.id.clone()), "any", false)?.iter().map(brief).collect::<Vec<_>>());
+            v["updates"] = json!(updates(&p.id, 10).iter().map(|u| json!({ "at": u.at, "by": name_of(&u.by), "health": u.health, "text": u.text })).collect::<Vec<_>>());
+            v
+        }
+        "project_save" => {
+            let p = if id.is_empty() {
+                add_project(&s("name"), &s("description"), &strings("members"), &s("due"))?
+            } else {
+                // The members as listed on the page: who's added, who's taken off.
+                let now = project(&id)?;
+                let wanted: Vec<String> = strings("members").iter().filter_map(|m| person(m).ok()).collect();
+                let add_members = wanted.iter().filter(|u| !now.member(u)).cloned().collect();
+                let remove_members = if arg.get("members").is_some() { now.members.iter().filter(|(u, _)| *u != now.owner && !wanted.contains(u)).map(|(u, _)| u.clone()).collect() } else { vec![] };
+                update_project(&id, ProjectChange { name: opt("name"), description: opt("description"), status: opt("status"), health: opt("health"), due: opt("due"), add_members, remove_members })?
+            };
+            json!({ "ok": true, "project": project_brief(&p) })
+        }
+        "project_update" => {
+            let u = post_update(&id, &s("health"), &s("text"))?;
+            json!({ "ok": true, "text": format!("posted ({})", u.health.replace('_', " ")) })
+        }
+        "project_draft" => draft_update(&id)?,
+        "project_delete" => json!({ "ok": true, "text": format!("deleted project {}", delete_project(&id)?.name) }),
+        _ => return Err(format!("unknown {what}")),
+    })
 }
 
 /// What lyra keeps about the person this conversation is for: memories, how
@@ -563,7 +660,6 @@ fn about_me(app: &App, hub: &Hub, export: bool) -> Value {
     let u = hub.users().get(&user);
     let mine = app.personal().map(|u| format!("user:{u}"));
     let memories = app.mem().map_or(Value::Null, |m| m.page("", "", "", mine.as_deref()).map_or(Value::Null, |p| p["memories"].clone()));
-    let pmi = crate::pmi::configured_for(&user);
     let microsoft = crate::graph::connected_for(&user);
     let mut theirs: Vec<_> = hub.devices().list().into_iter().filter(|d| d.user.as_deref().unwrap_or(lyra_web::users::OWNER) == user && d.kind == "device").collect();
     theirs.sort_by_key(|d| std::cmp::Reverse(d.last_seen));
@@ -575,7 +671,6 @@ fn about_me(app: &App, hub: &Hub, export: bool) -> Value {
         "style": crate::style::read(&user),
         "accounts": {
             "microsoft": { "connected": microsoft, "what": microsoft.then(|| crate::graph::granted_text(&user)), "granted": microsoft.then(|| crate::graph::granted(&user)) },
-            "pmi": { "connected": pmi },
         },
         "devices": devices,
         "actions": crate::actions::recent(&user, 100).iter().map(crate::actions::view).collect::<Vec<_>>(),

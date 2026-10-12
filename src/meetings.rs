@@ -2,7 +2,7 @@
 //! was transcribed and the person may read it: OnlineMeetings.Read and
 //! OnlineMeetingTranscript.Read.All, `[web.entra] meetings = true`), who was
 //! there, and what to do with it. The chat model writes the summary and action
-//! items; making the person's own PMI tasks and drafting the follow-up mail
+//! items; making the person's own tasks and drafting the follow-up mail
 //! go through the usual tools (sending still waits for their yes).
 
 use chrono::{DateTime, Duration, Local, Utc};
@@ -92,7 +92,7 @@ pub fn capabilities() -> Vec<Capability> {
     let mut c = Capability::new(
         "meeting_followup",
         CapabilityKind::NativeTool,
-        "After a Teams meeting: its transcript, who was there and the organizer, to write the follow-up: a short summary, decisions, and action items with owners. Then offer the user's own items as PMI tasks (pmi_add_task) and a follow-up mail to the attendees (mail_draft; sending waits for their yes).",
+        "After a Teams meeting: its transcript, who was there and the organizer, to write the follow-up: a short summary, decisions, and action items with owners. Then offer the user's own items as tasks (task_add) and a follow-up mail to the attendees (mail_draft; sending waits for their yes).",
         RiskLevel::ReadOnly,
     );
     c.input_schema = json!({ "type": "object", "properties": { "meeting": { "type": "string", "description": "Words of the meeting's title, or empty for the latest one that ended (the last week)." } }, "required": [] });

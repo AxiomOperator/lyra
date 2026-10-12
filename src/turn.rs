@@ -145,8 +145,8 @@ impl App {
         crate::acting::spawn(move || {
             // A reply someone's waiting for: lyra's background work waits for it.
             let _replying = crate::acting::Replying::start();
-            // This turn works in its person's PMI account; its calls count for this conversation.
-            pmi::set_user(&owner);
+            // This turn works for its person (their tasks, mail, calendar); its calls count for this conversation.
+            crate::acting::set(&owner);
             usage::set_job(Some(job.clone()));
             let mut history = history;
             // Nearing the model's context: the oldest turns become one note.

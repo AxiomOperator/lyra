@@ -130,7 +130,7 @@ export interface Status {
   /** Problems researched by themselves (read-only), newest first. */
   diagnoses?: Diagnosis[] | null;
   briefing?: Briefing | null;
-  pmi?: PmiState | null;
+  tasks?: TasksState | null;
   users_waiting?: number;
   /** Everything lyra depends on, checked every minute. */
   status?: StatusBoard | null;
@@ -405,56 +405,72 @@ export interface Briefing {
   sections: { name: string; items: BriefingItem[] }[];
 }
 
-/** PMI, the project-management app: a task as lyra shows it. */
-export interface PmiTask {
+/** One of lyra's own tasks, as lists show it. */
+export interface TaskBrief {
   id: string;
   title: string;
-  status: "todo" | "in_progress" | "done";
-  /** "personal", "project Website", "team IT". */
+  status: "open" | "in_progress" | "done" | "cancelled";
+  /** "personal", "project Website", or "Dana's". */
   where: string;
   due: string | null;
-  priority: "low" | "medium" | "high" | "urgent";
-  assignees?: string[];
-  blocked?: boolean;
-  approval?: string;
+  priority: "low" | "normal" | "high" | "urgent";
+  /** Whose it is, when it isn't yours. */
+  owner?: string;
+  assignees?: { name: string; state: "pending" | "accepted" | "declined" }[];
+  waiting_for_you?: boolean;
   checklist?: string;
   repeat?: string;
+  subtask_of?: string;
+  completed?: string;
 }
 
-export interface PmiProject {
+/** A task in full (the editor). */
+export interface TaskFull extends TaskBrief {
+  notes: string;
+  items: { done: boolean; text: string }[];
+  created: string;
+  project_id: string | null;
+  mine: boolean;
+  reminder: string | null;
+  history: { at: string; by: string; kind: string; text: string }[];
+}
+
+export interface ProjectBrief {
   id: string;
   name: string;
-  status: string;
-  health: "on_track" | "at_risk" | "off_track" | "no_tasks";
-  reported_health: string | null;
-  tasks: { total: number; done: number; open: number; overdue: number; dueSoon: number };
-  risks: { open: number; high: number };
-  last_update: string | null;
-  leads: string[];
+  description: string;
+  status: "active" | "on_hold" | "done";
+  health: "on_track" | "at_risk" | "off_track";
+  due: string | null;
+  owner: string;
+  /** You lead it (change members, delete it). */
+  mine: boolean;
+  members: { id: string; name: string; role: "owner" | "member" }[];
+  tasks: { open: number; done: number; overdue: number; total: number };
+  last_update: { at: string; by: string; health: string; text: string } | null;
 }
 
-export interface PmiInboxItem {
+export interface TaskInboxItem {
   id: string;
-  reason: string;
   at: string;
-  read: boolean;
-  task?: { id: string; title: string; where: string };
-  what?: string;
-  by?: string;
-  points?: string;
+  by: string;
+  what: string;
+  text: string;
+  unread: boolean;
+  task?: { id: string; title: string } | null;
 }
 
-export interface PmiState {
+/** Your tasks at a glance (sent live by lyra serve). */
+export interface TasksState {
   at: string | null;
   error: string | null;
-  live: boolean;
   user: string;
-  org: string;
-  tasks: PmiTask[];
-  waiting: { task_transfers?: { id: string; task: string; expires: string }[]; project_transfers?: { id: string; project: string; expires: string }[]; approvals?: PmiInboxItem[] };
+  tasks: TaskBrief[];
+  waiting: TaskBrief[];
+  given: TaskBrief[];
+  projects: ProjectBrief[];
+  inbox: TaskInboxItem[];
   inbox_unread: number;
-  inbox: PmiInboxItem[];
-  projects: PmiProject[];
 }
 
 /** Who this device's user is. */

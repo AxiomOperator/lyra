@@ -1,5 +1,5 @@
 //! Plan my day (`[planner]`): private focus blocks on a person's own Outlook
-//! calendar for their PMI tasks due soon, fitted around meetings within the
+//! calendar for their tasks due soon, fitted around meetings within the
 //! working day (lunch kept free), and moved or removed when the day changes.
 //! lyra does this by itself (the blocks are only theirs) and says what it did.
 //! The planning is a pure function (`plan`); `run` reads and writes Outlook.
@@ -251,7 +251,9 @@ pub fn plan(s: &Settings, date: NaiveDate, now: DateTime<Utc>, meetings: &[(Date
 
 // ---- Outlook
 
-const MARK: &str = "lyra focus block · PMI task ";
+const MARK: &str = "lyra focus block · task ";
+/// The mark blocks made for PMI tasks had (still recognized, so they're tidied away).
+const OLD_MARK: &str = "lyra focus block · PMI task ";
 
 /// lyra's own blocks among a day's events.
 fn blocks_in(events: &[Value]) -> Vec<Block> {
@@ -259,7 +261,8 @@ fn blocks_in(events: &[Value]) -> Vec<Block> {
         .iter()
         .filter(|e| e["categories"].as_array().is_some_and(|c| c.iter().any(|x| x == "lyra")))
         .filter_map(|e| {
-            let task = e["bodyPreview"].as_str()?.split(MARK).nth(1)?.split_whitespace().next()?.to_string();
+            let body = e["bodyPreview"].as_str()?;
+            let task = body.split(MARK).nth(1).or_else(|| body.split(OLD_MARK).nth(1))?.split_whitespace().next()?.to_string();
             Some(Block {
                 event: e["id"].as_str().map(str::to_string),
                 task,
@@ -280,6 +283,11 @@ fn meetings_in(events: &[Value]) -> Vec<(DateTime<Utc>, DateTime<Utc>)> {
         .collect()
 }
 
+/// Their tasks due within the week (overdue too).
+fn due_this_week() -> Result<Vec<Task>, String> {
+    Ok(tasks_from(&crate::tasks::tools::call("task_list", &json!({ "due": "week" }))?))
+}
+
 fn tasks_from(v: &Value) -> Vec<Task> {
     v["tasks"]
         .as_array()
@@ -290,7 +298,11 @@ fn tasks_from(v: &Value) -> Vec<Task> {
             id: t["id"].as_str().unwrap_or("").to_string(),
             title: t["title"].as_str().unwrap_or("").to_string(),
             due: t["due"].as_str().and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()),
-            priority: t["priority"].as_str().unwrap_or("medium").to_string(),
+            // lyra's "normal" is the planner's "medium".
+            priority: match t["priority"].as_str().unwrap_or("medium") {
+                "normal" => "medium".to_string(),
+                p => p.to_string(),
+            },
         })
         .collect()
 }
@@ -304,7 +316,7 @@ fn local_hm(t: DateTime<Utc>) -> String {
 pub fn run() -> Result<Vec<String>, String> {
     let s = settings();
     let user = crate::acting::current();
-    if !s.enabled || !crate::graph::connected_for(&user) || !crate::pmi::configured_for(&user) {
+    if !s.enabled || !crate::graph::connected_for(&user) {
         return Ok(vec![]);
     }
     let now = Local::now();
@@ -314,7 +326,7 @@ pub fn run() -> Result<Vec<String>, String> {
     }
     let Some((day, _)) = s.hours(date) else { return Ok(vec![]) };
     let events = crate::calendar::events(day.0, day.1)?;
-    let tasks = tasks_from(&crate::pmi::call("pmi_tasks", &json!({ "due": "week" }))?);
+    let tasks = due_this_week()?;
     let changes = plan(&s, date, now.with_timezone(&Utc), &meetings_in(&events), &tasks, &blocks_in(&events));
     let mut said = Vec::new();
     let why = || crate::actions::Why { source: "plan my day".into(), detail: "your tasks due this week and the free time in your working day (Settings → Working hours)".into(), skills: vec![] };
@@ -359,7 +371,7 @@ pub fn today() -> Result<Value, String> {
     let (day, lunch) = s.hours(date).ok_or("no such day")?;
     let events = if crate::graph::connected_for(&user) { crate::calendar::events(day.0 - Duration::hours(3), day.1 + Duration::hours(6)).unwrap_or_default() } else { vec![] };
     let blocks: Vec<Value> = blocks_in(&events).iter().map(|b| json!({ "title": b.title, "start": local_hm(b.start), "end": local_hm(b.end), "task": b.task })).collect();
-    let tasks = if crate::pmi::configured_for(&user) { crate::pmi::call("pmi_tasks", &json!({ "due": "week" })).map(|v| tasks_from(&v)).unwrap_or_default() } else { vec![] };
+    let tasks = due_this_week().unwrap_or_default();
     let mail = if crate::mail::connected_for(&user) { crate::mail::inbox(true, true, 3).map(|m| m.iter().map(|x| json!({ "from": x["from"]["emailAddress"]["name"], "subject": x["subject"] })).collect::<Vec<_>>()).unwrap_or_default() } else { vec![] };
     Ok(json!({
         "workday": s.workday(date),
@@ -373,8 +385,8 @@ pub fn today() -> Result<Value, String> {
 /// `/today [plan]`: the day; plan re-plans it now.
 pub fn command(arg: &str) -> Result<String, String> {
     let user = crate::acting::current();
-    if !crate::graph::connected_for(&user) || !crate::pmi::configured_for(&user) {
-        return Err("plan my day needs your Outlook calendar and PMI connected (More in the app; /pmi token)".into());
+    if !crate::graph::connected_for(&user) {
+        return Err("plan my day needs your Outlook calendar connected (More in the app)".into());
     }
     let mut out = Vec::new();
     if arg.trim() == "plan" {

@@ -39,19 +39,20 @@ pub const ROUTINE_NOTE: &str = "Work on the server (machine \"server\") unless t
     create it with routine_create (its prompt names the machines with @name or @all) instead of cron jobs or timers, \
     and don't run it now unless asked.";
 
-/// The Project Manager's tools: PMI, plus memory and lyra's goals.
+/// The Project Manager's tools: lyra's tasks and projects, plus memory and lyra's goals.
 pub const PM_TOOLS: &[&str] = &[
-    "pmi_tasks", "pmi_task", "pmi_search", "pmi_add_task", "pmi_update_task", "pmi_complete", "pmi_remind", "pmi_comment", "pmi_inbox",
-    "pmi_waiting", "pmi_projects", "pmi_project", "pmi_draft_update", "pmi_post_update", "pmi_add_risk",
-    "memory_recall", "memory_remember", "goal_list", "goal_get", "goal_note",
+    "task_list", "task_get", "task_search", "task_add", "task_update", "task_complete", "task_reopen", "task_remind", "task_comment",
+    "task_assign", "task_answer", "task_waiting", "task_inbox", "task_projects", "task_project", "task_project_add", "task_project_update",
+    "task_draft_update", "task_post_update", "memory_recall", "memory_remember", "goal_list", "goal_get", "goal_note",
 ];
 
-/// How the Project Manager works with PMI.
-pub const PM_NOTE: &str = "Projects and tasks live in PMI, the user's project-management app: use the pmi_ tools, never \
-    invent tasks or projects. Look things up (pmi_projects, pmi_project, pmi_tasks) before answering about them. Anything \
-    others can see (a task in a project or team, a comment, a status update, a risk) is asked of the user first: say \
-    exactly what you'll add or change. For a status update, draft it with pmi_draft_update, adjust it with what you know, \
-    then post it. Call out risks, overdue work and blockers plainly.";
+/// How the Project Manager works with lyra's tasks.
+pub const PM_NOTE: &str = "Tasks and projects live in lyra itself: use the task_ tools, never invent tasks or projects. \
+    Look things up (task_projects, task_project, task_list) before answering about them. Anything others can see (a \
+    task in a project with other members, giving a task to someone, a comment, a status update) waits for the user's \
+    Allow: say exactly what you'll add or change. A task given to someone waits for them to accept it. For a status \
+    update, draft it with task_draft_update, adjust it with what you know, then post it. Call out overdue work and \
+    blockers plainly.";
 
 pub fn template(name: &str) -> Option<AgentProfile> {
     let t = |title: &str, description: &str| {
@@ -248,13 +249,13 @@ pub fn template(name: &str) -> Option<AgentProfile> {
             p
         }
         "project-manager" => {
-            let mut p = t("Project Manager", "Works in PMI, the user's project-management app: tasks, reminders, projects, status updates and risks; turns goals into tasks and tracks progress.");
+            let mut p = t("Project Manager", "Works in lyra's tasks and projects: tasks, reminders, giving tasks to people, project status updates; turns goals into tasks and tracks progress.");
             p.role = "Project manager.".into();
             p.instructions = PM_NOTE.into();
             p.delegation = DelegationProfile {
                 auto_delegate: true,
                 intents: strs(&["plan_project", "track_tasks", "status_report", "project_update", "add_project_task"]),
-                keywords: strs(&["project", "milestone", "status update", "roadmap", "deadline", "pmi", "portfolio", "risk", "team task", "assign"]),
+                keywords: strs(&["project", "milestone", "status update", "roadmap", "deadline", "portfolio", "team task", "assign", "give a task"]),
                 examples: strs(&[
                     "Give me a status update on the project",
                     "Post a status update on the Website project",

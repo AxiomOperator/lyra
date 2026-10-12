@@ -57,11 +57,11 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let mut brief_left = 0usize;
     let mut last_brief_check = Instant::now() - Duration::from_secs(60);
     // PMI: its live events (a thread), and the view read after each change.
-    let (pmi_events_tx, pmi_events) = std::sync::mpsc::channel::<(String, crate::pmi::Event)>();
-    let (pmi_tx, pmi_rx) = std::sync::mpsc::channel::<(String, Result<crate::pmi::State, String>)>();
     // Each person with a PMI token: their live view, followed while lyra runs.
-    let mut pmi: std::collections::HashMap<String, PmiUser> = std::collections::HashMap::new();
-    let mut last_pmi_scan = Instant::now() - Duration::from_secs(120);
+    // Each person's tasks, as their devices show them (read again when tasks change).
+    let mut tasks: std::collections::HashMap<String, TaskUser> = std::collections::HashMap::new();
+    let mut tasks_seen = 0u64;
+    let mut last_tasks = Instant::now() - Duration::from_secs(120);
     // Each person's assistant work: nags, plan my day, proactive help, the
     // recap, "tell me when …", and telling what was done outside quiet time.
     let mut assistant = assistant::Assistant::new();
@@ -75,6 +75,20 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
     let (tidy_tx, tidy_rx) = std::sync::mpsc::channel::<Vec<String>>();
     // Routine runs done but not recorded yet (their check and email): a stop waits for them too.
     let mut finishing = 0usize;
+    // PMI is gone: those who used it hear where their tasks are now (once).
+    for user in crate::migrate::take_pmi_moved() {
+        hub.notify(Notification {
+            title: "📋 Your tasks live in lyra now".into(),
+            body: "PMI isn't used any more. Add what you still need on the Tasks page, or tell lyra (\"remind me friday to …\"); you can give tasks to people and keep projects there too.".into(),
+            tag: "tasks-moved".into(),
+            approval: None,
+            url: Some("/?page=tasks".into()),
+            actions: vec![],
+            reference: None,
+            to: To::User(user.clone()),
+        });
+        convs[0].app.log(Level::Plan, format!("told {user}: tasks live in lyra now (PMI is gone)"));
+    }
     for (user, name) in crate::routines::take_resume() {
         crate::routines::request_run_for(&user, &name);
         convs[0].app.log(Level::Plan, format!("routine {name}: running again (a restart cut it off)"));
@@ -181,8 +195,8 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     }
                     let tx = assistant.action_tx.clone();
                     crate::acting::spawn(move || {
-                        // In their own PMI account.
-                        let r = crate::pmi::as_user(&who.user, || crate::pmi::push_action(&action, &reference));
+                        // As them: their own answer.
+                        let r = crate::tasks::as_user(&who.user, || crate::tasks::remind::push_action(&action, &reference));
                         let _ = tx.send((who.user, action, reference, r));
                     });
                 }
@@ -283,7 +297,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     all["diagnoses"] = diag_view.clone();
                     c.mirror.machines = if c.app.admin { machines.clone() } else { Vec::new() };
                     c.mirror.extra = for_viewer(&all, &c.app);
-                    c.mirror.extra["pmi"] = pmi.get(&c.app.owner).map_or(Value::Null, |p| p.view.clone());
+                    c.mirror.extra["tasks"] = tasks.get(&c.app.owner).map_or(Value::Null, |p| p.view.clone());
                     c.mirror.extra["briefing"] = brief_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
                     c.mirror.extra["routines"] = routines_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
                     for u in c.mirror.updates(&mut c.app) {
@@ -339,10 +353,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         }
         // PMI, per person with a token: follow their live events (a thread each,
         // started as tokens appear), read again shortly after a change and every 5 minutes.
-        if pmi_tick(&mut pmi, &mut last_pmi_scan, &pmi_events_tx, &pmi_events, &pmi_tx, &pmi_rx, &mut convs, hub) {
+        if tasks_tick(&mut tasks, &mut tasks_seen, &mut last_tasks, hub) {
             everyone = true;
         }
-        everyone = assistant.tick(&mut convs, hub, &mut pmi, everyone);
+        everyone = assistant.tick(&mut convs, hub, &tasks, everyone);
         // The daily briefing: on schedule or asked for, gathered and written off the loop.
         // Asked for while a batch is still being made: kept for the next look.
         let wanted = if brief_left == 0 { crate::briefing::take_requests() } else { Vec::new() };
@@ -352,7 +366,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             let now = chrono::Local::now();
             let due = s.enabled && crate::briefing::next(&s.schedule, last_brief.as_ref().map(|b| b.at), now).is_some_and(|t| t <= now);
             if !wanted.is_empty() || due {
-                brief_left = start_briefings(&convs, hub, node_build.as_deref(), &server_health, &pmi, last_brief.as_ref(), &wanted, due, &s, &brief_tx);
+                brief_left = start_briefings(&convs, hub, node_build.as_deref(), &server_health, &tasks, last_brief.as_ref(), &wanted, due, &s, &brief_tx);
             }
         }
         while let Ok(ready) = ready_rx.try_recv() {
@@ -529,7 +543,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                 c.changed = false;
                 c.mirror.machines = if c.app.admin { machines.clone() } else { Vec::new() };
                 c.mirror.extra = for_viewer(&extra_now, &c.app);
-                c.mirror.extra["pmi"] = pmi.get(&c.app.owner).map_or(Value::Null, |p| p.view.clone());
+                c.mirror.extra["tasks"] = tasks.get(&c.app.owner).map_or(Value::Null, |p| p.view.clone());
                 c.mirror.extra["briefing"] = brief_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
                 c.mirror.extra["routines"] = routines_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
                 for u in c.mirror.updates(&mut c.app) {
@@ -593,102 +607,39 @@ fn status_board(convs: &mut [Conv], hub: &Hub, status_alerts: &mut crate::status
     status_view
 }
 
-/// PMI, per person with a token: follow their live events (a thread each,
-/// started as tokens appear), read again shortly after a change and every 5
-/// minutes. True when what devices show changed.
-#[allow(clippy::too_many_arguments)]
-fn pmi_tick(
-    pmi: &mut std::collections::HashMap<String, PmiUser>,
-    last_pmi_scan: &mut Instant,
-    pmi_events_tx: &std::sync::mpsc::Sender<(String, crate::pmi::Event)>,
-    pmi_events: &std::sync::mpsc::Receiver<(String, crate::pmi::Event)>,
-    pmi_tx: &std::sync::mpsc::Sender<(String, Result<crate::pmi::State, String>)>,
-    pmi_rx: &std::sync::mpsc::Receiver<(String, Result<crate::pmi::State, String>)>,
-    convs: &mut [Conv],
-    hub: &Hub,
-) -> bool {
+/// Each person's tasks for their devices: read again when tasks change (and
+/// every minute, as days turn and things fall due), and the pushes changes
+/// made (a task given to someone, an answer, a comment) sent. True when what
+/// devices show changed.
+fn tasks_tick(tasks: &mut std::collections::HashMap<String, TaskUser>, seen: &mut u64, last: &mut Instant, hub: &Hub) -> bool {
+    for n in crate::tasks::take_notices() {
+        hub.notify(Notification {
+            title: n.title,
+            body: n.body,
+            tag: n.tag,
+            approval: None,
+            url: Some("/?page=tasks".into()),
+            actions: n.actions,
+            reference: n.reference,
+            to: To::User(n.to),
+        });
+    }
+    let rev = crate::tasks::revision();
+    if rev == *seen && last.elapsed() < Duration::from_secs(60) {
+        return false;
+    }
+    *seen = rev;
+    *last = Instant::now();
     let mut everyone = false;
-    if last_pmi_scan.elapsed() >= Duration::from_secs(60) {
-        *last_pmi_scan = Instant::now();
-        let people: Vec<String> = hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active && !pmi.contains_key(&u.id) && crate::pmi::configured_for(&u.id)).map(|u| u.id).collect();
-        for user in people {
-            let tx = pmi_events_tx.clone();
-            let who = user.clone();
-            crate::acting::spawn(move || crate::pmi::follow(who, tx));
-            pmi.insert(user.clone(), PmiUser { due: Some(Instant::now()), last: Instant::now(), nags: crate::pmi::Nags::load_for(&user), ..Default::default() });
-        }
-    }
-    while let Ok((user, e)) = pmi_events.try_recv() {
-        let Some(p) = pmi.get_mut(&user) else { continue };
-        match e {
-            crate::pmi::Event::Live(live) => {
-                if live != p.state.live {
-                    p.state.live = live;
-                    if user == convs[0].app.owner {
-                        convs[0].app.log(Level::Info, if live { "PMI: following its live updates".to_string() } else { "PMI: can't follow its live updates, retrying".to_string() });
-                    }
-                    p.view = json!(p.state);
-                    everyone = true;
-                    // Back after an outage: what changed meanwhile.
-                    if live {
-                        p.due = Some(Instant::now());
-                    }
-                }
-                // Their token is gone: forget them until one is set again.
-                if !live && !crate::pmi::configured_for(&user) {
-                    pmi.remove(&user);
-                    everyone = true;
-                }
-            }
-            crate::pmi::Event::Changed(areas) => {
-                if areas.iter().any(|a| matches!(a.as_str(), "tasks" | "projects" | "resync" | "structure")) {
-                    let soon = Instant::now() + Duration::from_secs(5);
-                    p.due = Some(p.due.map_or(soon, |d| d.min(soon)));
-                }
-            }
-        }
-    }
-    for user in crate::pmi::take_stale() {
-        if let Some(p) = pmi.get_mut(&user) {
-            p.due = Some(Instant::now() + Duration::from_secs(2));
-        } else {
-            // A token was just set: start following them now.
-            *last_pmi_scan = Instant::now() - Duration::from_secs(120);
-        }
-    }
-    for (user, p) in pmi.iter_mut() {
-        if !p.busy && (p.due.is_some_and(|d| Instant::now() >= d) || p.last.elapsed() >= Duration::from_secs(300)) {
-            p.busy = true;
-            p.due = None;
-            p.last = Instant::now();
-            let (tx, user) = (pmi_tx.clone(), user.clone());
-            crate::acting::spawn(move || {
-                let r = crate::pmi::as_user(&user, crate::pmi::snapshot);
-                let _ = tx.send((user, r));
-            });
-        }
-    }
-    while let Ok((user, r)) = pmi_rx.try_recv() {
-        let Some(p) = pmi.get_mut(&user) else { continue };
-        p.busy = false;
-        let mine = user == convs[0].app.owner;
-        match r {
-            Ok(mut s) => {
-                s.live = p.state.live;
-                if mine && p.state.error.is_some() {
-                    convs[0].app.log(Level::Info, format!("PMI: back ({})", s.line(chrono::Local::now().date_naive())));
-                }
-                p.state = s;
-            }
-            Err(e) => {
-                if mine && p.state.error.as_deref() != Some(e.as_str()) {
-                    convs[0].app.log(Level::Error, format!("PMI: {e}"));
-                }
-                p.state.error = Some(e);
-            }
-        }
-        let view = json!(p.state);
-        if view != p.view {
+    let people: Vec<String> = hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id).chain([lyra_web::users::OWNER.to_string()]).collect();
+    for user in people {
+        let state = crate::tasks::as_user(&user, crate::tasks::snapshot).unwrap_or_else(|e| crate::tasks::State { error: Some(e), ..Default::default() });
+        // Its time changes every read: the rest says whether it's new.
+        let view = json!({ "tasks": state.tasks, "waiting": state.waiting, "given": state.given, "projects": state.projects, "inbox": state.inbox, "inbox_unread": state.inbox_unread, "error": state.error, "user": state.user, "at": state.at });
+        let p = tasks.entry(user).or_default();
+        let same = p.view.as_object().map(|v| v.iter().filter(|(k, _)| *k != "at").collect::<Vec<_>>()) == view.as_object().map(|v| v.iter().filter(|(k, _)| *k != "at").collect::<Vec<_>>());
+        p.state = state;
+        if !same {
             p.view = view;
             everyone = true;
         }
@@ -696,7 +647,7 @@ fn pmi_tick(
     everyone
 }
 
-/// The daily briefing, for those it's for (everyone with PMI or a calendar on
+/// The daily briefing, for those it's for (everyone with tasks or a calendar on
 /// schedule; only those who asked otherwise): what's at hand gathered here,
 /// their calendar, Teams and mail read and the takeaway written off the loop.
 /// How many are coming.
@@ -706,7 +657,7 @@ fn start_briefings(
     hub: &Hub,
     node_build: Option<&str>,
     server_health: &Value,
-    pmi: &std::collections::HashMap<String, PmiUser>,
+    tasks: &std::collections::HashMap<String, TaskUser>,
     last_brief: Option<&crate::briefing::Briefing>,
     wanted: &[String],
     due: bool,
@@ -718,10 +669,10 @@ fn start_briefings(
     let mut inputs = crate::briefing::local_inputs(convs[0].app.goals.as_deref(), at, since);
     inputs.machines = machines_detail(hub, node_build);
     inputs.server_health = (!server_health.is_null()).then(|| server_health.clone());
-    inputs.pmi = pmi.get(&convs[0].app.owner).filter(|p| p.state.at.is_some()).map(|p| p.state.clone());
+    inputs.tasks = tasks.get(&convs[0].app.owner).filter(|p| p.state.at.is_some()).map(|p| p.state.clone());
     let (url, model, tx) = (format!("{}/chat/completions", convs[0].app.base_url.trim_end_matches('/')), convs[0].app.model.clone(), brief_tx.clone());
     let owner = convs[0].app.owner.clone();
-    // On schedule: everyone with PMI or a calendar connected gets their own.
+    // On schedule: everyone with tasks or a calendar connected gets their own.
     // Asked for: only those who asked (whatever they have connected).
     let asked = |u: &String| wanted.iter().any(|w| w == u);
     let with_owner = due || asked(&owner);
@@ -731,14 +682,14 @@ fn start_briefings(
         .into_iter()
         .filter(|u| u.status == lyra_web::Status::Active && u.id != owner)
         .map(|u| u.id)
-        .filter(|u| if due { pmi.get(u).is_some_and(|p| p.state.at.is_some()) || crate::graph::connected_for(u) } else { asked(u) })
+        .filter(|u| if due { tasks.get(u).is_some_and(|p| !p.state.tasks.is_empty() || !p.state.waiting.is_empty()) || crate::graph::connected_for(u) } else { asked(u) })
         .map(|u| {
             let since = crate::briefing::window_start(crate::briefing::last_for(&u).map(|b| b.at), at);
             // Their tasks, routines and goals.
             let (goals, goal_events) = crate::goals::for_user(&u).map_or_else(Default::default, |g| (g.manager.all().unwrap_or_default(), g.manager.events(None, 300).unwrap_or_default()));
             let runs = crate::acting::run(&u, crate::routines::runs);
-            let pmi = pmi.get(&u).filter(|p| p.state.at.is_some()).map(|p| p.state.clone());
-            (u, crate::briefing::Inputs { now: at, since, pmi, runs, goals, goal_events, ..Default::default() })
+            let tasks = tasks.get(&u).filter(|p| p.state.at.is_some()).map(|p| p.state.clone());
+            (u, crate::briefing::Inputs { now: at, since, tasks, runs, goals, goal_events, ..Default::default() })
         })
         .collect();
     let batch: Vec<(String, crate::briefing::Inputs)> = with_owner.then_some((owner, inputs)).into_iter().chain(others).collect();

@@ -49,9 +49,9 @@ impl App {
             "/calendar" => Box::new(move || calendar::command(&arg, &owner)),
             "/mail" => Box::new(move || crate::acting::run(&owner, || mail::command(&arg))),
             "/today" => Box::new(move || crate::acting::run(&owner, || planner::command(&arg))),
-            "/pmi" => Box::new(move || pmi::as_user(&owner, || pmi::command(&arg))),
-            "/tasks" => Box::new(move || pmi::as_user(&owner, || pmi::tasks_text(&arg))),
-            "/task" => Box::new(move || pmi::as_user(&owner, || pmi::task_command(&arg))),
+            "/tasks" => Box::new(move || crate::tasks::as_user(&owner, || crate::tasks::tools::tasks_text(&arg))),
+            "/task" => Box::new(move || crate::tasks::as_user(&owner, || crate::tasks::tools::task_command(&arg))),
+            "/project" | "/projects" => Box::new(move || crate::tasks::as_user(&owner, || crate::tasks::tools::project_command(&arg))),
             // Which model, and which the server offers.
             "/model" if arg.trim().is_empty() => {
                 let (url, current) = (self.base_url.clone(), self.model.clone());
@@ -246,10 +246,10 @@ impl App {
                 let (url, model) = (format!("{}/chat/completions", self.base_url.trim_end_matches('/')), self.model.clone());
                 crate::acting::run(&self.owner.clone(), || style::command(arg, &url, &model))
             }
-            // In the person's own PMI account.
-            "/pmi" => pmi::as_user(&self.owner.clone(), || pmi::command(arg)),
-            "/tasks" => pmi::as_user(&self.owner.clone(), || pmi::tasks_text(arg)),
-            "/task" => pmi::as_user(&self.owner.clone(), || pmi::task_command(arg)),
+            // The person's own tasks.
+            "/tasks" => crate::tasks::as_user(&self.owner.clone(), || crate::tasks::tools::tasks_text(arg)),
+            "/task" => crate::tasks::as_user(&self.owner.clone(), || crate::tasks::tools::task_command(arg)),
+            "/project" | "/projects" => crate::tasks::as_user(&self.owner.clone(), || crate::tasks::tools::project_command(arg)),
             _ => Err(format!("unknown command {name} — try /help")),
         }
     }
@@ -326,7 +326,7 @@ impl App {
 /// Commands the app's pages and buttons may run (each still checked by role).
 pub(crate) const PAGE_COMMANDS: &[&str] = &[
     "/memory", "/approve", "/reject", "/deprecate", "/goal", "/goals", "/model", "/backup", "/routine", "/routines", "/status", "/diagnose", "/coding",
-    "/briefing", "/tasks", "/task", "/pmi", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami", "/usage", "/sessions", "/plan", "/recap", "/watches", "/feedback", "/settings", "/agent", "/sandbox", "/evolve",
+    "/briefing", "/tasks", "/task", "/project", "/projects", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami", "/usage", "/sessions", "/plan", "/recap", "/watches", "/feedback", "/settings", "/agent", "/sandbox", "/evolve",
 ];
 
 /// Commands a member (not an admin) may use. Their own memories, goals,
@@ -337,8 +337,8 @@ pub(crate) fn member_may(name: &str, arg: &str) -> bool {
         "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" | "/feedback" | "/templates" | "/chat-only" | "/effort" | "/steps" | "/retry" | "/edit" | "/email" => true,
         // Their own skills (the commands check whose each one is).
         "/approve" | "/reject" | "/deprecate" => true,
-        // Their own PMI account, routines and goals.
-        "/pmi" | "/tasks" | "/task" | "/routine" | "/routines" | "/calendar" | "/mail" | "/today" | "/style" | "/notes" | "/note" | "/list" => true,
+        // Their own tasks and projects, routines and goals.
+        "/tasks" | "/task" | "/project" | "/projects" | "/routine" | "/routines" | "/calendar" | "/mail" | "/today" | "/style" | "/notes" | "/note" | "/list" => true,
         // Their own briefing (made from their own accounts; nobody else's is touched).
         "/briefing" => true,
         // Looking after their own memories (held to their scope there).

@@ -1,5 +1,5 @@
-//! Each person's assistant work, off a turn: reminders (nags) for PMI
-//! tasks, plan my day, proactive help (meeting prep, mail triage), the
+//! Each person's assistant work, off a turn: their task reminders (pushed
+//! again while open), plan my day, proactive help (meeting prep, mail triage), the
 //! end-of-day recap, "tell me when …" watches, and what the planner did, told
 //! once they're out of quiet time. Its own state, its own tick.
 
@@ -72,39 +72,30 @@ impl Assistant {
 
     /// One look at it all; `everyone` (devices are being told anyway) comes
     /// back true when what they show changed.
-    pub(crate) fn tick(&mut self, convs: &mut [Conv], hub: &Hub, pmi: &mut std::collections::HashMap<String, PmiUser>, everyone: bool) -> bool {
+    pub(crate) fn tick(&mut self, convs: &mut [Conv], hub: &Hub, tasks: &std::collections::HashMap<String, TaskUser>, everyone: bool) -> bool {
         let mut everyone = everyone;
-        // Nags: each person's, checked with each new view and every minute.
-        if self.last_nag.elapsed() >= Duration::from_secs(60) || everyone {
+        // Reminders: each person's, looked at every half minute. One whose time
+        // has come goes out then; repeats wait for the end of their quiet time
+        // (outside work hours, in a meeting; not known yet: it's being looked up).
+        if self.last_nag.elapsed() >= Duration::from_secs(30) {
             self.last_nag = Instant::now();
-            let s = crate::pmi::settings();
+            let s = crate::tasks::settings();
             let owner = convs[0].app.owner.clone();
-            for (user, p) in pmi.iter_mut().filter(|(_, p)| p.state.at.is_some() && p.state.error.is_none()) {
-                // Not in their quiet time (outside work hours, in a meeting): nags wait.
-                // Not known yet: it's being looked up, and they wait until it is.
-                if self.quiet.now(user) != Some(false) {
-                    continue;
+            let quiet: std::collections::HashMap<String, bool> = tasks.keys().map(|u| (u.clone(), self.quiet.now(u) != Some(false))).collect();
+            for d in crate::tasks::remind::due(chrono::Utc::now(), &|u| quiet.get(u).copied().unwrap_or(true)) {
+                if d.user == owner {
+                    convs[0].app.log(Level::Plan, if d.nag == 0 { format!("⏰ reminder: {}", d.title) } else { format!("⏰ still to do: {} (reminder {} of {})", d.title, d.nag, s.nag_max) });
                 }
-                let (due, changed) = p.nags.due(&p.state, &s, chrono::Utc::now());
-                for n in due {
-                    // Only the owner's own reminders in the owner's Activity.
-                    if *user == owner {
-                        convs[0].app.log(Level::Plan, format!("⏰ still to do: {} (reminder {} of {})", n.title, n.sent, s.nag_max));
-                    }
-                    hub.notify(Notification {
-                        title: format!("⏰ Still to do: {}", n.title),
-                        body: format!("The reminder went off {}. Done, or later?", n.fired.with_timezone(&chrono::Local).format("%a %H:%M")),
-                        tag: format!("nag-{}", n.task),
-                        approval: None,
-                        url: Some("/?page=tasks".into()),
-                        actions: vec![("done".into(), "Done".into()), ("snooze1h".into(), "In 1 hour".into()), ("tomorrow".into(), "Tomorrow".into())],
-                        reference: Some(n.task.clone()),
-                        to: To::User(user.clone()),
-                    });
-                }
-                if changed {
-                    p.nags.save_for(user);
-                }
+                hub.notify(Notification {
+                    title: if d.nag == 0 { format!("⏰ {}", d.title) } else { format!("⏰ Still to do: {}", d.title) },
+                    body: if d.nag == 0 { "Your reminder. Done, or later?".into() } else { format!("The reminder went off {}. Done, or later?", d.fired.with_timezone(&chrono::Local).format("%a %H:%M")) },
+                    tag: format!("nag-{}", d.task),
+                    approval: None,
+                    url: Some("/?page=tasks".into()),
+                    actions: vec![("done".into(), "Done".into()), ("snooze1h".into(), "In 1 hour".into()), ("tomorrow".into(), "Tomorrow".into())],
+                    reference: Some(d.task.clone()),
+                    to: To::User(d.user.clone()),
+                });
             }
         }
         while let Ok((user, action, task, r)) = self.action_rx.try_recv() {
@@ -112,10 +103,6 @@ impl Assistant {
                 Ok(what) => {
                     if user == convs[0].app.owner {
                         convs[0].app.log(Level::Plan, format!("reminder: {what}"));
-                    }
-                    if let Some(p) = pmi.get_mut(&user) {
-                        p.nags.items.retain(|_, n| n.task != task);
-                        p.nags.save_for(&user);
                     }
                 }
                 Err(e) => {
@@ -126,11 +113,11 @@ impl Assistant {
                 }
             }
         }
-        // Plan my day, for everyone with Outlook and PMI, in their working day.
+        // Plan my day, for everyone with Outlook, in their working day.
         if self.last_plan.elapsed() >= Duration::from_secs(15 * 60) && crate::planner::settings().enabled && crate::planner::settings().working_now(chrono::Local::now()) {
             self.last_plan = Instant::now();
             for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id) {
-                if self.planning.contains(&u) || !crate::graph::connected_for(&u) || !crate::pmi::configured_for(&u) {
+                if self.planning.contains(&u) || !crate::graph::connected_for(&u) {
                     continue;
                 }
                 self.planning.insert(u.clone());
@@ -180,7 +167,7 @@ impl Assistant {
             self.last_recap_look = Instant::now();
             let now = chrono::Local::now();
             for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id) {
-                if self.recapping.contains(&u) || !(crate::graph::connected_for(&u) || crate::pmi::configured_for(&u)) || !crate::recap::due(&u, now) {
+                if self.recapping.contains(&u) || !(crate::graph::connected_for(&u) || tasks.get(&u).is_some_and(|t| !t.state.tasks.is_empty())) || !crate::recap::due(&u, now) {
                     continue;
                 }
                 self.recapping.insert(u.clone());

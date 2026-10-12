@@ -862,63 +862,74 @@ summary = true                    # the chat model's one-line takeaway
 # enabled = true
 ```
 
-## PMI: tasks, reminders and projects
+## Tasks, reminders and projects
 
-PMI is the project-management app at `https://pmi.fbcad.org`, and lyra uses it as its task
-system. To connect it, make an access token in PMI (Your account → Security) and give it to
-lyra on the server, either with `lyra pmi token` (read from stdin, not echoed) or `/pmi token
-<token>`. The token is kept in `~/.lyra/config/secrets.toml`, readable by its owner only and
-left out of backups; the token line is never shown in the chat or logs. `/pmi` shows who
-you're signed in as.
+lyra keeps tasks itself (`~/.lyra/tasks/tasks.db`), for everyone who uses it, members
+included. There's no outside account to connect. (Until October 2026 this was PMI. Nothing
+was brought over from it: PMI's tasks stayed in PMI.)
 
 In chat:
-- **Personal tasks and reminders:** "Remind me Friday at 3 to call the vendor" adds a personal
-  task due Friday with a reminder at 15:00, and PMI sends the reminder. "What's on my plate
-  today?" lists your personal and assigned tasks. "Done with the vendor call, left a
-  voicemail" completes it, with what you said as PMI's closing comment (otherwise "Done (via
-  lyra)").
-- **Projects:** "Which projects are at risk?", "How's the Website project?", "Draft a status
-  update for Phones". These are answered from PMI's portfolio, updates and risks.
-- **What waits on you:** transfers to accept and tasks to approve.
+- **Your own tasks and reminders:** "Remind me Friday at 3 to call the vendor" adds a task due
+  Friday with a reminder at 15:00. "What's on my plate today?" lists your tasks. "Done with
+  the vendor call, left a voicemail" completes it, keeping what you said in its history.
+  Tasks can repeat (daily, weekdays, weekly, every two weeks, monthly, yearly), have a
+  checklist and subtasks, and a priority.
+- **Giving a task to someone:** "Give Dana the toner order, due Friday." Dana is asked:
+  she gets a push with **Accept** and **Decline**, and it waits on her Tasks page. Accepted,
+  it's on her list and on yours under "Given to others". Declined, it comes back to you.
+- **Projects:** "Make a Website project with Dana and Sam", "Which projects are at risk?",
+  "Draft a status update for Website". A project has members, health (on track, at risk,
+  off track) and status updates. Its members see its tasks.
 
-Changes to your personal space and your own reminders happen at once. Anything others can see
-waits for your **Allow**: a task in a project or team, a comment, a status update, or a risk.
-Those go through the **Project Manager** agent, which is installed once a token is set and
-asks before each change.
+Your own tasks and your own reminders change at once. Anything someone else sees waits for
+your **Allow**:
+- a task in a project with other members;
+- giving a task to someone;
+- a comment;
+- a status update.
+
+The **Project Manager** agent is installed with tasks and works with them for you.
+The old `pmi_*` tool names still work (they're the `task_*` tools now), so saved workflows
+and skills keep working.
 
 In the terminal and the app:
-- `/tasks [today|overdue|week|project <name>|team <name>]` lists open tasks, numbered.
-- `/task add <what> [when]` adds a personal task. Dates and times are read in plain words:
-  "tomorrow", "friday 3pm", "in 2h", "next monday", "oct 14".
-- `/task done <n> [comment]` completes one.
-- `/task snooze <n> [1h|tomorrow|<when>]` moves its reminder.
+- `/tasks [today|overdue|week|waiting|given|all|projects|project <name>]` lists tasks, numbered.
+- `/task add <what> [when]` adds one. Dates and times are read in plain words: "tomorrow",
+  "friday 3pm", "in 2h", "next monday", "oct 14".
+- `/task done <n> [note]` completes one, and `/task reopen|delete <n>` undoes or removes it.
+- `/task snooze <n> [1h|tomorrow|<when>]` sets your reminder.
+- `/task accept|decline <n> [note]` answers a task given to you, and `/task give <n> <person>`
+  gives one to someone.
+- `/project [<name>|add <name>|member <project> <person>]` shows and makes projects.
 
-lyra serve follows PMI's live updates, so its view of PMI changes within seconds of anything
-changing there. That view shows up in several places:
-- **The app's Tasks page:** open tasks grouped Overdue / Today / Upcoming / No date, and what
-  waits on you. Tap the circle to complete a task (with an optional closing comment) or the
-  clock to be reminded in an hour, and add tasks in plain words from the box at the top.
-  The Projects tab shows each project's health and progress, and the badge counts overdue and
-  waiting items.
-- **The morning briefing:** a Tasks section with overdue tasks, today's tasks, what waits on
-  you, projects at risk and the unread inbox.
-- **`lyra connect`'s panel:** a Tasks line and today's tasks.
-- **The Status page:** a PMI row (signed in, or "token rejected").
+Where your tasks show up:
+- **The app's Tasks page:**
+  - **Lists:** your open tasks (Overdue / Today / Upcoming / No date), "Waiting for your
+    answer" (Accept / Decline), "Given to others", and what others did on your tasks lately.
+  - **Quick actions:** tap the circle to finish a task or the clock to be reminded in an
+    hour; tap a task to edit it. The editor has notes, due date, your reminder, priority,
+    repeat, project, checklist, giving it to someone, comments and its history.
+  - **Other tabs:** Projects (health, progress, members, status updates, with a draft made
+    from the tasks) and Done (the last two weeks).
+  - **Live:** the view updates as tasks change, and the badge counts overdue tasks and ones
+    waiting for your answer.
+- **The morning briefing:** overdue and today's tasks, tasks to accept, projects at risk.
+- **Plan my day, meeting prep, mail triage, the recap, "who is …" and "tell me when this task
+  changes":** they all read your lyra tasks. A mail that asks something of you becomes a task.
+- **The TUI's Goals panel and `lyra connect`'s panel:** a Tasks line ("2 overdue · 1 today").
+- **The Status page:** a Tasks row.
 
-PMI sends your reminders itself, and lyra doesn't repeat them. It only follows up: if a
-reminder went off and its task is still open after 30 minutes, lyra pushes "⏰ Still to do:
-…" with **Done**, **In 1 hour** and **Tomorrow** buttons. It does this at most 3 times, and
-stops when the task is done or the reminder is read. Pressing a button counts as your answer,
-even for a project task. Only reminders from the last day are followed.
+Reminders are each person's own, on any task they can see. lyra pushes one at its time, with
+**Done**, **In 1 hour** and **Tomorrow** buttons. While the task is still open, it pushes
+"⏰ Still to do: …" again every 30 minutes, at most 3 times, outside your quiet time (outside
+working hours, or in a meeting). Pressing a button counts as your own answer.
 
 ```toml
-[pmi]
-url = "https://pmi.fbcad.org/api"
-org = ""          # an organization's slug; empty: the first one
-nag = true        # follow up on reminders still open
+[tasks]
+enabled = true
+nag = true        # push again while a reminder's task is still open
 nag_minutes = 30
 nag_max = 3
-# enabled = true
 ```
 
 ## Microsoft 365: calendar, mail, Teams and files
@@ -969,8 +980,8 @@ admin consent**. Anyone who connected before reconnects once (More → Outlook �
 
 ## Plan my day
 
-For anyone with Outlook and PMI connected, lyra plans the working day. It puts private
-**focus blocks** on their own calendar for PMI tasks due in the next 3 days.
+For anyone with Outlook connected, lyra plans the working day. It puts private
+**focus blocks** on their own calendar for their tasks due in the next 3 days.
 - **What gets a block first:** overdue tasks, then by due date and priority.
 - **How long:** 90 minutes for urgent or high priority, 60 for medium, 30 for low. Each block
   goes where it fits whole; otherwise it's shortened to at least 30 minutes.
@@ -1020,7 +1031,7 @@ checklist lines (`- [ ] milk`).
 - what your memory says about them
 - recent mail from them
 - meetings with them in the last and next three weeks
-- PMI tasks you share
+- tasks you share
 
 It uses your own accounts only, and the permissions you've already granted.
 
@@ -1046,12 +1057,12 @@ corrections.
 
 For anyone with Outlook connected, during the working day (`[planner]` hours):
 - **Meeting prep:** 15 minutes before a meeting with other people, a "📋 14:30 Budget review"
-  push. It says who's in it, the latest email from the first few of them, and open PMI tasks
+  push. It says who's in it, the latest email from the first few of them, and open tasks
   that share a word with the meeting. It arrives even if you're in another meeting.
 - **Mail triage:** every 10 minutes, your model reads new mail from people (Focused inbox; mail
   from before lyra started looking is left alone). If an email asks you to do or answer
   something, lyra:
-  - adds a **personal PMI task**, with the due date if the email gives one
+  - adds a **task of your own**, with the due date if the email gives one
   - **flags** the email
   - **drafts a reply** into Drafts, never sent
 
@@ -1119,14 +1130,14 @@ only recall and save theirs, and neither the owner's nor anyone else's turns eve
 Each person also has their own `USER.md` (`~/.lyra/users/<id>/USER.md`); without one, lyra
 just knows their name.
 
-Each person can also connect their own PMI account (`/pmi token <token>` in their own chat).
+Each person has their own tasks and reminders (the Tasks page), and can give tasks to others.
 It's kept in `~/.lyra/users/<id>/secrets.toml`, which is left out of backups like the owner's.
 With a token they get:
 - their tasks and reminders in chat and on their Tasks page
 - reminder follow-ups pushed to their devices
 - a morning briefing of their own, holding just their tasks
 
-lyra serve follows each person's PMI separately.
+Each person's tasks, reminders and projects are their own (giving a task to someone asks them first).
 
 Goals and routines are per person too (`~/.lyra/users/<id>/goals/` and `…/routines/`; the
 owner's stay where they are):
@@ -1166,7 +1177,7 @@ After a Teams meeting, ask lyra to "follow up on the firewall sync". `meeting_fo
 - the decisions made
 - action items with owners
 
-It then offers your own items as PMI tasks and drafts a follow-up mail to the attendees; sending waits for your Allow. When transcripts can be read, lyra also offers the follow-up by push 10–90 minutes after a Teams meeting ends.
+It then offers your own items as tasks and drafts a follow-up mail to the attendees; sending waits for your Allow. When transcripts can be read, lyra also offers the follow-up by push 10–90 minutes after a Teams meeting ends.
 
 Reading transcripts needs two more delegated Microsoft Graph permissions on the app registration: `OnlineMeetings.Read` and `OnlineMeetingTranscript.Read.All`, the second with admin consent. Once they're granted:
 1. Set `[web.entra] meetings = true`.
@@ -1177,10 +1188,10 @@ Meetings only have a transcript if transcription was on in Teams. Without one, l
 
 ### "Tell me when …"
 
-Ask "tell me when Jeremy replies" or "let me know when the PMI firewall task changes", and lyra watches for it:
+Ask "tell me when Jeremy replies" or "let me know when the firewall task changes", and lyra watches for it:
 - mail from someone (`mail_from`)
 - a reply on a thread you sent, found by words in its subject (`mail_reply`)
-- a PMI task changing status (`task`)
+- a task changing status (`task`)
 - a Teams message from someone (`teams_from`)
 
 lyra checks every two minutes, in your own accounts. When it happens you get a push and the watch ends. A watch gives up after two weeks unless you say otherwise. The Status page lists what it's watching for, each with a ✕ to stop it; so does `/watches`, with `/watches cancel <id>` to stop one. Members have this too.
@@ -1189,7 +1200,7 @@ lyra checks every two minutes, in your own accounts. When it happens you get a p
 
 At the end of each person's working day (`[planner] day_end`, 16:30 by default, working days only), lyra pushes a recap:
 - **Today:** today's meetings.
-- **Still open:** PMI tasks due by today that are still open.
+- **Still open:** tasks due by today that are still open.
 - **Due tomorrow:** tasks due tomorrow.
 - **Mail:** unread mail in Focused, and mail they sent that hasn't been answered.
 - **Tomorrow:** how tomorrow starts.
@@ -1250,7 +1261,7 @@ Its calls count under `vision` in AI usage.
 - known pitfalls: `[vision]` instead of `[vision_model]`, the decision and vision
   models on one server, a `secrets.toml` others can read
 - each configured model and service: the chat model, embeddings, reranker,
-  decision model, vision model, SearXNG and PMI
+  decision model, vision model and SearXNG
 
 ```sh
 scripts/lyra-check-config             # $LYRA_HOME/config/config.toml (~/.lyra), and its models
@@ -2089,16 +2100,15 @@ file, or a URL; a URL is fetched once a day and cached in `~/.lyra/capabilities/
   `auth_secret` names a token in `~/.lyra/config/secrets.toml`.
 - **Health:** a 401 or 403 counts as unavailable.
 
-For example, the rest of PMI, next to the curated `pmi_*` tools (its org id is the one
-`/pmi` shows):
+For example, an internal app's API, a few of its areas only:
 
 ```toml
 [[capabilities.openapi]]
-name = "pmi_api"
-spec = "https://pmi.fbcad.org/api/docs/json"
-base_url = "https://pmi.fbcad.org/api"
-auth_secret = "pmi"
-include_tags = ["projects", "tasks", "teams", "labels", "search", "dashboard", "inbox", "calendar"]
+name = "helpdesk"
+spec = "https://helpdesk.example.com/api/docs/json"
+base_url = "https://helpdesk.example.com/api"
+auth_secret = "helpdesk"
+include_tags = ["tickets", "search"]
 exclude = ["/v1/admin/*"]
 defaults = { orgId = "<your org id>" }
 ```

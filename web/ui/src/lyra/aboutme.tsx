@@ -39,7 +39,7 @@ export interface Me {
   username?: string | null;
   memories: Memory[] | null;
   style: string | null;
-  accounts: { microsoft: { connected: boolean; what?: string | null; granted?: string[] | null }; pmi: { connected: boolean } };
+  accounts: { microsoft: { connected: boolean; what?: string | null; granted?: string[] | null } };
   devices: { name: string; last_seen?: string | null }[];
   actions: Action[];
   error?: string;
@@ -257,7 +257,7 @@ export function PasswordCard({ username }: { username: string }) {
   );
 }
 
-/** What lyra can use as you (Microsoft 365, PMI), and disconnecting it. */
+/** What lyra can use as you (Microsoft 365), and disconnecting it. */
 export function ConnectedAccounts({ me, act, confirm }: { me: Me | null; act: (c: string) => Promise<boolean>; confirm: ReturnType<typeof useConfirm>[0] }) {
   return (
     <Card className="gap-1 py-4">
@@ -275,17 +275,6 @@ export function ConnectedAccounts({ me, act, confirm }: { me: Me | null; act: (c
             </div>
             {me?.accounts.microsoft.connected && (
               <Button size="sm" variant="ghost" onClick={() => confirm({ title: "Disconnect Microsoft 365?", text: "lyra stops reading your calendar, mail, Teams and files. Connect again any time.", action: "Disconnect", run: () => void act("/calendar disconnect") })}>
-                Disconnect
-              </Button>
-            )}
-          </div>
-          <div className="flex items-center justify-between gap-2 py-2">
-            <div>
-              <div className="font-medium">PMI</div>
-              <div className="text-muted-foreground text-xs">{me?.accounts.pmi.connected ? "Your tasks and projects (as you)" : "Not connected (Tasks page)"}</div>
-            </div>
-            {me?.accounts.pmi.connected && (
-              <Button size="sm" variant="ghost" onClick={() => confirm({ title: "Disconnect PMI?", text: "Your access token is removed from lyra. Paste a new one on the Tasks page to connect again.", action: "Disconnect", run: () => void act("/pmi token") })}>
                 Disconnect
               </Button>
             )}

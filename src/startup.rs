@@ -68,7 +68,7 @@ pub(crate) fn configure(config: &Config) {
     health::configure(config.health.clone());
     coding::configure(config.coding.clone());
     briefing::configure(config.briefing.clone());
-    pmi::configure(config.pmi.clone());
+    crate::tasks::configure(config.tasks.clone());
     planner::configure(config.planner.clone());
     usage::configure(prices(config));
     vision::configure(config.vision_model.clone());
@@ -123,7 +123,6 @@ usage: lyra [command] [options]
   devices [remove <name>] paired devices
   service                 install a systemd user service that runs `lyra serve`
   node [pair|service]     let a lyra server work on this machine (see lyra node --help)
-  pmi [token]             the PMI connection; `lyra pmi token` saves the owner's access token (read from stdin; everyone else connects their own on the Tasks page)
   secret <service>        save a secret (read from stdin, not echoed): `lyra secret entra` for Microsoft sign-in
   connect [--pair <code>] the terminal UI for a lyra server (see lyra connect --help);
                           plain `lyra` opens it on a machine that has no lyra of its own
@@ -172,28 +171,6 @@ pub(crate) fn secret_cli(args: &[String]) {
     }
 }
 
-/// `lyra pmi [token]`: the token is read from stdin, so it's never in the shell history.
-pub(crate) fn pmi_cli(args: &[String]) {
-    if let Ok(config) = Config::load() {
-        pmi::configure(config.pmi);
-    }
-    let result = match args.first().map(String::as_str) {
-        None | Some("status") => Ok(pmi::describe()),
-        Some("token") => {
-            let line = read_secret("PMI access token (Your account → Security in PMI)");
-            pmi::command(&format!("token {}", line.trim()))
-        }
-        Some(other) => Err(format!("unknown: lyra pmi {other} (try lyra pmi or lyra pmi token)")),
-    };
-    match result {
-        Ok(text) => println!("{text}"),
-        Err(e) => {
-            eprintln!("lyra pmi: {e}");
-            std::process::exit(1);
-        }
-    }
-}
-
 pub(crate) fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).is_none_or(|a| a != "node" && a != "connect") && args.iter().any(|a| a == "-h" || a == "--help") {
@@ -214,7 +191,6 @@ pub(crate) fn main() {
         Some("node") => return lyra_node::main(&args[2..]),
         Some("connect") => return connect::main(&args[2..]),
         Some("mcp") => return mcp_server::main(&args[2..]),
-        Some("pmi") => return pmi_cli(&args[2..]),
         Some("secret") => return secret_cli(&args[2..]),
         // No lyra of its own here, but a paired terminal: open that.
         None if connect::configured() && !config::home().is_some_and(|h| h.join("config").join("config.toml").exists()) => return connect::main(&[]),
@@ -748,23 +724,25 @@ pub(crate) fn open_agents(config: &Config, runtime: &tokio::runtime::Handle) -> 
             {
                 let _ = a.registry.create(p, "installed with coding agents (Claude Code, OpenCode)");
             }
-            // PMI comes with a Project Manager to work in it (once: deleting it sticks).
-            if pmi::anyone() && a.registry.get("project-manager").is_none() && a.registry.versions("project-manager").is_ok_and(|v| v.is_empty())
+            // lyra's tasks come with a Project Manager to work in them (once: deleting it sticks).
+            if config.tasks.enabled && a.registry.get("project-manager").is_none() && a.registry.versions("project-manager").is_ok_and(|v| v.is_empty())
                 && let Some(p) = lyra_agents::templates::template("project-manager")
             {
-                let _ = a.registry.create(p, "installed with PMI");
+                let _ = a.registry.create(p, "installed with lyra's tasks");
             }
-            // A Project Manager from before PMI: its tools and instructions.
+            // A Project Manager from before (PMI's, or none): lyra's task tools and instructions.
             if let Some(mut pm) = a.registry.get("project-manager").filter(|p| p.template.as_deref() == Some("project-manager"))
-                && !pm.tools.iter().any(|t| t == "pmi_tasks")
+                && !pm.tools.iter().any(|t| t == "task_list")
             {
+                pm.tools.retain(|t| !t.starts_with("pmi_"));
                 for t in lyra_agents::templates::PM_TOOLS {
                     if !pm.tools.iter().any(|x| x == t) {
                         pm.tools.push(t.to_string());
                     }
                 }
                 pm.instructions = lyra_agents::templates::PM_NOTE.into();
-                let _ = a.registry.update(pm, "PMI tools");
+                pm.description = lyra_agents::templates::template("project-manager").map(|t| t.description).unwrap_or(pm.description);
+                let _ = a.registry.update(pm, "lyra's own tasks (PMI is gone)");
             }
             // Agents that look things up know the user's people and notes too.
             for name in ["researcher", "assistant"] {

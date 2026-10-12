@@ -8,6 +8,10 @@
 //! 3. Documents (`documents/`, and each person's) into their notes folder:
 //!    notes and documents are one thing now. Moved, each under a name of its
 //!    own, its `# Title` first.
+//! 4. PMI is gone (lyra keeps tasks itself): each person's PMI token is
+//!    removed from their secrets, its reminder state (`pmi/nags.json`) too,
+//!    and who had one is noted (`tasks/pmi_moved.json`) so lyra serve tells
+//!    them where their tasks are now. Nothing is brought over (decided).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -21,8 +25,47 @@ pub fn run() -> Result<Vec<String>, String> {
         migrate(&home, old_config_dir().as_deref(), old_data_dir().as_deref())?,
         context_out_of_config(&home)?,
         documents_into_notes(&home)?,
+        pmi_gone(&home)?,
     ];
     Ok(notes.into_iter().flatten().collect())
+}
+
+/// PMI's tokens and reminder state, gone; who had one, noted to be told.
+fn pmi_gone(home: &Path) -> Result<Option<String>, String> {
+    let mut people = vec![lyra_web::users::OWNER.to_string()];
+    for e in std::fs::read_dir(home.join("users")).into_iter().flatten().flatten() {
+        if e.path().is_dir() {
+            people.push(e.file_name().to_string_lossy().to_string());
+        }
+    }
+    let mut had = Vec::new();
+    for user in &people {
+        if crate::secrets::token_for("pmi", user).is_some() {
+            crate::secrets::set_token_for("pmi", "", user)?;
+            had.push(user.clone());
+        }
+        let dir = if user == lyra_web::users::OWNER { home.join("pmi") } else { home.join("users").join(user).join("pmi") };
+        let _ = std::fs::remove_file(dir.join("nags.json"));
+        let _ = std::fs::remove_dir(&dir);
+    }
+    if had.is_empty() {
+        return Ok(None);
+    }
+    let file = home.join("tasks").join("pmi_moved.json");
+    let mut all: Vec<String> = crate::store::read_json(&file);
+    all.extend(had.iter().cloned());
+    all.sort();
+    all.dedup();
+    crate::store::write_json(&file, &all)?;
+    Ok(Some(format!("PMI is gone: the PMI token{} of {} removed; lyra keeps tasks itself now", if had.len() == 1 { "" } else { "s" }, had.join(", "))))
+}
+
+/// The people PMI's removal hasn't been told to yet (and they're taken off).
+pub fn take_pmi_moved() -> Vec<String> {
+    let Some(file) = crate::config::home().map(|h| h.join("tasks").join("pmi_moved.json")) else { return Vec::new() };
+    let all: Vec<String> = crate::store::read_json(&file);
+    let _ = std::fs::remove_file(&file);
+    all
 }
 
 /// Move each person's documents into their notes folder.

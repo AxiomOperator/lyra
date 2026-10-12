@@ -13,7 +13,7 @@ It reports:
     models on one server, secrets.toml readable by others, ...)
   - each configured model and service: reachable, the right model, able to do
     its job (the chat model, embeddings, reranker, decision model, vision model,
-    SearXNG, PMI)
+    SearXNG)
 
 Exit status: 0 when nothing is wrong (warnings allowed), 1 on errors, 2 when
 the file can't be read at all. Needs Python 3.11+ (tomllib); nothing else.
@@ -309,11 +309,9 @@ def check_search(s):
 
 
 def check_pmi(p):
-    if p.get("enabled") is False or not p.get("url"):
-        return
-    r = reach("[pmi]", base(p["url"]), timeout=10)
-    if r is not None:
-        ok(f"[pmi] {p['url']} answers ({r[0]})")
+    # PMI is gone: lyra keeps tasks itself ([tasks]).
+    if p:
+        warn("[pmi] isn't used any more (lyra keeps tasks itself): it can be removed")
 
 
 def check_web(w):

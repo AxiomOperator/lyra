@@ -124,7 +124,7 @@ impl crate::caps::Remote for HubRemote {
 /// The pages a member (not an admin) may ask for: their own conversations,
 /// data and settings. Everything else is an admin's (machines, users, devices,
 /// the server's settings, email services, Running now…).
-pub(crate) const MEMBER_PAGES: &[&str] = &["sessions", "search", "agents", "skills", "activity", "about", "models", "do", "pmi", "routines", "routine_save", "routine_results", "routine_result", "goals", "memory", "calendar", "mail", "notes", "usage", "recap", "briefing", "watches", "everything", "templates", "template_put", "template_remove", "meetings", "meeting", "meeting_notes", "meeting_followup", "meeting_draft", "document", "document_save", "document_kind", "document_remove", "document_download", "document_onedrive", "document_mail", "document_ask", "me", "me_export", "me_clear_actions", "changelog", "feedback", "feedback_submit", "feedback_comment", "feedback_update", "feedback_seen", "feedback_analyze", "feedback_enhance", "qa", "qa_put", "qa_remove", "qa_promote", "email", "email_set", "email_test"];
+pub(crate) const MEMBER_PAGES: &[&str] = &["sessions", "search", "agents", "skills", "activity", "about", "models", "do", "tasks", "task", "task_save", "task_done", "task_reopen", "task_delete", "task_answer", "task_comment", "task_remind", "task_assign", "projects", "project", "project_save", "project_update", "project_draft", "project_delete", "routines", "routine_save", "routine_results", "routine_result", "goals", "memory", "calendar", "mail", "notes", "usage", "recap", "briefing", "watches", "everything", "templates", "template_put", "template_remove", "meetings", "meeting", "meeting_notes", "meeting_followup", "meeting_draft", "document", "document_save", "document_kind", "document_remove", "document_download", "document_onedrive", "document_mail", "document_ask", "me", "me_export", "me_clear_actions", "changelog", "feedback", "feedback_submit", "feedback_comment", "feedback_update", "feedback_seen", "feedback_analyze", "feedback_enhance", "qa", "qa_put", "qa_remove", "qa_promote", "email", "email_set", "email_test"];
 
 pub(crate) fn member_may_get(what: &str) -> bool {
     MEMBER_PAGES.contains(&what)
@@ -440,20 +440,11 @@ pub fn attachments(hub: &Hub, files: &[String], vision: bool, who: &Who) -> (Str
     (text, images, looks)
 }
 
-/// One person's PMI, as lyra serve follows it.
-struct PmiUser {
-    state: crate::pmi::State,
+/// One person's tasks, as their devices show them.
+#[derive(Default)]
+struct TaskUser {
+    state: crate::tasks::State,
     view: Value,
-    busy: bool,
-    due: Option<Instant>,
-    last: Instant,
-    nags: crate::pmi::Nags,
-}
-
-impl Default for PmiUser {
-    fn default() -> Self {
-        Self { state: Default::default(), view: Value::Null, busy: false, due: None, last: Instant::now(), nags: Default::default() }
-    }
 }
 
 /// One open conversation: its lyra and what its devices were last sent.

@@ -1,5 +1,5 @@
 //! "Tell me when …": things a person asked lyra to watch for: mail from
-//! someone, a reply on a thread they sent, a PMI task changing, a Teams
+//! someone, a reply on a thread they sent, a task changing, a Teams
 //! message from someone, a web page changing or a search turning up
 //! something new. Checked every couple of minutes in their own accounts (the
 //! web ones on their own schedule, every few hours); when one happens they
@@ -89,7 +89,7 @@ pub fn add(kind: &str, target: &str, days: i64, when: &str, every_hours: u32) ->
             (format!("a reply to \"{}\"", m["subject"].as_str().unwrap_or(target)), json!({ "conversation": m["conversationId"], "sent": m["sentDateTime"], "me": m["from"]["emailAddress"]["address"] }))
         }
         "task" => {
-            let t = crate::pmi::call("pmi_task", &json!({ "id": target }))?;
+            let t = crate::tasks::tools::call("task_get", &json!({ "id": target }))?;
             (format!("task \"{}\" to change (now {})", t["title"].as_str().unwrap_or(target), t["status"].as_str().unwrap_or("?")), json!({ "status": t["status"], "title": t["title"] }))
         }
         "teams_from" => {
@@ -286,7 +286,7 @@ fn check(w: &Watch) -> Result<Option<String>, String> {
                 .map(|m| format!("{} replied: {}", m["from"]["emailAddress"]["name"].as_str().unwrap_or("someone"), w.label.trim_start_matches("a reply to "))))
         }
         "task" => {
-            let t = crate::pmi::call("pmi_task", &json!({ "id": w.target }))?;
+            let t = crate::tasks::tools::call("task_get", &json!({ "id": w.target }))?;
             Ok((t["status"] != w.state["status"]).then(|| format!("\"{}\" is now {}", t["title"].as_str().unwrap_or("the task"), t["status"].as_str().unwrap_or("changed"))))
         }
         "teams_from" => {
@@ -362,7 +362,7 @@ pub fn capabilities() -> Vec<Capability> {
     vec![
         tool(
             "watch_for",
-            "\"Tell me when …\": watch for mail from someone (mail_from), a reply on a thread the user sent (mail_reply, by words in its subject), a PMI task changing status (task, by id), a Teams message from someone (teams_from), a web page changing (web_page, by URL: \"tell me when the price drops below 500\", \"when it says in stock\") or a search turning up something new (web_search). The user gets a push when it happens, once.",
+            "\"Tell me when …\": watch for mail from someone (mail_from), a reply on a thread the user sent (mail_reply, by words in its subject), a task changing status (task, by id), a Teams message from someone (teams_from), a web page changing (web_page, by URL: \"tell me when the price drops below 500\", \"when it says in stock\") or a search turning up something new (web_search). The user gets a push when it happens, once.",
             RiskLevel::LowWrite,
             json!({
                 "kind": { "type": "string", "enum": ["mail_from", "mail_reply", "task", "teams_from", "web_page", "web_search"] },

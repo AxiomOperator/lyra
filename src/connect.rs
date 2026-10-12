@@ -650,8 +650,8 @@ fn draw_panel(f: &mut Frame, s: &Screen, area: Rect) {
             lines.push(Line::styled(truncate(&format!("{} {}: {}", if r["state"] == "down" { "✗" } else { "◐" }, str_of(&r["name"]), str_of(&r["detail"])), width), Style::default().fg(color)));
         }
     }
-    // PMI: what's overdue and due today, and what waits on the user.
-    if let Ok(p) = serde_json::from_value::<crate::pmi::State>(st["pmi"].clone())
+    // Tasks: what's overdue and due today, and what waits for their answer.
+    if let Ok(p) = serde_json::from_value::<crate::tasks::State>(st["tasks"].clone())
         && p.at.is_some()
     {
         let today = chrono::Local::now().date_naive();

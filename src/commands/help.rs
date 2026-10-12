@@ -34,8 +34,9 @@ pub(crate) const COMMANDS: &str = "\
 /routine run|pause|resume|delete|show <name> · /routine edit <name> schedule|prompt|notify|changes|email <value>
 /coding                      coding jobs handed to Claude Code / OpenCode (ask: 'fix … in ~/Projects/x on @desktop')
 /diagnose [<machine> <problem>]  problems researched (read-only); look into one now
-/tasks [today|overdue|week|project <name>]   your PMI tasks (personal and assigned), numbered
-/task add <what> [when] · /task done <n> [comment] · /task snooze <n> [1h|tomorrow]
+/tasks [today|overdue|week|waiting|given|all|projects|project <name>]   your tasks, numbered
+/task add <what> [when] · /task done <n> [note] · /task snooze <n> [1h|tomorrow] · /task accept|decline <n> · /task give <n> <person>
+/project [<name>|add <name>|member <project> <person>]   your projects: their health and open tasks
 /users [approve|admin|member|disable <who>]   the people who use lyra serve (admins)
 /users rounds <who> <n|default>   their own limit on tool calls in one reply (1–64; admins)
 /users add <username> <name> [admin]   an account without Microsoft: a one-time password, shown once (admins)
@@ -48,7 +49,6 @@ pub(crate) const COMMANDS: &str = "\
 /recap                       your end-of-day recap now (it also comes at the end of the working day)
 /watches [cancel <id>]       what lyra watches for you (tell me when Jeremy replies)
 /feedback                    bug reports and feature requests: yours (admins: everyone's)
-/pmi [token <token>]         the PMI connection (your project-management app)
 /calendar [today|tomorrow|week|<day>|disconnect]   your Outlook calendar (connect it from More in the app)
 /today [plan]                plan my day: meetings, focus blocks for tasks due soon, mail to answer first (plan: re-plan now)
 /notes [words] · /note <title>: <text> · /list <name> [add <a, b>|done|undone|remove <item>]   your notes and lists

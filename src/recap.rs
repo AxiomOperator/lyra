@@ -116,9 +116,9 @@ pub fn gather(now: DateTime<Utc>) -> Recap {
             parts.push(Part { title: "Tomorrow".into(), lines });
         }
     }
-    if crate::pmi::configured_for(&user) {
+    {
         let today = Local::now().date_naive();
-        if let Ok(v) = crate::pmi::call("pmi_tasks", &json!({ "due": "week" })) {
+        if let Ok(v) = crate::tasks::tools::call("task_list", &json!({ "due": "week" })) {
             let tasks: Vec<&Value> = v["tasks"].as_array().into_iter().flatten().collect();
             let due = |t: &&Value| t["due"].as_str().and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
             let slipped: Vec<String> = tasks.iter().filter(|t| due(t).is_some_and(|d| d <= today)).map(|t| format!("{} (due {})", time(&t["title"]), time(&t["due"]))).collect();
@@ -151,7 +151,7 @@ pub fn gather(now: DateTime<Utc>) -> Recap {
 /// The recap as text (`/recap`, the push).
 pub fn describe(r: &Recap) -> String {
     if r.parts.is_empty() {
-        return "Nothing to recap: connect Outlook (Profile → Connections → Outlook) or PMI for your day's facts.".into();
+        return "Nothing to recap: connect Outlook (Profile → Connections → Outlook), or add tasks, for your day's facts.".into();
     }
     let mut out = vec![format!("End of day · {}", r.at.with_timezone(&Local).format("%a %b %-d"))];
     for p in &r.parts {
