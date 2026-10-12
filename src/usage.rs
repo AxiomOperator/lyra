@@ -203,12 +203,61 @@ fn months_between(since: DateTime<Utc>, now: DateTime<Utc>) -> Vec<String> {
 /// Calls since `since` (reading the months it spans).
 pub fn since(since: DateTime<Utc>) -> Vec<Call> {
     let Some(d) = dir() else { return vec![] };
-    months_between(since, Utc::now())
-        .iter()
-        .filter_map(|mo| std::fs::read_to_string(d.join(format!("{mo}.jsonl"))).ok())
-        .flat_map(|t| t.lines().filter_map(|l| serde_json::from_str::<Call>(l).ok()).collect::<Vec<_>>())
-        .filter(|c| c.at >= since)
-        .collect()
+    let mut out = Vec::new();
+    for mo in months_between(since, Utc::now()) {
+        month(&d.join(format!("{mo}.jsonl")), |calls| out.extend(calls.iter().filter(|c| c.at >= since).cloned()));
+    }
+    out
+}
+
+/// A month file as read so far: which file it is, how far it's been read
+/// (whole lines), and its calls.
+struct Month {
+    id: u64,
+    read: u64,
+    calls: Vec<Call>,
+}
+
+static MONTHS: LazyLock<Mutex<HashMap<std::path::PathBuf, Month>>> = LazyLock::new(Default::default);
+
+/// A month's calls, reading only what was added since the last look (the
+/// file only grows; a new or shorter file is read from the start).
+fn month(path: &std::path::Path, with: impl FnOnce(&[Call])) {
+    use std::io::{Read, Seek};
+    let mut all = MONTHS.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(meta) = std::fs::metadata(path) else {
+        all.remove(path);
+        return;
+    };
+    #[cfg(unix)]
+    let id = std::os::unix::fs::MetadataExt::ino(&meta);
+    #[cfg(not(unix))]
+    let id = 0;
+    let m = all.entry(path.to_path_buf()).or_insert(Month { id, read: 0, calls: Vec::new() });
+    if m.id != id || meta.len() < m.read {
+        *m = Month { id, read: 0, calls: Vec::new() };
+    }
+    if meta.len() > m.read
+        && let Ok(mut f) = std::fs::File::open(path)
+        && f.seek(std::io::SeekFrom::Start(m.read)).is_ok()
+    {
+        let mut new = Vec::new();
+        if f.read_to_end(&mut new).is_ok() {
+            // Up to the last whole line: one being written is read next time
+            // (a last line without its newline counts once it reads).
+            let mut whole = new.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+            if whole < new.len() && serde_json::from_slice::<Call>(&new[whole..]).is_ok() {
+                whole = new.len();
+            }
+            for line in String::from_utf8_lossy(&new[..whole]).lines() {
+                if let Ok(c) = serde_json::from_str::<Call>(line) {
+                    m.calls.push(c);
+                }
+            }
+            m.read += whole as u64;
+        }
+    }
+    with(&m.calls);
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -354,6 +403,26 @@ mod tests {
         assert!((t.cost - 0.04).abs() < 1e-9 && p.any(), "{}", t.cost);
         assert_eq!(tokens(1_234), "1.2k");
         assert_eq!(tokens(2_500_000), "2.5M");
+    }
+
+    #[test]
+    fn a_month_is_read_again_only_from_where_it_was_left() {
+        crate::config::with_test_home(|home| {
+            std::fs::create_dir_all(home.join("usage")).unwrap();
+            let file = home.join("usage").join(format!("{}.jsonl", Utc::now().format("%Y-%m")));
+            let line = |output: u64| serde_json::to_string(&Call { at: Utc::now(), user: "u".into(), kind: "chat".into(), model: "m".into(), input: 1, cached: 0, output, ms: 1, job: None }).unwrap() + "\n";
+            std::fs::write(&file, line(1) + &line(2)).unwrap();
+            let from = Utc::now() - Duration::days(1);
+            assert_eq!(since(from).len(), 2);
+            // Appended, with a line still being written at the end.
+            let mut f = std::fs::OpenOptions::new().append(true).open(&file).unwrap();
+            write!(f, "{}{{\"at\":", line(3)).unwrap();
+            assert_eq!(since(from).iter().map(|c| c.output).collect::<Vec<_>>(), [1, 2, 3]);
+            // Started again (a new file): read from the start.
+            std::fs::remove_file(&file).unwrap();
+            std::fs::write(&file, line(9)).unwrap();
+            assert_eq!(since(from).iter().map(|c| c.output).collect::<Vec<_>>(), [9]);
+        });
     }
 
     #[test]

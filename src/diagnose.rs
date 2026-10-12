@@ -60,7 +60,7 @@ fn path() -> Option<std::path::PathBuf> {
 }
 
 pub fn all() -> Vec<Diagnosis> {
-    path().map(|p| crate::store::read_json(&p)).unwrap_or_default()
+    path().map(|p| crate::store::read_json_cached(&p)).unwrap_or_default()
 }
 
 fn save(list: &[Diagnosis]) {

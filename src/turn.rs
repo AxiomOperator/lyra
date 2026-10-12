@@ -190,11 +190,28 @@ impl App {
             if voice {
                 add_to_system(&mut history, SPOKEN);
             }
-            if let Some(tools) = &tools {
-                let mine = viewer.as_ref().map(|v| format!("user:{v}"));
-                apply_memories(&tools.mem, &content, run, &mut history, &tx, mine.as_deref());
+            // Memories, skills and "just chatting?" side by side (each its own
+            // search or question); their notes go in in this order.
+            let (memory_notes, (skills, skill_notes), just_chatting) = std::thread::scope(|s| {
+                let memory = crate::acting::scoped(s, || {
+                    let mut scratch = vec![json!({ "role": "user" })];
+                    if let Some(tools) = &tools {
+                        let mine = viewer.as_ref().map(|v| format!("user:{v}"));
+                        apply_memories(&tools.mem, &content, run, &mut scratch, &tx, mine.as_deref());
+                    }
+                    turn_notes(scratch)
+                });
+                let skills = crate::acting::scoped(s, || {
+                    let mut scratch = vec![json!({ "role": "user" })];
+                    let names = learning.as_ref().map(|l| apply_skills(l, &content, run, &mut scratch, &tx)).unwrap_or_default();
+                    (names, turn_notes(scratch))
+                });
+                let just_chatting = !chat_only && looks.is_empty() && chatting(&content, &last_reply);
+                (memory.join().unwrap_or_default(), skills.join().unwrap_or_default(), just_chatting)
+            });
+            for note in memory_notes.iter().chain(&skill_notes) {
+                add_to_turn(&mut history, note);
             }
-            let skills = learning.map(|l| apply_skills(&l, &content, run, &mut history, &tx)).unwrap_or_default();
             // What corrections taught not to do, for the tools and skills likely now (4.2).
             let notes = crate::avoid::relevant(viewer.as_deref(), &content, &skills, &recent_tools);
             if let Some(section) = crate::avoid::section(&notes) {
@@ -206,7 +223,7 @@ impl App {
             let offer = if chat_only {
                 add_to_system(&mut history, CHAT_ONLY);
                 Offer::Nothing
-            } else if looks.is_empty() && chatting(&content, &last_reply) {
+            } else if just_chatting {
                 let _ = tx.send(StreamEvent::Log("just chatting: no tools offered".into()));
                 add_to_turn(&mut history, CHATTING);
                 Offer::Search
@@ -381,6 +398,15 @@ pub(crate) fn add_to_turn(history: &mut [Value], section: &str) {
     match last.get_mut(TURN_CONTEXT).and_then(Value::as_array_mut) {
         Some(list) => list.push(json!(section)),
         None => last[TURN_CONTEXT] = json!([section]),
+    }
+}
+
+/// The notes gathered on a scratch history (work done side by side), to add
+/// to the real one.
+fn turn_notes(mut scratch: Vec<Value>) -> Vec<String> {
+    match scratch.last_mut().and_then(|m| m.as_object_mut()).and_then(|o| o.remove(TURN_CONTEXT)) {
+        Some(Value::Array(list)) => list.into_iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -1166,7 +1192,7 @@ pub(crate) fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: 
 
 #[cfg(test)]
 mod tests {
-    use super::{Effort, TURN_CONTEXT, UNREACHED, add_to_turn, compact, finish_turn_context, fit, gave_up, short_why, small_talk};
+    use super::{Effort, TURN_CONTEXT, UNREACHED, add_to_turn, compact, finish_turn_context, fit, gave_up, short_why, small_talk, turn_notes};
     use serde_json::json;
 
     #[test]
@@ -1236,6 +1262,23 @@ mod tests {
         if std::env::var_os("LYRA_MODEL_SILENCE_SECONDS").is_none() {
             assert_eq!(super::silence(), std::time::Duration::from_secs(180));
         }
+    }
+
+    #[test]
+    fn notes_gathered_side_by_side_come_back_in_order() {
+        // Memories and skills are looked up at once, each on a scratch history.
+        let mut memory = vec![json!({ "role": "user" })];
+        add_to_turn(&mut memory, "# Memories\n- likes tea");
+        let mut skills = vec![json!({ "role": "user" })];
+        add_to_turn(&mut skills, "# Skills\n- greet");
+        let mut real = vec![json!({ "role": "system", "content": "You are lyra." }), json!({ "role": "user", "content": "hi" })];
+        for note in turn_notes(memory).iter().chain(&turn_notes(skills)) {
+            add_to_turn(&mut real, note);
+        }
+        assert!(turn_notes(vec![json!({ "role": "user" })]).is_empty(), "nothing found: nothing added");
+        finish_turn_context(&mut real);
+        let said = real[1]["content"].as_str().unwrap();
+        assert!(said.find("likes tea").unwrap() < said.find("greet").unwrap() && said.ends_with("hi"), "{said}");
     }
 
     #[test]

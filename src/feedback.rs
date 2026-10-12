@@ -324,7 +324,7 @@ fn path() -> Option<PathBuf> {
 // Changes go through `LOCK` (read, change, write as one step); the file
 // itself is written atomically by `store`.
 fn load() -> Vec<Item> {
-    path().map(|p| crate::store::read_json(&p)).unwrap_or_default()
+    path().map(|p| crate::store::read_json_cached(&p)).unwrap_or_default()
 }
 
 fn save(all: &[Item]) -> Result<(), String> {

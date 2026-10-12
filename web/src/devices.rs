@@ -119,7 +119,9 @@ impl Devices {
 
     /// Every device, or why the file can't be read (a change then doesn't happen).
     fn load(&self) -> Result<Vec<Device>, String> {
-        crate::jsonfile::read(&self.file())
+        // Asked on every request: read again only when it changed.
+        let file = self.file();
+        crate::jsonfile::cached(&file, || crate::jsonfile::read(&file))
     }
 
     fn save(&self, devices: &[Device]) -> Result<(), String> {

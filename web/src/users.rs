@@ -181,7 +181,7 @@ impl Users {
 
     /// Everyone, or why the file can't be read (a change then doesn't happen).
     fn load(&self) -> Result<Vec<User>, String> {
-        crate::jsonfile::read(&self.path)
+        crate::jsonfile::cached(&self.path, || crate::jsonfile::read(&self.path))
     }
 
     pub fn get(&self, id: &str) -> Option<User> {

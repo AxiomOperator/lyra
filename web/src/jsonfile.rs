@@ -82,6 +82,47 @@ pub fn read<T: DeserializeOwned + Default>(path: &Path) -> Result<T, String> {
 /// Write it: a temp file of its own, flushed, then put in place (only its
 /// owner can read it when `private`). The version it replaces, if it read
 /// well, is kept as `.bak`.
+/// A file as it was when last looked at: when it was changed, its size and
+/// which file it is (a write puts a new one in its place).
+type Stamp = (std::time::SystemTime, u64, u64);
+
+fn stamp(path: &Path) -> Option<Stamp> {
+    let m = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let id = std::os::unix::fs::MetadataExt::ino(&m);
+    #[cfg(not(unix))]
+    let id = 0;
+    Some((m.modified().ok()?, m.len(), id))
+}
+
+type Cached = HashMap<(PathBuf, std::any::TypeId), (Stamp, Box<dyn std::any::Any + Send>)>;
+static CACHE: LazyLock<Mutex<Cached>> = LazyLock::new(Default::default);
+
+/// `read` the file only when it changed since the last time (files read every
+/// few seconds, or on every request, but rarely written); otherwise what it
+/// gave then. A failed read isn't kept.
+pub fn cached<T: Clone + Send + 'static>(path: &Path, read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let key = (path.to_path_buf(), std::any::TypeId::of::<T>());
+    let Some(now) = stamp(path) else {
+        CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+        return read();
+    };
+    if let Some((at, v)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(&key)
+        && *at == now
+        && let Some(v) = v.downcast_ref::<T>()
+    {
+        return Ok(v.clone());
+    }
+    // Stamped before reading: a change in between is read again next time.
+    let v = read()?;
+    let mut all = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if all.len() > 500 {
+        all.clear();
+    }
+    all.insert(key, (now, Box::new(v.clone())));
+    Ok(v)
+}
+
 pub fn write<T: Serialize + ?Sized>(path: &Path, value: &T, private: bool) -> Result<(), String> {
     use std::io::Write;
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -114,6 +155,26 @@ pub fn write<T: Serialize + ?Sized>(path: &Path, value: &T, private: bool) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_is_read_again_only_once_it_changed() {
+        let dir = std::env::temp_dir().join(format!("lyra-jsonfile-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("devices.json");
+        write(&file, &vec![1, 2], false).unwrap();
+        let reads = std::cell::Cell::new(0);
+        let get = || cached(&file, || { reads.set(reads.get() + 1); read::<Vec<i32>>(&file) }).unwrap();
+        assert_eq!(get(), vec![1, 2]);
+        assert_eq!(get(), vec![1, 2]);
+        assert_eq!(reads.get(), 1, "unchanged: not read again");
+        // Same size, new contents: still seen.
+        write(&file, &vec![3, 4], false).unwrap();
+        assert_eq!(get(), vec![3, 4]);
+        assert_eq!(reads.get(), 2);
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(get(), Vec::<i32>::new(), "gone: the default");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_garbled_file_is_never_read_as_empty() {

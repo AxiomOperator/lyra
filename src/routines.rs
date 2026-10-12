@@ -338,7 +338,7 @@ pub fn create(name: &str, schedule: &str, prompt: &str, notify: Notify, changes:
 static RUNS_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn runs() -> HashMap<String, Vec<Run>> {
-    let mut all: HashMap<String, Vec<Run>> = dir().map(|d| crate::store::read_json(&d.join("runs.json"))).unwrap_or_default();
+    let mut all: HashMap<String, Vec<Run>> = dir().map(|d| crate::store::read_json_cached(&d.join("runs.json"))).unwrap_or_default();
     // "running" with nothing running it: lyra stopped (a restart) part way.
     let live: Vec<String> = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, _, r)| r.session.clone()).collect();
     for x in all.values_mut().flatten() {

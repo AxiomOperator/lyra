@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.85.0.243",
+    "date": "2026-10-12",
+    "title": "Quicker to start a reply",
+    "improved": [
+      "Before a reply, lyra looks up your memories and skills and checks whether you're just chatting all at once, instead of one after another, so the answer starts sooner.",
+      "Your message is turned into a search vector once and reused for every lookup in the reply (memories, skills, agents, each round of tools), instead of again each time.",
+      "The Usage, Sessions and Search pages open faster: lyra reads only what's new in the usage log, and only the conversations that changed since the last look.",
+      "lyra no longer re-reads files that hardly ever change (paired devices, users, feedback, write-ups, models marked down, routine runs) every few seconds: it reads them again only when they change."
+    ]
+  },
+  {
     "version": "0.84.0.242",
     "date": "2026-10-12",
     "title": "Smoother replies in the app",

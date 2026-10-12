@@ -179,6 +179,25 @@ most of them):
 - **Vision:** with it on, every past image is re-sent each turn.
 - **Goals:** `goals_tick` does synchronous SQLite work on the loop every 60 s.
 
+### Done (2026-10-12)
+- **A1 + A2** (0.82.0.240): the prompt's start stays the same, the tool list
+  only grows at its end, `[light_model]`, and background work waits for
+  replies.
+- **C1–C3** (0.83.0.241): Status probes ask for the model list; the status
+  goes as patches of what changed; the timer counts on the device; the loop
+  rests when idle and skips conversations nobody shows.
+- **B1–B3** (0.84.0.242): messages in their own context, memoized message
+  views, a stable tool-results map, updates batched per frame, tool JSON
+  parsed once (and the outbox no longer reacts to each word).
+- **A3 (part), A4, C4, C6** (0.85.0.243): memories, skills and the chat gate
+  run side by side; a query is embedded once (10-minute cache in
+  `retrieval::embed`); files read again only once changed
+  (`jsonfile::cached`: devices, users, feedback, diagnoses, known down,
+  routine runs, sessions); the usage log read incrementally.
+
+Still to do: compacting in the background and routing's model fallback as a
+light job (A3), merging the review and capture gates (A2), B4, C5 and C7.
+
 ### Already fixed today
 - **Searching in circles:** near-repeat searches give back the earlier
   results, and there are 8 searches at most per reply (0.78.2.233).

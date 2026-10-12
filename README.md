@@ -1543,6 +1543,24 @@ its own copy of the conversation (`--force` overrides).
   - Without one, or while it's down, background work waits until no reply is
     being written. A reply's own steps (a page's summary, compacting) don't
     wait.
+- **Before a reply, lookups run side by side:** memories, skills and the
+  "just chatting?" check. A message is embedded once and reused (for each tool
+  round, routing and discovery) for 10 minutes.
+- **The server at rest:**
+  - The Status page asks each model server for its model list ("are you
+    there?"), not a real question, and those checks aren't counted as usage.
+  - Devices get only the parts of the status that changed (`status_patch`).
+    The "thinking 4s" timer is counted on the device from `phase_since`.
+  - The loop looks for work 4 times a second when nothing's running (25 while
+    a reply streams), and only conversations a device shows are brought up to
+    date.
+  - Files read often but written rarely (devices, users, feedback, diagnoses,
+    models marked down, routine runs, saved conversations) are read again only
+    once they change. The usage log is read only from where it was left.
+- **The app:** messages live in their own context, so pages that don't show
+  them aren't redrawn for each word. Only the message being written is
+  redrawn, updates are applied once per screen frame, and tool results are
+  parsed once.
 
 ## Web search
 

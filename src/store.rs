@@ -61,6 +61,12 @@ pub fn read_json<T: DeserializeOwned + Default>(path: &Path) -> T {
     JsonStore::<T>::new(path).read()
 }
 
+/// `read_json` for a file read often and written rarely (feedback, the
+/// diagnoses, models marked down …): read again only once it has changed.
+pub fn read_json_cached<T: DeserializeOwned + Default + Clone + Send + 'static>(path: &Path) -> T {
+    lyra_web::jsonfile::cached(path, || Ok(read_json(path))).unwrap_or_default()
+}
+
 /// Change a text file (config.toml, behavior.toml) under its lock: read it
 /// (empty when missing), `change` it, write it atomically, keeping its
 /// permissions (it may hold keys). Two changes at once can't lose each other.

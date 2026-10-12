@@ -78,12 +78,46 @@ impl EmbeddingResponse {
 
 /// Embed `texts` in one request.
 pub fn embed(endpoint: &Endpoint, texts: &[&str]) -> Result<Embeddings, String> {
+    // One query (a message, with what it's looking for): made once, not again
+    // for each tool round or each place that searches with it.
+    let key = match texts {
+        [one] if one.len() <= 8_000 => Some(format!("{}\n{}\n{one}", endpoint.url, endpoint.model)),
+        _ => None,
+    };
+    if let Some(v) = key.as_deref().and_then(cached_query) {
+        return Ok(Embeddings { vectors: vec![v], tokens: 0 });
+    }
     let body = serde_json::json!({ "model": endpoint.model, "input": texts });
     let resp: EmbeddingResponse = endpoint.post("embeddings", body)?;
     if resp.data.len() != texts.len() {
         return Err(format!("asked for {} embeddings, got {}", texts.len(), resp.data.len()));
     }
-    Ok(resp.into_embeddings())
+    let e = resp.into_embeddings();
+    if let (Some(key), Some(v)) = (key, e.vectors.first()) {
+        keep_query(key, v.clone());
+    }
+    Ok(e)
+}
+
+/// Queries embedded lately: (when, key, vector), newest last.
+type QueryCache = Vec<(std::time::Instant, String, Vec<f32>)>;
+static QUERIES: std::sync::Mutex<QueryCache> = std::sync::Mutex::new(Vec::new());
+const QUERIES_KEPT: usize = 64;
+const QUERY_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+fn cached_query(key: &str) -> Option<Vec<f32>> {
+    let mut q = QUERIES.lock().unwrap_or_else(|e| e.into_inner());
+    q.retain(|(at, _, _)| at.elapsed() < QUERY_FOR);
+    q.iter().find(|(_, k, _)| k == key).map(|(_, _, v)| v.clone())
+}
+
+fn keep_query(key: String, v: Vec<f32>) {
+    let mut q = QUERIES.lock().unwrap_or_else(|e| e.into_inner());
+    q.retain(|(_, k, _)| *k != key);
+    if q.len() >= QUERIES_KEPT {
+        q.remove(0);
+    }
+    q.push((std::time::Instant::now(), key, v));
 }
 
 /// Qwen3-Embedding (and similar instruction-tuned embedders) match better when
@@ -231,6 +265,20 @@ mod tests {
         let e = resp.into_embeddings();
         assert_eq!(e.vectors, [vec![0.1, 0.2], vec![0.5, 0.6]]);
         assert_eq!(e.tokens, 5);
+    }
+
+    #[test]
+    fn a_query_is_embedded_once_and_then_reused() {
+        // The fake server answers one request: the second embedding of the
+        // same query must come from the cache.
+        let (url, served) = crate::decide::tests::fake(serde_json::json!({ "data": [{ "index": 0, "embedding": [0.25, 0.5] }], "usage": { "prompt_tokens": 3 } }));
+        let ep = Endpoint { url, model: "embed-test".into(), dimensions: None, price: Default::default() };
+        let first = embed(&ep, &["where is the printer?"]).unwrap();
+        served.join().unwrap();
+        let again = embed(&ep, &["where is the printer?"]).unwrap();
+        assert_eq!(first.vectors, again.vectors);
+        assert_eq!(again.tokens, 0, "nothing was asked of the server");
+        assert!(embed(&ep, &["something else"]).is_err(), "another query still goes to the server");
     }
 
     #[test]

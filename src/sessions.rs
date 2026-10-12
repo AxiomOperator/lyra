@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::{Message, ToolCall};
 
 /// One chat line as saved: what the model saw plus what the UI showed.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SavedMessage {
     pub role: String,
     pub content: String,
@@ -31,7 +31,7 @@ pub struct SavedMessage {
     pub run: Option<crate::outcomes::RunRef>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
     pub started: DateTime<Utc>,
@@ -180,7 +180,9 @@ pub fn list(dir: &Path) -> Vec<Session> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "json") && !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.') || n == "meta.json"))
-        .filter_map(|p| load_file(&p).ok())
+        // Each file read again only once it has changed (the Sessions and
+        // Search pages ask for every one on each visit).
+        .filter_map(|p| lyra_web::jsonfile::cached(&p, || load_file(&p)).ok())
         .filter(|s| s.user_turns() > 0)
         .collect();
     all.sort_by_key(|s| std::cmp::Reverse(s.updated));

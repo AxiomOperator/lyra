@@ -74,6 +74,22 @@ where
     })
 }
 
+/// `spawn` for a scoped thread (one that may borrow): the same person,
+/// conversation and reply, for work done side by side within one step.
+pub fn scoped<'scope, 'env, F, T>(s: &'scope std::thread::Scope<'scope, 'env>, f: F) -> std::thread::ScopedJoinHandle<'scope, T>
+where
+    F: FnOnce() -> T + Send + 'scope,
+    T: Send + 'scope,
+{
+    let (user, job, reply) = (current(), crate::usage::job(), in_reply());
+    s.spawn(move || {
+        set(&user);
+        crate::usage::set_job(job);
+        REPLY.with(|r| r.set(reply));
+        f()
+    })
+}
+
 pub fn current() -> String {
     USER.with(|u| u.borrow().clone())
 }

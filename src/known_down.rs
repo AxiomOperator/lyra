@@ -41,7 +41,7 @@ pub fn all() -> BTreeMap<String, Mark> {
         return BTreeMap::new();
     }
     match path() {
-        Some(p) if p.exists() => store().map(|s| s.load()).unwrap_or_default(),
+        Some(p) if p.exists() => crate::store::read_json_cached(&p),
         _ => BTreeMap::new(),
     }
 }
