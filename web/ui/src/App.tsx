@@ -54,6 +54,7 @@ import {
   Search,
   Timer,
   TrendingUp,
+  AudioLines,
   Briefcase,
   Zap,
   Shield,
@@ -135,6 +136,7 @@ const TodayPage = page(() => import("./lyra/today"), "TodayPage");
 const AgentsPage = page(() => import("./lyra/agents"), "AgentsPage");
 const ProposalsPage = page(() => import("./lyra/proposals"), "ProposalsPage");
 const HealthPage = page(() => import("./lyra/health"), "HealthPage");
+const TalkPage = page(() => import("./lyra/talk"), "TalkPage");
 const ActivityPage = page(() => import("./lyra/pages"), "ActivityPage");
 const DevicesPage = page(() => import("./lyra/pages"), "DevicesPage");
 const MachinesPage = page(() => import("./lyra/pages"), "MachinesPage");
@@ -148,10 +150,10 @@ function Loading() {
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "today" | "agents" | "proposals" | "health" | "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "me" | "running" | "profile";
-const manage: Manage[] = ["today", "agents", "proposals", "health", "me", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings", "running", "profile"];
+type Manage = "talk" | "today" | "agents" | "proposals" | "health" | "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "me" | "running" | "profile";
+const manage: Manage[] = ["talk", "today", "agents", "proposals", "health", "me", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings", "running", "profile"];
 /** What a member (not an admin) has: their chats, day, tasks, activity, skills (Status is admins'). */
-const forMembers: string[] = ["chat", "today", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage", "meetings", "me", "profile"];
+const forMembers: string[] = ["chat", "talk", "today", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage", "meetings", "me", "profile"];
 
 type TabItem = {
   id: Tab;
@@ -164,6 +166,7 @@ type TabItem = {
  *  alone opens at once). Badges add up on the group. */
 const railGroups: { id: string; label: string; icon: typeof MessageSquare; pages: Tab[] }[] = [
   { id: "chat", label: "Chat", icon: MessageSquare, pages: ["chat"] },
+  { id: "talk", label: "Talk", icon: AudioLines, pages: ["talk"] },
   { id: "work", label: "Work", icon: Briefcase, pages: ["today", "tasks", "meetings", "notes", "projects"] },
   { id: "knowledge", label: "Knowledge", icon: Brain, pages: ["memory", "skills"] },
   { id: "automation", label: "Automation", icon: Zap, pages: ["agents", "proposals", "health", "routines", "goals", "coding"] },
@@ -351,7 +354,7 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
           {/* Scrolls on a very short screen, never sideways, without a bar; says when there's more. */}
           <RailScroll>
             {groups.map((g, i) => (
-              <div key={g.id} className={cn("flex flex-col items-center", (i === 2 || g.id === "help") && "mt-0.5 border-sidebar-border border-t pt-1", g.id === "help" && "mt-auto")}>
+              <div key={g.id} className={cn("flex flex-col items-center", (i === 3 || g.id === "help") && "mt-0.5 border-sidebar-border border-t pt-1", g.id === "help" && "mt-auto")}>
                 {g.items.length === 1 ? railItem({ ...g.items[0], label: g.items[0].label }) : railGroup(g.label, g.icon, g.items, g.id)}
               </div>
             ))}
@@ -532,6 +535,7 @@ function Shell() {
   const todayKey = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
   const pmiWaiting = (status.pmi?.waiting.task_transfers?.length ?? 0) + (status.pmi?.waiting.project_transfers?.length ?? 0) + (status.pmi?.waiting.approvals?.length ?? 0);
   const more: TabItem[] = ([
+    { id: "talk", label: "Talk", icon: AudioLines },
     { id: "today", label: "Today", icon: Sun },
     { id: "agents", label: "Agents", icon: Bot },
     { id: "proposals", label: "Proposals", icon: Lightbulb },
@@ -638,6 +642,7 @@ function Shell() {
         <div className="flex min-h-0 flex-1 flex-col">
           <Suspense fallback={<Loading />}>
           {tab === "chat" && <ChatPage />}
+          {tab === "talk" && <TalkPage />}
           {tab === "status" && admin && <StatusPage toMachines={() => setTab("machines")} toChat={() => setTab("chat")} />}
           {tab === "today" && <TodayPage go={(p) => setTab(p as Tab)} />}
           {tab === "agents" && admin && <AgentsPage onBack={toMore} />}

@@ -38,7 +38,7 @@ function recognizer(): (new () => Recognition) | null {
 export const canHandsFree = canSpeak && recognizer() !== null;
 
 /** Whether hands-free can run: the browser's, or lyra's speech servers. */
-function useCanHandsFree() {
+export function useCanHandsFree() {
   const server = useServerSpeech();
   return canHandsFree || (!!server?.stt && !!server?.tts && canRecord);
 }
@@ -111,14 +111,37 @@ export function HandsFreeButton() {
   );
 }
 
+// The Talk page has the voice while it's open: the chat's bar stands aside.
+let talking = false;
+const talkWatchers = new Set<(on: boolean) => void>();
+export function setTalkOpen(on: boolean) {
+  talking = on;
+  talkWatchers.forEach((fn) => fn(on));
+}
+function useTalkOpen() {
+  const [on, set] = useState(talking);
+  useEffect(() => {
+    talkWatchers.add(set);
+    return () => void talkWatchers.delete(set);
+  }, []);
+  return on;
+}
+
+/** Turn hands-free on or off (the Talk page's buttons). */
+export const startHandsFree = () => setWanted(true);
+export const endHandsFree = () => setWanted(false);
+
+export type HandsFree = { on: boolean; state: State; heard: string; resume: () => void; skip: () => void; end: () => void };
+
 /**
  * The loop, while hands-free is on: listens, sends, waits for the reply,
  * reads it, listens again; reads out lyra's questions and takes a spoken
- * yes or no. Shown as a bar above the composer.
+ * yes or no. `active`: this one runs it (one at a time: the chat's bar, or
+ * the Talk page).
  */
-export function HandsFreeBar({ lastReply, waiting, approvals }: { lastReply: { id: string; text: string } | null; waiting: boolean; approvals: Approval[] }) {
+export function useHandsFree({ lastReply, waiting, approvals, active = true }: { lastReply: { id: string; text: string } | null; waiting: boolean; approvals: Approval[]; active?: boolean }): HandsFree {
   const { say, send } = useLyra();
-  const on = useHandsFreeOn();
+  const on = useHandsFreeOn() && active;
   const [state, setState] = useState<State>("off");
   const [heard, setHeard] = useState("");
   const rec = useRef<{ abort: () => void } | null>(null);
@@ -328,7 +351,22 @@ export function HandsFreeBar({ lastReply, waiting, approvals }: { lastReply: { i
   // Leaving the page: nothing keeps listening.
   useEffect(() => () => quiet(), [quiet]);
 
-  if (!on && state === "off") return null;
+  // Stop what's being said (or heard) and listen now.
+  const skip = () => {
+    run.current += 1;
+    quiet();
+    stopSpeaking();
+    misses.current = 0;
+    ear();
+  };
+  return { on, state, heard, resume: () => ((misses.current = 0), ear()), skip, end: () => setWanted(false) };
+}
+
+/** Hands-free as a bar above the composer (while the Talk page isn't open). */
+export function HandsFreeBar({ lastReply, waiting, approvals }: { lastReply: { id: string; text: string } | null; waiting: boolean; approvals: Approval[] }) {
+  const talk = useTalkOpen();
+  const { on, state, heard, resume } = useHandsFree({ lastReply, waiting, approvals, active: !talk });
+  if (talk || (!on && state === "off")) return null;
   return (
     <div className={cn("mx-3 mb-2 flex items-center gap-3 rounded-lg border px-3 py-2 text-sm", state === "approval" ? "border-amber-600/70 bg-amber-950/30" : "border-emerald-700/60 bg-emerald-950/20")} role="status" aria-live="polite">
       {state === "speaking" ? <Volume2 className="size-4 shrink-0 text-emerald-300" /> : <Mic className={cn("size-4 shrink-0 text-emerald-300", state === "listening" && "animate-pulse")} />}
@@ -338,7 +376,7 @@ export function HandsFreeBar({ lastReply, waiting, approvals }: { lastReply: { i
         {state === "listening" && !heard && <div className="text-muted-foreground text-xs">Say what you need, or “stop”.</div>}
       </div>
       {state === "paused" ? (
-        <Button size="sm" variant="secondary" onClick={() => ((misses.current = 0), ear())}>
+        <Button size="sm" variant="secondary" onClick={resume}>
           <Play /> Go on
         </Button>
       ) : null}
@@ -348,6 +386,9 @@ export function HandsFreeBar({ lastReply, waiting, approvals }: { lastReply: { i
     </div>
   );
 }
+
+export const HANDS_FREE_WORDS = WORDS;
+export type HandsFreeState = State;
 
 export function handsFreeState(): State {
   return current;

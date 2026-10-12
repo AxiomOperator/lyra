@@ -33,6 +33,13 @@ impl App {
             self.log(Level::Info, format!("steps first: {}", if self.steps_wait { "on" } else { "off" }));
             return;
         }
+        // The Talk page opened or closed: replies for the ear, or the screen (no echo).
+        if matches!(content.as_str(), "/talk on" | "/talk off") {
+            self.input.clear();
+            self.voice = content == "/talk on";
+            self.log(Level::Info, format!("voice conversation: {}", if self.voice { "on" } else { "off" }));
+            return;
+        }
         if content.is_empty() || self.waiting {
             return;
         }
@@ -129,6 +136,7 @@ impl App {
         let recent_tools: Vec<String> = self.messages[prior_start..before_user].iter().flat_map(|m| m.tool_calls.iter().map(|c| c.function.name.clone())).collect();
         // Cards in the chat (forms, steps) need someone looking at the app.
         let (chat_only, steps_wait, interactive, unattended, effort) = (self.chat_only, self.steps_wait, self.hub.is_some() && !self.unattended, self.unattended, self.effort);
+        let voice = self.voice;
         // Their own tool-call limit, else the shared one (evolved, or behavior.toml).
         // (During a trial, the behavior of this turn's side.)
         let max_rounds = limits::tool_rounds(&owner, self.evolution.as_ref().map(|e| e.behavior_for(run).max_tool_rounds)) as usize;
@@ -176,6 +184,9 @@ impl App {
             }
             if let Some(section) = &style_section {
                 add_to_system(&mut history, section);
+            }
+            if voice {
+                add_to_system(&mut history, SPOKEN);
             }
             if let Some(tools) = &tools {
                 let mine = viewer.as_ref().map(|v| format!("user:{v}"));
@@ -592,6 +603,9 @@ fn fit(history: &mut [Value], room: usize) -> usize {
 }
 
 /// Said to the model when the conversation is set to chat only.
+/// The Talk page: everything lyra says is heard, not read.
+const SPOKEN: &str = "This is a spoken conversation: the person hears your reply read aloud and answers by voice. Answer the way you'd say it: short, plain sentences, the answer first. No lists, tables, headings, code blocks, links or emoji; say numbers and times the way they're spoken. If there's a lot, give the main point and offer more. Ask one question at a time. Things that need to be seen (a long table, code) belong in the chat: say you'll put it there.";
+
 const CHAT_ONLY: &str = "Tools are off in this conversation (the user set it to chat only): answer in words. If they ask for something that needs a tool (mail, calendar, tasks, files, machines), say you can do it once they turn Chat only off.";
 
 /// Said to the model on a turn that's just conversation.

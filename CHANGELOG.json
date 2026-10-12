@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.80.0.235",
+    "date": "2026-10-12",
+    "title": "Talk",
+    "new": [
+      "A new Talk page (its own button on the left, for everyone) is for talking with lyra by voice alone. Tap the circle and talk: lyra hears when you've finished, answers aloud, and listens again. The circle shows when it's listening, thinking and speaking, with captions of what you said and lyra's answer.",
+      "On the Talk page, lyra answers the way you'd say it: short and plain, no lists or tables. Talk over it, or tap the circle, to cut in. Approvals are read out, and you can answer yes or no out loud or with the buttons.",
+      "It's the same conversation as the chat, so what you said is there when you go back. New starts a fresh one."
+    ]
+  },
+  {
     "version": "0.79.0.234",
     "date": "2026-10-12",
     "title": "lyra's own voice",

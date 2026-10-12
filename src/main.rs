@@ -433,6 +433,8 @@ struct App {
     effort: Option<turn::Effort>,
     /// A round of several calls shows its steps first (off: "don't wait next time").
     steps_wait: bool,
+    /// The Talk page is open: replies are spoken, so they're written for the ear.
+    voice: bool,
     /// The next reply comes from this model (`/retry other`): base URL and name.
     next_model: Option<(String, String)>,
     /// Nobody watches this conversation (a routine's run, a diagnosis): no
@@ -625,6 +627,7 @@ impl App {
             chat_only: false,
             effort: None,
             steps_wait: true,
+            voice: false,
             next_model: None,
             unattended: false,
             show_reasoning: true,

@@ -1,0 +1,1 @@
+import{M as e}from"./index-DU-ID6ww.js";export{e as Mermaid};

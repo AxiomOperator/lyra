@@ -1578,6 +1578,18 @@ it's waiting for. What was written so far stays, marked *(stopped)*.
     composer.
   - **Hands-free:** it hears when you stop talking (`vad_enabled`), and
     talking over a reply stops it and listens (`allow_interruptions`).
+  - **Talk** (its own button on the rail, for everyone) is a conversation by
+    voice alone:
+    - tap the circle and talk; it shows when lyra is listening, hearing you,
+      thinking and speaking;
+    - captions show what you said and lyra's answer;
+    - tap while lyra speaks to cut in, End to stop, New for a new
+      conversation;
+    - while it's open, lyra answers for the ear: short, plain sentences, no
+      lists, tables or code;
+    - approvals are read out, answered by a spoken yes or no or the buttons;
+    - it's the same conversation as the chat, so everything said shows
+      there too.
   - **Status:** the Status page shows both servers, and whether Whisper has
     its model.
   - **Falling back:** a server that's down, or doesn't have its model, isn't

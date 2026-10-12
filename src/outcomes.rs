@@ -614,6 +614,21 @@ mod app_tests {
     }
 
     #[test]
+    fn the_talk_page_switches_voice_replies_without_a_trace_in_the_chat() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        config::with_test_home(|home| {
+            let (mut app, _) = app(home, &rt);
+            for (line, on) in [("/talk on", true), ("/talk off", false)] {
+                app.input = line.into();
+                app.send();
+                assert_eq!(app.voice, on);
+            }
+            assert!(app.messages.is_empty(), "nothing in the conversation");
+            assert!(!app.waiting);
+        });
+    }
+
+    #[test]
     fn reviews_wait_in_a_queue_one_per_turn() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         config::with_test_home(|home| {
