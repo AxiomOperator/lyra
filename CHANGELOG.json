@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.81.0.239",
+    "date": "2026-10-12",
+    "title": "Where lyra can be faster",
+    "improved": [
+      "A review of where lyra spends its time and resources, with the changes that would make replies come faster and the server do less when idle, is now in the project's docs."
+    ]
+  },
+  {
     "version": "0.81.0.238",
     "date": "2026-10-12",
     "title": "A clearer sidebar",
