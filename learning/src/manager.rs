@@ -55,6 +55,11 @@ pub struct Settings {
     pub duplicate_threshold: f32,
     pub scoring: Weights,
     pub lifecycle: Policy,
+    /// With embeddings: a skill this similar to the request or more goes in
+    /// the prompt; less similar ones stay out, however few there are.
+    pub relevance_floor: f32,
+    /// Most tokens of skills in one prompt (the best ones first).
+    pub max_skill_tokens: usize,
 }
 
 impl Default for Settings {
@@ -66,6 +71,8 @@ impl Default for Settings {
             duplicate_threshold: 0.6,
             scoring: Weights::default(),
             lifecycle: Policy::default(),
+            relevance_floor: 0.45,
+            max_skill_tokens: 800,
         }
     }
 }
@@ -199,6 +206,81 @@ impl<S: SkillStore> SkillManager<S> {
         Ok(ranked)
     }
 
+    /// Usable skills ranked by a relevance worked out elsewhere (similarity of
+    /// meaning to the request), leaving out those under `floor`.
+    pub async fn search_by(&self, relevance: &HashMap<Uuid, f32>, floor: f32, limit: usize) -> Result<Vec<Ranked>> {
+        let usage = self.ledger.usage().await?;
+        let (now, s) = (Utc::now(), &self.settings);
+        let mut ranked: Vec<Ranked> = self
+            .store
+            .list(None)
+            .await?
+            .into_iter()
+            .filter_map(|mut skill| {
+                let relevance = *relevance.get(&skill.id).filter(|r| **r >= floor)?;
+                let trial = skill.status == SkillStatus::Proposed && s.mode == Mode::Auto && skill.confidence >= s.lifecycle.promote_confidence;
+                if skill.status != SkillStatus::Active && !trial {
+                    return None;
+                }
+                skill.usage = usage.get(&skill.id).copied().unwrap_or_default();
+                let score = scoring::score(&skill, relevance, &s.scoring, now);
+                Some(Ranked { skill, score, trial })
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.score.final_score.total_cmp(&a.score.final_score));
+        ranked.truncate(limit);
+        Ok(ranked)
+    }
+
+    /// Lessons worth sharing (4.3): the same lesson learned on their own by
+    /// two or more people, each with it working at least once, and no shared
+    /// skill like it yet. Each group's skills, the most used first.
+    pub async fn sharing_candidates(&self) -> Result<Vec<Vec<Skill>>> {
+        let all = self.list(None).await?;
+        let mine: Vec<&Skill> = all.iter().filter(|s| s.owner.is_some() && s.status == SkillStatus::Active && s.usage.success_count > 0).collect();
+        let shared: Vec<Skill> = all.iter().filter(|s| s.owner.is_none() && s.status != SkillStatus::Rejected).cloned().collect();
+        let mut used: Vec<Uuid> = Vec::new();
+        let mut out = Vec::new();
+        for (i, a) in mine.iter().enumerate() {
+            if used.contains(&a.id) {
+                continue;
+            }
+            let mut group = vec![(*a).clone()];
+            for b in &mine[i + 1..] {
+                let both = vec![(*a).clone(), (*b).clone()];
+                if b.owner != a.owner && !group.iter().any(|g| g.owner == b.owner) && !curator::duplicates(&both, self.settings.duplicate_threshold).is_empty() {
+                    group.push((*b).clone());
+                }
+            }
+            if group.len() < 2 {
+                continue;
+            }
+            // Shared already (something like it is everyone's).
+            let like_shared = shared.iter().any(|x| {
+                let pair = vec![x.clone(), group[0].clone()];
+                !curator::duplicates(&pair, self.settings.duplicate_threshold).is_empty()
+            });
+            if like_shared {
+                continue;
+            }
+            used.extend(group.iter().map(|g| g.id));
+            group.sort_by_key(|g| std::cmp::Reverse(g.usage.success_count));
+            out.push(group);
+        }
+        Ok(out)
+    }
+
+    /// Note that two skills conflict (the curator's finding, or a person's):
+    /// only the better of them goes into a prompt.
+    pub async fn mark_conflict(&self, a: Uuid, b: Uuid, reason: &str) -> Result<()> {
+        self.ledger.relate(a, b, Relationship::ConflictsWith, reason).await
+    }
+
+    /// Pairs of skills known to conflict (the curator flags them).
+    pub async fn conflicts(&self) -> Result<Vec<(Uuid, Uuid)>> {
+        Ok(self.ledger.relationships().await?.into_iter().filter(|(_, _, kind, _)| *kind == Relationship::ConflictsWith).map(|(a, b, _, _)| (a, b)).collect())
+    }
+
     /// Existing skills (proposed, active or deprecated) most like `text`, for
     /// the reviewer to refine instead of duplicating.
     pub async fn related(&self, text: &str, limit: usize) -> Result<Vec<Skill>> {
@@ -315,14 +397,14 @@ impl<S: SkillStore> SkillManager<S> {
     /// A name someone else already has gets a number.
     pub async fn learn_as(&self, c: Candidate, source: &str, run: Option<Uuid>, owner: Option<&str>) -> Result<Skill> {
         let now = Utc::now();
+        // Whoever's it is, a taken name gets a number: a shared skill and
+        // someone's own one can't share a file (4.3).
         let mut name = c.name.clone();
-        if owner.is_some() {
-            let taken: Vec<String> = self.list(None).await?.into_iter().map(|s| s.name).collect();
-            let mut n = 2;
-            while taken.contains(&name) {
-                name = format!("{}-{n}", c.name);
-                n += 1;
-            }
+        let taken: Vec<String> = self.list(None).await?.into_iter().map(|s| s.name).collect();
+        let mut n = 2;
+        while taken.contains(&name) {
+            name = format!("{}-{n}", c.name);
+            n += 1;
         }
         let skill = Skill {
             id: Uuid::new_v4(),
@@ -848,6 +930,31 @@ mod tests {
         // Her conversations' reviews may refine hers, not the shared one.
         let d = decision(r#"{"action":"update","skill":"rust-commit","description":"x","instructions":"Always run cargo test.","confidence":0.8,"reason":"r"}"#, &["rust-commit"]);
         assert!(matches!(m.apply_as(d, None, "e", Some("dana")).await.unwrap(), Applied::Ignored(_)));
+    }
+
+    #[tokio::test]
+    async fn a_shared_skill_never_takes_someones_name_and_lessons_many_learned_are_offered_for_sharing() {
+        let m = manager(Mode::Propose).await;
+        let danas = m.learn_as(candidate("printer-restart", 0.9), "conversation", None, Some("dana")).await.unwrap();
+        let shared = m.learn(candidate("printer-restart", 0.9), "conversation", None).await.unwrap();
+        assert_eq!(shared.name, "printer-restart-2", "the owner's lesson doesn't overwrite Dana's file");
+        assert!(m.get(danas.id).await.unwrap().is_some());
+        m.decide_as("reject", "printer-restart-2", None, true).await.unwrap();
+        // Juan learned the same on his own; it worked for both of them.
+        let juans = m.learn_as(candidate("printer-restart", 0.9), "conversation", None, Some("juan")).await.unwrap();
+        for (who, s) in [("dana", &danas), ("juan", &juans)] {
+            m.decide_as("approve", &s.name, Some(who), false).await.unwrap();
+            let run = Uuid::new_v4();
+            m.record_usage(run, &[s.id]).await.unwrap();
+            m.record_outcome(run, SkillOutcome::Success, true).await.unwrap();
+        }
+        let groups = m.sharing_candidates().await.unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 2, "two people");
+        // One person alone isn't enough.
+        let solo = m.learn_as(candidate("vpn-fix", 0.9), "conversation", None, Some("dana")).await.unwrap();
+        m.decide_as("approve", &solo.name, Some("dana"), false).await.unwrap();
+        assert_eq!(m.sharing_candidates().await.unwrap().len(), 1);
     }
 
     #[tokio::test]

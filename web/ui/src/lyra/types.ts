@@ -1,6 +1,6 @@
 // What `lyra serve` sends (see src/serve.rs on the Rust side).
 
-export type Role = "user" | "assistant" | "tool" | "agent_tool" | "info" | "error" | "agent" | "approval" | "picture";
+export type Role = "user" | "assistant" | "tool" | "agent_tool" | "info" | "error" | "agent" | "approval" | "picture" | "suggest";
 
 export interface ToolCall {
   id: string;

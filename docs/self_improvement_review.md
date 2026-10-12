@@ -231,6 +231,15 @@ Ordered by value for effort. Phase 1 alone would wake every loop up.
 
 ### Phase 4: learn more kinds of things
 
+**Done in 0.77.0.230.** All of 4.1–4.7 are in place:
+- **4.1** Skills are found by meaning (LanceDB `skills/index/`), with a floor, a token budget, and a conflict's loser left out.
+- **4.2** Avoid notes come from corrections.
+- **4.3** Lessons several people learned are offered for sharing. Shared and personal names no longer collide, and the curator sees no one's personal skill names.
+- **4.4** Routing examples are learned and unlearned, and misrouting is flagged.
+- **4.5** Routines and goals are offered from patterns, with a one-tap card.
+- **4.6** New detectors: the tool-call limit, slow or long replies, workflow mis-triggers, guideline bloat and unhelpful guidelines, memory misses (with a capture review).
+- **4.7** Runs record what was in play, guideline and workflow effects show on the page, and unhelpful memories are proposed for archiving.
+
 | # | Upgrade |
 |---|---|
 | 4.1 | **Embedding skill retrieval with a floor:** reuse the memory embedding provider, store skill vectors in LanceDB with the files unchanged, inject a skill only above a relevance threshold, cap skills at about 800 tokens in all, and leave out the loser of a known conflict. |

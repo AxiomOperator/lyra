@@ -218,6 +218,8 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
             "user" => ("you", Color::Cyan),
             "assistant" => ("lyra", Color::Green),
             "info" => ("system", Color::Magenta),
+        // An offer (a routine, a goal): its last line is the command that does it.
+        "suggest" => ("💡 lyra suggests", Color::Yellow),
             // A specialist agent working for lyra (UI only; not in the history).
             "agent" => ("↪ agent", Color::LightBlue),
             "approval" => ("approval", Color::Yellow),

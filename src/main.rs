@@ -1,6 +1,7 @@
 mod acting;
 mod actions;
 mod alerts;
+mod avoid;
 mod asks;
 mod trouble;
 mod retention;
@@ -43,6 +44,7 @@ mod known_down;
 mod lock;
 mod mem;
 mod outcomes;
+mod patterns;
 mod notes;
 mod people;
 mod plan;
@@ -241,6 +243,8 @@ enum StreamEvent {
     GateClosed { memory: bool },
     /// How a reply went, read from the person's next message (off the loop).
     Judged { run: Uuid, verdict: outcomes::Verdict },
+    /// A routine or goal to offer (4.5): what to say, and the command that does it.
+    Suggest(patterns::Offer),
     /// A backup finished (`nightly` ones only log).
     BackedUp { nightly: bool, result: backup::Made },
     /// The main agent is working with a subagent (routing, progress, result).
@@ -807,6 +811,7 @@ impl App {
                 self.save_session();
                 self.review(false);
                 self.capture(false);
+                self.offer_pattern();
             }
             StreamEvent::Limit(rounds) => {
                 let own = limits::own_tool_rounds(&self.owner).is_some();
@@ -989,6 +994,10 @@ impl App {
                 }
             }
             StreamEvent::Judged { run, verdict } => self.apply_verdict(run, verdict),
+            StreamEvent::Suggest(offer) => {
+                self.log(Level::Plan, format!("offering: {}", offer.command));
+                self.messages.push(Message::new("suggest", format!("{}\n\n{}", offer.text, offer.command)));
+            }
             StreamEvent::GateClosed { memory } => {
                 if memory {
                     self.capturing = false;
@@ -1344,6 +1353,22 @@ impl App {
         }
         if outcome == SkillOutcome::Failure && verdict.correction {
             self.corrected_skills = run.skills.clone();
+            // What not to do next time, on the tool or skill it was about (4.2).
+            if let Some(said) = verdict.said.clone() {
+                let (reply, tools) = self.reply_of(id);
+                let asked = self.messages.iter().rposition(|m| m.run.as_ref().is_some_and(|r| r.id == id)).and_then(|i| self.messages[..i].iter().rev().find(|m| m.role == "user")).map(|m| m.content.clone()).unwrap_or_default();
+                let skills: Vec<String> = run.skills.iter().map(|s| s.trim_end_matches(" (trial)").to_string()).collect();
+                let (url, model, tx, owner) = (format!("{}/chat/completions", self.base_url.trim_end_matches('/')), self.model.clone(), self.tx.clone(), self.personal());
+                crate::acting::spawn(move || {
+                    let Some((tool, skill, note)) = avoid::learn(&url, &model, &asked, &reply, &said, &tools, &skills) else { return };
+                    let text = match avoid::add(tool.as_deref(), skill.as_deref(), &note, owner.as_deref()) {
+                        Ok((a, true)) => format!("learned what to avoid with {}: {}", a.tool.as_deref().or(a.skill.as_deref()).unwrap_or(""), a.note),
+                        Ok((a, false)) => format!("avoid note on {} confirmed again ({}×)", a.tool.as_deref().or(a.skill.as_deref()).unwrap_or(""), a.count),
+                        Err(_) => return,
+                    };
+                    let _ = tx.send(StreamEvent::LearnNotes(vec![text]));
+                });
+            }
         }
         // Were the memories in that reply's prompt helpful? (M13) A partial says neither.
         if run.memories > 0
@@ -1400,6 +1425,39 @@ impl App {
                 None => learning.record_outcome(id, outcome, overwrite).unwrap_or_else(|e| vec![format!("recording outcome failed: {e}")]),
             };
             let _ = tx.send(StreamEvent::LearnNotes(notes));
+        });
+    }
+
+    /// A routine or a goal, when the request shows a pattern (4.5): looked
+    /// for off the loop in this person's own saved conversations.
+    fn offer_pattern(&self) {
+        if self.unattended {
+            return;
+        }
+        let Some(message) = self.messages.iter().rev().find(|m| m.role == "user").map(|m| m.content.clone()) else { return };
+        let (owner, session, tx) = (self.owner.clone(), self.session_id.clone(), self.tx.clone());
+        crate::acting::spawn(move || {
+            let since = chrono::Utc::now() - chrono::Duration::days(14);
+            let earlier: Vec<(String, chrono::DateTime<chrono::Utc>)> = sessions::dir()
+                .map(|d| sessions::list_for(&d, &owner))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|s| s.updated > since && s.kind() == "chat")
+                .flat_map(|s| {
+                    let at = s.updated;
+                    let mine = s.id == session;
+                    let mut asked: Vec<String> = s.messages.into_iter().filter(|m| m.role == "user").map(|m| m.content).collect();
+                    // This conversation: not the message itself.
+                    if mine {
+                        asked.pop();
+                    }
+                    asked.into_iter().map(move |t| (t, at))
+                })
+                .collect();
+            let routines: Vec<String> = crate::acting::run(&owner, crate::routines::list).into_iter().map(|r| r.prompt).collect();
+            if let Some(o) = patterns::offer(&owner, &message, &earlier, &routines) {
+                let _ = tx.send(StreamEvent::Suggest(o));
+            }
         });
     }
 
@@ -1639,6 +1697,9 @@ impl App {
         };
         let reason = if episode {
             Some("the user asked to record this conversation as an episode; summarize it in \"episode\"")
+        } else if outcomes::told_before(&user) {
+            // A memory miss (4.6): what they'd said before is worth keeping now.
+            Some("the person said they had told lyra this before: remember what they said, so it isn't missed again")
         } else {
             capture::trigger(&turn)
         };
@@ -2058,6 +2119,13 @@ impl App {
             let before: Vec<&Message> = self.messages[..start].iter().filter(|m| matches!(m.role.as_str(), "user" | "assistant") && !m.content.trim().is_empty()).collect();
             run.history = before.iter().rev().take(4).rev().map(|m| (m.role.clone(), m.content.chars().take(800).collect())).collect();
         }
+        // What was in play (4.7): guidelines, the workflow, memories; and how it went.
+        if let Some(r) = self.run {
+            (run.guidelines, run.workflow) = evolution.in_play(&turn[0].content, r);
+        }
+        run.memories = self.applied_memories.len();
+        run.reply_chars = turn.iter().rev().find(|m| m.role == "assistant").map_or(0, |m| m.content.chars().count());
+        run.memory_miss = outcomes::told_before(&turn[0].content);
         // During a trial: the side this turn was on.
         let arm = self.run.and_then(|r| evolution.arm(r));
         // Written now (one row), so an outcome that follows at once (Stop, the

@@ -32,6 +32,24 @@ pub struct Learning {
     runtime: Handle,
     /// The skills folder, for messages.
     dir: String,
+    /// The skills' meaning as vectors (4.1), when an embedding model is set up.
+    index: std::sync::RwLock<Option<Arc<SkillIndex>>>,
+}
+
+/// Every skill's text embedded and kept in LanceDB (`skills/index/`), so a
+/// request finds the skills that mean the same thing, not only those sharing
+/// its words. The skill files stay what they are; this is only an index.
+pub struct SkillIndex {
+    index: lyra_capabilities::index::CapabilityIndex,
+    embedder: Arc<dyn lyra_memory::EmbeddingProvider>,
+    /// What was indexed last (so unchanged skills aren't embedded again).
+    synced: std::sync::Mutex<u64>,
+}
+
+impl SkillIndex {
+    pub async fn open(dir: &std::path::Path, embedder: Arc<dyn lyra_memory::EmbeddingProvider>) -> anyhow::Result<Self> {
+        Ok(Self { index: lyra_capabilities::index::CapabilityIndex::open(dir).await?, embedder, synced: Default::default() })
+    }
 }
 
 /// A finished model call (review or curation): what came of it, and the
@@ -43,7 +61,49 @@ pub struct Review<T> {
 
 impl Learning {
     pub fn new(manager: Arc<SkillManager>, runtime: Handle, dir: String) -> Self {
-        Self { manager, runtime, dir }
+        Self { manager, runtime, dir, index: Default::default() }
+    }
+
+    /// Use meaning (vectors) to find skills from now on.
+    pub fn set_index(&self, index: Option<Arc<SkillIndex>>) {
+        *self.index.write().unwrap_or_else(|e| e.into_inner()) = index;
+    }
+
+    /// Each skill's similarity to `message` (indexing what changed first);
+    /// `None` without an index or when the embedding model can't be reached.
+    fn similarity(&self, message: &str) -> Option<std::collections::HashMap<Uuid, f32>> {
+        let idx = self.index.read().unwrap_or_else(|e| e.into_inner()).clone()?;
+        let skills = self.run(self.manager.list(None)).ok()?;
+        let rows: Vec<(String, String)> = skills
+            .iter()
+            .filter(|s| matches!(s.status, SkillStatus::Active | SkillStatus::Proposed))
+            .map(|s| (s.id.to_string(), format!("{}: {}\n{}", s.name, s.description, s.instructions.chars().take(600).collect::<String>())))
+            .collect();
+        let hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            rows.hash(&mut h);
+            h.finish()
+        };
+        let e = idx.embedder.clone();
+        let run = async {
+            let mut synced = idx.synced.lock().unwrap_or_else(|e| e.into_inner()).to_owned();
+            if synced != hash {
+                let missing = idx.index.sync(&rows, Some((e.model(), e.dimensions()))).await?;
+                for chunk in missing.chunks(32) {
+                    let texts: Vec<String> = chunk.iter().map(|(_, t)| t.clone()).collect();
+                    let vectors = e.embed(&texts).await?;
+                    let pairs: Vec<(String, Vec<f32>)> = chunk.iter().map(|(id, _)| id.clone()).zip(vectors).collect();
+                    idx.index.set_vectors(e.model(), &pairs).await?;
+                }
+                synced = hash;
+                *idx.synced.lock().unwrap_or_else(|e| e.into_inner()) = synced;
+            }
+            let v = e.embed_query(message).await?;
+            let found = idx.index.search_vector(e.model(), &v, 50).await?;
+            anyhow::Ok(found.into_iter().filter_map(|(id, sim)| Some((Uuid::parse_str(&id).ok()?, sim))).collect())
+        };
+        self.runtime.block_on(run).ok()
     }
 
     pub fn mode(&self) -> Mode {
@@ -62,11 +122,38 @@ impl Learning {
 
     /// Skills for an agent: global ones and its own (A11, A15); and only the
     /// shared ones and the own of whoever this turn is for.
+    ///
+    /// With an embedding model, skills are found by meaning and only those
+    /// above the relevance floor go in; without one, by their words. Of two
+    /// skills known to conflict, only the better goes in, and all of them
+    /// together stay within `max_skill_tokens` (4.1).
     pub fn relevant_for(&self, agent: Option<&str>, message: &str) -> Result<Vec<Ranked>, String> {
-        let limit = self.manager.settings().max_skills;
-        let found = self.run(self.manager.search(message, limit * 6))?;
+        let settings = self.manager.settings();
+        let limit = settings.max_skills;
+        let found = match self.similarity(message) {
+            Some(rel) => self.run(self.manager.search_by(&rel, settings.relevance_floor, limit * 6))?,
+            None => self.run(self.manager.search(message, limit * 6))?,
+        };
         let viewer = viewer();
-        Ok(found.into_iter().filter(|r| (r.skill.agent.is_none() || r.skill.agent.as_deref() == agent) && r.skill.visible_to(viewer.as_deref())).take(limit).collect())
+        let conflicts = self.run(self.manager.conflicts()).unwrap_or_default();
+        let mut out: Vec<Ranked> = Vec::new();
+        let mut tokens = 0usize;
+        for r in found.into_iter().filter(|r| (r.skill.agent.is_none() || r.skill.agent.as_deref() == agent) && r.skill.visible_to(viewer.as_deref())) {
+            // The loser of a known conflict stays out (the list is best first).
+            if out.iter().any(|w| conflicts.iter().any(|(a, b)| (*a == w.skill.id && *b == r.skill.id) || (*b == w.skill.id && *a == r.skill.id))) {
+                continue;
+            }
+            let size = approx_tokens(&format!("{} {} {}", r.skill.name, r.skill.description, r.skill.instructions)) as usize;
+            if !out.is_empty() && tokens + size > settings.max_skill_tokens {
+                continue;
+            }
+            tokens += size;
+            out.push(r);
+            if out.len() >= limit {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// Make a skill an agent's own (or global again with `None`). Agents are
@@ -157,9 +244,13 @@ impl Learning {
     /// merges, splits and conflicts. Returns notes for the log.
     pub fn curate(&self, url: &str, model: &str, run: Option<Uuid>) -> Review<Vec<String>> {
         let local = (|| -> Result<(lyra_learning::Report, Vec<Skill>), String> {
-            let report = self.run(self.manager.review_collection())?;
-            // The shared collection only: a person's own skills are theirs to keep.
+            let mut report = self.run(self.manager.review_collection())?;
+            // The shared collection only: a person's own skills are theirs to
+            // keep, and their names don't reach the shared curator either.
             let skills: Vec<Skill> = self.run(self.manager.list(None))?.into_iter().filter(|s| s.owner.is_none()).collect();
+            let shared = |n: &String| skills.iter().any(|s| &s.name == n);
+            report.duplicates.retain(|(a, b, _)| shared(a) && shared(b));
+            report.stale.retain(|n| shared(n));
             Ok((report, skills))
         })();
         let (report, skills) = match local {
@@ -178,10 +269,36 @@ impl Learning {
             Ok(r) => r,
             Err(e) => return Review { outcome: Err(e), usage: None },
         };
+        let shared = self.share_lessons(url, model);
         let outcome = curator::parse(&reply)
             .and_then(|plan| self.run(self.manager.apply_plan(plan, run)))
-            .map(|applied| [notes, applied].concat());
+            .map(|applied| [notes, applied, shared].concat());
         Review { outcome, usage }
+    }
+
+    /// Lessons two or more people learned on their own, and that worked for
+    /// each, offered as one shared skill (4.3): written in general terms by
+    /// the model (nobody's details), proposed, for an admin to approve. The
+    /// personal ones stay theirs.
+    pub fn share_lessons(&self, url: &str, model: &str) -> Vec<String> {
+        let Ok(groups) = self.run(self.manager.sharing_candidates()) else { return Vec::new() };
+        let mut notes = Vec::new();
+        for group in groups.into_iter().take(3) {
+            let texts: Vec<String> = group.iter().map(|s| format!("- When: {}\n  How: {}", s.description, s.instructions)).collect();
+            let prompt = format!("{} people each learned this on their own, and it worked for them:\n{}", group.len(), texts.join("\n"));
+            let Ok((reply, _)) = complete_light(url, model, SHARE_PROMPT, &prompt) else { continue };
+            let Some(v) = reply.find('{').zip(reply.rfind('}')).and_then(|(a, b)| serde_json::from_str::<Value>(reply.get(a..=b)?).ok()) else { continue };
+            let (Some(name), Some(when), Some(how)) = (v["name"].as_str(), v["description"].as_str(), v["instructions"].as_str()) else { continue };
+            if lyra_evolution::safety_scan(how).is_some() {
+                continue;
+            }
+            let c = evaluator::Candidate { name: name.trim().to_string(), description: when.trim().to_string(), instructions: how.trim().to_string(), confidence: 0.8, reason: format!("learned on their own by {} people, and it worked for each", group.len()) };
+            match self.run(self.manager.learn_as(c, "shared from people's own skills", None, None)) {
+                Ok(skill) => notes.push(format!("offered for sharing: {} (learned by {} people) · an admin approves it: /approve {}", skill.name, group.len(), skill.name)),
+                Err(e) => notes.push(format!("couldn't offer a shared skill: {e}")),
+            }
+        }
+        notes
     }
 
     /// Whether a scheduled curation is due.
@@ -381,6 +498,11 @@ fn viewer() -> Option<String> {
 }
 
 /// `5 uses · 80% success · reliability 0.71 · confidence 0.85`.
+const SHARE_PROMPT: &str = "\
+You turn lessons several people learned on their own into one skill everyone can use. \
+Write it in general terms: no names, addresses, accounts, file paths or other details of any one person. \
+Reply with JSON only: {\"name\": \"kebab-case-name\", \"description\": \"when it applies\", \"instructions\": \"how to do it, as steps\"}.";
+
 pub fn track_record(s: &Skill) -> String {
     let u = &s.usage;
     let rate = u.success_rate().map_or("no outcomes yet".into(), |r| format!("{:.0}% success", r * 100.0));
@@ -577,6 +699,43 @@ mod tests {
         assert_eq!(turn.user, "No, use the staging server instead");
         assert!(turn.follows_reply);
         assert_eq!((turn.tool_calls, turn.tool_errors, turn.skills_used), (2, 1, 2));
+    }
+
+    #[test]
+    fn skills_are_found_by_meaning_above_a_floor_without_a_conflicts_loser_and_within_a_budget() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = std::env::temp_dir().join(format!("lyra-learn-meaning-{}", Uuid::new_v4()));
+        let settings = lyra_learning::Settings { relevance_floor: 0.3, ..Default::default() };
+        let manager = Arc::new(rt.block_on(SkillManager::open(&dir, settings)).unwrap());
+        let skill = |name: &str, when: &str, how: &str, confidence: f32| {
+            let c = lyra_learning::evaluator::Candidate { name: name.into(), description: when.into(), instructions: how.into(), confidence, reason: "r".into() };
+            let s = rt.block_on(manager.learn_as(c, "conversation", None, None)).unwrap();
+            rt.block_on(manager.approve(&s.name)).unwrap();
+            s
+        };
+        let printer = skill("restart-printer", "When the office printer stops printing", "Power-cycle the printer, then clear the printer queue.", 0.9);
+        let vpn = skill("vpn-reconnect", "When the VPN keeps dropping", "Re-import the VPN profile and reconnect.", 0.9);
+        let other = skill("printer-queue-purge", "When printer jobs pile up", "Purge the printer queue from the print server.", 0.6);
+        let l = Learning::new(manager.clone(), rt.handle().clone(), dir.display().to_string());
+        let names = |l: &Learning, q: &str| l.relevant(q).unwrap().into_iter().map(|r| r.skill.name).collect::<Vec<_>>();
+        // Words only (no index): whatever shares a word comes up.
+        assert!(names(&l, "printer stopped printing").contains(&"restart-printer".to_string()));
+        // By meaning: the printer skills, not the VPN one (under the floor).
+        let fake = lyra_memory::embedding::FakeEmbedder::new("fake", 64);
+        l.set_index(Some(Arc::new(rt.block_on(SkillIndex::open(&dir.join("index"), Arc::new(fake))).unwrap())));
+        let found = names(&l, "the printer stopped printing again");
+        assert!(found.contains(&printer.name) && !found.contains(&vpn.name), "{found:?}");
+        assert!(found.contains(&other.name), "{found:?}");
+        // Known to conflict: only the better one goes in.
+        rt.block_on(manager.mark_conflict(printer.id, other.id, "one restarts, one purges")).unwrap();
+        let found = names(&l, "the printer stopped printing again");
+        assert_eq!(found, vec![printer.name.clone()], "the conflict's loser stays out");
+        assert!(dir.join("index").exists(), "the vectors are kept in LanceDB beside the files");
+        // A small budget: only the best fits.
+        let tight = Arc::new(rt.block_on(SkillManager::open(&dir, lyra_learning::Settings { relevance_floor: 0.3, max_skill_tokens: 5, ..Default::default() })).unwrap());
+        let l2 = Learning::new(tight, rt.handle().clone(), dir.display().to_string());
+        assert_eq!(names(&l2, "printer stopped printing vpn dropping").len(), 1, "within max_skill_tokens");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

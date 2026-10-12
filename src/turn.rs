@@ -123,6 +123,10 @@ impl App {
         // What lyra said last, so "yes, do it" reads as the go-ahead it is.
         let last_reply: String = self.messages.iter().rev().skip(1).find(|m| m.role == "assistant").map(|m| m.content.chars().take(400).collect()).unwrap_or_default();
         let looks = std::mem::take(&mut self.attach_looks);
+        // The tools the turn before used (an avoid note on one may apply now).
+        let before_user = self.messages.len().saturating_sub(1);
+        let prior_start = self.messages[..before_user].iter().rposition(|m| m.role == "user").unwrap_or(0);
+        let recent_tools: Vec<String> = self.messages[prior_start..before_user].iter().flat_map(|m| m.tool_calls.iter().map(|c| c.function.name.clone())).collect();
         // Cards in the chat (forms, steps) need someone looking at the app.
         let (chat_only, steps_wait, interactive, unattended, effort) = (self.chat_only, self.steps_wait, self.hub.is_some() && !self.unattended, self.unattended, self.effort);
         // Their own tool-call limit, else the shared one (evolved, or behavior.toml).
@@ -178,6 +182,12 @@ impl App {
                 apply_memories(&tools.mem, &content, run, &mut history, &tx, mine.as_deref());
             }
             let skills = learning.map(|l| apply_skills(&l, &content, run, &mut history, &tx)).unwrap_or_default();
+            // What corrections taught not to do, for the tools and skills likely now (4.2).
+            let notes = crate::avoid::relevant(viewer.as_deref(), &content, &skills, &recent_tools);
+            if let Some(section) = crate::avoid::section(&notes) {
+                let _ = tx.send(StreamEvent::Log(format!("avoid notes in the prompt: {}", notes.iter().map(|a| a.tool.as_deref().or(a.skill.as_deref()).unwrap_or("")).collect::<Vec<_>>().join(", "))));
+                add_to_system(&mut history, &section);
+            }
             // Just talking (a greeting, a thank-you, "test"): no tools offered but
             // the search for one, so nothing gets sent or changed by a guess.
             let offer = if chat_only {

@@ -658,6 +658,19 @@ pub(crate) fn open_learning(
             let shown = context::show(&dir);
             let status = format!("skills · {shown} · mode {}", c.settings.mode.as_str());
             let learning = Learning::new(Arc::new(manager), runtime.clone(), shown);
+            // With an embedding model, skills are found by meaning (`skills/index/`).
+            let mut status = status;
+            if let Some(endpoint) = config.embedding.clone()
+                && let Ok(provider) = retrieval::EndpointEmbedder::connect(endpoint)
+            {
+                match runtime.block_on(learn::SkillIndex::open(&dir.join("index"), Arc::new(provider.with_instruction(retrieval::CAPABILITY_INSTRUCTION)))) {
+                    Ok(index) => {
+                        learning.set_index(Some(Arc::new(index)));
+                        status += " · found by meaning";
+                    }
+                    Err(e) => status += &format!(" · by keywords (index: {e:#})"),
+                }
+            }
             (Some(Arc::new(learning)), Ok(status))
         }
         Err(e) => (None, Err(format!("learning off: {e:#}"))),

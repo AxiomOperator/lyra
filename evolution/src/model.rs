@@ -82,6 +82,20 @@ pub struct RunRecord {
     /// How its outcome came in: "rated", "signal", "judged" or "hint".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome_source: Option<String>,
+    /// What was in play (4.7): the evolved guidelines in its prompt, the
+    /// workflow that matched, how many memories were recalled into it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guidelines: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
+    #[serde(default)]
+    pub memories: usize,
+    /// How long the reply was, in characters.
+    #[serde(default)]
+    pub reply_chars: usize,
+    /// The person said they'd told lyra before ("I told you…"): memory missed something.
+    #[serde(default)]
+    pub memory_miss: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -112,6 +126,11 @@ impl RunRecord {
             arm: None,
             history: Vec::new(),
             outcome_source: None,
+            guidelines: Vec::new(),
+            workflow: None,
+            memories: 0,
+            reply_chars: 0,
+            memory_miss: false,
             created_at: Utc::now(),
         }
     }
@@ -609,6 +628,9 @@ pub struct Health {
     pub all: Arm,
     pub generations: Vec<GenerationHealth>,
     pub skills: Vec<SkillEffect>,
+    /// Each guideline's and workflow's effect (4.7).
+    pub guidelines: Vec<crate::detect::GuidelineEffect>,
+    pub workflows: Vec<SkillEffect>,
     pub trial: Option<TrialStanding>,
     pub owner_runs: usize,
     /// Everyone else's turns (counted, never shown).

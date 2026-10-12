@@ -131,6 +131,16 @@ impl Evolution {
         }
     }
 
+    /// What a turn had in play (4.7): its side's guidelines and the workflow that matched.
+    pub fn in_play(&self, request: &str, run: Uuid) -> (Vec<String>, Option<String>) {
+        let live = self.live.read().unwrap_or_else(|e| e.into_inner());
+        let (behavior, workflows) = match (self.arm_in(&live, run), &live.control) {
+            (Some(false), Some(c)) => (&c.behavior, &c.workflows),
+            _ => (&live.behavior, &live.workflows),
+        };
+        (behavior.guidelines.clone(), workflow::pick(workflows, request).map(|w| w.name.clone()))
+    }
+
     fn arm_in(&self, live: &Live, run: Uuid) -> Option<bool> {
         live.control.as_ref().map(|c| ((run.as_u128() % 10_000) as f32) / 10_000.0 < c.share)
     }
@@ -445,6 +455,8 @@ pub fn health(env: &Env) -> Result<Value, String> {
         "problems": ops.iter().take(8).map(|o| json!({ "kind": o.kind, "problem": o.problem })).collect::<Vec<_>>(),
         "generations": h.generations,
         "skills": skills,
+        "guidelines": h.guidelines,
+        "workflows": h.workflows,
         "trial": h.trial,
         "tests": lyra_evolution::golden::list(ev.manager.home()).0.len(),
         "pending": ev.manager.candidates(200)?.iter().filter(|c| matches!(c.status, CandidateStatus::Proposed | CandidateStatus::Testing)).count(),

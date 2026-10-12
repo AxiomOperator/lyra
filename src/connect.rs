@@ -380,6 +380,8 @@ fn role_label(role: &str) -> (&'static str, Color) {
         "agent" => ("↪ agent", Color::LightBlue),
         "approval" => ("approval", Color::Yellow),
         "info" => ("system", Color::Magenta),
+        // An offer (a routine, a goal): its last line is the command that does it.
+        "suggest" => ("💡 lyra suggests", Color::Yellow),
         _ => ("error", Color::Red),
     }
 }

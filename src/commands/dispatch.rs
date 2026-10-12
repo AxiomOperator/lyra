@@ -76,6 +76,24 @@ impl App {
         match name {
             "/help" => Ok(format!("{COMMANDS}\n{}\n{}\n{}\n{}\n{HELP_END}", goals::COMMANDS, agents::COMMANDS, evolve::COMMANDS, caps::COMMANDS)),
             // Each person's own skills are theirs to decide; shared ones an admin's.
+            // What corrections taught not to do (4.2): list, or remove one.
+            "/skills" if arg.trim().starts_with("avoid") => {
+                let rest = arg.trim().trim_start_matches("avoid").trim();
+                let viewer = self.personal();
+                let mine: Vec<crate::avoid::Avoid> = crate::avoid::all().into_iter().filter(|a| a.owner.is_none() || a.owner == viewer).collect();
+                match rest.strip_prefix("remove").map(str::trim) {
+                    Some(id) => {
+                        let a = mine.iter().find(|a| !id.is_empty() && a.id.starts_with(id)).ok_or_else(|| format!("no avoid note {id:?}: /skills avoid lists them"))?;
+                        if a.owner.is_none() && !self.admin {
+                            return Err("shared avoid notes are an admin's to remove".into());
+                        }
+                        crate::avoid::remove(&a.id)?;
+                        Ok(format!("removed: {}", a.note))
+                    }
+                    None if mine.is_empty() => Ok("no avoid notes yet: they come from corrections about a tool or a skill".into()),
+                    None => Ok(mine.iter().map(|a| format!("{} {} ({}×{}): {}", a.id, a.tool.as_deref().or(a.skill.as_deref()).unwrap_or(""), a.count, if a.owner.is_some() { ", yours" } else { "" }, a.note)).collect::<Vec<_>>().join("\n") + "\n/skills avoid remove <id> drops one"),
+                }
+            }
             "/skills" => need().and_then(|l| l.describe_for(self.personal().as_deref(), self.admin)),
             "/approve" => need().and_then(|l| l.decide("approve", arg, self.personal().as_deref(), self.admin)),
             "/reject" => need().and_then(|l| l.decide("reject", arg, self.personal().as_deref(), self.admin)),

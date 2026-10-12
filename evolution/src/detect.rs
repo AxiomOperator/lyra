@@ -3,11 +3,11 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::model::{Category, Opportunity, RunKind, RunRecord};
+use crate::model::{Category, Opportunity, RunKind, RunOutcome, RunRecord};
 
 /// How a learned skill is doing, from the skills system.
 /// How a long-lived goal has been going, for spotting goals that keep
@@ -131,6 +131,24 @@ pub struct Thresholds {
     pub agent_min_delegations: u32,
     /// ...that failed or was corrected this share of the time is struggling.
     pub agent_trouble_share: f32,
+    /// Replies stopped at the tool-call limit this often in the window.
+    pub limit_hits: usize,
+    /// A reply this slow (seconds) is slow; this many of them (and a fifth of the runs) is a pattern.
+    pub slow_seconds: u64,
+    pub slow_runs: usize,
+    /// A reply this long (characters) is long; this many of them corrected is a pattern.
+    pub long_chars: usize,
+    pub long_corrected: usize,
+    /// A workflow corrected this many times, at least half the times it ran, mis-triggers.
+    pub workflow_corrections: usize,
+    /// This many guidelines is too many to keep in every prompt.
+    pub max_guidelines: usize,
+    /// A guideline in play for this many judged replies, and as many without it...
+    pub guideline_min_runs: usize,
+    /// ...that does this much worse with it doesn't help.
+    pub guideline_drop: f32,
+    /// "I told you that already" this often in the window.
+    pub memory_misses: usize,
 }
 
 impl Default for Thresholds {
@@ -154,6 +172,16 @@ impl Default for Thresholds {
             goal_blocks: 3,
             agent_min_delegations: 4,
             agent_trouble_share: 0.4,
+            limit_hits: 3,
+            slow_seconds: 90,
+            slow_runs: 3,
+            long_chars: 4000,
+            long_corrected: 2,
+            workflow_corrections: 2,
+            max_guidelines: 10,
+            guideline_min_runs: 10,
+            guideline_drop: 0.15,
+            memory_misses: 2,
         }
     }
 }
@@ -162,6 +190,7 @@ pub fn detect(runs: &[RunRecord], skills: &[SkillHealth], t: &Thresholds) -> Vec
     let mut out = Vec::new();
     let ids = |rs: &[&RunRecord]| rs.iter().map(|r| r.id).collect::<Vec<Uuid>>();
     let tasks = |rs: &[&RunRecord]| rs.iter().filter(|r| !r.task.is_empty()).take(6).map(|r| r.task.clone()).collect::<Vec<_>>();
+    out.extend(detect_more(runs, t));
 
     // Heavy runs: many tool or model calls for one task.
     let heavy: Vec<&RunRecord> = runs
@@ -263,6 +292,120 @@ pub fn detect(runs: &[RunRecord], skills: &[SkillHealth], t: &Thresholds) -> Vec
     out
 }
 
+/// 4.6: the tool-call limit, slow or long replies, workflows that fire on
+/// the wrong requests, too many guidelines (or ones that don't help), and
+/// memory missing what the person had said before.
+pub fn detect_more(runs: &[RunRecord], t: &Thresholds) -> Vec<Opportunity> {
+    let mut out = Vec::new();
+    let chats: Vec<&RunRecord> = runs.iter().filter(|r| r.kind == RunKind::Chat).collect();
+    let ids = |rs: &[&RunRecord]| rs.iter().map(|r| r.id).collect::<Vec<Uuid>>();
+    let share = |n: usize| chats.is_empty() || n * 5 >= chats.len();
+    let limited: Vec<&RunRecord> = chats.iter().copied().filter(|r| r.limited).collect();
+    if limited.len() >= t.limit_hits {
+        out.push(Opportunity {
+            kind: "tool_limit_hits".into(),
+            problem: format!("{} recent replies stopped at the tool-call limit, part done", limited.len()),
+            categories: vec![Category::Configuration, Category::Workflow, Category::Tool, Category::Prompt],
+            evidence: ids(&limited),
+            details: json!({ "tools": limited.iter().take(6).map(|r| r.tools_used.join(" → ")).collect::<Vec<_>>() }),
+        });
+    }
+    let slow: Vec<&RunRecord> = chats.iter().copied().filter(|r| r.duration_ms >= t.slow_seconds * 1000).collect();
+    if slow.len() >= t.slow_runs && share(slow.len()) {
+        let avg = slow.iter().map(|r| r.duration_ms).sum::<u64>() as f32 / slow.len() as f32 / 1000.0;
+        out.push(Opportunity {
+            kind: "slow_replies".into(),
+            problem: format!("{} recent replies took over {}s (avg {avg:.0}s)", slow.len(), t.slow_seconds),
+            categories: vec![Category::Prompt, Category::Configuration, Category::Tool],
+            evidence: ids(&slow),
+            details: json!({ "avg_seconds": avg, "avg_tool_calls": slow.iter().map(|r| r.tool_calls).sum::<u32>() as f32 / slow.len() as f32 }),
+        });
+    }
+    let long: Vec<&RunRecord> = chats.iter().copied().filter(|r| r.reply_chars >= t.long_chars && r.corrected).collect();
+    if long.len() >= t.long_corrected {
+        out.push(Opportunity {
+            kind: "long_replies".into(),
+            problem: format!("{} long replies (over {} characters) were corrected", long.len(), t.long_chars),
+            categories: vec![Category::Prompt],
+            evidence: ids(&long),
+            details: json!({ "feedback": long.iter().filter_map(|r| r.feedback.clone()).take(5).collect::<Vec<_>>() }),
+        });
+    }
+    // A workflow that keeps getting corrected fires on the wrong requests (or misleads).
+    let mut workflows: Vec<&str> = chats.iter().filter_map(|r| r.workflow.as_deref()).collect();
+    workflows.sort();
+    workflows.dedup();
+    for w in workflows {
+        let with: Vec<&RunRecord> = chats.iter().copied().filter(|r| r.workflow.as_deref() == Some(w)).collect();
+        let corrected: Vec<&RunRecord> = with.iter().copied().filter(|r| r.corrected).collect();
+        if corrected.len() >= t.workflow_corrections && corrected.len() * 2 >= with.len() {
+            out.push(Opportunity {
+                kind: "workflow_mistrigger".into(),
+                problem: format!("workflow {w} was corrected {} of the {} times it ran", corrected.len(), with.len()),
+                categories: vec![Category::Workflow],
+                evidence: ids(&corrected),
+                details: json!({ "workflow": w, "tasks": corrected.iter().filter(|r| !r.task.is_empty()).take(5).map(|r| r.task.clone()).collect::<Vec<_>>() }),
+            });
+        }
+    }
+    // Guidelines: too many, or one that doesn't help (replies with it vs without).
+    if let Some(latest) = chats.first().filter(|r| r.guidelines.len() >= t.max_guidelines) {
+        out.push(Opportunity {
+            kind: "guideline_bloat".into(),
+            problem: format!("{} guidelines go into every prompt: too many to all matter", latest.guidelines.len()),
+            categories: vec![Category::Prompt],
+            evidence: Vec::new(),
+            details: json!({ "guidelines": guideline_effects(&chats) }),
+        });
+    }
+    for g in guideline_effects(&chats) {
+        if g.with_judged >= t.guideline_min_runs && g.without_judged >= t.guideline_min_runs && g.without_rate - g.with_rate > t.guideline_drop {
+            out.push(Opportunity {
+                kind: "guideline_unhelpful".into(),
+                problem: format!("replies with the guideline \"{}\" go well {:.0}% of the time vs {:.0}% without it", g.guideline, g.with_rate * 100.0, g.without_rate * 100.0),
+                categories: vec![Category::Prompt],
+                evidence: Vec::new(),
+                details: json!({ "guideline": g.guideline }),
+            });
+        }
+    }
+    let missed: Vec<&RunRecord> = chats.iter().copied().filter(|r| r.memory_miss).collect();
+    if missed.len() >= t.memory_misses {
+        out.push(Opportunity {
+            kind: "memory_misses".into(),
+            problem: format!("{} times recently the person said they'd told lyra before", missed.len()),
+            categories: vec![Category::Configuration, Category::Prompt],
+            evidence: ids(&missed),
+            details: json!({ "hint": "recall_before_answering makes lyra look in its memory first" }),
+        });
+    }
+    out
+}
+
+/// How replies went with each guideline in play, and without it.
+#[derive(Debug, Clone, Serialize)]
+pub struct GuidelineEffect {
+    pub guideline: String,
+    pub with_judged: usize,
+    pub with_rate: f32,
+    pub without_judged: usize,
+    pub without_rate: f32,
+}
+
+pub fn guideline_effects(chats: &[&RunRecord]) -> Vec<GuidelineEffect> {
+    let mut all: Vec<&str> = chats.iter().flat_map(|r| r.guidelines.iter().map(String::as_str)).collect();
+    all.sort();
+    all.dedup();
+    let judged = |r: &&&RunRecord| r.outcome != RunOutcome::Unknown;
+    let rate = |rs: &[&&RunRecord]| if rs.is_empty() { 0.0 } else { rs.iter().filter(|r| r.outcome == RunOutcome::Success).count() as f32 / rs.len() as f32 };
+    all.into_iter()
+        .map(|g| {
+            let (with, without): (Vec<&&RunRecord>, Vec<&&RunRecord>) = chats.iter().filter(judged).partition(|r| r.guidelines.iter().any(|x| x == g));
+            GuidelineEffect { guideline: g.to_string(), with_judged: with.len(), with_rate: rate(&with), without_judged: without.len(), without_rate: rate(&without) }
+        })
+        .collect()
+}
+
 /// C12: capabilities that keep failing or crawl, with the runs that used
 /// them as evidence. Better tools, workflows around them, or guidance on
 /// when (not) to use them can fix that.
@@ -346,6 +489,44 @@ mod tests {
 
     use super::*;
     use crate::model::RunOutcome;
+
+    #[test]
+    fn new_detectors_find_limits_slowness_long_corrections_bad_workflows_unhelpful_guidelines_and_memory_misses() {
+        let t = Thresholds::default();
+        let mut runs = Vec::new();
+        for i in 0..12 {
+            let mut r = run(&format!("task {i}"));
+            r.limited = i < 3;
+            r.duration_ms = if i < 4 { 120_000 } else { 5_000 };
+            r.reply_chars = if i < 2 { 6000 } else { 500 };
+            r.corrected = i < 2 || (4..6).contains(&i);
+            r.workflow = (4..6).contains(&i).then(|| "release".to_string());
+            r.memory_miss = i == 7 || i == 8;
+            runs.push(r);
+        }
+        let kinds = |rs: &[RunRecord]| detect_more(rs, &t).into_iter().map(|o| o.kind).collect::<Vec<_>>();
+        let found = kinds(&runs);
+        for k in ["tool_limit_hits", "slow_replies", "long_replies", "workflow_mistrigger", "memory_misses"] {
+            assert!(found.contains(&k.to_string()), "{k}: {found:?}");
+        }
+        assert!(!found.contains(&"guideline_bloat".to_string()));
+        // A guideline whose replies go worse than those without it.
+        let mut judged = Vec::new();
+        for i in 0..24 {
+            let mut r = run(&format!("judged {i}"));
+            let with = i < 12;
+            r.guidelines = if with { vec!["Answer in one word.".into()] } else { vec![] };
+            r.outcome = if (with && i % 3 == 0) || (!with && i % 4 != 0) { RunOutcome::Success } else { RunOutcome::Failure };
+            judged.push(r);
+        }
+        let found = detect_more(&judged, &t);
+        let g = found.iter().find(|o| o.kind == "guideline_unhelpful").expect("the guideline doesn't help");
+        assert!(g.problem.contains("Answer in one word."), "{}", g.problem);
+        // Too many guidelines in play.
+        let mut bloated = run("x");
+        bloated.guidelines = (0..12).map(|i| format!("rule {i}")).collect();
+        assert!(kinds(&[bloated]).contains(&"guideline_bloat".to_string()));
+    }
 
     fn run(task: &str) -> RunRecord {
         RunRecord::new(RunKind::Chat, task, 1)

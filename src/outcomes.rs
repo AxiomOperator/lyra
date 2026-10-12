@@ -111,6 +111,14 @@ pub fn keep_going(next: &str) -> bool {
     KEEP_GOING.contains(&t.as_str())
 }
 
+/// The person says they'd told lyra this before ("I told you…", "as I said").
+pub fn told_before(message: &str) -> bool {
+    const SAID: &[&str] = &["i told you", "i already told you", "i've told you", "i have told you", "told you already", "told you before", "as i said", "like i said", "i mentioned", "i already said", "i said before", "you should know this", "you should remember"];
+    let t = words(message).join(" ");
+    let t = format!(" {t} ");
+    SAID.iter().any(|p| t.contains(&format!(" {} ", words(p).join(" "))))
+}
+
 /// How long after a reply asking the same again counts as "that didn't do it".
 pub const ASKED_AGAIN: Duration = Duration::from_secs(120);
 
@@ -123,6 +131,14 @@ pub fn same_question(before: &str, now: &str) -> bool {
     let shared = b.iter().filter(|w| a.contains(w)).count();
     let union = a.len() + b.len() - shared;
     shared as f32 / union.max(1) as f32 >= 0.7
+}
+
+/// Two short texts that say much the same (most of their words shared).
+pub fn similar(a: &str, b: &str) -> bool {
+    let (a, b) = (words(a), words(b));
+    let shared = b.iter().filter(|w| a.contains(w)).count();
+    let union = a.len() + b.len() - shared;
+    union > 0 && shared as f32 / union as f32 >= 0.6
 }
 
 fn words(text: &str) -> Vec<String> {
@@ -412,6 +428,15 @@ mod tests {
         assert_eq!(by_words("ok great"), Some(Class::Success));
         assert_eq!(by_words("Thanks but that didn't work"), Some(Class::Correction));
         assert_eq!(by_words("Now do the same for Go"), None);
+    }
+
+    #[test]
+    fn i_told_you_already_is_a_memory_miss() {
+        assert!(told_before("I told you, the server is in rack 3"));
+        assert!(told_before("as I said, it's port 8080"));
+        assert!(told_before("I've told you this before!"));
+        assert!(!told_before("tell me about the server"));
+        assert!(!told_before("she said it was fine"));
     }
 
     #[test]

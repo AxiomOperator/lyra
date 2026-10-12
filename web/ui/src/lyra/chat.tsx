@@ -245,6 +245,8 @@ function MessageView({ m, results, streaming, asking, asks, max, model, turn, id
     case "picture":
       // The browser sandbox's page after a step (for the person; the model never gets it).
       return <BrowserPicture src={m.content} />;
+    case "suggest":
+      return <SuggestCard text={m.content} />;
     case "tool":
     case "agent_tool":
       // Shown with its call; a stray one (no call to attach to) stays small.
@@ -255,6 +257,34 @@ function MessageView({ m, results, streaming, asking, asks, max, model, turn, id
 }
 
 // ---- cards
+
+/** lyra offers a routine or a goal (a pattern in what was asked): one tap
+ *  sets it up (the offer's last line is the command), or it's waved off. */
+function SuggestCard({ text }: { text: string }) {
+  const { say } = useLyra();
+  const [done, setDone] = useState<"yes" | "no" | null>(null);
+  const lines = text.trim().split("\n");
+  const command = lines[lines.length - 1].startsWith("/") ? lines.pop()! : "";
+  return (
+    <Card className="gap-2 border-amber-700/50 bg-amber-950/10 py-3">
+      <CardContent className="space-y-2 px-4 text-sm">
+        <p className="whitespace-pre-wrap">💡 {lines.join("\n").trim()}</p>
+        {command && !done && (
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => say(command) && setDone("yes")}>
+              Yes, set it up
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setDone("no")}>
+              No thanks
+            </Button>
+          </div>
+        )}
+        {done === "yes" && <p className="text-muted-foreground text-xs">Setting it up…</p>}
+        {done === "no" && <p className="text-muted-foreground text-xs">OK: not offered again for a month.</p>}
+      </CardContent>
+    </Card>
+  );
+}
 
 export function ApprovalCard({ a, more }: { a: Approval; more: number }) {
   const { send } = useLyra();

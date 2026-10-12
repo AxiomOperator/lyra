@@ -227,7 +227,7 @@ impl Agents {
     /// Re-index the agents' routing texts (A7). Returns notes.
     pub fn sync(&self) -> Vec<String> {
         let mut notes = self.registry.sync();
-        match self.rt.block_on(self.router.sync(&self.registry.enabled())) {
+        match self.rt.block_on(self.router.sync(&with_learned(self.registry.enabled()))) {
             Ok(n) if n > 0 => notes.push(format!("indexed {n} routing examples")),
             Ok(_) => {}
             Err(e) => notes.push(format!("agent routing index: {e:#}")),
@@ -240,7 +240,8 @@ impl Agents {
     /// `None` keeps it with the main agent.
     pub fn route(&self, env: &Env, message: &str) -> Option<RoutingDecision> {
         let s = self.settings();
-        let agents = self.registry.enabled();
+        // With what good delegations taught them (4.4).
+        let agents = with_learned(self.registry.enabled());
         if let Some(d) = router::explicit(&agents, message) {
             return Some(d);
         }
@@ -1518,7 +1519,9 @@ impl crate::App {
 
     /// The user's reaction to a reply counts for the agents that worked on
     /// it; a correction is reviewed for a lesson that becomes the agent's
-    /// own skill (A14).
+    /// own skill (A14). A good routed delegation teaches routing its task
+    /// as an example (the owner's only: examples are shared); a bad one
+    /// unlearns it, and routing that keeps failing is flagged (4.4).
     pub(crate) fn judge_delegations(&self, run: Uuid, outcome: lyra_learning::SkillOutcome, message: &str) {
         let Some(agents) = self.agents.clone() else { return };
         let word = match outcome {
@@ -1536,6 +1539,21 @@ impl crate::App {
                 return;
             }
             let _ = tx.send(StreamEvent::Log(format!("agents: {word} recorded for {}", records.iter().map(|r| r.agent.as_str()).collect::<Vec<_>>().join(", "))));
+            let mut learned = Vec::new();
+            for r in records.iter().filter(|r| ROUTED.contains(&r.method.as_str())) {
+                match outcome {
+                    lyra_learning::SkillOutcome::Success if owner.is_none() => learned.extend(learn_example(&r.agent, &r.task)),
+                    lyra_learning::SkillOutcome::Failure => {
+                        learned.extend(unlearn_example(&r.agent, &r.task));
+                        learned.extend(misrouted(&agents, &r.agent));
+                    }
+                    _ => {}
+                }
+            }
+            if !learned.is_empty() {
+                agents.sync();
+                let _ = tx.send(StreamEvent::LearnNotes(learned));
+            }
             let Some(learning) = learning.filter(|_| outcome == lyra_learning::SkillOutcome::Failure) else { return };
             for r in records {
                 let transcript = format!("Task given to the {} agent: {}\n\nIts result:\n{}\n\nThe user's reaction: {message}", r.agent, r.task, r.output);
@@ -1875,6 +1893,80 @@ pub fn bench_answer(url: &str, model: &str, p: &AgentProfile, task: &str) -> Res
     Ok((r.text(), tokens))
 }
 
+
+// ---- routing that learns (4.4)
+
+/// How a delegation was routed for it to teach routing (an explicit mention or
+/// a tool call isn't routing's pick).
+const ROUTED: &[&str] = &["rule", "semantic", "model"];
+/// Learned examples kept per agent (the oldest go first).
+const LEARNED_PER_AGENT: usize = 20;
+
+fn learned_store() -> Option<crate::store::JsonStore<std::collections::HashMap<String, Vec<String>>>> {
+    Some(crate::store::JsonStore::new(crate::config::home()?.join("agents").join("learned.json")))
+}
+
+/// Each agent's routing examples learned from delegations that went well.
+pub fn learned() -> std::collections::HashMap<String, Vec<String>> {
+    learned_store().map(|s| s.load()).unwrap_or_default()
+}
+
+/// The profiles with what they learned added to their examples (in memory only).
+fn with_learned(mut agents: Vec<AgentProfile>) -> Vec<AgentProfile> {
+    let learned = learned();
+    for a in &mut agents {
+        if let Some(more) = learned.get(&a.name) {
+            a.delegation.examples.extend(more.iter().cloned());
+        }
+    }
+    agents
+}
+
+/// A task that went well becomes one of its agent's examples (once).
+fn learn_example(agent: &str, task: &str) -> Option<String> {
+    let task: String = task.trim().chars().take(200).collect();
+    if task.split_whitespace().count() < 3 {
+        return None;
+    }
+    learned_store()?
+        .update(|all| {
+            let list = all.entry(agent.to_string()).or_default();
+            if list.iter().any(|x| crate::outcomes::similar(x, &task)) {
+                return None;
+            }
+            list.push(task.clone());
+            if list.len() > LEARNED_PER_AGENT {
+                list.remove(0);
+            }
+            Some(format!("routing learned: requests like \"{}\" go to {agent}", task.chars().take(60).collect::<String>()))
+        })
+        .ok()
+        .flatten()
+}
+
+/// A task that went badly takes back an example like it.
+fn unlearn_example(agent: &str, task: &str) -> Option<String> {
+    learned_store()?
+        .update(|all| {
+            let list = all.get_mut(agent)?;
+            let before = list.len();
+            list.retain(|x| !crate::outcomes::similar(x, task));
+            (list.len() < before).then(|| format!("routing unlearned an example for {agent} (that kind of request went badly)"))
+        })
+        .ok()
+        .flatten()
+}
+
+/// Routing keeps sending an agent work that fails: of its last routed
+/// delegations with an outcome, three or more failed (and most of them).
+fn misrouted(agents: &Agents, agent: &str) -> Option<String> {
+    let recent: Vec<_> = agents.registry.delegations(Some(agent), 30).ok()?.into_iter().filter(|d| ROUTED.contains(&d.method.as_str()) && d.outcome.is_some()).take(8).collect();
+    let failed = recent.iter().filter(|d| d.outcome.as_deref() == Some("failure")).count();
+    (failed >= 3 && failed * 2 > recent.len()).then(|| {
+        format!("⚠ routing sends {agent} work that goes badly: {failed} of its last {} routed tasks failed. Look at its examples and exclusions (/agent show {agent}), or turn off its auto-delegation", recent.len())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
@@ -1942,6 +2034,28 @@ mod tests {
         let (tx, events) = mpsc::channel();
         let env = Env { url: url.into(), model: "m".into(), caps: Some(Arc::new(caps)), tools: Some(tools), learning: None, agents, tx, machine: None, fleet: None, cancel: Default::default(), member: false, viewer: None, owner: "owner".into(), session: "test-conv".into() };
         Fixture { _rt: rt, env, events }
+    }
+
+    #[test]
+    fn good_delegations_teach_routing_and_bad_ones_take_it_back() {
+        crate::config::with_test_home(|_| {
+            assert!(learn_example("writer", "draft a note to the team about friday's outage").is_some());
+            assert!(learn_example("writer", "draft a note to the team about the friday outage").is_none(), "once");
+            assert!(learn_example("writer", "hi").is_none(), "too short to teach anything");
+            let p = lyra_agents::templates::template("writer").expect("a writer template");
+            let routed = with_learned(vec![p.clone()]);
+            assert_eq!(routed[0].delegation.examples.len(), p.delegation.examples.len() + 1);
+            assert!(routed[0].routing_texts().iter().any(|t| t.contains("friday's outage")), "it's indexed for meaning too");
+            assert!(router::rule_score(&routed[0], "draft a note to the team about the outage").0 > router::rule_score(&p, "draft a note to the team about the outage").0);
+            assert!(unlearn_example("writer", "draft a note to the team about friday's outage").is_some());
+            assert!(learned()["writer"].is_empty());
+            let topics = ["budget", "outage", "hiring", "office move", "security", "holiday", "training", "roadmap", "audit", "vendor", "backup", "printer", "network", "payroll", "survey", "launch", "parking", "lunch", "badge", "laptop", "cleanup", "policy", "travel"];
+            for t in topics {
+                let id = || Uuid::new_v4().simple().to_string()[..6].to_string();
+                learn_example("writer", &format!("{t} {} {} {}", id(), id(), id())).unwrap();
+            }
+            assert_eq!(learned()["writer"].len(), LEARNED_PER_AGENT, "capped");
+        });
     }
 
     #[test]

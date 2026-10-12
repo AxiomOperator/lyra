@@ -378,6 +378,12 @@ How it works:
    observed reliability, learned confidence and freshness (weights in
    `[learning.scoring]`) and the best are added to the prompt. Each reply is a
    *run*; the skills it used are recorded and shown under the reply.
+1b. **Finding them.** With an embedding model (`[embedding]`), skills are
+   found by meaning: their text is kept as vectors in `skills/index/`
+   (LanceDB; the files stay as they are). Only those at least
+   `relevance_floor` (0.45) similar to the request go in, together within
+   `max_skill_tokens` (800), and of two skills known to conflict only the
+   better. Without one, by their words.
 2. **Outcomes.** Each reply gets one verdict, and a stronger one replaces a
    weaker one. From strongest to weakest:
    - **Your rating:** 👍 / 👎 under the reply in the app, `+` / `-` in the
@@ -392,7 +398,12 @@ How it works:
    - **Copying it or having it read aloud:** a hint it helped.
 
    Everyone's replies count, each person's for their own skills; only the
-   owner's words reach shared evidence. Reliability is smoothed,
+   owner's words reach shared evidence. Only the skills a reply actually
+   followed get the credit (the decision model or the fallback says which).
+   A correction about a tool or a skill also becomes an **avoid note**
+   (`skills/avoid.json`, `/skills avoid`). The note goes into the prompt
+   whenever that tool or skill is likely: the skill is in it, or the tool was
+   just used or is named by the request. Reliability is smoothed,
    `(successes + 1) / (outcomes + 2)`, so new skills start at 0.5.
 3. **Learning.** After a correction, a failed step that was fixed, a multi-step
    success or "remember how we did this", the model reviews the turn, seeing
@@ -406,6 +417,11 @@ How it works:
 5. **Curation.** `/curate` (weekly by default, `curate =`) looks for
    near-duplicates, stale skills and, with the model's help, merges, splits and
    contradictions. Merges and splits are proposed; conflicts are flagged.
+
+A lesson two or more people learned on their own (their own skills), that
+worked for each of them, is offered at curation as one **shared** skill.
+The model writes it in general terms, with nobody's details, and an admin
+approves it. Their own skills stay theirs.
 
 `mode` decides how much happens on its own:
 
@@ -1832,6 +1848,29 @@ evidence about its own runs, progressively and reversibly. Built following
     not. A trial clearly losing half way stops early.
   - `/evolve trial` shows how it stands, `/evolve keep` keeps it now, and
     `/evolve rollback` ends it. Nothing else deploys while one runs.
+- **What's in play** is recorded on each run: the guidelines, the workflow
+  that matched, how many memories were recalled, the reply's length.
+  - New detectors use it: replies stopped at the tool-call limit, slow
+    replies, long replies that get corrected, a workflow corrected at least
+    half the times it ran, too many guidelines, a guideline whose replies go
+    worse than those without it, and "I told you that already". That last
+    one also starts a memory capture review at once.
+  - The How lyra is doing page shows each guideline's and workflow's effect.
+  - A memory that was in three replies that went badly, and never one that
+    went well, is proposed for archiving.
+- **Routing learns:**
+  - A routed delegation that went well (the owner's) adds its task to that
+    agent's examples, in `agents/learned.json`: up to 20 per agent, no
+    repeats.
+  - One that went badly takes a similar example back.
+  - Routing that keeps sending an agent failing work is flagged.
+- **Routines and goals from patterns:**
+  - Something asked three times in two weeks, or meant to recur ("keep an
+    eye on…", "every morning…"), is offered as a routine, with a time worked
+    out from when you asked.
+  - A lasting aim ("my goal is…") is offered as a goal.
+  - It's a card in the chat that sets it up in one tap, and isn't offered
+    again for 30 days.
 - **Your settings stay yours.** A change on the Settings page (or
   `/settings`) to a behavior setting is a generation of its own, and a
   rollback keeps what you set by hand. Tool calls per reply have one range

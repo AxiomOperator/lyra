@@ -52,6 +52,8 @@ interface Health {
   problems: { kind: string; problem: string }[];
   generations: { number: number; reason: string; created_at: string; trial: Trial | null; record: Arm }[];
   skills: { name: string; with: Arm; without: Arm }[];
+  guidelines: { guideline: string; with_judged: number; with_rate: number; without_judged: number; without_rate: number }[];
+  workflows: { name: string; with: Arm; without: Arm }[];
   trial: { generation: number; parent: number; trial: Arm; control: Arm; needed: number; share: number; started: string } | null;
   tests: number;
   pending: number;
@@ -212,6 +214,33 @@ export function HealthPage({ onBack }: { onBack: () => void }) {
                     <span className="font-mono text-xs">{s.name}</span>
                     <span className="text-xs">
                       with it {pct(s.with)} ({s.with.judged}/{s.with.runs}) · without {pct(s.without)}
+                    </span>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
+          {(data.guidelines.length > 0 || data.workflows.length > 0) && (
+            <Card className="gap-2 py-3">
+              <CardHeader className="px-4">
+                <CardTitle className="text-sm">Guidelines and workflows</CardTitle>
+                <CardDescription>How replies went with each of lyra's own guidelines and workflows in play, and without them. One that doesn't help is proposed for removal.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-1 px-4 text-sm">
+                {data.guidelines.map((g) => (
+                  <div key={g.guideline} className="flex flex-wrap items-baseline justify-between gap-x-3">
+                    <span className="min-w-0 flex-1 break-words text-xs">{g.guideline}</span>
+                    <span className="text-xs">
+                      with it {g.with_judged ? `${Math.round(g.with_rate * 100)}%` : "—"} ({g.with_judged}) · without {g.without_judged ? `${Math.round(g.without_rate * 100)}%` : "—"} ({g.without_judged})
+                    </span>
+                  </div>
+                ))}
+                {data.workflows.map((w) => (
+                  <div key={w.name} className="flex flex-wrap items-baseline justify-between gap-x-3">
+                    <span className="font-mono text-xs">workflow {w.name}</span>
+                    <span className="text-xs">
+                      when it ran {pct(w.with)} ({w.with.judged}/{w.with.runs}) · otherwise {pct(w.without)}
                     </span>
                   </div>
                 ))}

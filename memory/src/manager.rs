@@ -189,6 +189,9 @@ pub struct Report {
     pub stale: Vec<Uuid>,
 }
 
+/// A memory in this many replies that went badly (and none that went well) is proposed for archiving.
+const UNHELPFUL_TIMES: u64 = 3;
+
 pub struct MemoryManager {
     store: Box<dyn MemoryStore>,
     /// Replaceable at runtime (a config reload).
@@ -996,6 +999,14 @@ impl MemoryManager {
             for id in stale.iter().filter(|i| !merged.contains(i)) {
                 notes.push(self.propose_or_apply(MemoryChange::Archive { memory: *id }, "unused and not important", run).await?);
             }
+            // In replies that kept going badly and never one that went well (4.7).
+            let usage = self.store.usage().await?;
+            for m in all.iter().filter(|m| !merged.contains(&m.id) && !stale.contains(&m.id) && m.importance < 0.9) {
+                if let Some(u) = usage.get(&m.id).filter(|u| u.unhelpful >= UNHELPFUL_TIMES && u.helpful == 0) {
+                    let why = format!("in {} replies that went badly, and never one that went well", u.unhelpful);
+                    notes.push(self.propose_or_apply(MemoryChange::Archive { memory: m.id }, &why, run).await?);
+                }
+            }
             for c in plan.contradictions {
                 let Some(found) = resolve(&c.memories).filter(|f| f.len() == 2) else { continue };
                 // One person's memory never marks another's (or the owner's) as contradicted.
@@ -1514,6 +1525,22 @@ mod tests {
         assert_eq!(m.get(a.id).await.unwrap().unwrap().status, MemoryStatus::Superseded);
         assert_eq!(m.get(other.id).await.unwrap().unwrap().status, MemoryStatus::Active, "never across scopes");
         assert!(m.proposals().await.unwrap().is_empty(), "nothing waits: the merged one isn't archived either");
+    }
+
+    #[tokio::test]
+    async fn a_memory_that_never_helps_is_offered_for_archiving() {
+        let m = manager(Settings::default()).await;
+        let a = m.remember(fact("user", "The printer is on floor 3.")).await.unwrap().memory().clone();
+        for _ in 0..3 {
+            let run = Uuid::new_v4();
+            let c = m.compile("where is the printer floor", run, None).await.unwrap();
+            assert!(c.used.iter().any(|r| r.memory.id == a.id), "it was in the prompt");
+            m.feedback(run, false).await.unwrap();
+        }
+        let notes = m.apply_curation(curator::Plan::default(), &[], None).await.unwrap();
+        assert!(notes.iter().any(|n| n.contains("3 replies that went badly")), "{notes:?}");
+        assert_eq!(m.get(a.id).await.unwrap().unwrap().status, MemoryStatus::Active, "proposed, not done");
+        assert_eq!(m.proposals().await.unwrap().len(), 1);
     }
 
     #[tokio::test]

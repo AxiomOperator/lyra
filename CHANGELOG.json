@@ -1,5 +1,24 @@
 [
   {
+    "version": "0.77.0.230",
+    "date": "2026-10-11",
+    "title": "lyra learns more kinds of things",
+    "new": [
+      "When you correct lyra about how it used a tool or a skill, it keeps a short note on what to avoid, and reminds itself whenever that tool or skill is likely to come up again. /skills avoid lists the notes.",
+      "lyra notices patterns. Ask for the same thing three times in two weeks, or ask it to keep an eye on something every morning, and it offers to make it a routine. Say what you're aiming for and it offers to keep it as a goal. Either way, one tap sets it up.",
+      "A lesson that two or more people each learned on their own, and that worked for them, is offered to an admin as one skill for everyone, written without anyone's details.",
+      "Agents get better at being picked: a task an agent handled well becomes one of its examples, and one it handled badly is taken back. lyra flags an agent that keeps getting the wrong work."
+    ],
+    "improved": [
+      "Skills are now found by what they mean, not just their words, and only the ones that really fit go in. If two skills disagree, only the better one is used, and all of them together stay short.",
+      "lyra spots more problems in itself: replies that hit the tool-call limit, slow replies, long ones that get corrected, workflows that fire on the wrong requests, too many or unhelpful guidelines, and \"I told you that already\". That last one also gets it to remember what you'd said.",
+      "The How lyra is doing page shows how replies go with each of lyra's own guidelines and workflows in play, and a memory that keeps turning up in replies that go badly is offered for archiving."
+    ],
+    "fixed": [
+      "A shared skill could take the same name as someone's personal one. Now it gets a number, and the shared curator no longer sees anyone's personal skill names."
+    ]
+  },
+  {
     "version": "0.76.0.229",
     "date": "2026-10-11",
     "title": "lyra looks after itself every week",

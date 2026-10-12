@@ -672,8 +672,20 @@ impl EvolutionManager {
                 SkillEffect { name, with: Arm::of(&with), without: Arm::of(&without) }
             })
             .collect();
+        let mut flows: Vec<String> = runs.iter().filter_map(|r| r.workflow.clone()).collect();
+        flows.sort();
+        flows.dedup();
+        let workflows = flows
+            .into_iter()
+            .map(|name| {
+                let (with, without): (Vec<RunRecord>, Vec<RunRecord>) = runs.iter().cloned().partition(|r| r.workflow.as_deref() == Some(name.as_str()));
+                SkillEffect { name, with: Arm::of(&with), without: Arm::of(&without) }
+            })
+            .collect();
+        let refs: Vec<&RunRecord> = runs.iter().collect();
+        let guidelines = crate::detect::guideline_effects(&refs);
         let others = runs.iter().filter(|r| r.person.is_some()).count();
-        Ok(Health { weeks: buckets, sources, all, generations, skills, trial: self.trial_standing()?, owner_runs: runs.len() - others, other_runs: others })
+        Ok(Health { weeks: buckets, sources, all, generations, skills, guidelines, workflows, trial: self.trial_standing()?, owner_runs: runs.len() - others, other_runs: others })
     }
 
     // ---- trials (E8)

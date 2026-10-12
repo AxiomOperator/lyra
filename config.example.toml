@@ -147,6 +147,8 @@ currency = "$"
 # dir = "~/.lyra/skills"    # default
 # min_confidence = 0.6      # drop lessons the reviewer is less sure of
 # max_skills = 3            # skills added to the prompt per message
+# relevance_floor = 0.45    # with embeddings: skills less similar to the request stay out
+# max_skill_tokens = 800    # most tokens of skills in one prompt
 #
 # [learning.scoring]        # how skills are ranked for a message
 # relevance = 0.50
@@ -203,6 +205,16 @@ currency = "$"
 # goal_blocks = 3
 # agent_min_delegations = 4
 # agent_trouble_share = 0.4
+# limit_hits = 3            # replies stopped at the tool-call limit
+# slow_seconds = 90         # a reply this slow is slow...
+# slow_runs = 3             # ...this many of them is a pattern
+# long_chars = 4000         # a reply this long is long...
+# long_corrected = 2        # ...this many of them corrected is a pattern
+# workflow_corrections = 2  # a workflow corrected this often (half its runs) mis-triggers
+# max_guidelines = 10       # more guidelines than this is too many
+# guideline_min_runs = 10   # replies with and without a guideline before it's judged...
+# guideline_drop = 0.15     # ...and how much worse with it means it doesn't help
+# memory_misses = 2         # "I told you that already" this often
 #
 # [evolution.fitness]       # benchmark weights
 # success = 0.4
