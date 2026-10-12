@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.75.0.228",
+    "date": "2026-10-11",
+    "title": "A live check for the blind comparison",
+    "improved": [
+      "The blind side-by-side comparison of lyra's proposed changes has been checked against real models: answers from the main model, judged by the fallback, which correctly turned down a worse change."
+    ]
+  },
+  {
     "version": "0.75.0.227",
     "date": "2026-10-11",
     "title": "lyra measures its own changes properly",

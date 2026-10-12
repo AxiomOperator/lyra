@@ -1989,6 +1989,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
+    /// The pairwise benchmark against real models: answers from one, judged
+    /// by another (the fallback). Opt in with `LYRA_LIVE_URL=… LYRA_LIVE_MODEL=…
+    /// LYRA_LIVE_JUDGE_URL=… LYRA_LIVE_JUDGE_MODEL=… cargo test live_pairwise_benchmark -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_pairwise_benchmark() {
+        let var = |k: &str| std::env::var(k).ok();
+        let (Some(url), Some(model), Some(judge_url), Some(judge)) = (var("LYRA_LIVE_URL"), var("LYRA_LIVE_MODEL"), var("LYRA_LIVE_JUDGE_URL"), var("LYRA_LIVE_JUDGE_MODEL")) else { return };
+        crate::learn::configure(crate::learn::Structured { max_tokens: 2048, thinking: false });
+        crate::fallback::configure(Some(crate::fallback::Settings { url: judge_url, model: judge.clone(), background: false, price: Default::default() }), None);
+        crate::config::with_test_home(|home| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let manager = EvolutionManager::open(home, rt.handle().clone(), Default::default()).unwrap();
+            let ev = Arc::new(Evolution::new(manager, rt.handle().clone(), None, 2).with_samples(1));
+            add_test(&ev, "Explain in a few sentences why backups should be tested by restoring them.", None, vec![], "added").unwrap();
+            add_test(&ev, "List three things to check before restarting a production database server.", None, vec![], "added").unwrap();
+            let op = lyra_evolution::Opportunity { kind: "k".into(), problem: "answers are too long".into(), categories: vec![Category::Prompt], evidence: vec![], details: json!({}) };
+            let change = Change::Prompt { add: vec!["Answer every request in exactly one word, even when more is needed.".into()], remove: vec![] };
+            let c = ev.manager.propose(&op, vec![evolver::Proposal { change, rationale: "shorter".into(), confidence: 0.5 }]).unwrap().remove(0);
+            let env = Env { url: format!("{}/chat/completions", url.trim_end_matches('/')), model, evolution: ev, tools: None, learning: None, caps: None, goals: None, system_prompt: None };
+            let t = test(&env, c);
+            for n in &t.notes {
+                println!("{n}");
+            }
+            let cmp = t.candidate.expect("tested").validation.expect("validated").comparison.expect("judged pair by pair");
+            assert_eq!(cmp.judge, judge, "the fallback judged, not the model under test");
+            assert_eq!(cmp.wins + cmp.losses + cmp.ties, 2, "{cmp:?}");
+            assert!(!cmp.passes, "one-word answers shouldn't win: {cmp:?}");
+        });
+        crate::fallback::configure(None, None);
+    }
+
     /// A tiny web server answering every request with `body`.
     fn serve(body: &'static str) -> String {
         use std::io::{Read, Write};
