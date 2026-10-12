@@ -12,7 +12,7 @@ import { AudioLines, Loader2, Mic, Pause, Plus, Square, Volume2 } from "lucide-r
 import { useEffect, useMemo } from "react";
 import { endHandsFree, HANDS_FREE_WORDS, setTalkOpen, startHandsFree, useCanHandsFree, useHandsFree, type HandsFreeState } from "./handsfree";
 import { useServerSpeech } from "./speech";
-import { useLyra } from "./store";
+import { useLyra, usePhase } from "./store";
 import { speakable, VoiceButton } from "./voice";
 
 const LOOK: Record<HandsFreeState, { ring: string; core: string; label: string }> = {
@@ -34,6 +34,7 @@ export function TalkPage() {
     for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "assistant" && messages[i].content.trim()) return { id: `${status.session ?? ""}-${i}`, text: messages[i].content };
     return null;
   }, [messages, status.session]);
+  const phase = usePhase(status);
   const hf = useHandsFree({ lastReply, waiting: !!status.waiting, approvals, active: true });
 
   // The page has the voice: the chat's hands-free bar stands aside, and lyra
@@ -61,7 +62,7 @@ export function TalkPage() {
     // Speaking (or hearing nothing useful): straight to listening.
     if (hf.state === "speaking" || hf.state === "listening") return hf.skip();
   };
-  const word = !hf.on ? (can ? "Tap the circle and talk" : "") : hf.state === "waiting" && status.phase ? status.phase.replace(/^↪\s*/, "") : HANDS_FREE_WORDS[hf.state];
+  const word = !hf.on ? (can ? "Tap the circle and talk" : "") : hf.state === "waiting" && phase ? phase.replace(/^↪\s*/, "") : HANDS_FREE_WORDS[hf.state];
 
   return (
     <div className="flex h-full min-h-0 flex-col">

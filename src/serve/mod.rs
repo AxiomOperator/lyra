@@ -191,7 +191,10 @@ pub(crate) fn catch_stop() {
 fn status(app: &App, machines: &[String]) -> Value {
     let active = app.agents.as_ref().map(|a| a.active.lock().map(|v| v.clone()).unwrap_or_default()).unwrap_or_default();
     json!({
-        "phase": crate::ui::phase_text(app),
+        // The timer after it ("thinking 4s") is counted up on the device, from
+        // `phase_since`: the status doesn't change every second.
+        "phase": crate::ui::phase_word(app).0,
+        "phase_since": crate::ui::phase_word(app).1.then(|| app.phase_at.timestamp_millis()),
         "waiting": app.waiting,
         "can_continue": app.can_continue && !app.waiting,
         // Keep going (after an error, with work done), Try again (nothing done), Continue (the limit).
@@ -329,8 +332,8 @@ impl Mirror {
             map.extend(extra.clone());
         }
         if s != self.status {
-            self.status = s.clone();
-            out.push(json!({ "type": "status", "status": s }));
+            out.push(status_change(&self.status, &s));
+            self.status = s;
         }
         out
     }
@@ -343,6 +346,17 @@ impl Mirror {
             .collect();
         json!({ "type": "snapshot", "seq": seq, "messages": self.sent, "status": self.status, "commands": commands, "app_version": app_version, "session_id": self.session })
     }
+}
+
+/// Only the parts of the status that changed (`set`, `unset`); the whole of
+/// it the first time.
+fn status_change(before: &Value, now: &Value) -> Value {
+    let (Some(old), Some(new)) = (before.as_object(), now.as_object()) else {
+        return json!({ "type": "status", "status": now });
+    };
+    let set: serde_json::Map<String, Value> = new.iter().filter(|(k, v)| old.get(*k) != Some(v)).map(|(k, v)| (k.clone(), v.clone())).collect();
+    let unset: Vec<&String> = old.keys().filter(|k| !new.contains_key(*k)).collect();
+    json!({ "type": "status_patch", "set": set, "unset": unset })
 }
 
 /// Text added to the end of a message (a reply streaming in) is sent as just
@@ -466,6 +480,9 @@ impl Conv {
 
 /// Unopened conversations nobody looks at are put away after this long.
 const IDLE: Duration = Duration::from_secs(15 * 60);
+/// How long the loop rests when nothing's being worked on (a message from a
+/// device still wakes it at once): 4 looks a second, not 25.
+const REST_MS: u64 = 250;
 
 /// A person's conversations act with the role they have now (an admin made
 /// a member loses admin rights at once, also where they were already talking).
@@ -686,6 +703,19 @@ pub fn service_unit(binary: &str, system: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_status_change_sends_only_what_changed() {
+        use serde_json::json;
+        let first = super::status_change(&serde_json::Value::Null, &json!({ "phase": "● idle" }));
+        assert_eq!(first["type"], "status", "the first time, all of it");
+        let before = json!({ "phase": "● idle", "board": { "tasks": [1, 2, 3] }, "asks": [1] });
+        let now = json!({ "phase": "◐ thinking", "phase_since": 5, "board": { "tasks": [1, 2, 3] } });
+        let p = super::status_change(&before, &now);
+        assert_eq!(p["type"], "status_patch");
+        assert_eq!(p["set"], json!({ "phase": "◐ thinking", "phase_since": 5 }), "the board didn't change, so it isn't sent");
+        assert_eq!(p["unset"], json!(["asks"]));
+    }
 
     #[test]
     fn members_get_their_own_pages_and_never_an_admins() {

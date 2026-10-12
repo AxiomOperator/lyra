@@ -249,11 +249,12 @@ pub fn gate(what: &str, state: &str, question: &str, light: (&str, &str)) -> Opt
     Some((yes, "the fallback model"))
 }
 
-/// For Status: one tiny question, timed, without counting or logging it.
+/// For Status: is it there? (its model list: no question, nothing counted
+/// or logged, so a check every minute costs the model nothing).
 pub fn probe() -> Option<Result<(u64, String), String>> {
     let settings = SETTINGS.read().unwrap_or_else(|e| e.into_inner()).clone()?;
     let started = Instant::now();
-    Some(call(&settings, "The server answered the health check.", &[("q".into(), Question::Yes("Did the server answer?".into()))]).map(|_| (started.elapsed().as_millis() as u64, settings.model.clone())))
+    Some(crate::models(&settings.url).map(|_| (started.elapsed().as_millis() as u64, settings.model.clone())))
 }
 
 pub fn url() -> Option<String> {

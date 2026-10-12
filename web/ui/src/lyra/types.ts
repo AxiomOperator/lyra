@@ -102,6 +102,8 @@ export interface Status {
   /** This conversation's task board, shared by lyra and its agents (see chat-parts2's BoardView). */
   board?: unknown;
   phase?: string;
+  /** When the phase began (ms), for its timer: counted up here. */
+  phase_since?: number | null;
   waiting?: boolean;
   /** The last reply stopped at its tool-call limit, or on an error: Continue picks it up. */
   can_continue?: boolean;

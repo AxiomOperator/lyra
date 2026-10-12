@@ -117,6 +117,15 @@ fn ago(t: DateTime<Utc>) -> String {
 
 // ---- what a check pass needs, taken from the app (cheap), probed elsewhere
 
+/// A model server that answered its model list: up, saying what it has.
+fn listed(model: &str, offered: &[String]) -> (State, String) {
+    if offered.is_empty() || offered.iter().any(|m| m == model) {
+        (State::Up, model.to_string())
+    } else {
+        (State::Up, format!("{model} (it lists {})", offered.iter().take(3).cloned().collect::<Vec<_>>().join(", ")))
+    }
+}
+
 /// A speech server's models (`GET /models`).
 fn speech_models(url: &str) -> Result<Vec<String>, String> {
     let c = reqwest::blocking::Client::builder().connect_timeout(std::time::Duration::from_secs(4)).timeout(std::time::Duration::from_secs(10)).build().map_err(|e| e.to_string())?;
@@ -282,9 +291,8 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
             &mut jobs,
             Box::new(move || {
                 let target = host(&ep.url);
-                vec![check("embedding", "Models", "Embedding", &target, move || {
-                    crate::retrieval::embed(&ep, &["status check"]).map(|e| (State::Up, format!("{} · {} dims", ep.model, e.vectors.first().map_or(0, Vec::len))))
-                })]
+                // "Are you there?" (its model list), not an embedding every minute.
+                vec![check("embedding", "Models", "Embedding", &target, move || crate::models(&ep.url).map(|offered| listed(&ep.model, &offered)))]
             }),
         ),
         None => out.push(probe("embedding", "Models", "Embedding", "", State::Off, None, "not set up ([embedding]): memory uses keywords only")),
@@ -294,16 +302,7 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
             &mut jobs,
             Box::new(move || {
                 let target = host(&ep.url);
-                vec![check("reranker", "Models", "Reranker", &target, move || {
-                    let docs = ["Bananas are yellow.", "Rust is a systems programming language."];
-                    crate::retrieval::rerank(&ep, "What is Rust?", &docs).map(|r| {
-                        if r.first().is_some_and(|top| top.index == 1) {
-                            (State::Up, ep.model.clone())
-                        } else {
-                            (State::Degraded, "answers, but ranked a test query wrongly".into())
-                        }
-                    })
-                })]
+                vec![check("reranker", "Models", "Reranker", &target, move || crate::models(&ep.url).map(|offered| listed(&ep.model, &offered)))]
             }),
         ),
         None => out.push(probe("reranker", "Models", "Reranker", "", State::Off, None, "not set up ([reranker])")),

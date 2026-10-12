@@ -130,8 +130,8 @@ async fn ask(c: &RemoteConfig, text: &str) -> Result<String, String> {
                     return Err(m["content"].as_str().unwrap_or("lyra failed").to_string());
                 }
             }
-            "status" if v["status"]["approvals"].as_array().is_some_and(|a| !a.is_empty()) => {
-                let a = &v["status"]["approvals"][0];
+            "status" | "status_patch" if v["status"]["approvals"].as_array().or(v["set"]["approvals"].as_array()).is_some_and(|a| !a.is_empty()) => {
+                let a = if v["status"].is_null() { &v["set"]["approvals"][0] } else { &v["status"]["approvals"][0] };
                 return Ok(format!("lyra is waiting for the user's approval in its app ({} {}): {}", a["agent"].as_str().unwrap_or(""), a["what"].as_str().unwrap_or(""), a["detail"].as_str().unwrap_or("")));
             }
             _ => {}

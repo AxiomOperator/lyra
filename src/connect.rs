@@ -109,6 +109,18 @@ impl View {
                 self.rendered = vec![None; self.messages.len()];
             }
             "status" => self.status = m["status"].clone(),
+            // Only what changed.
+            "status_patch" => {
+                if !self.status.is_object() {
+                    self.status = json!({});
+                }
+                if let (Some(st), Some(set)) = (self.status.as_object_mut(), m["set"].as_object()) {
+                    st.extend(set.clone());
+                    for k in m["unset"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                        st.remove(k);
+                    }
+                }
+            }
             "resync" => self.ready = false,
             _ => {}
         }
@@ -406,7 +418,11 @@ fn draw(f: &mut Frame, s: &mut Screen) {
     if let Some(t) = st["title"].as_str() {
         spans.push(Span::styled(format!("· {} ", truncate(t, 40)), Style::default().fg(Color::DarkGray)));
     }
-    let phase = str_of(&st["phase"]);
+    let mut phase = str_of(&st["phase"]);
+    // Its timer, counted up here.
+    if let Some(since) = st["phase_since"].as_i64() {
+        phase = format!("{phase} {}s", (chrono::Utc::now().timestamp_millis() - since).max(0) / 1000);
+    }
     let phase_style = if s.approval().is_some() {
         Style::default().fg(Color::Yellow).bold()
     } else if phase.starts_with('↪') {
@@ -1117,7 +1133,10 @@ mod tests {
         assert_eq!(v.messages[1]["content"], "Hello");
         v.apply(json!({ "type": "status", "seq": 8, "status": { "approvals": [{ "id": 3 }] } }));
         assert_eq!(v.status["approvals"][0]["id"], 3);
-        v.apply(json!({ "type": "reset", "seq": 9, "messages": [] }));
+        v.apply(json!({ "type": "status_patch", "seq": 10, "set": { "phase": "◐ thinking" }, "unset": ["approvals"] }));
+        assert_eq!(v.status["phase"], "◐ thinking");
+        assert!(v.status.get("approvals").is_none(), "{}", v.status);
+        v.apply(json!({ "type": "reset", "seq": 11, "messages": [] }));
         assert!(v.messages.is_empty() && v.rendered.is_empty());
         assert_eq!(v.commands[0].2, "/new");
     }

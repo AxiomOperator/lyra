@@ -925,15 +925,23 @@ fn phase_span(app: &App) -> Span<'static> {
 }
 
 pub(crate) fn phase_text(app: &App) -> String {
-    let since = secs(app.phase_since.elapsed());
+    match phase_word(app) {
+        (word, true) => format!("{word} {}", secs(app.phase_since.elapsed())),
+        (word, false) => word,
+    }
+}
+
+/// What it's doing, without the timer, and whether a timer goes after it
+/// (devices count it up themselves from `phase_since`).
+pub(crate) fn phase_word(app: &App) -> (String, bool) {
     match &app.phase {
-        Phase::Idle => "● idle".into(),
-        Phase::Waiting => format!("◌ waiting {since}"),
-        Phase::Thinking => format!("◐ thinking {since}"),
-        Phase::Streaming => format!("▸ streaming {since}"),
-        Phase::Tools(names) => format!("⚙ {names}"),
-        Phase::Delegating(agent) => format!("↪ {agent} {since}"),
-        Phase::Approval(agent) => format!("⚠ {agent} awaits your y/n"),
+        Phase::Idle => ("● idle".into(), false),
+        Phase::Waiting => ("◌ waiting".into(), true),
+        Phase::Thinking => ("◐ thinking".into(), true),
+        Phase::Streaming => ("▸ streaming".into(), true),
+        Phase::Tools(names) => (format!("⚙ {names}"), false),
+        Phase::Delegating(agent) => (format!("↪ {agent}"), true),
+        Phase::Approval(agent) => (format!("⚠ {agent} awaits your y/n"), false),
     }
 }
 

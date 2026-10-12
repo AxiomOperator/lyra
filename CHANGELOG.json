@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.83.0.241",
+    "date": "2026-10-12",
+    "title": "A quieter server",
+    "improved": [
+      "The Status page's checks no longer ask the embedding, reranker and decision models real questions every minute: lyra just asks each server whether it's there. That's thousands fewer model calls a day, and they no longer show up in usage.",
+      "While a reply is written, your devices get only the parts of lyra's status that changed, instead of all of it every second. The \"thinking 4s\" timer now counts up on the device itself.",
+      "When nothing is happening, the server checks for work 4 times a second instead of 25, and it doesn't update conversations no device is showing (they're brought up to date when opened)."
+    ]
+  },
+  {
     "version": "0.82.0.240",
     "date": "2026-10-12",
     "title": "Faster replies in long conversations",

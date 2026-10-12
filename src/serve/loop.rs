@@ -103,8 +103,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             convs[0].app.log(Level::Error, t);
         }
         let mut everyone = false;
-        // What the devices ask for (waiting a little when there's nothing).
-        let mut next = inbound.recv_timeout(Duration::from_millis(40)).ok();
+        // What the devices ask for (waiting a little when there's nothing):
+        // briefly while something is being worked on (a reply streams), longer at rest.
+        let busy = draining.is_some() || convs.iter().any(|c| c.app.waiting || c.app.plan_busy);
+        let mut next = inbound.recv_timeout(Duration::from_millis(if busy { 40 } else { REST_MS })).ok();
         while let Some(msg) = next.take() {
             match msg {
                 Inbound::Send { text, device, who, session, conn, files } => {
@@ -282,8 +284,6 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                     c.mirror.machines = if c.app.admin { machines.clone() } else { Vec::new() };
                     c.mirror.extra = for_viewer(&all, &c.app);
                     c.mirror.extra["pmi"] = pmi.get(&c.app.owner).map_or(Value::Null, |p| p.view.clone());
-                c.mirror.extra["briefing"] = brief_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
-                c.mirror.extra["routines"] = routines_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
                     c.mirror.extra["briefing"] = brief_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
                     c.mirror.extra["routines"] = routines_views.get(&c.app.owner).cloned().unwrap_or(Value::Null);
                     for u in c.mirror.updates(&mut c.app) {
@@ -509,16 +509,22 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
             last_open = open.clone();
             everyone = true;
         }
-        let mut extra_now = extra.clone();
-        extra_now["conversations"] = open;
-        extra_now["server_health"] = server_health.clone();
-        extra_now["server_harnesses"] = server_harnesses.clone();
-        extra_now["status"] = status_view.clone();
-        extra_now["diagnoses"] = diag_view.clone();
         let attached = hub.attached_sessions();
+        // Only conversations some device shows are brought up to date (one
+        // opened later gets a snapshot); while one works, it's looked at each
+        // second (what changed goes out, the timer is counted on the device).
+        let due = |c: &Conv| attached.contains(&c.app.session_id) && (everyone || c.changed || (c.app.waiting && c.last_status.elapsed() > Duration::from_secs(1)));
+        let mut extra_now = Value::Null;
+        if convs.iter().any(due) {
+            extra_now = extra.clone();
+            extra_now["conversations"] = open;
+            extra_now["server_health"] = server_health.clone();
+            extra_now["server_harnesses"] = server_harnesses.clone();
+            extra_now["status"] = status_view.clone();
+            extra_now["diagnoses"] = diag_view.clone();
+        }
         for c in convs.iter_mut() {
-            // The phase timer ("thinking 4s") ticks while something is happening.
-            if everyone || c.changed || (c.app.waiting && c.last_status.elapsed() > Duration::from_secs(1)) {
+            if due(c) {
                 c.last_status = Instant::now();
                 c.changed = false;
                 c.mirror.machines = if c.app.admin { machines.clone() } else { Vec::new() };

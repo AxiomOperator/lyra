@@ -72,7 +72,7 @@ import { EverythingSearch } from "./lyra/everything";
 import { UpdatedNote, WhatsNewPage } from "./lyra/whatsnew";
 import { CodingPage } from "./lyra/coding";
 import { SearchBox, SearchHits, useConversationSearch } from "./lyra/search";
-import { APP_VERSION, LyraProvider, useData, useLyra } from "./lyra/store";
+import { APP_VERSION, LyraProvider, useData, useLyra, usePhase } from "./lyra/store";
 import type { Session } from "./lyra/types";
 import { loadToken, saveToken, takeShared } from "./lyra/token";
 import { takeIntent } from "./lyra/intent";
@@ -543,6 +543,7 @@ function Shell() {
   const newer = !!serverVersion && serverVersion !== APP_VERSION;
   const asking = (status.approvals?.length ?? 0) > 0;
   const working = status.phase?.startsWith("↪");
+  const phase = usePhase(status);
 
   const mention = (name: string) => {
     setTab("chat");
@@ -631,7 +632,7 @@ function Shell() {
                   status.waiting && !asking && !working && "border-teal-500/50 bg-teal-500/15 text-teal-300",
                 )}
               >
-                {status.phase}
+                {phase}
               </Badge>
             )}
           </div>

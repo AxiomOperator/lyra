@@ -1,5 +1,5 @@
 // The live connection to `lyra serve`: a snapshot, then small updates
-// (add / append / replace / truncate / reset / status), mirrored into React
+// (add / append / replace / truncate / reset / status / status_patch), mirrored into React
 // state. Sends messages, approvals, pairing answers and page requests.
 // Messages go through an outbox (outbox.ts): kept on the device until the
 // conversation shows them, sent when lyra is reachable and done answering.
@@ -71,6 +71,12 @@ function reduce(state: State, msg: Update): State {
       return { ...state, seq, messages: (msg.messages as ChatMessage[]) ?? [] };
     case "status":
       return { ...state, seq, status: (msg.status as Status) ?? {} };
+    // Only what changed.
+    case "status_patch": {
+      const status = { ...state.status, ...((msg.set as Partial<Status>) ?? {}) } as Record<string, unknown>;
+      for (const k of (msg.unset as string[]) ?? []) delete status[k];
+      return { ...state, seq, status: status as Status };
+    }
     default:
       return { ...state, seq };
   }
@@ -376,4 +382,17 @@ export function useData<T>(what: string, deps: unknown[] = []): [T | null, () =>
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, refresh, ...deps]);
   return [data, refresh];
+}
+
+/** What lyra is doing, with its timer ("◐ thinking 4s") counted up here, once a second. */
+export function usePhase(status: Status): string {
+  const [, tick] = useState(0);
+  const since = status.phase_since;
+  useEffect(() => {
+    if (!since) return;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [since]);
+  const phase = status.phase ?? "";
+  return since ? `${phase} ${Math.max(0, Math.floor((Date.now() - since) / 1000))}s` : phase;
 }

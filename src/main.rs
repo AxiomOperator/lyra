@@ -416,6 +416,8 @@ struct App {
     started: Option<Instant>,
     /// When the current phase began, for live timers.
     phase_since: Instant,
+    /// The same moment on the clock, for devices that count the timer up themselves.
+    phase_at: chrono::DateTime<chrono::Utc>,
     phase: Phase,
     messages: Vec<Message>,
     input: String,
@@ -617,6 +619,7 @@ impl App {
             totals: Totals::default(),
             started: None,
             phase_since: Instant::now(),
+            phase_at: chrono::Utc::now(),
             phase: Phase::Idle,
             messages: Vec::new(),
             input: String::new(),
@@ -1193,6 +1196,7 @@ impl App {
         if self.phase != phase {
             self.phase = phase;
             self.phase_since = Instant::now();
+            self.phase_at = chrono::Utc::now();
         }
     }
 
