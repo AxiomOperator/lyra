@@ -65,6 +65,13 @@ pub struct RunRecord {
     pub errors: Vec<String>,
     /// The agent generation that did the work.
     pub generation: u32,
+    /// Whose turn it was: `None` for lyra's owner. Anyone else's run holds
+    /// counts only (no task text, errors as their kind).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person: Option<String>,
+    /// It stopped at the tool-call limit, part done.
+    #[serde(default)]
+    pub limited: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -90,6 +97,8 @@ impl RunRecord {
             tools_used: Vec::new(),
             errors: Vec::new(),
             generation,
+            person: None,
+            limited: false,
             created_at: Utc::now(),
         }
     }

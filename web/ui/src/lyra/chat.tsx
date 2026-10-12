@@ -24,6 +24,7 @@ import { AskCard, ChatOnlyButton, EditButton, EffortButton, EditLast, FoldedTrie
 import { BoardCard, ComposerModel, PlanCard, ToolFileContent, ToolFileTree, ToolTerminal, type BoardView, type PlanView } from "./chat-parts2";
 import { HandsFreeBar, HandsFreeButton, useHandsFreeOn } from "./handsfree";
 import { SpeakButton, VoiceButton, useAutoRead } from "./voice";
+import { CopyButton, RateButtons, useRate } from "./rating";
 import { AgentTask, ApprovalAt, ApprovalDetail, ComposerAttachments, ReplyContext, ReplySources, SentAttachments, StarterSuggestions, approvalCall, splitAttached, webSources } from "./chat-parts";
 
 /** The approval waiting, and the call it's shown at. */
@@ -129,11 +130,14 @@ function ToolCallView({ name, args, result }: { name: string; args: string; resu
   );
 }
 
-function Footer({ m, max, model, id, retry }: { m: ChatMessage; max: number; model?: string; id: string; retry?: boolean }) {
+function Footer({ m, max, model, id, retry, index }: { m: ChatMessage; max: number; model?: string; id: string; retry?: boolean; index: number }) {
+  const rate = useRate();
   if (!m.stats && !m.agents?.length && !m.skills?.length && !m.content.trim()) return null;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
-      <SpeakButton id={id} text={m.content} />
+      <SpeakButton id={id} text={m.content} onRead={m.rateable ? () => rate(index, "read") : undefined} />
+      {m.rateable && <CopyButton index={index} text={m.content} />}
+      {m.rateable && <RateButtons index={index} rated={m.rated} />}
       {retry && <RetryButtons />}
       {m.usage && <ReplyContext usage={m.usage} max={max} model={model} />}
       {m.stats && <span>{m.stats}</span>}
@@ -171,7 +175,7 @@ function BrowserPicture({ src }: { src: string }) {
   );
 }
 
-function MessageView({ m, results, streaming, asking, asks, max, model, turn, id, editable, retry }: { m: ChatMessage; results: Map<string, string>; streaming: boolean; asking: Asking; asks: ChatAsk[]; max: number; model?: string; turn?: ChatMessage[]; id: string; editable?: boolean; retry?: boolean }) {
+function MessageView({ m, results, streaming, asking, asks, max, model, turn, id, editable, retry, index }: { m: ChatMessage; results: Map<string, string>; streaming: boolean; asking: Asking; asks: ChatAsk[]; max: number; model?: string; turn?: ChatMessage[]; id: string; editable?: boolean; retry?: boolean; index: number }) {
   const { status } = useLyra();
   // A call, and the approval (or question) it waits for when it's this one.
   const call = (c: ChatMessage["calls"][number]) => {
@@ -201,7 +205,7 @@ function MessageView({ m, results, streaming, asking, asks, max, model, turn, id
             {m.calls?.map(call)}
             {/* The turn's sources, under its answer. */}
             {!streaming && turn && <ReplySources web={webSources(turn, results)} memories={m.memory_notes ?? []} />}
-            {!streaming && <Footer m={m} max={max} model={model} id={id} retry={retry} />}
+            {!streaming && <Footer m={m} max={max} model={model} id={id} retry={retry} index={index} />}
           </MessageContent>
         </Message>
       );
@@ -729,6 +733,7 @@ export function ChatPage() {
                 id={`${status.session ?? ""}-${j}`}
                 editable={idle && j === lastUser}
                 retry={idle && j === lastAnswer}
+                index={j}
               />
             );
             const fold = folds.get(i);

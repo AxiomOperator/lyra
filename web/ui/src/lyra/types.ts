@@ -23,6 +23,9 @@ export interface ChatMessage {
   agents: string[];
   /** The reply's tokens, time and cost, for its context meter. */
   usage?: { input: number; cached: number; output: number; ms: number; estimated: boolean; cost: number; currency: string } | null;
+  /** A reply that can be rated (👍 / 👎), and how it was rated ("good", "bad"). */
+  rateable?: boolean;
+  rated?: string | null;
 }
 
 /** Something lyra asks in the chat: a missing piece as a form, or a round's steps to skip. */
@@ -138,7 +141,7 @@ export interface Status {
   /** Conversations loaded on the server, and which are answering. */
   conversations?: { session: string; title: string | null; answering: boolean }[];
   /** The decision model (`[decide]`), with what it has done since lyra started. */
-  decide?: { model: string; decided: number; to_chat: number; ms: number } | null;
+  decide?: { model: string; decided: number; to_chat: number; ms: number; down?: boolean; gated?: number } | null;
   /** Routines with their next run and last result (`runs` holds the latest one). */
   routines?: Routine[] | null;
   /** The newest backup of lyra, and whether one is being made. */

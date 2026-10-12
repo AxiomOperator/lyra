@@ -507,6 +507,11 @@ fn draw_chat(f: &mut Frame, s: &mut Screen, area: Rect) {
         if let Some(stats) = m["stats"].as_str() {
             lines.push(Line::styled(stats.to_string(), dim));
         }
+        match m["rated"].as_str() {
+            Some("good") => lines.push(Line::styled("you rated it 👍", dim)),
+            Some("bad") => lines.push(Line::styled("you rated it 👎", dim)),
+            _ => {}
+        }
         let list = |k: &str| m[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
         if !list("skills").is_empty() {
             lines.push(Line::styled(format!("used skills: {}", list("skills")), Style::default().fg(Color::Magenta)));
@@ -928,6 +933,12 @@ fn ui_loop(terminal: &mut DefaultTerminal, s: &mut Screen, incoming: mpsc::Recei
                 }
             }
             KeyCode::Enter => s.submit(),
+            // + / - with nothing typed: 👍 / 👎 on the last reply (as in lyra itself).
+            KeyCode::Char(c @ ('+' | '-')) if s.input.is_empty() && s.view.status["waiting"] != true && s.view.messages.iter().any(|m| m["rateable"] == true) => {
+                if let Some(index) = s.view.messages.iter().rposition(|m| m["rateable"] == true) {
+                    s.send(json!({ "type": "rate", "index": index, "rating": if c == '+' { "good" } else { "bad" } }));
+                }
+            }
             KeyCode::Backspace => {
                 s.input.pop();
                 s.palette = 0;

@@ -1532,7 +1532,7 @@ pub fn show(ev: &Evolution, key: &str) -> Result<String, String> {
     out.push(format!("evidence: {} run(s)", c.evidence.len()));
     let runs = ev.manager.runs(ev.manager.settings.window * 2)?;
     for r in runs.iter().filter(|r| c.evidence.contains(&r.id)).take(5) {
-        out.push(format!("  [{} {}] {}", r.kind, r.outcome, truncate(&r.task, 80)));
+        out.push(format!("  [{} {}] {}", r.kind, r.outcome, if r.person.is_some() { "(another person's request)".to_string() } else { truncate(&r.task, 80) }));
     }
     if let Some(v) = &c.validation {
         out.push(format!("validation: {}", if v.valid { "passed checks" } else { "failed checks" }));
@@ -1611,7 +1611,7 @@ pub fn runs(ev: &Evolution) -> Result<String, String> {
                 r.model_calls,
                 r.tool_calls,
                 r.duration_ms / 1000,
-                truncate(&r.task, 60)
+                if r.person.is_some() { "(another person's request)".to_string() } else { truncate(&r.task, 60) }
             );
             if r.corrected {
                 line += " · corrected";

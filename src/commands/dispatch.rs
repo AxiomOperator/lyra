@@ -73,7 +73,6 @@ impl App {
                 Ok(_) => "learning is off".into(),
             })
         };
-        let last_run = self.last_run.clone();
         match name {
             "/help" => Ok(format!("{COMMANDS}\n{}\n{}\n{}\n{}\n{HELP_END}", goals::COMMANDS, agents::COMMANDS, evolve::COMMANDS, caps::COMMANDS)),
             // Each person's own skills are theirs to decide; shared ones an admin's.
@@ -84,29 +83,14 @@ impl App {
             "/forget-skill" => need().and_then(|l| l.decide("forget", arg, self.personal().as_deref(), self.admin)),
             "/history" => need().and_then(|l| l.history(arg, self.personal().as_deref())),
             "/rollback" => need().and_then(|l| l.rollback(arg, self.personal().as_deref(), self.admin)),
-            "/outcome" => (|| {
-                let outcome = match arg.trim() {
-                    "good" | "success" => SkillOutcome::Success,
-                    "bad" | "failure" => SkillOutcome::Failure,
-                    "partial" => SkillOutcome::Partial,
-                    _ => return Err("usage: /outcome good|bad|partial".into()),
-                };
-                let last = last_run.ok_or("no reply to rate yet")?;
-                let mut out = Vec::new();
-                if let Some(evo) = last.evo {
-                    self.record_evolution_outcome(evo, outcome, None);
-                    out.push(format!("recorded {outcome} for the last run"));
+            // 👍 / 👎 on the last reply (what the app's buttons and the TUI's +/- do too).
+            "/outcome" => {
+                let (word, note) = arg.trim().split_once(' ').unwrap_or((arg.trim(), ""));
+                if outcomes::rating(word).is_none() {
+                    return Err("usage: /outcome good|bad|partial [what was wrong]".into());
                 }
-                if let (Some(l), false) = (&learning, last.skills.is_empty()) {
-                    let notes = l.record_outcome(last.id, outcome, true)?;
-                    out.push(format!("recorded {outcome} for {}", last.skills.join(", ")));
-                    out.extend(notes);
-                }
-                if out.is_empty() {
-                    return Err("nothing to record it for: the last reply used no skills and evolution is off".into());
-                }
-                Ok(out.join("\n"))
-            })(),
+                self.rate(None, word, note)
+            }
             "/learn" | "/curate" => need().and_then(|l| {
                 if l.mode() == Mode::Off {
                     Err("learning mode is off ([learning] mode in config.toml)".into())

@@ -423,7 +423,8 @@ pub fn last_turn<'a>(history: &[(&'a str, &'a str)], skills_used: usize) -> Opti
         user: history[start].1,
         follows_reply: history[..start].iter().any(|(role, _)| *role == "assistant"),
         tool_calls: tools.len(),
-        tool_errors: tools.iter().filter(|c| c.contains("\"error\"")).count(),
+        // Failed by their structure (`ok: false`, an `error`), not a mention of one.
+        tool_errors: tools.iter().filter(|c| crate::outcomes::failure(c).is_some()).count(),
         skills_used,
     })
 }

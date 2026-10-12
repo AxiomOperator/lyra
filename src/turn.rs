@@ -250,6 +250,11 @@ impl App {
                 return;
             }
         };
+        // Asked again (or changed): that reply didn't do it.
+        if let Some(id) = self.last_run.as_ref().map(|r| r.id) {
+            let why = if edit.is_some() { "they changed their message and sent it again" } else { "they asked for the reply again" };
+            self.apply_verdict(id, crate::outcomes::Verdict::new(lyra_learning::SkillOutcome::Failure, crate::outcomes::Strength::Signal, why));
+        }
         let original = std::mem::take(&mut self.messages[i].content);
         let images = std::mem::take(&mut self.messages[i].images);
         let text = match edit {
@@ -262,7 +267,7 @@ impl App {
         };
         self.messages.truncate(i);
         self.can_continue = false;
-        // Not a correction of the last run (it's gone).
+        // Judged already (above): the new reply is what's judged next.
         self.last_run = None;
         self.log(Level::Info, match (&other, which) {
             (Some((_, m)), _) => format!("sending the last message again, to {m}"),
@@ -876,6 +881,8 @@ pub(crate) fn converse(
             } else {
                 caps.invoke(&call.function.name, arguments, ctx, false, true)
             };
+            // A failure says so in its structure (for the detectors and skill reviews).
+            let content = crate::outcomes::mark(content);
             history.push(json!({ "role": "tool", "tool_call_id": call.id, "content": content }));
             // The browser's page, for the person (never the model).
             if call.function.name.starts_with("browser_")

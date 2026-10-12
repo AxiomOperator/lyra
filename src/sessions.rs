@@ -25,6 +25,10 @@ pub struct SavedMessage {
     pub skills: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<String>,
+    /// A reply's run and how it went (rated, judged), so a resumed
+    /// conversation can still be rated and isn't judged twice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<crate::outcomes::RunRef>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -100,6 +104,7 @@ impl Session {
                     memories: m.memories.clone(),
                     skills: m.skills.clone(),
                     agents: m.agents.clone(),
+                    run: m.run.clone(),
                 })
                 .collect(),
         }
@@ -116,6 +121,7 @@ impl Session {
                 m.memories = s.memories;
                 m.skills = s.skills;
                 m.agents = s.agents;
+                m.run = s.run;
                 m
             })
             .collect()
@@ -351,6 +357,7 @@ mod tests {
                 memories: vec![],
                 skills: vec![],
                 agents: vec![],
+                run: None,
             })
             .collect();
         Session { id: id.into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: lines[0].1.into(), owner: owner(), chat_only: false, summary: None, effort: None, messages }
@@ -519,7 +526,7 @@ mod keep_tests {
         let dir = std::env::temp_dir().join(format!("lyra-sessions-meta-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut s = Session { id: "20261008-090000-abc123".into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: "Firewall rules".into(), owner: "dana".into(), chat_only: false, summary: None, effort: None, messages: vec![] };
-        s.messages.push(SavedMessage { role: "user".into(), content: "Firewall rules".into(), tool_calls: vec![], tool_call_id: None, reasoning: String::new(), memories: vec![], skills: vec![], agents: vec![] });
+        s.messages.push(SavedMessage { role: "user".into(), content: "Firewall rules".into(), tool_calls: vec![], tool_call_id: None, reasoning: String::new(), memories: vec![], skills: vec![], agents: vec![], run: None });
         save(&dir, &s).unwrap();
         assert!(keep_command(&dir, "dana", "folder abc123 Network").unwrap().contains("moved to Network"));
         keep_command(&dir, "dana", "pin abc123").unwrap();

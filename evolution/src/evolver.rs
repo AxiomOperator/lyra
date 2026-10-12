@@ -60,7 +60,7 @@ pub fn prompt(op: &Opportunity, evidence: &[RunRecord], ctx: &Context, allowed: 
             "- [{} {}] \"{}\" · {} model calls, {} tool calls, {} retries · tools: {} · errors: {}{}{}\n",
             r.kind,
             r.outcome,
-            r.task.chars().take(120).collect::<String>(),
+            if r.person.is_some() { "(another person's request, not shown)".to_string() } else { r.task.chars().take(120).collect::<String>() },
             r.model_calls,
             r.tool_calls,
             r.retries,

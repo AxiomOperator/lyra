@@ -210,9 +210,21 @@ impl EvolutionManager {
     pub fn set_outcome(&self, id: Uuid, outcome: RunOutcome, corrected: bool, feedback: Option<&str>) -> Result<(), String> {
         let Some(mut run) = self.db(self.store.run(id))? else { return Ok(()) };
         run.outcome = outcome;
-        run.corrected |= corrected;
+        // The latest verdict says (a 👍 after a correction takes it back).
+        run.corrected = corrected;
         if let Some(f) = feedback {
             run.feedback = Some(f.chars().take(500).collect());
+        }
+        self.db(self.store.save_run(&run))
+    }
+
+    /// The run stopped at the tool-call limit (`rounds`), part done.
+    pub fn mark_limited(&self, id: Uuid, rounds: u32) -> Result<(), String> {
+        let Some(mut run) = self.db(self.store.run(id))? else { return Ok(()) };
+        run.limited = true;
+        let note = format!("stopped at the tool-call limit ({rounds} rounds)");
+        if !run.errors.contains(&note) {
+            run.errors.push(note);
         }
         self.db(self.store.save_run(&run))
     }

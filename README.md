@@ -377,10 +377,22 @@ How it works:
    observed reliability, learned confidence and freshness (weights in
    `[learning.scoring]`) and the best are added to the prompt. Each reply is a
    *run*; the skills it used are recorded and shown under the reply.
-2. **Outcomes.** Your next message is read as feedback on those skills: thanks
-   or "that worked" is a success, a correction a failure, anything else no
-   signal. `/outcome good|bad|partial` says so explicitly. Reliability is
-   smoothed, `(successes + 1) / (outcomes + 2)`, so new skills start at 0.5.
+2. **Outcomes.** Each reply gets one verdict, and a stronger one replaces a
+   weaker one. From strongest to weakest:
+   - **Your rating:** 👍 / 👎 under the reply in the app, `+` / `-` in the
+     terminal, or `/outcome good|bad|partial [what was wrong]`.
+   - **What you did:** asking for it again (`/retry`, `/edit`, or the same
+     question within two minutes) or stopping it is a failure; the tool-call
+     limit or Keep going is partial.
+   - **Your next message,** read by the decision model, else the fallback
+     model, and whole-word lists only as a last resort: success, partial,
+     correction, or nothing for a new topic. "Thanks, now do Y instead" is
+     thanks.
+   - **Copying it or having it read aloud:** a hint it helped.
+
+   Everyone's replies count, each person's for their own skills; only the
+   owner's words reach shared evidence. Reliability is smoothed,
+   `(successes + 1) / (outcomes + 2)`, so new skills start at 0.5.
 3. **Learning.** After a correction, a failed step that was fixed, a multi-step
    success or "remember how we did this", the model reviews the turn, seeing
    the existing skills most like it, and decides to *ignore*, *create* a new
@@ -1744,9 +1756,12 @@ evidence about its own runs, progressively and reversibly. Built following
 - **Telemetry.** Every chat turn and plan run is recorded in
   `~/.lyra/evolution/evolution.db`: model and tool calls, tool errors,
   retries and replans, tokens, time, the skills used and the generation that
-  did the work. Your next message (a correction or thanks, or `/outcome`)
-  becomes its outcome, and what you said is kept with it; a plan's outcome is
-  its goal status.
+  did the work, whether it hit the tool-call limit, and whose turn it was
+  (anyone but the owner's is counts only: no request text, errors as their
+  kind). How the reply went (your 👍 / 👎, what you did, or your next message
+  as the model reads it) becomes its outcome, and what you said is kept with
+  it; a plan's outcome is its goal status. Tool failures are read from the
+  result's structure (`"ok": false, "error_kind"`).
 - **Review.** Deterministic detectors look at recent runs for problems with
   evidence: heavy runs, the same error again and again, frequent corrections,
   the same chain of tools in many runs, failing skills, plans that need rework.

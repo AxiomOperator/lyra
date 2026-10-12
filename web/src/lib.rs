@@ -64,6 +64,10 @@ pub enum Inbound {
     Stop { device: String, who: Who, session: String },
     /// An answer to an approval (`y`, `n`, `a`).
     Approve { id: u64, answer: String, device: String, who: Who },
+    /// How a reply in that conversation went: 👍 / 👎 (`good`, `bad`, with
+    /// what was wrong), or a hint it helped (`copied`, `read`). `index` is
+    /// the reply's place in the conversation's messages.
+    Rate { index: usize, rating: String, note: String, device: String, who: Who, session: String },
     /// "Forgot my password": email this person their one-time link.
     ResetLink { user: String, link: String },
     /// An answer to something lyra asked in the chat: a form's values, or
@@ -1497,6 +1501,13 @@ async fn connection(s: Arc<Shared>, d: Device, mut who: Who, session: String, mu
                             device: d.name.clone(),
                             who: who.clone(),
                         });
+                    }
+                    "rate" => {
+                        let rating = v["rating"].as_str().unwrap_or("").to_string();
+                        let note: String = v["note"].as_str().unwrap_or("").chars().take(500).collect();
+                        if let Some(index) = v["index"].as_u64() {
+                            let _ = s.inbound.send(Inbound::Rate { index: index as usize, rating, note, device: d.name.clone(), who: who.clone(), session: session.clone() });
+                        }
                     }
                     "answer" => {
                         let _ = s.inbound.send(Inbound::Answer { id: v["id"].as_u64().unwrap_or(0), value: v["value"].clone(), device: d.name.clone(), who: who.clone() });

@@ -161,7 +161,7 @@ impl Default for Thresholds {
 pub fn detect(runs: &[RunRecord], skills: &[SkillHealth], t: &Thresholds) -> Vec<Opportunity> {
     let mut out = Vec::new();
     let ids = |rs: &[&RunRecord]| rs.iter().map(|r| r.id).collect::<Vec<Uuid>>();
-    let tasks = |rs: &[&RunRecord]| rs.iter().take(6).map(|r| r.task.clone()).collect::<Vec<_>>();
+    let tasks = |rs: &[&RunRecord]| rs.iter().filter(|r| !r.task.is_empty()).take(6).map(|r| r.task.clone()).collect::<Vec<_>>();
 
     // Heavy runs: many tool or model calls for one task.
     let heavy: Vec<&RunRecord> = runs

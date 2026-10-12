@@ -94,7 +94,7 @@ export function stopSpeaking() {
 }
 
 /** The speaker under a reply: read it, or stop. */
-export function SpeakButton({ id, text }: { id: string; text: string }) {
+export function SpeakButton({ id, text, onRead }: { id: string; text: string; onRead?: () => void }) {
   const [now, setNow] = useState(speakingId);
   useEffect(() => {
     speakingListeners.add(setNow);
@@ -103,7 +103,7 @@ export function SpeakButton({ id, text }: { id: string; text: string }) {
   if (!canSpeak || !text.trim()) return null;
   const on = now === id;
   return (
-    <button type="button" aria-label={on ? "Stop reading" : "Read aloud"} title={on ? "Stop reading" : "Read aloud"} onClick={() => (on ? stopSpeaking() : speak(id, text))} className={cn("rounded p-0.5 hover:text-foreground", on && "text-primary")}>
+    <button type="button" aria-label={on ? "Stop reading" : "Read aloud"} title={on ? "Stop reading" : "Read aloud"} onClick={() => (on ? stopSpeaking() : (speak(id, text), onRead?.()))} className={cn("rounded p-0.5 hover:text-foreground", on && "text-primary")}>
       {on ? <Square className="size-3.5" /> : <Volume2 className="size-3.5" />}
     </button>
   );

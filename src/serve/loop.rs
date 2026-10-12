@@ -151,6 +151,19 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         }
                     });
                 }
+                Inbound::Rate { index, rating, note, device, who, session } => {
+                    sync_role(&mut convs, &who);
+                    // Only their own conversation's replies.
+                    let i = conv_for(&mut convs, &session, &who);
+                    if convs[i].app.owner == who.user {
+                        match convs[i].app.rate(Some(index), &rating, &note) {
+                            Ok(_) if matches!(rating.as_str(), "copied" | "read") => {}
+                            Ok(said) => convs[i].app.log(Level::Learn, format!("{device}: {said}")),
+                            Err(e) => convs[i].app.log(Level::Info, format!("{device}: couldn't rate that reply: {e}")),
+                        }
+                        convs[i].changed = true;
+                    }
+                }
                 Inbound::Answer { id, value, device, who } => {
                     sync_role(&mut convs, &who);
                     // Only in the user's own conversations.

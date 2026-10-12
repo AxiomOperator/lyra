@@ -473,6 +473,7 @@ pub fn delegate(
             // Shown in the chat as this delegation's own tool card.
             let shown_id = format!("{task_id}-{}", call["id"].as_str().unwrap_or(""));
             if let Some(out) = ready.remove(call["id"].as_str().unwrap_or("")) {
+                let out = crate::outcomes::mark(out);
                 let clipped: String = out.chars().take(4000).collect();
                 emit(&env.tx, AgentEvent::ToolResult { agent: profile.title.clone(), id: shown_id, output: clipped });
                 messages.push(json!({ "role": "tool", "tool_call_id": call["id"], "content": out }));
@@ -527,6 +528,7 @@ pub fn delegate(
                 // A9: not in this agent's permissions, whatever the model asked.
                 json!({ "error": format!("{} may not use {name}", profile.title) }).to_string()
             };
+            let out = crate::outcomes::mark(out);
             let clipped: String = out.chars().take(4000).collect();
             emit(&env.tx, AgentEvent::ToolResult { agent: profile.title.clone(), id: shown_id, output: clipped });
             messages.push(json!({ "role": "tool", "tool_call_id": call["id"], "content": out }));

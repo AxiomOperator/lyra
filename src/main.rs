@@ -42,6 +42,7 @@ mod limits;
 mod known_down;
 mod lock;
 mod mem;
+mod outcomes;
 mod notes;
 mod people;
 mod plan;
@@ -129,6 +130,9 @@ struct Message {
     /// Images sent with it (data URLs), for a model that can see.
     #[serde(skip)]
     images: Vec<String>,
+    /// A reply's run, to rate or judge (and how it went), kept with the saved conversation.
+    #[serde(skip)]
+    run: Option<LastRun>,
     /// The content rendered as Markdown, and the content length it was
     /// rendered from (re-rendered when a streaming reply grows).
     #[serde(skip)]
@@ -148,6 +152,7 @@ impl Message {
             skills: Vec::new(),
             agents: Vec::new(),
             images: Vec::new(),
+            run: None,
             rendered: None,
         }
     }
@@ -234,6 +239,8 @@ enum StreamEvent {
     /// The decision model found nothing for a memory capture (`memory`) or a
     /// skill review to look at.
     GateClosed { memory: bool },
+    /// How a reply went, read from the person's next message (off the loop).
+    Judged { run: Uuid, verdict: outcomes::Verdict },
     /// A backup finished (`nightly` ones only log).
     BackedUp { nightly: bool, result: backup::Made },
     /// The main agent is working with a subagent (routing, progress, result).
@@ -365,14 +372,7 @@ enum Level {
 }
 
 /// A finished run, awaiting the user's reaction.
-#[derive(Clone)]
-struct LastRun {
-    id: Uuid,
-    skills: Vec<String>,
-    memories: usize,
-    /// Its evolution telemetry record.
-    evo: Option<Uuid>,
-}
+type LastRun = outcomes::RunRef;
 
 /// One line in the activity log.
 struct Activity {
@@ -752,7 +752,8 @@ impl App {
                 self.messages.push(result);
             }
             StreamEvent::Done(stats) => {
-                if stopped(&self.cancel) {
+                let was_stopped = stopped(&self.cancel);
+                if was_stopped {
                     let reply = self.reply();
                     reply.content.push_str(if reply.content.is_empty() { "_(stopped)_" } else { "\n\n_(stopped)_" });
                 }
@@ -780,7 +781,13 @@ impl App {
                     let handled = self.handled_by.clone();
                     self.reply().agents = handled;
                 }
-                self.last_run = self.run.take().map(|id| LastRun { id, skills, memories: memories.len(), evo });
+                self.last_run = self.run.take().map(|id| LastRun::new(id, skills, memories.len(), evo));
+                let run = self.last_run.clone();
+                self.reply().run = run;
+                // Stopped part way: it wasn't going where they wanted.
+                if was_stopped && let Some(id) = self.last_run.as_ref().map(|r| r.id) {
+                    self.apply_verdict(id, outcomes::Verdict::new(SkillOutcome::Failure, outcomes::Strength::Signal, "they stopped it part way"));
+                }
                 self.save_session();
                 self.review(false);
                 self.capture(false);
@@ -792,6 +799,16 @@ impl App {
                 self.messages.push(Message::new("info", format!("{}{done}", limits::stopped_note(rounds, own, self.admin))));
                 self.can_continue = true;
                 self.continue_after_error = false;
+                // Only part done: so recorded, and the run notes it hit the limit.
+                if let Some(last) = self.last_run.clone() {
+                    // Before the outcome is written (both change the same record).
+                    if let (Some(evo), Some(evolution)) = (last.evo, self.evolution.clone())
+                        && let Err(e) = evolution.manager.mark_limited(evo, rounds as u32)
+                    {
+                        self.log(Level::Error, format!("noting the limit on the run failed: {e}"));
+                    }
+                    self.apply_verdict(last.id, outcomes::Verdict::new(SkillOutcome::Partial, outcomes::Strength::Signal, format!("it stopped at the tool-call limit ({rounds} rounds)")));
+                }
                 self.save_session();
             }
             StreamEvent::Error(e) => {
@@ -955,6 +972,7 @@ impl App {
                     self.messages.push(Message::new(if result.is_ok() { "info" } else { "error" }, text));
                 }
             }
+            StreamEvent::Judged { run, verdict } => self.apply_verdict(run, verdict),
             StreamEvent::GateClosed { memory } => {
                 if memory {
                     self.capturing = false;
@@ -1222,48 +1240,131 @@ impl App {
         });
     }
 
-    /// Read the user's new message as feedback on the skills the last reply
-    /// used: a correction is a failure, thanks a success.
+    /// Read the person's new message for how the last reply went: off the
+    /// loop (the decision model, else the fallback model), the verdict comes
+    /// back as `Judged`. Everyone's replies count, each person's for their own
+    /// skills and memories.
     fn judge_last_run(&mut self, message: &str) {
         self.corrected_skills.clear();
-        if self.personal().is_some() {
-            self.last_run = None;
+        let Some(last) = self.last_run.take() else { return };
+        // Already known for sure (rated, stopped, asked again): nothing to read.
+        let known = self.run_ref(last.id).and_then(|r| r.verdict.clone()).or(last.verdict.clone());
+        if known.as_ref().is_some_and(|v| v.strength >= outcomes::Strength::Signal) {
             return;
         }
-        let Some(last) = self.last_run.take() else { return };
-        let Some(outcome) = evaluator::outcome_signal(message) else { return };
-        self.judge_delegations(last.id, outcome, message);
-        if let Some(evo) = last.evo {
-            self.record_evolution_outcome(evo, outcome, Some(message));
+        let asked = self.messages.iter().rev().find(|m| m.role == "user").map(|m| m.content.clone()).unwrap_or_default();
+        let reply = self.messages.iter().rev().find(|m| m.role == "assistant").map(|m| m.content.clone()).unwrap_or_default();
+        let since = (chrono::Utc::now() - last.at).to_std().unwrap_or_default();
+        let (url, model, tx, next) = (format!("{}/chat/completions", self.base_url.trim_end_matches('/')), self.model.clone(), self.tx.clone(), message.to_string());
+        let owner = self.owner.clone();
+        crate::acting::spawn(move || {
+            // Counted for this conversation's person.
+            crate::acting::set(&owner);
+            if let Some(verdict) = outcomes::judge(&asked, &reply, &next, since, Some((&url, &model))) {
+                let _ = tx.send(StreamEvent::Judged { run: last.id, verdict });
+            }
+        });
+    }
+
+    /// A reply's run, wherever it is kept (its message, or the plan just run).
+    fn run_ref(&self, id: Uuid) -> Option<&LastRun> {
+        self.messages.iter().rev().filter_map(|m| m.run.as_ref()).find(|r| r.id == id).or(self.last_run.as_ref().filter(|r| r.id == id))
+    }
+
+    /// How a reply went, recorded everywhere that learns from it: its skills,
+    /// its memories, the agents that worked on it, evolution. A weaker verdict
+    /// than the one it has already changes nothing.
+    fn apply_verdict(&mut self, id: Uuid, verdict: outcomes::Verdict) {
+        let Some(run) = self.run_ref(id).cloned() else { return };
+        let before = run.verdict.clone();
+        if !verdict.replaces(before.as_ref()) || before.as_ref().is_some_and(|b| *b == verdict) {
+            return;
         }
-        // Were the memories in that reply's prompt helpful? (M13)
-        if last.memories > 0
+        // Kept with the reply (and the plan's run), so it isn't judged twice.
+        if let Some(i) = self.messages.iter().rposition(|m| m.run.as_ref().is_some_and(|r| r.id == id)) {
+            if let Some(r) = self.messages[i].run.as_mut() {
+                r.verdict = Some(verdict.clone());
+            }
+            self.touch(i);
+        }
+        if let Some(r) = self.last_run.as_mut().filter(|r| r.id == id) {
+            r.verdict = Some(verdict.clone());
+        }
+        self.save_session();
+        let outcome = verdict.outcome;
+        let source = match verdict.strength {
+            outcomes::Strength::Rated => "rated",
+            outcomes::Strength::Signal => "signal",
+            outcomes::Strength::Judged => "judged",
+            outcomes::Strength::Mild => "hint",
+        };
+        self.log(Level::Learn, format!("reply {source} {}: {}", verdict.word(), verdict.reason));
+        // What they said goes with it, but only the owner's words reach the
+        // shared evidence: anyone else's stay with their own skills.
+        let feedback = match self.personal() {
+            Some(_) => None,
+            // Their words; else what they did (stopped it, asked again). A bare 👍 / 👎 adds none.
+            None => verdict.said.clone().or_else(|| matches!(verdict.strength, outcomes::Strength::Signal | outcomes::Strength::Mild).then(|| verdict.reason.clone())),
+        };
+        self.judge_delegations(id, outcome, verdict.said.as_deref().unwrap_or(&verdict.reason));
+        if let Some(evo) = run.evo {
+            self.record_evolution_outcome(evo, outcome, verdict.correction, feedback.as_deref());
+        }
+        if outcome == SkillOutcome::Failure && verdict.correction {
+            self.corrected_skills = run.skills.clone();
+        }
+        // Were the memories in that reply's prompt helpful? (M13) A partial says neither.
+        if run.memories > 0
+            && outcome != SkillOutcome::Partial
             && let Some(mem) = self.mem()
         {
             let (tx, helpful) = (self.tx.clone(), outcome == SkillOutcome::Success);
             crate::acting::spawn(move || {
-                let note = match mem.feedback(last.id, helpful) {
+                let note = match mem.feedback(id, helpful) {
                     Ok(n) => format!("{n} memor{} marked {}", if n == 1 { "y" } else { "ies" }, if helpful { "helpful" } else { "not helpful" }),
                     Err(e) => format!("memory feedback failed: {e}"),
                 };
                 let _ = tx.send(StreamEvent::MemoryNotes(vec![note]));
             });
         }
-        let (run, skills) = (last.id, last.skills);
         let Some(learning) = self.learning.clone() else { return };
-        if skills.is_empty() {
+        if run.skills.is_empty() {
             return;
         }
-        if outcome == SkillOutcome::Failure {
-            self.corrected_skills = skills;
-        }
+        // A verdict replacing another overwrites it in the ledger too.
+        let overwrite = before.is_some() || verdict.strength == outcomes::Strength::Rated;
         let tx = self.tx.clone();
         crate::acting::spawn(move || {
-            let notes = learning
-                .record_outcome(run, outcome, false)
-                .unwrap_or_else(|e| vec![format!("recording outcome failed: {e}")]);
+            let notes = learning.record_outcome(id, outcome, overwrite).unwrap_or_else(|e| vec![format!("recording outcome failed: {e}")]);
             let _ = tx.send(StreamEvent::LearnNotes(notes));
         });
+    }
+
+    /// The person's 👍 / 👎 on a reply (`index`: its message; `None`: the
+    /// last one rated or ratable), with what was wrong; `copied` / `read` are
+    /// the hints a reply was useful. Returns what to say.
+    fn rate(&mut self, index: Option<usize>, word: &str, note: &str) -> Result<String, String> {
+        let at = match index {
+            Some(i) => Some(i).filter(|i| self.messages.get(*i).is_some_and(|m| m.run.is_some())).ok_or("that reply can't be rated")?,
+            None => match self.messages.iter().rposition(|m| m.run.is_some()) {
+                Some(i) => i,
+                // The plan just run (it has no reply of its own).
+                None => return self.rate_plan(word, note),
+            },
+        };
+        let id = self.messages[at].run.as_ref().map(|r| r.id).ok_or("that reply can't be rated")?;
+        let verdict = verdict_for(word, note)?;
+        let said = verdict.word();
+        self.apply_verdict(id, verdict);
+        Ok(format!("recorded: that reply was {said}{}", if note.trim().is_empty() { "" } else { " (with what was wrong)" }))
+    }
+
+    fn rate_plan(&mut self, word: &str, note: &str) -> Result<String, String> {
+        let id = self.last_run.as_ref().map(|r| r.id).ok_or("no reply to rate yet")?;
+        let verdict = verdict_for(word, note)?;
+        let said = verdict.word();
+        self.apply_verdict(id, verdict);
+        Ok(format!("recorded: that run was {said}"))
     }
 
     /// Curate the skill collection in the background.
@@ -1342,8 +1443,9 @@ impl App {
         crate::acting::spawn(move || {
             let trigger = match trigger {
                 Some(t) => t,
-                None => match decide::yes("a lesson here?", &transcript, LESSON_GATE) {
-                    Some((true, _)) => "the decision model saw a reusable lesson",
+                None => match decide::gate("a lesson here?", &transcript, LESSON_GATE, (&url, &model)) {
+                    Some((true, "the decision model")) => "the decision model saw a reusable lesson",
+                    Some((true, _)) => "the fallback model saw a reusable lesson",
                     _ => {
                         let _ = tx.send(StreamEvent::GateClosed { memory: false });
                         return;
@@ -1358,7 +1460,8 @@ impl App {
     /// What the decision model decided (or that it's down), into Activity.
     fn decide_notes(&mut self) {
         for note in decide::take_notes() {
-            self.log(Level::Info, note);
+            // Down is a warning (its checks moved to the fallback model).
+            self.log(if note.starts_with('⚠') { Level::Error } else { Level::Info }, note);
         }
     }
 
@@ -1444,8 +1547,9 @@ impl App {
             crate::acting::set(&owner);
             let reason = match reason {
                 Some(r) => r,
-                None => match decide::yes("worth remembering?", &transcript, MEMORY_GATE) {
-                    Some((true, _)) => "the decision model found something worth remembering",
+                None => match decide::gate("worth remembering?", &transcript, MEMORY_GATE, (&url, &model)) {
+                    Some((true, "the decision model")) => "the decision model found something worth remembering",
+                    Some((true, _)) => "the fallback model found something worth remembering",
                     _ => {
                         let _ = tx.send(StreamEvent::GateClosed { memory: true });
                         return;
@@ -1543,7 +1647,7 @@ impl App {
         let goal_text = goal.as_ref().map_or(String::new(), |g| g.description.clone());
         let evo = self.record_plan_run(&engine, &plan, &goal_text, outcome.goal_status);
         // The user's next message is feedback on the plan, for evolution.
-        self.last_run = Some(LastRun { id: plan.id, skills: Vec::new(), memories: 0, evo });
+        self.last_run = Some(LastRun::new(plan.id, Vec::new(), 0, evo));
         // P18: the outcome becomes an episode (linked to the plan, with its
         // real start), and durable discoveries are offered to memory, all
         // through the memory manager.
@@ -1799,48 +1903,57 @@ impl App {
 
     /// E1: record the turn just answered (or failed) for evolution. Returns its id.
     fn record_chat_run(&mut self, stats: &Stats, error: Option<&str>) -> Option<Uuid> {
-        // Evolution learns from the owner's conversations only.
-        if self.personal().is_some() {
-            return None;
-        }
+        // Everyone's turns count. Anyone but the owner's are counts only: no
+        // words of theirs (the request, an error's text) in the shared record.
+        let person = self.personal();
         let evolution = self.evolution.clone()?;
         let start = self.messages.iter().rposition(|m| m.role == "user")?;
         let turn = &self.messages[start..];
-        let mut run = lyra_evolution::RunRecord::new(lyra_evolution::RunKind::Chat, &turn[0].content, 0);
+        let task = if person.is_some() { "" } else { turn[0].content.as_str() };
+        let mut run = lyra_evolution::RunRecord::new(lyra_evolution::RunKind::Chat, task, 0);
+        run.person = person.clone();
         run.model_calls = turn.iter().filter(|m| m.role == "assistant").count().max(1) as u32;
         run.tools_used = turn.iter().flat_map(|m| m.tool_calls.iter().map(|c| c.function.name.clone())).collect();
         run.tool_calls = run.tools_used.len() as u32;
+        // Each failed call, by its result's structure (`ok: false`, `error`).
+        let names: std::collections::HashMap<&str, &str> = turn.iter().flat_map(|m| m.tool_calls.iter().map(|c| (c.id.as_str(), c.function.name.as_str()))).collect();
         run.errors = turn
             .iter()
             .filter(|m| m.role == "tool")
-            .filter_map(|m| serde_json::from_str::<Value>(&m.content).ok()?.get("error")?.as_str().map(str::to_string))
+            .filter_map(|m| {
+                let f = outcomes::failure(&m.content)?;
+                let tool = m.tool_call_id.as_deref().and_then(|id| names.get(id)).copied().unwrap_or("a tool");
+                Some(if person.is_some() { format!("{tool}: {}", f.kind.as_str()) } else { f.message })
+            })
             .collect();
         run.retries = run.errors.len() as u32;
         run.tokens = stats.input + stats.output;
         run.duration_ms = stats.elapsed.as_millis() as u64;
         run.skills_used = self.applied_skills.iter().map(|s| s.trim_end_matches(" (trial)").to_string()).collect();
         if let Some(e) = error {
-            run.errors.push(e.chars().take(300).collect());
+            run.errors.push(if person.is_some() { "the reply failed".into() } else { e.chars().take(300).collect() });
             run.outcome = lyra_evolution::RunOutcome::Failure;
         }
         let id = run.id;
+        // Written now (one row), so an outcome that follows at once (Stop, the
+        // tool-call limit) finds it.
+        if let Err(e) = evolution.record(run) {
+            self.log(Level::Error, format!("recording the run failed: {e}"));
+        }
         let tx = self.tx.clone();
         crate::acting::spawn(move || {
-            if let Err(e) = evolution.record(run) {
-                let _ = tx.send(StreamEvent::Log(format!("recording the run failed: {e}")));
-            }
             let _ = tx.send(StreamEvent::Evolution(evolution.snapshot()));
         });
         Some(id)
     }
 
     /// The user's reaction tells how a run went; then check for a regression.
-    fn record_evolution_outcome(&self, id: Uuid, outcome: SkillOutcome, feedback: Option<&str>) {
+    fn record_evolution_outcome(&self, id: Uuid, outcome: SkillOutcome, corrected: bool, feedback: Option<&str>) {
         let Some(env) = self.evolution_env() else { return };
-        let (outcome, corrected) = match outcome {
-            SkillOutcome::Success => (lyra_evolution::RunOutcome::Success, false),
-            SkillOutcome::Partial => (lyra_evolution::RunOutcome::Partial, false),
-            SkillOutcome::Failure => (lyra_evolution::RunOutcome::Failure, true),
+        let outcome = match outcome {
+            SkillOutcome::Success => lyra_evolution::RunOutcome::Success,
+            SkillOutcome::Partial => lyra_evolution::RunOutcome::Partial,
+            SkillOutcome::Failure => lyra_evolution::RunOutcome::Failure,
             SkillOutcome::Unknown => return,
         };
         let (tx, feedback) = (self.tx.clone(), feedback.map(str::to_string));
@@ -1972,7 +2085,9 @@ impl App {
         self.agent_cards.clear();
         self.messages.push(Message::new("info", format!("resumed session {id} · {turns} turns · last active {when}")));
         self.scroll = None;
-        self.last_run = None;
+        // The last reply, if nothing was said after it, can still be judged or rated.
+        let last_user = self.messages.iter().rposition(|m| m.role == "user");
+        self.last_run = self.messages.iter().enumerate().rev().find(|(i, m)| m.run.is_some() && last_user.is_none_or(|u| *i > u)).and_then(|(_, m)| m.run.clone());
         self.log(Level::Info, format!("resumed session {id} ({turns} turns)"));
     }
 
@@ -2221,6 +2336,16 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
             KeyCode::PageUp => app.scroll_up(app.page),
             KeyCode::PageDown => app.scroll_down(app.page),
             KeyCode::Enter => app.send(),
+            // + / - with nothing typed: 👍 / 👎 on the last reply.
+            KeyCode::Char(c @ ('+' | '-')) if app.input.is_empty() && !app.waiting && app.messages.iter().any(|m| m.run.is_some()) => {
+                let text = match app.rate(None, if c == '+' { "good" } else { "bad" }, "") {
+                    Ok(t) if c == '-' => format!("{t}. What was wrong? /outcome bad <what>, and lyra learns from it"),
+                    Ok(t) => t,
+                    Err(e) => e,
+                };
+                app.messages.push(Message::new("info", text));
+                app.scroll = None;
+            }
             KeyCode::Backspace => {
                 app.input.pop();
                 app.palette = 0;
@@ -2234,6 +2359,30 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
             _ => {}
         }
     }
+}
+
+/// A rating word (`good`, `bad`, `partial`; `copied`, `read`) as a verdict.
+fn verdict_for(word: &str, note: &str) -> Result<outcomes::Verdict, String> {
+    use outcomes::{Strength, Verdict};
+    let note = note.trim();
+    Ok(match word.trim() {
+        "copied" => Verdict::new(SkillOutcome::Success, Strength::Mild, "they copied it"),
+        "read" => Verdict::new(SkillOutcome::Success, Strength::Mild, "they had it read aloud"),
+        w => {
+            let outcome = outcomes::rating(w).ok_or("rate it good, bad or partial")?;
+            let mut v = Verdict::new(outcome, Strength::Rated, match outcome {
+                SkillOutcome::Success => "👍",
+                SkillOutcome::Failure => "👎",
+                _ => "partly right",
+            });
+            if !note.is_empty() {
+                v.reason = format!("{}: {}", v.reason, note.chars().take(200).collect::<String>());
+                v.said = Some(note.chars().take(500).collect());
+                v.correction = outcome != SkillOutcome::Success;
+            }
+            v
+        }
+    })
 }
 
 fn main() {

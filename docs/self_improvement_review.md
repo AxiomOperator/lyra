@@ -174,6 +174,15 @@ Ordered by value for effort. Phase 1 alone would wake every loop up.
 
 ### Phase 1: give the loops a signal (quick wins, highest value)
 
+**Done in 0.74.0.226.** All of 1.1–1.7 are in place:
+- **The core:** `src/outcomes.rs` keeps one verdict per reply, ranked rated > signal > judged > hint, saved with the reply in the session.
+- **Rating:** 👍 / 👎 with "what was wrong?", plus Copy, in the app. `+` / `-` in both TUIs.
+- **The judge:** the decision model, then the fallback model, then whole-word lists.
+- **Signals:** Stop, `/retry` and `/edit`, the tool-call limit (`limited` on the run), Keep going, the same question again, copy and read aloud.
+- **Everyone counts:** members' runs are counts only.
+- **Tool failures:** marked `ok:false` with an `error_kind`.
+- **Gates:** they fall back to the fallback model, with the down state shown on Status, in the app and in the TUI.
+
 | # | Upgrade | What it changes |
 |---|---|---|
 | 1.1 | **Rate a reply in the app**: 👍 / 👎 (with an optional "what was wrong?") on each reply in the PWA and TUI (`+`/`-` on the last reply). It goes through the same path as `/outcome`. | It gives a direct, unambiguous signal to skills, memory, delegations and evolution at once. |

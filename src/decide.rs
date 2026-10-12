@@ -56,6 +56,10 @@ static SETTINGS: RwLock<Option<Settings>> = RwLock::new(None);
 static DOWN_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
 /// Lines for the Activity panel, taken by the app.
 static NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// It failed and hasn't answered since (for the warning when it's back).
+static WAS_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Gates the fallback model answered for it.
+static GATED: AtomicU64 = AtomicU64::new(0);
 static CALLS: AtomicU64 = AtomicU64::new(0);
 static FALLBACKS: AtomicU64 = AtomicU64::new(0);
 static MILLIS: AtomicU64 = AtomicU64::new(0);
@@ -64,6 +68,7 @@ static MILLIS: AtomicU64 = AtomicU64::new(0);
 pub fn configure(settings: Option<Settings>) {
     *SETTINGS.write().unwrap_or_else(|e| e.into_inner()) = settings;
     *DOWN_UNTIL.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    WAS_DOWN.store(false, Ordering::Relaxed);
 }
 
 /// The decision model's name, when one is set up.
@@ -179,6 +184,9 @@ pub fn ask(what: &str, state: &str, questions: &[(String, Question)]) -> Option<
     let started = Instant::now();
     match call(&settings, state, questions) {
         Ok(answers) => {
+            if WAS_DOWN.swap(false, Ordering::Relaxed) {
+                note(format!("✓ the decision model ({}) answers again", settings.model));
+            }
             let ms = started.elapsed().as_millis() as u64;
             CALLS.fetch_add(1, Ordering::Relaxed);
             MILLIS.fetch_add(ms, Ordering::Relaxed);
@@ -199,13 +207,46 @@ pub fn ask(what: &str, state: &str, questions: &[(String, Question)]) -> Option<
         Err(e) => {
             FALLBACKS.fetch_add(1, Ordering::Relaxed);
             let mut down = DOWN_UNTIL.lock().unwrap_or_else(|e| e.into_inner());
-            if down.is_none() {
-                note(format!("decision model unavailable ({e}); using the chat model for a minute"));
+            if down.is_none() && !WAS_DOWN.swap(true, Ordering::Relaxed) {
+                note(format!("⚠ the decision model is down ({e}): until it answers, the chat model decides and its checks (worth a review? worth remembering? how did the reply go?) go to the fallback model"));
             }
             *down = Some(Instant::now() + Duration::from_secs(60));
             None
         }
     }
+}
+
+/// It's set up but not answering (failed lately, or marked known down).
+pub fn down() -> bool {
+    model().is_some() && (crate::known_down::is_down("decide") || WAS_DOWN.load(Ordering::Relaxed))
+}
+
+/// Gates the fallback model answered since start, because this one was down or unsure.
+pub fn gated() -> u64 {
+    GATED.load(Ordering::Relaxed)
+}
+
+/// A yes/no gate (a lesson here? worth remembering?): the decision model
+/// when it's sure; when it's down or unsure, the fallback model reads the
+/// same (`light`: the chat URL and model, as a light job), so the gate
+/// doesn't quietly stay shut. `None`: neither could say.
+pub fn gate(what: &str, state: &str, question: &str, light: (&str, &str)) -> Option<(bool, &'static str)> {
+    if let Some((yes, _)) = yes(what, state, question) {
+        return Some((yes, "the decision model"));
+    }
+    let prompt = format!("{question}\n\nAnswer with one word: yes or no.");
+    let (reply, _) = crate::learn::complete_light_short(light.0, light.1, &prompt, &clip(state, 6000), 20).ok()?;
+    let word = reply.trim().trim_start_matches(|c: char| !c.is_alphabetic()).to_lowercase();
+    let yes = if word.starts_with("yes") {
+        true
+    } else if word.starts_with("no") {
+        false
+    } else {
+        return None;
+    };
+    GATED.fetch_add(1, Ordering::Relaxed);
+    note(format!("{what}: {} — the fallback model (the decision model was down or unsure)", if yes { "yes" } else { "no" }));
+    Some((yes, "the fallback model"))
 }
 
 /// For Status: one tiny question, timed, without counting or logging it.
@@ -356,7 +397,31 @@ pub(crate) mod tests {
 
         configure(Some(settings("http://127.0.0.1:9/v1")));
         assert!(yes("test", "s", "q?").is_none(), "down: the chat model decides");
-        assert!(take_notes().iter().any(|n| n.contains("unavailable")));
+        assert!(take_notes().iter().any(|n| n.starts_with("⚠") && n.contains("is down")));
+        configure(None);
+    }
+
+    #[test]
+    fn a_gate_goes_to_the_fallback_model_while_the_decision_model_is_down() {
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        configure(Some(settings("http://127.0.0.1:9/v1")));
+        take_notes();
+        // The fallback (a light job on the chat endpoint) answers instead.
+        let (chat, request) = fake(json!({ "choices": [{ "message": { "role": "assistant", "content": "Yes." } }] }));
+        let said = gate("a lesson here?", "the user showed how to restart the printer", "Is there a reusable lesson?", (&format!("{chat}/chat/completions"), "m"));
+        assert_eq!(said, Some((true, "the fallback model")));
+        assert!(request.join().unwrap().contains("Is there a reusable lesson?"));
+        assert!(down(), "it shows as down");
+        let notes = take_notes();
+        assert!(notes.iter().any(|n| n.starts_with("⚠ the decision model is down")), "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains("the fallback model")), "{notes:?}");
+        // Back up: said once, and no longer down.
+        let (url, _server) = fake(json!({ "answers": { "q": { "type": "noul", "noul": 0.05 } } }));
+        configure(Some(settings(&url)));
+        WAS_DOWN.store(true, Ordering::Relaxed);
+        assert_eq!(gate("worth remembering?", "hi", "Worth remembering?", ("http://127.0.0.1:9/v1/chat/completions", "m")), Some((false, "the decision model")));
+        assert!(!down());
+        assert!(take_notes().iter().any(|n| n.contains("answers again")));
         configure(None);
     }
 }

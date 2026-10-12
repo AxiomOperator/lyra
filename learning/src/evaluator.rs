@@ -4,12 +4,11 @@
 //! Two stages: a cheap [`trigger`] check on every turn, and, only when it fires,
 //! an LLM review ([`SYSTEM_PROMPT`] + [`prompt`], answer read by [`parse`] and
 //! [`Verdict::decide`]). The caller makes the LLM request, so this module has
-//! no network code. [`outcome_signal`] reads the user's next message as
-//! feedback on the skills the last answer used.
+//! no network code. (How a reply went is lyra's to judge: its outcomes module.)
 
 use serde::Deserialize;
 
-use crate::{Skill, SkillOutcome};
+use crate::Skill;
 
 /// What happened in the turn just finished.
 pub struct Turn<'a> {
@@ -33,10 +32,6 @@ const CORRECTION: &[&str] = &[
     "actually,", "instead", "you should have", "should be", "wrong", "doesn't work",
     "didn't work", "don't do", "stop doing", "still broken", "still fails",
 ];
-const PRAISE: &[&str] = &[
-    "thanks", "thank you", "perfect", "that worked", "it worked", "works now", "that works",
-    "great", "awesome", "exactly", "nice", "spot on", "worked",
-];
 
 /// Why this turn is worth reviewing for a lesson, or `None` for ordinary turns.
 pub fn trigger(turn: &Turn) -> Option<&'static str> {
@@ -58,20 +53,6 @@ pub fn trigger(turn: &Turn) -> Option<&'static str> {
         return Some("a multi-step procedure succeeded");
     }
     None
-}
-
-/// What the user's next message says about the previous answer: a correction
-/// is a failure, thanks or "that worked" a success, anything else no signal.
-/// (A failed task isn't a failed skill, so only the user's reaction counts.)
-pub fn outcome_signal(next_message: &str) -> Option<SkillOutcome> {
-    let text = format!(" {} ", next_message.to_lowercase());
-    if CORRECTION.iter().any(|p| text.contains(p)) {
-        Some(SkillOutcome::Failure)
-    } else if PRAISE.iter().any(|p| text.contains(p)) {
-        Some(SkillOutcome::Success)
-    } else {
-        None
-    }
 }
 
 pub const SYSTEM_PROMPT: &str = "\
@@ -302,14 +283,6 @@ mod tests {
         assert_eq!(trigger(&all_failed), None, "failed procedures aren't lessons");
         let multi = Turn { tool_calls: 3, ..turn("do it") };
         assert!(trigger(&multi).is_some());
-    }
-
-    #[test]
-    fn outcome_signals() {
-        assert_eq!(outcome_signal("Thanks, that worked!"), Some(SkillOutcome::Success));
-        assert_eq!(outcome_signal("No, that's wrong"), Some(SkillOutcome::Failure));
-        assert_eq!(outcome_signal("Thanks but that didn't work"), Some(SkillOutcome::Failure));
-        assert_eq!(outcome_signal("Now do the same for Go"), None);
     }
 
     #[test]

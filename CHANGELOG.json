@@ -1,5 +1,23 @@
 [
   {
+    "version": "0.74.0.226",
+    "date": "2026-10-11",
+    "title": "Tell lyra how a reply went",
+    "new": [
+      "👍 / 👎 under every reply in the app. 👎 asks what was wrong (if you want to say), and there's a Copy button too. In the terminal, press + or - with nothing typed, or use /outcome good|bad|partial with what was wrong.",
+      "lyra now reads your next message to tell how its last reply went, so most replies get an outcome without you doing anything. The decision model reads it, or the fallback model when that's down. \"Thanks, now do Y instead\" counts as thanks, and \"no, it's on Tuesday\" as a correction.",
+      "What you do counts too: asking for a reply again, changing your message, stopping a reply part way, hitting the tool-call limit, Keep going, and asking the same thing again within two minutes. Copying a reply or having it read aloud is a hint it helped."
+    ],
+    "improved": [
+      "Your skills, memories, agents and lyra's evolution all learn from these. Everyone's replies count now, not only the owner's: each person's for their own skills, and only as counts for what's shared (no one's words reach anyone else).",
+      "A rating stays with the reply in the saved conversation, so a resumed conversation can still be rated. Your own rating is never overridden by a guess.",
+      "When the decision model is down, its checks (is there a lesson here, is this worth remembering) go to the fallback model instead of quietly saying no. The Status page, the menu under your initials, the terminal's Session panel and Activity say it's down."
+    ],
+    "fixed": [
+      "A tool result that only mentioned the word \"error\" (an email about one, say) no longer counts as a failed step."
+    ]
+  },
+  {
     "version": "0.73.0.225",
     "date": "2026-10-11",
     "title": "A plan for lyra learning on its own",

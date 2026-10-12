@@ -61,7 +61,7 @@ pub(crate) const COMMANDS: &str = "\
 /resume <id>                 switch to a saved conversation
 /history <id>                a skill's versions and audit trail
 /rollback <id> [version]     restore an earlier version (the previous one by default)
-/outcome good|bad|partial    how the last reply's skills worked out
+/outcome good|bad|partial [what was wrong]    👍 / 👎 the last reply (+ / - with nothing typed)
 /learn                       review the conversation for a lesson now
 /curate                      look for duplicates, conflicts and stale skills now
 /memory                      memory stats and what's waiting for approval
@@ -87,6 +87,6 @@ pub(crate) const COMMANDS: &str = "\
 /plan budget [raise]         the plan's budget · add the configured budget again
 /plan checkpoints|revisions  recovery points · how the plan changed
 /caps [search|show|allow|health]  what lyra can do, which capability fits, what's allowed
-/outcome good|bad|partial    (also) how the last reply went, for evolution";
+/outcome good|bad|partial    (also) how the last reply went, for evolution and agents";
 
 pub(crate) const HELP_END: &str = "/help                        this list";

@@ -371,8 +371,8 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
                   )}
                   <span className="text-muted-foreground">model {status.model}</span>
                   {status.decide && (
-                    <span className="text-muted-foreground">
-                      decides: {status.decide.model} · {status.decide.ms} ms
+                    <span className={status.decide.down ? "text-amber-400" : "text-muted-foreground"} title={status.decide.down ? "The decision model isn't answering: the chat model decides, and its checks go to the fallback model" : undefined}>
+                      decides: {status.decide.model} {status.decide.down ? "· down, the fallback model checks" : `· ${status.decide.ms} ms`}
                     </span>
                   )}
                   <span className="text-muted-foreground">lyra {status.version ?? "…"}</span>

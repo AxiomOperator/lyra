@@ -270,6 +270,15 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
             let text = format!("handled with: {}", m.agents.join(", "));
             lines.push(Line::styled(text, Style::default().fg(Color::LightBlue)));
         }
+        // How the reply went (rated, or read from what came next).
+        if let Some(v) = m.run.as_ref().and_then(|r| r.verdict.as_ref()) {
+            let mark = match (v.strength, v.outcome) {
+                (crate::outcomes::Strength::Rated, lyra_learning::SkillOutcome::Success) => "you rated it 👍".to_string(),
+                (crate::outcomes::Strength::Rated, lyra_learning::SkillOutcome::Failure) => "you rated it 👎".to_string(),
+                _ => format!("went {}: {}", v.word(), v.reason),
+            };
+            lines.push(Line::styled(truncate(&mark, 160), dim));
+        }
         lines.push(Line::default());
     }
     // Show "thinking..." until the first token arrives, and while waiting on a tool.
@@ -363,7 +372,13 @@ fn session_panel(app: &App, width: usize) -> Vec<Line<'static>> {
     if let Some(model) = crate::decide::model() {
         let (calls, fallbacks, ms) = crate::decide::stats();
         let text = format!("{model} · {calls} decided{} · {ms} ms", if fallbacks > 0 { format!(", {fallbacks} to chat") } else { String::new() });
-        lines.push(Line::from(vec![label("decide"), Span::raw(truncate(&text, width.saturating_sub(8)))]));
+        // Down: say so, and that its checks went to the fallback model.
+        let (text, style) = if crate::decide::down() {
+            (format!("{model} down · checks by the fallback ({})", crate::decide::gated()), Style::default().fg(Color::Red))
+        } else {
+            (text, Style::default())
+        };
+        lines.push(Line::from(vec![label("decide"), Span::styled(truncate(&text, width.saturating_sub(8)), style)]));
     }
     lines.extend([
         Line::from(vec![

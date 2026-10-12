@@ -292,7 +292,8 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
             Box::new(move || {
                 vec![check("decide", "Models", "Decision model", &host(&url), || match crate::decide::probe() {
                     Some(Ok((_, model))) => Ok((State::Up, model)),
-                    Some(Err(e)) => Err(e),
+                    // Its checks don't stop: they go to the fallback model meanwhile.
+                    Some(Err(e)) => Err(format!("{e} · meanwhile the chat model decides, and its checks (worth a review, worth remembering, how a reply went) go to the fallback model")),
                     None => Ok((State::Off, "not set up".into())),
                 })]
             }),

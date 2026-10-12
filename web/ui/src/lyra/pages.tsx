@@ -555,6 +555,7 @@ export function MorePage({ toChat, open, update }: { toChat: () => void; open: (
             lyra {about?.lyra} · app {APP_VERSION}
             {newer ? ` (lyra has ${serverVersion})` : ""} · model {about?.model}
             {status.decide && ` · decisions by ${status.decide.model} (${status.decide.decided} made, ${status.decide.to_chat} left to the chat model, ${status.decide.ms} ms average)`}
+            {status.decide?.down && ` · ⚠ it's down: its checks go to the fallback model (${status.decide.gated ?? 0} so far)`}
             <br />
             lyra-node on offer: {about?.node_build ?? "none"} · {about?.devices ?? 0} paired devices
           </CardDescription>

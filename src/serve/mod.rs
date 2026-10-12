@@ -49,6 +49,9 @@ fn web_message(app: &App, m: &Message) -> Value {
         "memory_notes": m.memories.iter().filter_map(|id| app.memory_texts.get(id).map(|t| json!({ "id": id, "text": t }))).collect::<Vec<_>>(),
         "skills": m.skills,
         "agents": m.agents,
+        // A reply that can be rated (👍 / 👎), and how its person rated it.
+        "rateable": m.run.is_some(),
+        "rated": m.run.as_ref().and_then(|r| r.verdict.as_ref()).filter(|v| v.strength == crate::outcomes::Strength::Rated).map(|v| v.word()),
     })
 }
 
@@ -210,7 +213,7 @@ fn status(app: &App, machines: &[String]) -> Value {
         "backing_up": crate::backup::running(),
         "decide": crate::decide::model().map(|model| {
             let (decided, to_chat, ms) = crate::decide::stats();
-            json!({ "model": model, "decided": decided, "to_chat": to_chat, "ms": ms })
+            json!({ "model": model, "decided": decided, "to_chat": to_chat, "ms": ms, "down": crate::decide::down(), "gated": crate::decide::gated() })
         }),
         "context_window": crate::stats::CONTEXT_WINDOW.load(std::sync::atomic::Ordering::Relaxed),
         "version": crate::changelog::version(),
