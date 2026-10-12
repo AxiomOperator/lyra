@@ -1,5 +1,6 @@
-// Read-back: lyra's replies spoken by the device's own voice (the browser's
-// speech synthesis: phones and desktops, no server). A speaker on each reply;
+// Read-back: lyra's replies spoken aloud. With a voice on lyra's own server
+// (`[speech.tts]`, e.g. Kokoro) that one, a sentence at a time; otherwise the
+// device's own (the browser's speech synthesis). A speaker on each reply;
 // "read replies aloud" (for the car) and the voice are kept on this device.
 
 import { VoiceSelector, VoiceSelectorContent, VoiceSelectorEmpty, VoiceSelectorGroup, VoiceSelectorInput, VoiceSelectorItem, VoiceSelectorList, VoiceSelectorTrigger } from "@/components/ai-elements/voice-selector";
@@ -7,10 +8,14 @@ import { PromptInputButton } from "@/components/ai-elements/prompt-input";
 import { cn } from "@/lib/utils";
 import { Check, Square, Volume2, VolumeX } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { serverSay, serverSpeech, serverVoices, stopServerSay, useServerSpeech } from "./speech";
 
 export const canSpeak = typeof window !== "undefined" && "speechSynthesis" in window;
 
-type Prefs = { auto: boolean; voice?: string; rate: number };
+/** Something can speak now: lyra's server voice, or this device's. */
+export const canSpeakNow = () => !!serverSpeech()?.tts || canSpeak;
+
+type Prefs = { auto: boolean; voice?: string; rate: number; serverVoice?: string };
 
 function load(): Prefs {
   try {
@@ -69,9 +74,22 @@ function setSpeaking(id: string | null) {
 
 /** Say `text` (as `id`, for the speaker buttons); `done` once it's said, or stopped. */
 export function speak(id: string, text: string, done?: () => void) {
-  if (!canSpeak) return done?.();
   const say = speakable(text);
-  if (!say) return done?.();
+  if (!say || !canSpeakNow()) return done?.();
+  // lyra's own voice (its speech server), a sentence at a time.
+  if (serverSpeech()?.tts) {
+    if (canSpeak) speechSynthesis.cancel();
+    setSpeaking(id);
+    serverSay(say, {
+      voice: prefs.serverVoice,
+      rate: prefs.rate,
+      done: () => {
+        if (speakingId === id) setSpeaking(null);
+        done?.();
+      },
+    });
+    return;
+  }
   speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(say);
   const v = speechSynthesis.getVoices().find((v) => v.voiceURI === prefs.voice);
@@ -89,6 +107,7 @@ export function speak(id: string, text: string, done?: () => void) {
 }
 
 export function stopSpeaking() {
+  stopServerSay();
   if (canSpeak) speechSynthesis.cancel();
   setSpeaking(null);
 }
@@ -100,7 +119,8 @@ export function SpeakButton({ id, text, onRead }: { id: string; text: string; on
     speakingListeners.add(setNow);
     return () => void speakingListeners.delete(setNow);
   }, []);
-  if (!canSpeak || !text.trim()) return null;
+  const server = useServerSpeech();
+  if (!(canSpeak || server?.tts) || !text.trim()) return null;
   const on = now === id;
   return (
     <button type="button" aria-label={on ? "Stop reading" : "Read aloud"} title={on ? "Stop reading" : "Read aloud"} onClick={() => (on ? stopSpeaking() : (speak(id, text), onRead?.()))} className={cn("rounded p-0.5 hover:text-foreground", on && "text-primary")}>
@@ -126,13 +146,23 @@ function useVoices() {
 export function VoiceButton() {
   const p = useVoicePrefs();
   const voices = useVoices();
+  const server = useServerSpeech();
   const [open, setOpen] = useState(false);
+  const [lyraVoices, setLyraVoices] = useState<string[]>([]);
+  useEffect(() => {
+    if (open && server?.tts) void serverVoices().then(setLyraVoices);
+  }, [open, server?.tts]);
   const pick = useCallback((uri?: string) => {
     setPrefs({ voice: uri });
-    const v = speechSynthesis.getVoices().find((v) => v.voiceURI === uri);
+    const v = canSpeak ? speechSynthesis.getVoices().find((v) => v.voiceURI === uri) : undefined;
     if (v) speak("sample", `Hi, I'm lyra. This is how I'll sound.`);
   }, []);
-  if (!canSpeak) return null;
+  const pickServer = useCallback((voice: string) => {
+    setPrefs({ serverVoice: voice });
+    speak("sample", `Hi, I'm lyra. This is how I'll sound.`);
+  }, []);
+  if (!(canSpeak || server?.tts)) return null;
+  const lyraVoice = p.serverVoice ?? server?.tts?.voice;
   // Your language's voices first.
   const lang = navigator.language.split("-")[0];
   const sorted = [...voices].sort((a, b) => Number(b.lang.startsWith(lang)) - Number(a.lang.startsWith(lang)) || a.name.localeCompare(b.name));
@@ -173,7 +203,17 @@ export function VoiceButton() {
         <VoiceSelectorInput placeholder="Find a voice…" />
         <VoiceSelectorList className="max-h-72">
           <VoiceSelectorEmpty>No voices on this device.</VoiceSelectorEmpty>
-          <VoiceSelectorGroup heading="This device's voices">
+          {server?.tts && (
+            <VoiceSelectorGroup heading="lyra's voices (its speech server: used while it's set up)">
+              {(lyraVoices.length ? lyraVoices : [server.tts.voice]).map((v) => (
+                <VoiceSelectorItem key={v} value={`lyra ${v}`} onSelect={() => pickServer(v)}>
+                  <span className="min-w-0 flex-1 truncate">{v}</span>
+                  {lyraVoice === v && <Check className="size-4 text-primary" />}
+                </VoiceSelectorItem>
+              ))}
+            </VoiceSelectorGroup>
+          )}
+          <VoiceSelectorGroup heading={server?.tts ? "This device's voices (when lyra's isn't there)" : "This device's voices"}>
             {sorted.map((v) => (
               <VoiceSelectorItem key={v.voiceURI} value={`${v.name} ${v.lang}`} onSelect={() => pick(v.voiceURI)}>
                 <span className="min-w-0 flex-1 truncate">{v.name}</span>

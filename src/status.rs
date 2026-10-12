@@ -117,6 +117,17 @@ fn ago(t: DateTime<Utc>) -> String {
 
 // ---- what a check pass needs, taken from the app (cheap), probed elsewhere
 
+/// A speech server's models (`GET /models`).
+fn speech_models(url: &str) -> Result<Vec<String>, String> {
+    let c = reqwest::blocking::Client::builder().connect_timeout(std::time::Duration::from_secs(4)).timeout(std::time::Duration::from_secs(10)).build().map_err(|e| e.to_string())?;
+    let r = c.get(format!("{}/models", url.trim_end_matches('/'))).send().map_err(|e| e.to_string())?;
+    if !r.status().is_success() {
+        return Err(format!("{}", r.status()));
+    }
+    let v: Value = r.json().map_err(|e| e.to_string())?;
+    Ok(v["data"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str().map(str::to_string)).collect())
+}
+
 pub struct Inputs {
     pub chat_url: String,
     pub chat_model: String,
@@ -299,6 +310,34 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
             }),
         ),
         None => out.push(probe("decide", "Models", "Decision model", "", State::Off, None, "not set up ([decide]): the chat model decides")),
+    }
+
+    // Voice on lyra's own servers ([speech]): each answers, and has its model.
+    let speech = crate::config::Config::load().map(|c| c.speech.web()).unwrap_or_default();
+    match speech.stt {
+        Some(stt) => spawn(
+            &mut jobs,
+            Box::new(move || {
+                vec![check("stt", "Models", "Speech to text", &host(&stt.url), move || {
+                    let v = speech_models(&stt.url)?;
+                    let has = v.iter().any(|m| m == &stt.model);
+                    Ok(if has { (State::Up, stt.model.clone()) } else { (State::Degraded, format!("answers, but {} isn't installed on it", stt.model)) })
+                })]
+            }),
+        ),
+        None => out.push(probe("stt", "Models", "Speech to text", "", State::Off, None, "not set up ([speech.stt]): the browser's own")),
+    }
+    match speech.tts {
+        Some(tts) => spawn(
+            &mut jobs,
+            Box::new(move || {
+                vec![check("tts", "Models", "Text to speech", &host(&tts.url), move || {
+                    let v = speech_models(&tts.url)?;
+                    Ok(if v.is_empty() || v.iter().any(|m| m == &tts.model) { (State::Up, format!("{} · {}", tts.model, tts.voice)) } else { (State::Degraded, format!("answers, but has no {}", tts.model)) })
+                })]
+            }),
+        ),
+        None => out.push(probe("tts", "Models", "Text to speech", "", State::Off, None, "not set up ([speech.tts]): the device's own voice")),
     }
 
     // Tools & APIs

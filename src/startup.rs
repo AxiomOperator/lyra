@@ -342,7 +342,8 @@ pub(crate) fn main() {
     };
     configure(&config);
     stats::learn_context_window(&config.url);
-    let web = config.web.clone();
+    let mut web = config.web.clone();
+    web.speech = config.speech.web();
     let mut app = App::new(config, Context::load(), services);
     for note in migrated {
         app.log(Level::Info, note);

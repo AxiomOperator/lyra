@@ -1567,8 +1567,23 @@ it's waiting for. What was written so far stays, marked *(stopped)*.
   `write_roots`). The machine downloads the upload itself with its node token;
   node tokens can read uploads only, never the chat. The model never chooses
   the source file, only the upload id.
-- **Voice:** the microphone button dictates into the message box where the
-  browser supports speech recognition (Chrome/Edge on Android, Safari on iOS).
+- **Voice:** the microphone button dictates into the message box, the speaker
+  under a reply reads it aloud, and hands-free talks back and forth.
+  - **On your own servers (`[speech]`):** Whisper (speech to text) and Kokoro
+    (lyra's voice), or anything OpenAI-compatible (`/audio/transcriptions`,
+    `/audio/speech`). The app records and plays; lyra passes the audio to the
+    servers, so they stay inside your network.
+  - **Speaking:** replies are spoken a sentence at a time as they're ready
+    (`stream_audio`). Pick lyra's voice from the speaker button in the
+    composer.
+  - **Hands-free:** it hears when you stop talking (`vad_enabled`), and
+    talking over a reply stops it and listens (`allow_interruptions`).
+  - **Status:** the Status page shows both servers, and whether Whisper has
+    its model.
+  - **Falling back:** a server that's down, or doesn't have its model, isn't
+    used. The app falls back to the browser's own recognition (Chrome and Edge
+    on Android, Safari on iOS) and the device's voices, which is all there is
+    without `[speech]`.
 - **Share to lyra (Android):** with the app installed, lyra appears in the
   share sheet; shared text, links and files land in the message box, ready to
   send. iOS doesn't support sharing to web apps.

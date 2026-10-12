@@ -5,6 +5,7 @@
 // conversation shows them, sent when lyra is reachable and done answering.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import { loadServerSpeech } from "./speech";
 import { answer as answerFolder, folderStates, folderUser, onFoldersChanged, setFolderUser } from "./folders";
 import { forgetAll, loadLast, loadOutbox, newQueued, saveLast, saveOutbox, timesSaid, type Queued } from "./outbox";
 import { saveToken } from "./token";
@@ -127,6 +128,11 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
       return next;
     });
   }, []);
+
+  // Voice on lyra's own servers ([speech]), if it has them.
+  useEffect(() => {
+    if (token) void loadServerSpeech(token);
+  }, [token]);
 
   // Opened without a connection: the last conversation, as it was.
   useEffect(() => {

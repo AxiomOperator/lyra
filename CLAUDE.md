@@ -26,7 +26,7 @@ Rust TUI chat client for local OpenAI-compatible LLMs, built up step by step.
   the browser sandbox's containers (`lyra-node sandbox setup`: image, network, LAN blocked and checked).
   Built static with musl (`.cargo/config.toml`).
 - `web/` — `lyra-web` crate: `lyra serve`'s HTTP + WebSocket server (axum), device pairing (token
-  hashes in `~/.lyra/web/devices.json`), Web Push (VAPID + RFC 8291 with RustCrypto), and the PWA
+  hashes in `~/.lyra/web/devices.json`), Web Push (VAPID + RFC 8291 with RustCrypto), voice on your own servers (`speech.rs`: `/api/speech`, `/transcribe` to Whisper, `/say` from Kokoro streamed, `/voices`; `[speech]` in lyra's config, only servers that have their model are announced), and the PWA
   in `web/ui/` (React + Vite + Tailwind + shadcn/ui + Vercel AI Elements; `npm run build` → `web/ui/dist/`,
   committed and embedded in the binary — rebuild and commit `dist/` after changing the app). `src/serve/` mirrors the `App` to devices as small
   updates and feeds their input back; TLS comes from the user's reverse proxy (Zoraxy).

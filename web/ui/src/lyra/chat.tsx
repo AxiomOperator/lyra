@@ -25,6 +25,7 @@ import { BoardCard, ComposerModel, PlanCard, ToolFileContent, ToolFileTree, Tool
 import { HandsFreeBar, HandsFreeButton, useHandsFreeOn } from "./handsfree";
 import { SpeakButton, VoiceButton, useAutoRead } from "./voice";
 import { AddTestButton, CopyButton, RateButtons, useRate } from "./rating";
+import { canRecord, transcribe, useServerSpeech } from "./speech";
 import { AgentTask, ApprovalAt, ApprovalDetail, ComposerAttachments, ReplyContext, ReplySources, SentAttachments, StarterSuggestions, approvalCall, splitAttached, webSources } from "./chat-parts";
 
 /** The approval waiting, and the call it's shown at. */
@@ -435,6 +436,7 @@ function Composer() {
   }, [text]);
   // The message as typed when dictation started; what's said goes after it.
   const typedBefore = useRef("");
+  const speech = useServerSpeech();
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
@@ -583,10 +585,13 @@ function Composer() {
             <PromptInputButton aria-label="Attach files" onClick={() => fileInput.current?.click()}>
               <Paperclip className="size-4" />
             </PromptInputButton>
-            {canDictate && (
+            {(canDictate || (speech?.stt && canRecord)) && (
               <SpeechInput
                 size="icon-sm"
                 variant="ghost"
+                // lyra's speech-to-text server when it has one (tap to start, tap to stop).
+                recorder={!!speech?.stt && canRecord}
+                onAudioRecorded={transcribe}
                 onListenStart={() => (typedBefore.current = text)}
                 onTranscriptionChange={(said) => setText(withDictation(typedBefore.current, said))}
               />

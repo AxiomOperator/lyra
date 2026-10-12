@@ -2,9 +2,10 @@
 // Listen → send what was said → wait for the reply → read it aloud → listen
 // again. lyra asking for a yes is read out and answered by voice ("yes" /
 // "no"). "Stop" (or "that's all") ends it; three silences in a row pause it
-// (tap to go on). Everything happens on this device: the browser's own
-// speech recognition and voice, no server. The screen is kept awake while
-// it's on.
+// (tap to go on). With speech on lyra's own servers (`[speech]`: Whisper and
+// Kokoro) those hear and speak: it hears when you stop talking, and talking
+// over a reply stops it and listens (interruptions). Otherwise the browser's
+// own recognition and voice. The screen is kept awake while it's on.
 
 import { PromptInputButton } from "@/components/ai-elements/prompt-input";
 import { Button } from "@/components/ui/button";
@@ -14,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLyra } from "./store";
 import type { Approval } from "./types";
 import { canSpeak, speak, stopSpeaking } from "./voice";
+import { canRecord, listenOnce, serverSpeech, useServerSpeech, watchForInterruption } from "./speech";
 
 type Recognition = {
   lang: string;
@@ -32,8 +34,17 @@ function recognizer(): (new () => Recognition) | null {
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
 
-/** This device can listen and speak. */
+/** This device can listen and speak (itself, or with lyra's speech servers). */
 export const canHandsFree = canSpeak && recognizer() !== null;
+
+/** Whether hands-free can run: the browser's, or lyra's speech servers. */
+function useCanHandsFree() {
+  const server = useServerSpeech();
+  return canHandsFree || (!!server?.stt && !!server?.tts && canRecord);
+}
+
+/** Hearing goes to lyra's speech-to-text server (it has one, and this browser records). */
+const serverHears = () => !!serverSpeech()?.stt && canRecord;
 
 /** What a heard phrase means, beyond a message. */
 export function meaning(said: string): "stop" | "yes" | "no" | null {
@@ -83,7 +94,8 @@ export function useHandsFreeOn() {
 export function HandsFreeButton() {
   const on = useHandsFreeOn();
   const { connected } = useLyra();
-  if (!canHandsFree) return null;
+  const can = useCanHandsFree();
+  if (!can) return null;
   return (
     <PromptInputButton
       aria-label="Hands-free"
@@ -109,7 +121,9 @@ export function HandsFreeBar({ lastReply, waiting, approvals }: { lastReply: { i
   const on = useHandsFreeOn();
   const [state, setState] = useState<State>("off");
   const [heard, setHeard] = useState("");
-  const rec = useRef<Recognition | null>(null);
+  const rec = useRef<{ abort: () => void } | null>(null);
+  // While a reply is read: listening for them talking over it.
+  const interrupt = useRef<(() => void) | null>(null);
   const run = useRef(0); // each start of the loop; a stale callback sees it changed
   const misses = useRef(0);
   const sentAfter = useRef<string | null>(null); // the reply showing when we sent
@@ -130,11 +144,30 @@ export function HandsFreeBar({ lastReply, waiting, approvals }: { lastReply: { i
       // already stopped
     }
     rec.current = null;
+    interrupt.current?.();
+    interrupt.current = null;
   }, []);
 
   // Listen once; `then` gets what was said (empty: nothing).
   const listen = useCallback(
     (then: (said: string) => void) => {
+      // lyra's speech-to-text server: it hears when they stop talking.
+      if (serverHears()) {
+        quiet();
+        const mine = run.current;
+        setHeard("");
+        const l = listenOnce((stage) => setHeard(stage === "hearing" ? "…" : stage === "thinking" ? "working out what you said…" : ""));
+        rec.current = { abort: l.stop };
+        l.done
+          .then((said) => {
+            if (run.current !== mine) return;
+            rec.current = null;
+            setHeard(said);
+            then(said);
+          })
+          .catch(() => run.current === mine && then(""));
+        return;
+      }
       const Rec = recognizer();
       if (!Rec) return;
       quiet();
@@ -173,7 +206,23 @@ export function HandsFreeBar({ lastReply, waiting, approvals }: { lastReply: { i
     (id: string, text: string, then: () => void) => {
       const mine = run.current;
       go("speaking");
-      speak(id, text, () => run.current === mine && then());
+      const finish = () => {
+        interrupt.current?.();
+        interrupt.current = null;
+        if (run.current === mine) then();
+      };
+      speak(id, text, finish);
+      // Interruptions: talking over it stops it, and what they say is heard.
+      const sp = serverSpeech();
+      if (sp?.interruptions && serverHears()) {
+        interrupt.current = watchForInterruption(() => {
+          if (run.current !== mine) return;
+          run.current += 1;
+          interrupt.current = null;
+          stopSpeaking();
+          earRef.current();
+        });
+      }
     },
     [go],
   );
@@ -184,6 +233,8 @@ export function HandsFreeBar({ lastReply, waiting, approvals }: { lastReply: { i
     go("listening");
     listen((said) => heardRef.current(said));
   }, [go, listen]);
+  const earRef = useRef(ear);
+  earRef.current = ear;
 
   heardRef.current = (said: string) => {
     if (!wanted) return;

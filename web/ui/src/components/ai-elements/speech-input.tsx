@@ -6,7 +6,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { MicIcon, SquareIcon } from "lucide-react";
 import type { ComponentProps } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 interface SpeechRecognition extends EventTarget {
   continuous: boolean;
@@ -72,6 +72,8 @@ export type SpeechInputProps = ComponentProps<typeof Button> & {
    * Return the transcribed text, which will be passed to onTranscriptionChange.
    */
   onAudioRecorded?: (audioBlob: Blob) => Promise<string>;
+  /** lyra: record and send the audio (onAudioRecorded) even where the browser recognizes speech itself. */
+  recorder?: boolean;
   lang?: string;
 };
 
@@ -96,12 +98,13 @@ export const SpeechInput = ({
   onTranscriptionChange,
   onListenStart,
   onAudioRecorded,
+  recorder = false,
   lang = navigator.language || "en-US",
   ...props
 }: SpeechInputProps) => {
   const [isListening, setIsListening] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [mode] = useState<SpeechInputMode>(detectSpeechInputMode);
+  const mode = useMemo<SpeechInputMode>(() => (recorder && typeof window !== "undefined" && "MediaRecorder" in window && "mediaDevices" in navigator ? "media-recorder" : detectSpeechInputMode()), [recorder]);
   const [isRecognitionReady, setIsRecognitionReady] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -202,6 +205,7 @@ export const SpeechInput = ({
       streamRef.current = stream;
       const mediaRecorder = new MediaRecorder(stream);
       audioChunksRef.current = [];
+      onListenStartRef.current?.();
 
       const handleDataAvailable = (event: BlobEvent) => {
         if (event.data.size > 0) {
@@ -215,8 +219,9 @@ export const SpeechInput = ({
         }
         streamRef.current = null;
 
+        // lyra: its real type (Safari records mp4, not webm).
         const audioBlob = new Blob(audioChunksRef.current, {
-          type: "audio/webm",
+          type: mediaRecorder.mimeType || "audio/webm",
         });
 
         if (audioBlob.size > 0 && onAudioRecordedRef.current) {

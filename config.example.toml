@@ -223,6 +223,31 @@ currency = "$"
 # reliability = 0.1
 # safety = 0.1
 
+# Voice on your own servers (see README): speech to text with a Whisper server
+# and lyra's voice with Kokoro (anything OpenAI-compatible). Devices' audio goes
+# through lyra, so these stay inside the network. Without it the app uses the
+# browser's own recognition and voices.
+# [speech.stt]
+# enabled = true
+# provider = "openai-compatible"
+# base_url = "http://172.16.0.14:8006/v1"     # its /audio/transcriptions
+# model = "Systran/faster-whisper-large-v3"
+# language = "en"
+#
+# [speech.tts]
+# enabled = true
+# provider = "openai-compatible"
+# base_url = "http://172.16.0.14:8880/v1"     # its /audio/speech
+# model = "kokoro"
+# voice = "af_heart"
+# response_format = "mp3"
+# speed = 1.0
+#
+# [speech.conversation]       # hands-free
+# vad_enabled = true          # it hears when you stop talking
+# allow_interruptions = true  # talking over a reply stops it and listens
+# stream_audio = true         # replies are spoken a sentence at a time as they're ready
+
 # Capabilities (see README): everything lyra can do — memory tools, composite
 # tools, OpenAPI operations, MCP tools, workflows, skills, helper agents —
 # discovered per message, scored by track record, behind a policy.

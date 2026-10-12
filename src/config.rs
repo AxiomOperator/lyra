@@ -87,6 +87,8 @@ pub struct Config {
     pub system: lyra_system::Settings,
     /// `[web]` table: `lyra serve` for phones and browsers.
     pub web: lyra_web::Settings,
+    /// `[speech]`: voice on your own servers (Whisper, Kokoro).
+    pub speech: SpeechConfig,
     /// `[search]` table: web search (SearXNG) and reading pages.
     pub search: crate::websearch::Settings,
     /// `[sandbox]`: disposable browser containers on a machine with Docker.
@@ -371,6 +373,7 @@ impl Default for Config {
             agents: crate::agents::Settings::default(),
             system: lyra_system::Settings::default(),
             web: lyra_web::Settings::default(),
+            speech: Default::default(),
             search: crate::websearch::Settings::default(),
             sandbox: crate::sandbox::Settings::default(),
         }
@@ -550,6 +553,22 @@ mod tests {
     }
 
     #[test]
+    fn speech_reads_as_written_and_only_whats_on_and_filled_in_is_used() {
+        let c: Config = toml::from_str(
+            "[speech.stt]\nenabled = true\nprovider = \"openai-compatible\"\nbase_url = \"http://172.99.99.14:8006/v1\"\nmodel = \"Systran/faster-distil-whisper-large-v3\"\nlanguage = \"en\"\n\n[speech.tts]\nenabled = true\nprovider = \"openai-compatible\"\nbase_url = \"http://172.99.99.14:8880/v1\"\nmodel = \"kokoro\"\nvoice = \"af_heart\"\nresponse_format = \"mp3\"\n\n[speech.conversation]\nvad_enabled = true\nallow_interruptions = true\nstream_audio = true\n",
+        )
+        .unwrap();
+        let w = c.speech.web();
+        assert_eq!(w.stt.as_ref().map(|s| (s.url.as_str(), s.language.as_deref())), Some(("http://172.99.99.14:8006/v1", Some("en"))));
+        assert_eq!(w.tts.as_ref().map(|t| (t.voice.as_str(), t.format.as_str())), Some(("af_heart", "mp3")));
+        assert!(w.vad && w.interruptions && w.stream);
+        let off: Config = toml::from_str("[speech.stt]\nenabled = false\nbase_url = \"http://x/v1\"\nmodel = \"m\"\n[speech.tts]\nenabled = true\n").unwrap();
+        let w = off.speech.web();
+        assert!(w.stt.is_none() && w.tts.is_none(), "off, or missing its address: not used");
+        assert!(Config::default().speech.web().stt.is_none());
+    }
+
+    #[test]
     fn edits_keep_the_rest_of_config_toml() {
         let dir = std::env::temp_dir().join(format!("lyra-config-edit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -572,5 +591,77 @@ mod tests {
         .is_err(), "a change lyra couldn't read back isn't written");
         assert!(std::fs::read_to_string(&path).unwrap().contains("model = \"b\""));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// `[speech]`: speech to text and text to speech on servers of your own
+/// (OpenAI-compatible: Whisper behind `/audio/transcriptions`, Kokoro behind
+/// `/audio/speech`). Without it the app uses the browser's own.
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct SpeechConfig {
+    pub stt: SttConfig,
+    pub tts: TtsConfig,
+    pub conversation: ConversationConfig,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct SttConfig {
+    pub enabled: bool,
+    /// `openai-compatible` (the only kind for now).
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    pub language: Option<String>,
+}
+
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct TtsConfig {
+    pub enabled: bool,
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    pub voice: String,
+    /// `mp3` (the default), `opus`, `wav`…
+    pub response_format: Option<String>,
+    pub speed: Option<f32>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct ConversationConfig {
+    /// Hands-free hears when you stop talking.
+    pub vad_enabled: bool,
+    /// Talking over a reply being read stops it and listens.
+    pub allow_interruptions: bool,
+    /// Replies are spoken a sentence at a time as they're ready.
+    pub stream_audio: bool,
+}
+
+impl Default for ConversationConfig {
+    fn default() -> Self {
+        Self { vad_enabled: true, allow_interruptions: true, stream_audio: true }
+    }
+}
+
+impl SpeechConfig {
+    /// As the web server takes it (what's switched on and filled in).
+    pub fn web(&self) -> lyra_web::Speech {
+        let ok = |enabled: bool, url: &str, model: &str| enabled && !url.trim().is_empty() && !model.trim().is_empty();
+        lyra_web::Speech {
+            stt: ok(self.stt.enabled, &self.stt.base_url, &self.stt.model).then(|| lyra_web::Stt { url: self.stt.base_url.trim().to_string(), model: self.stt.model.trim().to_string(), language: self.stt.language.clone() }),
+            tts: ok(self.tts.enabled, &self.tts.base_url, &self.tts.model).then(|| lyra_web::Tts {
+                url: self.tts.base_url.trim().to_string(),
+                model: self.tts.model.trim().to_string(),
+                voice: if self.tts.voice.trim().is_empty() { "af_heart".into() } else { self.tts.voice.trim().to_string() },
+                format: self.tts.response_format.clone().filter(|f| !f.trim().is_empty()).unwrap_or_else(|| "mp3".into()),
+                speed: self.tts.speed,
+            }),
+            vad: self.conversation.vad_enabled,
+            interruptions: self.conversation.allow_interruptions,
+            stream: self.conversation.stream_audio,
+        }
     }
 }

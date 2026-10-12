@@ -1,1 +1,0 @@
-import{v as e}from"./index-BNvp4yjS.js";export{e as Mermaid};

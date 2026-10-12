@@ -1,5 +1,19 @@
 [
   {
+    "version": "0.79.0.234",
+    "date": "2026-10-12",
+    "title": "lyra's own voice",
+    "new": [
+      "Voice can now run on your own servers: Whisper for speech to text and Kokoro for lyra's voice, set up in [speech]. Your audio goes through lyra to them and stays inside your network.",
+      "Replies read aloud in lyra's voice, a sentence at a time, so the first words come right away. Choose the voice from the speaker button by the message box.",
+      "Hands-free with your servers hears when you've finished talking, and you can talk over a reply to stop it and say something new. Dictation with the microphone uses your Whisper too, and works in browsers without speech recognition of their own, such as Firefox.",
+      "The Status page shows both speech servers, and whether Whisper has its model."
+    ],
+    "improved": [
+      "If a speech server is down or missing its model, the app quietly uses the browser's own recognition and voice instead, as before."
+    ]
+  },
+  {
     "version": "0.78.2.233",
     "date": "2026-10-12",
     "title": "No more searching in circles",

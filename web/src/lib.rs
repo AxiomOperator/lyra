@@ -10,6 +10,8 @@ pub mod oidc;
 pub mod users;
 pub mod uploads;
 pub mod push;
+pub mod speech;
+pub use speech::{Speech, Stt, Tts};
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -47,11 +49,14 @@ pub struct Settings {
     pub node_binary: String,
     /// `[web.entra]`: signing in with Microsoft.
     pub entra: oidc::Entra,
+    /// `[speech]` (lyra's own section, filled in by lyra): voice on your servers.
+    #[serde(skip)]
+    pub speech: Speech,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { listen: "127.0.0.1:8484".into(), public_url: String::new(), notify: true, node_binary: String::new(), entra: oidc::Entra::default() }
+        Self { listen: "127.0.0.1:8484".into(), public_url: String::new(), notify: true, node_binary: String::new(), entra: oidc::Entra::default(), speech: Speech::default() }
     }
 }
 
@@ -262,6 +267,8 @@ struct Shared {
     node_binary: std::path::PathBuf,
     public_url: String,
     entra: oidc::Entra,
+    /// `[speech]`: the speech servers devices' audio goes to.
+    pub(crate) speech: Speech,
     /// Microsoft sign-ins on their way, by state.
     logins: Mutex<HashMap<String, oidc::Pending>>,
     /// Finished sign-ins waiting for their browser: code → (device token, the sign-in's state, when).
@@ -334,6 +341,7 @@ impl Hub {
             },
             public_url: settings.public_url.trim_end_matches('/').to_string(),
             entra: settings.entra.clone(),
+            speech: settings.speech.clone(),
             logins: Mutex::new(HashMap::new()),
             handoffs: Mutex::new(HashMap::new()),
             tries: Mutex::new(HashMap::new()),
@@ -689,6 +697,10 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/api/connect/calendar", post(connect_calendar))
         .route("/api/vapid", get(vapid_key))
         .route("/api/push", post(set_push))
+        .route("/api/speech", get(speech::info))
+        .route("/api/speech/transcribe", post(speech::transcribe).layer(axum::extract::DefaultBodyLimit::max(speech::MAX_AUDIO)))
+        .route("/api/speech/say", post(speech::say))
+        .route("/api/speech/voices", get(speech::voices))
         .route("/api/test-push", post(test_push))
         .route("/api/approve", post(approve))
         .route("/api/action", post(action))
