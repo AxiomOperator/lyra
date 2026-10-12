@@ -126,7 +126,8 @@ impl App {
         // Cards in the chat (forms, steps) need someone looking at the app.
         let (chat_only, steps_wait, interactive, unattended, effort) = (self.chat_only, self.steps_wait, self.hub.is_some() && !self.unattended, self.unattended, self.effort);
         // Their own tool-call limit, else the shared one (evolved, or behavior.toml).
-        let max_rounds = limits::tool_rounds(&owner, self.evolution.as_ref().map(|e| e.behavior().max_tool_rounds)) as usize;
+        // (During a trial, the behavior of this turn's side.)
+        let max_rounds = limits::tool_rounds(&owner, self.evolution.as_ref().map(|e| e.behavior_for(run).max_tool_rounds)) as usize;
         self.can_continue = false;
         let job = self.session_id.clone();
         crate::acting::spawn(move || {
@@ -163,7 +164,7 @@ impl App {
                 let _ = tx.send(StreamEvent::Seen(seen));
             }
             // Evolved behavior: guidelines and the matching workflow.
-            if let Some(section) = evolution.as_ref().and_then(|e| e.chat_section(&content)) {
+            if let Some(section) = evolution.as_ref().and_then(|e| e.chat_section_for(&content, run)) {
                 add_to_system(&mut history, &section);
             }
             if let Some(section) = &goals_section {
@@ -587,7 +588,7 @@ const CHAT_ONLY: &str = "Tools are off in this conversation (the user set it to 
 const CHATTING: &str = "This message is conversation, not a request to do something: answer it in words. Don't send, change or look up anything unless the user plainly asks; if they do, find the tool with capability_search.";
 
 /// Said to the model whenever tools are offered.
-const TOOL_RULES: &str = "Use a tool only when the request needs it. If it isn't clear what the user wants done (who an email goes to, what it says, which task), ask them instead of guessing. If the user says no to something, don't try it again: tell them what you would have done, or ask what they'd like instead.";
+pub(crate) const TOOL_RULES: &str = "Use a tool only when the request needs it. If it isn't clear what the user wants done (who an email goes to, what it says, which task), ask them instead of guessing. If the user says no to something, don't try it again: tell them what you would have done, or ask what they'd like instead.";
 
 /// A message that's plainly just talk, without asking anyone: greetings,
 /// thanks, "test", and "ok"/"great" unless lyra just asked something (then

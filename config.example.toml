@@ -171,7 +171,12 @@ currency = "$"
 # mode = "propose"          # off (record runs only) | propose | auto
 # review = "manual"         # manual | daily | weekly
 # window = 50               # recent runs the detectors look at
-# benchmark_tasks = 3       # tasks replayed per benchmark
+# benchmark_tasks = 10      # tasks per benchmark: the problem's, the test set's
+#                           # (evolution/golden/), then recent ones
+# benchmark_samples = 2     # answers per task on each side, judged blind in pairs
+# trial_share = 0.3         # a deployed prompt/setting/workflow change is tried on
+#                           # this share of turns first (0 turns trials off)
+# trial_runs = 20           # its turns with an outcome before it's kept or rolled back
 # monitor_runs = 10         # judged runs before generations are compared
 # monitor_drop = 0.15       # success-rate drop that counts as a regression
 # max_problems = 3          # problems a review proposes candidates for

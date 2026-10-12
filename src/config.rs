@@ -134,8 +134,11 @@ pub struct EvolutionConfig {
     pub enabled: bool,
     /// When to look for improvements on its own: `manual`, `daily` or `weekly`.
     pub review: Schedule,
-    /// Recent tasks replayed (sandboxed) to compare a candidate with the baseline.
+    /// Tasks replayed (sandboxed) to compare a candidate with the baseline:
+    /// its evidence, then the test set (`evolution/golden/`), then recent ones.
     pub benchmark_tasks: usize,
+    /// Answers per task on each side, each pair judged blind.
+    pub benchmark_samples: usize,
     /// A git checkout of lyra's source. Only with this set can evolution
     /// propose code changes, which are tried in a throwaway worktree and, when
     /// approved, committed to a local `evolution/<id>` branch (never merged or pushed).
@@ -148,7 +151,7 @@ pub struct EvolutionConfig {
 
 impl Default for EvolutionConfig {
     fn default() -> Self {
-        Self { enabled: true, review: Schedule::Manual, benchmark_tasks: 3, source_repo: None, settings: Default::default() }
+        Self { enabled: true, review: Schedule::Manual, benchmark_tasks: 10, benchmark_samples: 2, source_repo: None, settings: Default::default() }
     }
 }
 

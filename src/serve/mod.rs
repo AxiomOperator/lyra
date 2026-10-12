@@ -694,7 +694,7 @@ mod tests {
         }
         for admin in [
             "status", "sandbox_containers", "sandbox_kill", "users", "user_add", "user_password", "user_email", "settings", "settings_set", "email_providers", "email_provider_put", "email_provider_test", "running",
-            "running_stop", "known_down_set", "devices", "machines", "rules", "set_rules", "backups", "sandbox_containers", "sandbox_kill", "evolution_candidates",
+            "running_stop", "known_down_set", "devices", "machines", "rules", "set_rules", "backups", "sandbox_containers", "sandbox_kill", "evolution_candidates", "evolution_health",
         ] {
             assert!(!member_may_get(admin), "{admin} is an admin's");
         }

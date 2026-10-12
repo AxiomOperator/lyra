@@ -778,6 +778,11 @@ fn evolution_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
     if !evolved.is_empty() {
         lines.push(Line::from(vec![label("evolved"), Span::raw(truncate(&evolved.join(" · "), width.saturating_sub(8)))]));
     }
+    // A change on trial against the generation before it (and the test set).
+    if let Some(t) = &snapshot.trial {
+        lines.push(Line::from(vec![label("trial"), Span::styled(truncate(t, width.saturating_sub(8)), Style::default().fg(Color::Cyan))]));
+    }
+    lines.push(Line::styled(truncate(&format!("{} test(s) · /evolve tests", snapshot.tests), width), dim));
     if st.pending > 0 {
         lines.push(Line::from(truncate(&format!("{} candidate(s) to review (/evolve list)", st.pending), width).yellow()));
     }

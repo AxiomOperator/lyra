@@ -18,7 +18,6 @@ use crate::behavior::Behavior;
 use crate::composite::CompositeTool;
 use crate::detect::{self, SkillHealth, Thresholds};
 use crate::evolver::Proposal;
-use crate::fitness;
 use crate::model::*;
 use crate::store::EvolutionStore;
 use crate::workflow::WorkflowDef;
@@ -52,6 +51,11 @@ pub struct Settings {
     pub monitor_drop: f32,
     /// Most problems one review proposes candidates for.
     pub max_problems: usize,
+    /// A deployed prompt, setting or workflow change is tried on this share
+    /// of the turns first (0 turns trials off).
+    pub trial_share: f32,
+    /// Turns with an outcome the trial needs before it's decided.
+    pub trial_runs: usize,
 }
 
 impl Default for Settings {
@@ -64,6 +68,8 @@ impl Default for Settings {
             monitor_runs: 10,
             monitor_drop: 0.15,
             max_problems: 3,
+            trial_share: 0.3,
+            trial_runs: 20,
         }
     }
 }
@@ -194,6 +200,7 @@ impl EvolutionManager {
             reason: reason.to_string(),
             created_at: Utc::now(),
             skill: None,
+            trial: None,
         };
         self.db(self.store.add_generation(&g))?;
         Ok(g)
@@ -207,9 +214,12 @@ impl EvolutionManager {
 
     /// The user's reaction (or a plan's goal status) tells how a run went;
     /// `feedback` is what they said, kept for the evolver and the benchmark judge.
-    pub fn set_outcome(&self, id: Uuid, outcome: RunOutcome, corrected: bool, feedback: Option<&str>) -> Result<(), String> {
+    pub fn set_outcome(&self, id: Uuid, outcome: RunOutcome, corrected: bool, feedback: Option<&str>, source: Option<&str>) -> Result<(), String> {
         let Some(mut run) = self.db(self.store.run(id))? else { return Ok(()) };
         run.outcome = outcome;
+        if let Some(s) = source {
+            run.outcome_source = Some(s.to_string());
+        }
         // The latest verdict says (a 👍 after a correction takes it back).
         run.corrected = corrected;
         if let Some(f) = feedback {
@@ -367,10 +377,20 @@ impl EvolutionManager {
     /// low-risk level, checks passed and the benchmark improved).
     pub fn may_auto_deploy(&self, c: &Candidate) -> bool {
         let Some(v) = &c.validation else { return false };
-        self.settings.mode == Mode::Auto
-            && c.level.policy() == Policy::AutoEventually
-            && v.valid
-            && matches!((&v.fitness_before, &v.fitness_after), (Some(b), Some(a)) if fitness::improves(b, a))
+        // Only through a trial: what can be tried on part of the turns.
+        self.settings.mode == Mode::Auto && c.level.policy() == Policy::AutoEventually && v.valid && v.improves() && self.trials(&c.change)
+    }
+
+    /// Whether this change is deployed on trial: a prompt, setting or
+    /// workflow change that shows in chats (planner-only ones can't be told
+    /// apart turn by turn), with trials on.
+    pub fn trials(&self, change: &Change) -> bool {
+        let chat = match change {
+            Change::Prompt { .. } | Change::Workflow { .. } => true,
+            Change::Configuration { key, .. } => matches!(key.as_str(), "max_tool_rounds" | "recall_before_answering"),
+            _ => false,
+        };
+        chat && self.settings.trial_share > 0.0 && self.settings.trial_runs > 0
     }
 
     // ---- deploying (prompt, configuration, workflow and tool changes)
@@ -414,8 +434,16 @@ impl EvolutionManager {
         }
         let current = self.generation()?;
         let next = self.apply(&self.snapshot(), &c.change)?;
+        // A running trial ends first: the one before it stays the agent.
+        if current.trial.as_ref().is_some_and(|t| t.status == TrialStatus::Running) {
+            return Err(format!("generation {} is still on trial: /evolve keep or /evolve rollback first", current.number));
+        }
         self.write_snapshot(&next)?;
-        let generation = self.add_generation(next, Some(&current), Some(c.id), &format!("{} — {why}", c.change.summary()))?;
+        let mut generation = self.add_generation(next, Some(&current), Some(c.id), &format!("{} — {why}", c.change.summary()))?;
+        if self.trials(&c.change) {
+            generation.trial = Some(Trial { share: self.settings.trial_share.clamp(0.05, 0.95), runs: self.settings.trial_runs, started: Utc::now(), status: TrialStatus::Running, note: String::new() });
+            self.db(self.store.update_generation(&generation))?;
+        }
         let v = c.validation.clone().unwrap_or_default();
         let fb = v.fitness_before.map(|f| f.total);
         let fa = v.fitness_after.map(|f| f.total);
@@ -453,6 +481,7 @@ impl EvolutionManager {
             reason: reason.clone(),
             created_at: Utc::now(),
             skill: Some(revision),
+            trial: None,
         };
         // The files may have been edited since; snapshot what's there now.
         g.snapshot = self.snapshot();
@@ -518,7 +547,7 @@ impl EvolutionManager {
         let generations = self.generations()?;
         let Some(current) = generations.first() else { return Ok(None) };
         let Some(parent) = current.parent.and_then(|p| generations.iter().find(|g| g.id == p)) else { return Ok(None) };
-        if current.candidate.is_none() {
+        if current.candidate.is_none() || current.trial.is_some() {
             return Ok(None);
         }
         let runs = self.runs(1000)?;
@@ -553,6 +582,110 @@ impl EvolutionManager {
             return Ok(Some(format!("generation {cur} hits {ea:.1} errors per run vs {eb:.1} for generation {par}")));
         }
         Ok(None)
+    }
+
+    // ---- how lyra is doing
+
+    /// Outcomes over the last `weeks` weeks, how they came in, each recent
+    /// generation's record and each skill's effect: counts only (no one's words).
+    pub fn health(&self, weeks: usize) -> Result<Health, String> {
+        let now = Utc::now();
+        let since = now - chrono::Duration::weeks(weeks as i64);
+        let runs: Vec<RunRecord> = self.runs(5000)?.into_iter().filter(|r| r.created_at >= since && r.kind == RunKind::Chat).collect();
+        let mut buckets: Vec<Week> = (0..weeks)
+            .rev()
+            .map(|i| Week { start: (now - chrono::Duration::weeks(i as i64 + 1)).date_naive(), ..Default::default() })
+            .collect();
+        let mut sources: BTreeMap<String, usize> = BTreeMap::new();
+        for r in &runs {
+            let age = (now - r.created_at).num_days().max(0) as usize / 7;
+            if let Some(w) = buckets.len().checked_sub(age + 1).and_then(|i| buckets.get_mut(i)) {
+                w.add(r);
+            }
+            if r.outcome != RunOutcome::Unknown {
+                *sources.entry(r.outcome_source.clone().unwrap_or_else(|| "earlier".into())).or_default() += 1;
+            }
+        }
+        let all = Arm::of(&runs);
+        let generations = self
+            .generations()?
+            .into_iter()
+            .take(10)
+            .map(|g| {
+                let mine: Vec<RunRecord> = runs.iter().filter(|r| r.generation == g.number && r.arm.as_deref() != Some("control")).cloned().collect();
+                GenerationHealth { number: g.number, reason: g.reason, created_at: g.created_at, trial: g.trial, record: Arm::of(&mine) }
+            })
+            .collect();
+        // A skill's effect: how replies that used it went vs those that didn't.
+        let mut names: Vec<String> = runs.iter().flat_map(|r| r.skills_used.iter().cloned()).collect();
+        names.sort();
+        names.dedup();
+        let skills = names
+            .into_iter()
+            .map(|name| {
+                let (with, without): (Vec<RunRecord>, Vec<RunRecord>) = runs.iter().cloned().partition(|r| r.skills_used.contains(&name));
+                SkillEffect { name, with: Arm::of(&with), without: Arm::of(&without) }
+            })
+            .collect();
+        let others = runs.iter().filter(|r| r.person.is_some()).count();
+        Ok(Health { weeks: buckets, sources, all, generations, skills, trial: self.trial_standing()?, owner_runs: runs.len() - others, other_runs: others })
+    }
+
+    // ---- trials (E8)
+
+    /// The generation on trial now, and the one it's compared with.
+    pub fn trial(&self) -> Result<Option<(Generation, Generation)>, String> {
+        let generations = self.generations()?;
+        let Some(current) = generations.first().filter(|g| g.trial.as_ref().is_some_and(|t| t.status == TrialStatus::Running)) else { return Ok(None) };
+        let parent = current.parent.and_then(|p| generations.iter().find(|g| g.id == p)).ok_or("the generation before the trial is missing")?;
+        Ok(Some((current.clone(), parent.clone())))
+    }
+
+    /// How the trial stands: its turns and the control's since it started.
+    pub fn trial_standing(&self) -> Result<Option<TrialStanding>, String> {
+        let Some((g, parent)) = self.trial()? else { return Ok(None) };
+        let t = g.trial.clone().expect("a running trial");
+        let runs = self.runs(2000)?;
+        let side = |arm: &str| runs.iter().filter(|r| r.arm.as_deref() == Some(arm) && r.created_at >= t.started).cloned().collect::<Vec<_>>();
+        let (trial, control) = (side("trial"), side("control"));
+        Ok(Some(TrialStanding { generation: g.number, parent: parent.number, trial: Arm::of(&trial), control: Arm::of(&control), needed: t.runs, share: t.share, started: t.started }))
+    }
+
+    /// Decide the trial once it has enough: `Some(true)` keep it, `Some(false)`
+    /// it lost (roll it back), `None` not yet. With the reason.
+    pub fn trial_verdict(&self) -> Result<Option<(bool, String)>, String> {
+        let Some(s) = self.trial_standing()? else { return Ok(None) };
+        let (t, c) = (&s.trial, &s.control);
+        let enough_control = c.judged >= (s.needed / 2).max(5);
+        let (Some(ts), Some(cs)) = (t.success_rate(), c.success_rate()) else { return Ok(None) };
+        let say = |verdict: &str| {
+            format!(
+                "generation {} {verdict} its trial: {:.0}% good of {} turns vs {:.0}% of {} for generation {}; corrected {:.0}% vs {:.0}%",
+                s.generation, ts * 100.0, t.judged, cs * 100.0, c.judged, s.parent, t.correction_rate() * 100.0, c.correction_rate() * 100.0
+            )
+        };
+        // Clearly worse half way: stop early.
+        if t.judged >= s.needed / 2 && enough_control && cs - ts > self.settings.monitor_drop {
+            return Ok(Some((false, say("lost"))));
+        }
+        if t.judged < s.needed || !enough_control {
+            return Ok(None);
+        }
+        let keep = ts + 1e-6 >= cs && t.correction_rate() <= c.correction_rate() + 0.1;
+        Ok(Some((keep, say(if keep { "won" } else { "lost" }))))
+    }
+
+    /// End the running trial: kept (it's the agent now) or lost (the caller rolls it back).
+    pub fn end_trial(&self, status: TrialStatus, note: &str) -> Result<Generation, String> {
+        let (mut g, _) = self.trial()?.ok_or("nothing is on trial")?;
+        if let Some(t) = g.trial.as_mut() {
+            t.status = status;
+            t.note = note.to_string();
+        }
+        self.db(self.store.update_generation(&g))?;
+        let kind = if status == TrialStatus::Kept { "trial_kept" } else { "trial_lost" };
+        self.event(None, kind, note.to_string(), Some(g.number), None, None)?;
+        Ok(g)
     }
 
     // ---- history
@@ -672,8 +805,67 @@ mod tests {
         let home = std::env::temp_dir().join(format!("lyra-evolution-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&home).unwrap();
         let store = rt.block_on(EvolutionStore::in_memory()).unwrap();
-        let m = EvolutionManager::with_store(store, &home, rt.handle().clone(), Settings { mode, ..Settings::default() }).unwrap();
+        // Trials have their own test; these deploy straight away.
+        let m = EvolutionManager::with_store(store, &home, rt.handle().clone(), Settings { mode, trial_share: 0.0, ..Settings::default() }).unwrap();
         (rt, m, home)
+    }
+
+    fn trial_manager() -> (tokio::runtime::Runtime, EvolutionManager, PathBuf) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let home = std::env::temp_dir().join(format!("lyra-evolution-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let store = rt.block_on(EvolutionStore::in_memory()).unwrap();
+        let m = EvolutionManager::with_store(store, &home, rt.handle().clone(), Settings { trial_runs: 10, ..Settings::default() }).unwrap();
+        (rt, m, home)
+    }
+
+    /// `n` runs on one side of a trial, `good` of them good.
+    fn arm_runs(m: &EvolutionManager, generation: u32, arm: &str, n: usize, good: usize) {
+        for i in 0..n {
+            let mut r = RunRecord::new(RunKind::Chat, "a task", generation);
+            r.arm = Some(arm.into());
+            r.outcome = if i < good { RunOutcome::Success } else { RunOutcome::Failure };
+            m.record_run(&r).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_change_is_tried_on_part_of_the_turns_and_kept_only_if_it_wins() {
+        let (_rt, m, _home) = trial_manager();
+        let c = m.propose(&op(), vec![proposal(Change::Prompt { add: vec!["Say which source each fact came from.".into()], remove: vec![] })]).unwrap().remove(0);
+        let g = m.deploy(c, "approved").unwrap();
+        assert_eq!(g.trial.as_ref().map(|t| (t.status, t.runs)), Some((TrialStatus::Running, 10)));
+        let (trial, parent) = m.trial().unwrap().unwrap();
+        assert_eq!((trial.number, parent.number), (2, 1));
+        // Not yet: too few turns either side.
+        arm_runs(&m, 2, "trial", 4, 3);
+        arm_runs(&m, 1, "control", 4, 2);
+        assert_eq!(m.trial_verdict().unwrap(), None);
+        // Another change waits for the trial.
+        let next = m.propose(&op(), vec![proposal(Change::Prompt { add: vec!["Be brief.".into()], remove: vec![] })]).unwrap().remove(0);
+        assert!(m.deploy(next, "x").unwrap_err().contains("on trial"));
+        // Enough, and it did better: kept.
+        arm_runs(&m, 2, "trial", 6, 6);
+        arm_runs(&m, 1, "control", 6, 3);
+        let (keep, why) = m.trial_verdict().unwrap().unwrap();
+        assert!(keep, "{why}");
+        assert!(why.contains("won its trial"), "{why}");
+        m.end_trial(TrialStatus::Kept, &why).unwrap();
+        assert!(m.trial().unwrap().is_none());
+        assert_eq!(m.generation().unwrap().trial.unwrap().status, TrialStatus::Kept);
+    }
+
+    #[test]
+    fn a_trial_clearly_losing_half_way_stops_early_and_planner_changes_skip_trials() {
+        let (_rt, m, _home) = trial_manager();
+        let c = m.propose(&op(), vec![proposal(Change::Prompt { add: vec!["Answer in one line.".into()], remove: vec![] })]).unwrap().remove(0);
+        m.deploy(c, "approved").unwrap();
+        arm_runs(&m, 2, "trial", 5, 1);
+        arm_runs(&m, 1, "control", 6, 5);
+        let (keep, why) = m.trial_verdict().unwrap().unwrap();
+        assert!(!keep && why.contains("lost"), "{why}");
+        assert!(!m.trials(&Change::Configuration { key: "plan_step_rounds".into(), from: json!(6), to: json!(4) }));
+        assert!(!m.trials(&Change::Agent { agent: "writer".into(), instructions: "x".into() }));
     }
 
     fn op() -> Opportunity {
@@ -765,7 +957,9 @@ mod tests {
 
     #[test]
     fn only_low_risk_improvements_auto_deploy() {
-        let (_rt, auto, _h) = manager(Mode::Auto);
+        let (rt, _m, home) = trial_manager();
+        let store = rt.block_on(EvolutionStore::in_memory()).unwrap();
+        let auto = EvolutionManager::with_store(store, &home, rt.handle().clone(), Settings { mode: Mode::Auto, ..Settings::default() }).unwrap();
         let better = Validation {
             valid: true,
             fitness_before: Some(Fitness { total: 0.5, success_rate: 0.5, safety: 1.0, ..Default::default() }),
@@ -781,12 +975,17 @@ mod tests {
             .remove(0);
         let config = auto.save_validation(config, better.clone()).unwrap();
         assert!(!auto.may_auto_deploy(&config), "configuration changes are proposed");
-        let worse = Validation { fitness_after: Some(Fitness { total: 0.4, ..Default::default() }), ..better };
+        let worse = Validation { fitness_after: Some(Fitness { total: 0.4, ..Default::default() }), ..better.clone() };
         let p2 = auto.propose(&op(), vec![proposal(Change::Prompt { add: vec!["Be terse.".into()], remove: vec![] })]).unwrap().remove(0);
         let p2 = auto.save_validation(p2, worse).unwrap();
         assert!(!auto.may_auto_deploy(&p2), "must beat the baseline");
         let (_rt2, propose, _h2) = manager(Mode::Propose);
         assert!(!propose.may_auto_deploy(&prompt), "propose mode never auto-deploys");
+        let (_rt3, no_trials, _h3) = manager(Mode::Auto);
+        assert!(!no_trials.may_auto_deploy(&prompt), "only through a trial");
+        let agent = auto.propose(&op(), vec![proposal(Change::Agent { agent: "writer".into(), instructions: "Write plainly.".into() })]).unwrap().remove(0);
+        let agent = auto.save_validation(agent, better.clone()).unwrap();
+        assert!(!auto.may_auto_deploy(&agent), "an agent's instructions always wait for a person");
     }
 
     #[test]
@@ -803,7 +1002,7 @@ mod tests {
         for i in 0..10 {
             let r = RunRecord::new(RunKind::Chat, &format!("u{i}"), 2);
             m.record_run(&r).unwrap();
-            m.set_outcome(r.id, if i < 3 { RunOutcome::Success } else { RunOutcome::Failure }, i >= 3, None).unwrap();
+            m.set_outcome(r.id, if i < 3 { RunOutcome::Success } else { RunOutcome::Failure }, i >= 3, None, None).unwrap();
         }
         let why = m.regression().unwrap().unwrap();
         assert!(why.contains("30%") && why.contains("100%"), "{why}");

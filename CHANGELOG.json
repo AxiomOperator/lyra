@@ -1,5 +1,21 @@
 [
   {
+    "version": "0.75.0.227",
+    "date": "2026-10-11",
+    "title": "lyra measures its own changes properly",
+    "new": [
+      "A new page, How lyra is doing (Automation, admins), shows whether replies are getting better. Week by week it shows how many went well, partly or badly, and how that's known: your ratings, what you did, or your next message. It also lists the problems lyra sees now, each change it made to itself and how replies went after it, the change on trial, each skill's effect, and how many tests it has. It shows counts only: nobody's words.",
+      "lyra's tests: a reply you rate 👍 becomes a test, with the answer you liked as the reference. Admins can add any reply with the new Add to tests button under it, or /evolve tests add. Changes lyra proposes are measured on these. /evolve tests lists them.",
+      "Changes are tried before they're kept. An approved change to lyra's guidelines, chat settings or workflows runs on about 30% of replies first, beside the version before it. It stays only if its replies do at least as well, and is rolled back if not. /evolve trial shows how it's doing and /evolve keep keeps it now."
+    ],
+    "improved": [
+      "Proposed changes are tested far more carefully: up to 10 tasks, two answers each, every pair judged blind by a different model when there is one. A change passes only when it's better beyond the noise, and saying the same in fewer words is only a tiebreak.",
+      "Tests run as real replies do, with lyra's memories, matching skills and tool rules, and a follow-up question is asked after what it followed.",
+      "A skill only gets credit for a reply that actually followed it, not for every reply it was offered to.",
+      "In auto mode, nothing changes without a trial, and changes to an agent's instructions always wait for an admin."
+    ]
+  },
+  {
     "version": "0.74.0.226",
     "date": "2026-10-11",
     "title": "Tell lyra how a reply went",

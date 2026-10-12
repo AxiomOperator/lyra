@@ -339,6 +339,20 @@ impl App {
                 Ok(note)
             }
             "generations" => evolve::generations(&evolution),
+            "trial" => evolve::trial_text(&evolution),
+            "keep" => {
+                let env = self.evolution_env().ok_or("evolution is off")?;
+                let note = evolve::keep(&env)?;
+                self.refresh_evolution();
+                Ok(note)
+            }
+            "tests" => match rest.split_once(' ').map_or((rest.as_str(), ""), |(a, b)| (a, b.trim())) {
+                ("", _) => Ok(evolve::tests_text(&evolution)),
+                ("remove", id) => evolve::remove_test(&evolution, id),
+                // The last reply (and what it answered) as a test.
+                ("add", _) => self.rate(None, "test", ""),
+                _ => Err("usage: /evolve tests [add | remove <id>]".into()),
+            },
             "history" => evolve::history(&evolution),
             "runs" => evolve::runs(&evolution),
             "review" => {

@@ -1780,16 +1780,29 @@ evidence about its own runs, progressively and reversibly. Built following
   - *skill*: revised instructions for a learned skill, applied as a new
     skill version.
 - **Validate.** `/evolve test` checks a candidate (it applies, is safe, its
-  tools exist), then **benchmarks** it: recent tasks (the evidence first) are
-  replayed headless with the current agent and with the candidate. Only
-  read-only tools really run (changes are simulated, destructive calls count
-  as safety violations). Changes that only affect planning (step rounds,
-  skill search, verification, workflows) are measured by planning and running
-  the tasks on a throwaway plan store instead. The model judges each answer
-  against the task and, when you corrected the original, your correction. The
-  fitness score weighs success, accuracy, efficiency (calls, tokens, time),
-  reliability and safety. `/evolve compare` tests every open candidate for a
-  problem and ranks them.
+  tools exist), then **benchmarks** it against the current agent:
+  - **Tasks:** `benchmark_tasks` (10) of them: the problem's evidence first,
+    then **lyra's tests**, then recent requests. Each is replayed with the
+    turns it followed, headless.
+  - **Tests:** one TOML file each in `~/.lyra/evolution/golden/`. A reply the
+    owner rates 👍 becomes one, with its answer as the reference, and so does
+    any reply an admin marks "Add to tests" (`/evolve tests` lists them).
+  - **The prompt:** built as a live turn builds it: the chat prompt, the
+    evolved guidelines and workflow, memories that match, matching skills
+    (the candidate's version of a changed one), and the tool rules.
+  - **Running them:** both sides answer every task `benchmark_samples` (2)
+    times. Only read-only tools really run: changes are simulated, and
+    destructive calls count as safety violations. Planner-only changes (step
+    rounds, skill search, verification, workflows) are planned and run on a
+    throwaway plan store instead.
+  - **Judging:** each pair is judged blind, in a random order, by the
+    fallback model when there is one (a model doesn't grade itself), against
+    the task, your correction if you made one, and a test's reference answer.
+  - **Passing:** a candidate passes only when its mean preference is above
+    zero across the whole 95% confidence interval, so the gain beats the
+    noise. Efficiency counts only when every pair is a tie.
+
+  `/evolve compare` tests every open candidate for a problem and ranks them.
 - **Deploy and roll back.** Only a tested candidate that passed its checks
   can be approved, and one that didn't beat the current agent needs
   `/evolve approve <id> force`. Each deployment is a new **generation** with a
@@ -1798,14 +1811,34 @@ evidence about its own runs, progressively and reversibly. Built following
   one candidate rejects its competitors. `/evolve rollback` restores any
   earlier generation, skill versions included, and the rollback is itself a
   generation.
-- **Monitor.** Once a new generation has enough runs, it's compared with its
-  parent: success rate over judged runs, and how often answers get corrected
-  and how many errors runs hit over all of them. A clear drop is flagged, or
-  rolled back in auto mode.
+- **Trial.** A deployed guideline, chat setting or workflow change starts on
+  **trial**:
+  - It runs on `trial_share` (30%) of replies; the rest still use the
+    generation before it. Each reply's side is fixed by its id and recorded on
+    the run.
+  - Once `trial_runs` (20) of its replies have an outcome (and the other side
+    has half that), it's kept if it did at least as well, and rolled back if
+    not. A trial clearly losing half way stops early.
+  - `/evolve trial` shows how it stands, `/evolve keep` keeps it now, and
+    `/evolve rollback` ends it. Nothing else deploys while one runs.
+- **Monitor.** Changes that aren't on trial (skills, agents, tools, planner
+  settings) are compared with their parent once they have enough runs:
+  success rate over judged runs, and how often answers get corrected and how
+  many errors runs hit over all of them. A clear drop is flagged, or rolled
+  back in auto mode.
 - **Policy.** Each change has a level that sets what may happen without you.
-  In `auto` mode, guideline and skill changes that beat the baseline deploy on
-  their own. Configuration, workflow and tool changes always wait for
-  `/evolve approve`. Code is manual. Architecture is never touched.
+  In `auto` mode, only guideline changes that beat the baseline deploy on
+  their own, and only through a trial. Everything else waits for
+  `/evolve approve`: configuration, workflow, tool, skill and agent changes.
+  Code is manual. Architecture is never touched.
+- **How lyra is doing** (the app's Automation group, admins) shows the
+  numbers behind all this, counts only:
+  - week by week: replies that went well, partly or badly, and how the
+    outcomes came in;
+  - what the detectors see now;
+  - each generation's record and the trial;
+  - each skill's effect: replies that used it against those that didn't;
+  - the size of the test set.
 - **History.** Every proposal, test, approval, deployment, rejection and
   rollback is an event with its category, evidence and fitness; the history
   is append-only, enforced by the database.
@@ -1824,7 +1857,8 @@ Commands: `/evolve` (status), `/evolve review`, `/evolve list`,
 `/evolve show <id>`, `/evolve test <id>`, `/evolve compare <id>`,
 `/evolve approve <id> [force]`, `/evolve reject <id>`,
 `/evolve rollback [generation]`, `/evolve generations`, `/evolve history`,
-`/evolve runs`, `/evolve code <problem>`.
+`/evolve runs`, `/evolve code <problem>`, `/evolve trial`, `/evolve keep`,
+`/evolve tests [add | remove <id>]`.
 
 ```toml
 [evolution]
@@ -1832,7 +1866,10 @@ enabled = true
 mode = "propose"            # off (record runs only) | propose | auto
 review = "manual"           # manual | daily | weekly
 window = 50                 # recent runs the detectors look at
-benchmark_tasks = 3         # tasks replayed per benchmark
+benchmark_tasks = 10        # tasks per benchmark (evidence, tests, recent)
+benchmark_samples = 2       # answers per task on each side, judged in pairs
+trial_share = 0.3           # share of replies a deployed change is tried on
+trial_runs = 20             # its replies with an outcome before it's decided
 monitor_runs = 10           # judged runs needed before comparing generations
 monitor_drop = 0.15         # success-rate drop that counts as a regression
 max_problems = 3            # problems a review proposes candidates for

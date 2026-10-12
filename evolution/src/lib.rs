@@ -14,10 +14,12 @@
 //!   new generation with a full snapshot; regressions roll back.
 
 pub mod behavior;
+pub mod compare;
 pub mod composite;
 pub mod detect;
 pub mod evolver;
 pub mod fitness;
+pub mod golden;
 pub mod lab;
 mod manager;
 pub mod model;

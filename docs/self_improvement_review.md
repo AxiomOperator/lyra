@@ -195,6 +195,14 @@ Ordered by value for effort. Phase 1 alone would wake every loop up.
 
 ### Phase 2: credit and measurement
 
+**Done in 0.75.0.227.** All of 2.1–2.6 are in place:
+- **Credit:** only the skills a reply followed get its outcome, as read by the decision model or the fallback.
+- **Tests:** a test set in `evolution/golden/`, from 👍 and "Add to tests". Benchmarks use 10 tasks × 2 answers with a 95% confidence interval.
+- **Real turns:** benchmarks build the prompt as live turns do, replaying earlier turns.
+- **Judging:** pairwise and blind, by the fallback model.
+- **Trials:** on 30% of turns. Auto-deploy happens only through a trial, and agent changes always wait for a person.
+- **Visible:** the How lyra is doing page, and the TUI Evolution panel's trial and tests lines.
+
 | # | Upgrade |
 |---|---|
 | 2.1 | **Per-skill credit:** the judge (1.2) is told which skills were injected and which ones the reply actually followed, and credits only those. |

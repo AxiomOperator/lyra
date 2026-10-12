@@ -53,6 +53,7 @@ import {
   WifiOff,
   Search,
   Timer,
+  TrendingUp,
   Briefcase,
   Zap,
   Shield,
@@ -133,6 +134,7 @@ const StatusPage = page(() => import("./lyra/status"), "StatusPage");
 const TodayPage = page(() => import("./lyra/today"), "TodayPage");
 const AgentsPage = page(() => import("./lyra/agents"), "AgentsPage");
 const ProposalsPage = page(() => import("./lyra/proposals"), "ProposalsPage");
+const HealthPage = page(() => import("./lyra/health"), "HealthPage");
 const ActivityPage = page(() => import("./lyra/pages"), "ActivityPage");
 const DevicesPage = page(() => import("./lyra/pages"), "DevicesPage");
 const MachinesPage = page(() => import("./lyra/pages"), "MachinesPage");
@@ -146,8 +148,8 @@ function Loading() {
 type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
-type Manage = "today" | "agents" | "proposals" | "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "me" | "running" | "profile";
-const manage: Manage[] = ["today", "agents", "proposals", "me", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings", "running", "profile"];
+type Manage = "today" | "agents" | "proposals" | "health" | "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "me" | "running" | "profile";
+const manage: Manage[] = ["today", "agents", "proposals", "health", "me", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings", "running", "profile"];
 /** What a member (not an admin) has: their chats, day, tasks, activity, skills (Status is admins'). */
 const forMembers: string[] = ["chat", "today", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage", "meetings", "me", "profile"];
 
@@ -164,7 +166,7 @@ const railGroups: { id: string; label: string; icon: typeof MessageSquare; pages
   { id: "chat", label: "Chat", icon: MessageSquare, pages: ["chat"] },
   { id: "work", label: "Work", icon: Briefcase, pages: ["today", "tasks", "meetings", "notes", "projects"] },
   { id: "knowledge", label: "Knowledge", icon: Brain, pages: ["memory", "skills"] },
-  { id: "automation", label: "Automation", icon: Zap, pages: ["agents", "proposals", "routines", "goals", "coding"] },
+  { id: "automation", label: "Automation", icon: Zap, pages: ["agents", "proposals", "health", "routines", "goals", "coding"] },
   { id: "system", label: "System", icon: Shield, pages: ["status", "machines", "devices", "users", "usage", "running", "model", "activity", "settings"] },
   { id: "help", label: "Help", icon: CircleHelp, pages: ["qa", "feedback", "whatsnew"] },
 ];
@@ -519,6 +521,7 @@ function Shell() {
     { id: "today", label: "Today", icon: Sun },
     { id: "agents", label: "Agents", icon: Bot },
     { id: "proposals", label: "Proposals", icon: Lightbulb },
+    { id: "health", label: "How lyra is doing", icon: TrendingUp },
     { id: "tasks", label: "Tasks", icon: ListTodo, badge: (status.pmi?.tasks ?? []).filter((t) => t.due && t.due < todayKey).length + pmiWaiting },
     { id: "meetings", label: "Meetings", icon: CalendarDays },
     { id: "notes", label: "Notes", icon: NotebookPen },
@@ -625,6 +628,7 @@ function Shell() {
           {tab === "today" && <TodayPage go={(p) => setTab(p as Tab)} />}
           {tab === "agents" && admin && <AgentsPage onBack={toMore} />}
           {tab === "proposals" && admin && <ProposalsPage onBack={toMore} />}
+          {tab === "health" && admin && <HealthPage onBack={toMore} />}
           {tab === "machines" && <MachinesPage mention={mention} toStatus={() => setTab("status")} toChat={() => setTab("chat")} />}
           {tab === "devices" && <DevicesPage />}
           {tab === "activity" && <ActivityPage />}

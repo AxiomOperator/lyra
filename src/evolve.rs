@@ -26,6 +26,8 @@ pub struct Evolution {
     /// lyra's source checkout, for code evolution.
     source_repo: Option<PathBuf>,
     benchmark_tasks: usize,
+    /// Answers per task on each side of a benchmark.
+    benchmark_samples: usize,
     /// The generation the monitor last warned about (propose mode).
     warned: Mutex<Option<u32>>,
     /// For the plan stores of benchmark runs.
@@ -39,6 +41,16 @@ struct Live {
     workflows: Vec<WorkflowDef>,
     /// Composite tools loaded (valid ones only).
     composites: usize,
+    /// While a generation is on trial: the one before it, which the other
+    /// turns still use (the control), and the trial's share of turns.
+    control: Option<Control>,
+}
+
+struct Control {
+    behavior: Behavior,
+    workflows: Vec<WorkflowDef>,
+    number: u32,
+    share: f32,
 }
 
 /// What the Evolution panel shows.
@@ -51,6 +63,10 @@ pub struct EvolutionSnapshot {
     pub tools: usize,
     /// Behavior settings that differ from the defaults, as `key=value`.
     pub settings: Vec<String>,
+    /// The change on trial, in short ("g5 on 30% · 8/20 · 75% vs 60%").
+    pub trial: Option<String>,
+    /// Tests in the test set.
+    pub tests: usize,
 }
 
 /// What background evolution work needs: the chat model and lyra's services.
@@ -76,7 +92,44 @@ pub struct Done {
 
 impl Evolution {
     pub fn new(manager: EvolutionManager, rt: tokio::runtime::Handle, source_repo: Option<PathBuf>, benchmark_tasks: usize) -> Self {
-        Self { manager, live: RwLock::new(Live::default()), source_repo, benchmark_tasks, warned: Mutex::new(None), rt }
+        Self { manager, live: RwLock::new(Live::default()), source_repo, benchmark_tasks, benchmark_samples: 2, warned: Mutex::new(None), rt }
+    }
+
+    /// Answers per task on each side of a benchmark (`[evolution] benchmark_samples`).
+    pub fn with_samples(mut self, n: usize) -> Self {
+        self.benchmark_samples = n.clamp(1, 5);
+        self
+    }
+
+    /// During a trial, which side a turn (by its run id) is on: `Some(true)`
+    /// the generation on trial, `Some(false)` the one before it. The same run
+    /// always lands on the same side.
+    pub fn arm(&self, run: Uuid) -> Option<bool> {
+        let live = self.live.read().unwrap_or_else(|e| e.into_inner());
+        let c = live.control.as_ref()?;
+        Some(((run.as_u128() % 10_000) as f32) / 10_000.0 < c.share)
+    }
+
+    /// The behavior a turn uses (the control's, for a turn on that side).
+    pub fn behavior_for(&self, run: Uuid) -> Behavior {
+        let live = self.live.read().unwrap_or_else(|e| e.into_inner());
+        match (self.arm_in(&live, run), &live.control) {
+            (Some(false), Some(c)) => c.behavior.clone(),
+            _ => live.behavior.clone(),
+        }
+    }
+
+    /// Behavior guidelines and the matching workflow for this turn's side.
+    pub fn chat_section_for(&self, request: &str, run: Uuid) -> Option<String> {
+        let live = self.live.read().unwrap_or_else(|e| e.into_inner());
+        match (self.arm_in(&live, run), &live.control) {
+            (Some(false), Some(c)) => chat_section(&c.behavior, &c.workflows, request),
+            _ => chat_section(&live.behavior, &live.workflows, request),
+        }
+    }
+
+    fn arm_in(&self, live: &Live, run: Uuid) -> Option<bool> {
+        live.control.as_ref().map(|c| ((run.as_u128() % 10_000) as f32) / 10_000.0 < c.share)
     }
 
     pub fn mode(&self) -> Mode {
@@ -103,14 +156,22 @@ impl Evolution {
             notes.extend(tools.set_composites(composites));
             loaded = tools.composite_names().len();
         }
-        *self.live.write().unwrap_or_else(|e| e.into_inner()) = Live { behavior, workflows, composites: loaded };
+        // On trial: the generation before it, for the other turns.
+        let control = match self.manager.trial() {
+            Ok(Some((g, parent))) => Some(Control {
+                behavior: Behavior::parse(&parent.snapshot.behavior).unwrap_or_default(),
+                workflows: parent.snapshot.workflows.values().filter_map(|t| WorkflowDef::parse(t).ok()).collect(),
+                number: parent.number,
+                share: g.trial.map_or(0.3, |t| t.share),
+            }),
+            Ok(None) => None,
+            Err(e) => {
+                notes.push(format!("couldn't read the trial: {e}"));
+                None
+            }
+        };
+        *self.live.write().unwrap_or_else(|e| e.into_inner()) = Live { behavior, workflows, composites: loaded, control };
         notes
-    }
-
-    /// Behavior guidelines and the matching workflow, for a chat request's system prompt.
-    pub fn chat_section(&self, request: &str) -> Option<String> {
-        let live = self.live.read().unwrap_or_else(|e| e.into_inner());
-        chat_section(&live.behavior, &live.workflows, request)
     }
 
     /// How to plan this request: the matching workflow, and whether reasoning
@@ -125,8 +186,16 @@ impl Evolution {
     }
 
     /// Save a finished run, stamped with the generation that did it.
-    pub fn record(&self, mut run: RunRecord) -> Result<Uuid, String> {
+    /// During a trial, `arm` says which side the run was on (`Some(false)`:
+    /// the control, so it counts for the generation before).
+    pub fn record(&self, mut run: RunRecord, arm: Option<bool>) -> Result<Uuid, String> {
         run.generation = self.generation();
+        if let Some(on_trial) = arm {
+            run.arm = Some(if on_trial { "trial" } else { "control" }.into());
+            if !on_trial && let Some(c) = &self.live.read().unwrap_or_else(|e| e.into_inner()).control {
+                run.generation = c.number;
+            }
+        }
         self.manager.record_run(&run)?;
         Ok(run.id)
     }
@@ -147,6 +216,11 @@ impl Evolution {
             workflows: live.workflows.len(),
             tools: live.composites,
             settings,
+            trial: self.manager.trial_standing().ok().flatten().map(|t| {
+                let rate = |a: &lyra_evolution::Arm| a.success_rate().map_or("—".into(), |r| format!("{:.0}%", r * 100.0));
+                format!("g{} on {:.0}% · {}/{} · {} vs {}", t.generation, t.share * 100.0, t.trial.judged, t.needed, rate(&t.trial), rate(&t.control))
+            }),
+            tests: lyra_evolution::golden::list(self.manager.home()).0.len(),
         })
     }
 
@@ -179,6 +253,33 @@ impl Evolution {
 /// once per generation.
 pub fn monitor(env: &Env) -> Vec<String> {
     let ev = &env.evolution;
+    // A generation on trial is decided by its trial (E8), in any mode.
+    match ev.manager.trial_verdict() {
+        Ok(Some((true, why))) => {
+            return match ev.manager.end_trial(lyra_evolution::TrialStatus::Kept, &why) {
+                Ok(_) => {
+                    let mut notes = vec![format!("✓ {why}: it's kept")];
+                    notes.extend(ev.reload(env.tools.as_deref()));
+                    notes
+                }
+                Err(e) => vec![format!("ending the trial failed: {e}")],
+            };
+        }
+        Ok(Some((false, why))) => {
+            if let Err(e) = ev.manager.end_trial(lyra_evolution::TrialStatus::Lost, &why) {
+                return vec![format!("ending the trial failed: {e}")];
+            }
+            return match rollback_to(env, None, &why) {
+                Ok(mut notes) => {
+                    notes[0] = format!("↩ {why}; {}", notes[0].trim_start_matches("↩ "));
+                    notes
+                }
+                Err(e) => vec![format!("{why}; rollback failed: {e}")],
+            };
+        }
+        Ok(None) => {}
+        Err(e) => return vec![format!("evolution trial check failed: {e}")],
+    }
     let reason = match ev.manager.regression() {
         Ok(Some(reason)) => reason,
         Ok(None) => return Vec::new(),
@@ -259,7 +360,12 @@ pub fn review(env: &Env) -> Done {
     done
 }
 
-fn review_inner(env: &Env, done: &mut Done) -> Result<(), String> {
+/// Active skills' health with their instructions.
+type SkillsSeen = Vec<(SkillHealth, String)>;
+
+/// What the detectors find in recent runs, skills, capabilities, goals and
+/// agents; with the active skills (and their instructions) they looked at.
+fn problems(env: &Env) -> Result<(Vec<lyra_evolution::Opportunity>, SkillsSeen), String> {
     let ev = &env.evolution;
     let skills = skill_health(env.learning.as_deref())?;
     // C12: capabilities' track records feed evolution too.
@@ -312,6 +418,40 @@ fn review_inner(env: &Env, done: &mut Done) -> Result<(), String> {
     let agents = env.caps.as_ref().and_then(|c| c.agents().cloned());
     let agent_records = agents.as_deref().map(crate::agents::evolution_records).unwrap_or_default();
     let ops = ev.manager.detect(&skills.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>(), &records, &goal_records, &agent_records)?;
+    Ok((ops, skills))
+}
+
+/// How lyra is doing (2.6, admins): outcomes week by week and how they came
+/// in, the problems the detectors see now, each generation's and skill's
+/// record, the trial and the test set. Counts only: no one's words.
+pub fn health(env: &Env) -> Result<Value, String> {
+    let ev = &env.evolution;
+    let h = ev.manager.health(8)?;
+    let (ops, _) = problems(env)?;
+    let mut skills = h.skills.clone();
+    skills.sort_by_key(|x| std::cmp::Reverse(x.with.runs));
+    skills.truncate(15);
+    Ok(json!({
+        "mode": format!("{:?}", ev.mode()).to_lowercase(),
+        "generation": ev.generation(),
+        "weeks": h.weeks,
+        "sources": h.sources,
+        "all": h.all,
+        "owner_runs": h.owner_runs,
+        "other_runs": h.other_runs,
+        "problems": ops.iter().take(8).map(|o| json!({ "kind": o.kind, "problem": o.problem })).collect::<Vec<_>>(),
+        "generations": h.generations,
+        "skills": skills,
+        "trial": h.trial,
+        "tests": lyra_evolution::golden::list(ev.manager.home()).0.len(),
+        "pending": ev.manager.candidates(200)?.iter().filter(|c| matches!(c.status, CandidateStatus::Proposed | CandidateStatus::Testing)).count(),
+    }))
+}
+
+fn review_inner(env: &Env, done: &mut Done) -> Result<(), String> {
+    let ev = &env.evolution;
+    let (ops, skills) = problems(env)?;
+    let agents = env.caps.as_ref().and_then(|c| c.agents().cloned());
     if ops.is_empty() {
         let note = format!("no problems found in the last {} runs", ev.manager.settings.window);
         ev.manager.note_review(&note)?;
@@ -557,32 +697,118 @@ fn test_inner(env: &Env, c: Candidate, t: &mut Tested) -> Result<Candidate, Stri
     // Planner-only changes are measured by planning and running the tasks
     // (sandboxed); everything else by answering them in a chat.
     let plans = plan_mode(&c.change);
-    let tasks: Vec<BenchTask> = if plans { tasks.into_iter().take(2).collect() } else { tasks };
+    // Plans are slow: fewer of them, once each.
+    let (tasks, samples): (Vec<BenchTask>, usize) = if plans { (tasks.into_iter().take(4).collect(), 1) } else { (tasks, ev.benchmark_samples) };
     let how = if plans { "as plans" } else { "as chats" };
-    t.notes.push(format!("{}: benchmarking {} task(s) {how}, baseline vs candidate…", c.short(), tasks.len()));
+    t.notes.push(format!("{}: benchmarking {} task(s) {how}, {samples} answer(s) each side, judged pair by pair…", c.short(), tasks.len()));
     let baseline = Variant::new(env, &current, skill_override.clone(), false);
     let candidate = Variant::new(env, &next, skill_override, true);
-    let mut before = Vec::new();
-    let mut after = Vec::new();
-    for task in &tasks {
-        if plans {
-            before.push(bench_plan(env, &baseline, task, t));
-            after.push(bench_plan(env, &candidate, task, t));
-        } else {
-            before.push(bench(env, &baseline, &task.task, &task.expect, t));
-            after.push(bench(env, &candidate, &task.task, &task.expect, t));
+    let compared = pairwise(env, &tasks, samples, t, |task, cand, t| {
+        let v = if cand { &candidate } else { &baseline };
+        if plans { bench_plan(env, v, task, t) } else { bench(env, v, task, t) }
+    });
+    v.notes.push(format!("benchmarked on {} task(s): {}", tasks.len(), compared.2.note));
+    v.fitness_before = Some(compared.0);
+    v.fitness_after = Some(compared.1);
+    v.comparison = Some(compared.2);
+    ev.manager.save_validation(c, v)
+}
+
+/// Both sides answer every task `samples` times; each pair is judged blind;
+/// the candidate passes when its gain beats the noise (E7).
+fn pairwise(env: &Env, tasks: &[BenchTask], samples: usize, t: &mut Tested, mut answer: impl FnMut(&BenchTask, bool, &mut Tested) -> (BenchResult, Option<String>)) -> (Fitness, Fitness, lyra_evolution::Comparison) {
+    use lyra_evolution::compare::Pref;
+    let judge_by = judge_model(env);
+    let (mut before, mut after, mut per_task) = (Vec::new(), Vec::new(), Vec::new());
+    for task in tasks {
+        let mut prefs = Vec::new();
+        for _ in 0..samples.max(1) {
+            let (mut a, answer_a) = answer(task, false, t);
+            let (mut b, answer_b) = answer(task, true, t);
+            let pref = match (&answer_a, &answer_b) {
+                (Some(x), Some(y)) => pair_judge(&judge_by, task, x, y, t),
+                (None, Some(_)) => Some(Pref::Better),
+                (Some(_), None) => Some(Pref::Worse),
+                (None, None) => None,
+            };
+            // The pair's verdict is each side's score too (for the fitness shown).
+            let (sa, sb) = match pref {
+                Some(Pref::Better) => (0.0, 1.0),
+                Some(Pref::Worse) => (1.0, 0.0),
+                Some(Pref::Tie) => (0.5, 0.5),
+                None => (0.0, 0.0),
+            };
+            (a.accuracy, a.success, b.accuracy, b.success) = (sa, sa >= 0.5, sb, sb >= 0.5);
+            prefs.extend(pref);
+            before.push(a);
+            after.push(b);
         }
+        per_task.push(prefs);
     }
-    let weights = &ev.manager.settings.fitness;
+    let weights = &env.evolution.manager.settings.fitness;
     let (fb, fa) = (fitness::fitness(&before, weights), fitness::fitness(&after, weights));
-    let verdict = if fitness::improves(&fb, &fa) { "improves on the baseline" } else { "doesn't beat the baseline" };
-    t.notes.push(format!("  fitness {:.2} → {:.2}: {verdict}", fb.total, fa.total));
+    let c = lyra_evolution::compare::compare(&per_task, &fb, &fa, &judge_by.1);
+    t.notes.push(format!("  {} better · {} worse · {} as good (judged by {}): {}", c.wins, c.losses, c.ties, c.judge, c.note));
     t.notes.push(format!("  {}", describe_fitness("baseline", &fb)));
     t.notes.push(format!("  {}", describe_fitness("candidate", &fa)));
-    v.notes.push(format!("benchmarked on {} task(s): {verdict}", tasks.len()));
-    v.fitness_before = Some(fb);
-    v.fitness_after = Some(fa);
-    ev.manager.save_validation(c, v)
+    (fb, fa, c)
+}
+
+/// Who judges: the fallback model when there is one other than the chat
+/// model (a model doesn't grade itself), else the chat model. `(url, model)`.
+fn judge_model(env: &Env) -> (String, String) {
+    match crate::fallback::first_up().filter(|f| f.model != env.model && !crate::known_down::is_down("fallback")) {
+        Some(f) => (format!("{}/chat/completions", f.url.trim_end_matches('/')), f.model),
+        None => (env.url.clone(), env.model.clone()),
+    }
+}
+
+const PAIR_PROMPT: &str = "\
+You compare two answers to the same request and say which is better: more correct, more complete, more helpful, and doing what was asked. \
+Length and style don't matter unless they get in the way. If a reference answer is given, someone liked it: a good answer needn't match it word for word. \
+Reply with JSON only: {\"better\": \"1\" | \"2\" | \"tie\", \"reason\": \"a few words\"}.";
+
+/// Which answer is better, shown in a random order so the judge can't
+/// favour a side: the candidate's (`b`) better, worse or as good.
+fn pair_judge(judge: &(String, String), task: &BenchTask, a: &str, b: &str, t: &mut Tested) -> Option<lyra_evolution::compare::Pref> {
+    use lyra_evolution::compare::Pref;
+    let candidate_first = Uuid::new_v4().as_u128().is_multiple_of(2);
+    let (first, second) = if candidate_first { (b, a) } else { (a, b) };
+    let clip = |x: &str| x.chars().take(6000).collect::<String>();
+    let mut prompt = String::new();
+    if !task.history.is_empty() {
+        prompt += "Earlier in the conversation:\n";
+        for (role, text) in &task.history {
+            prompt += &format!("{role}: {}\n", text.chars().take(600).collect::<String>());
+        }
+        prompt += "\n";
+    }
+    prompt += &format!("Request: {}\n\nWhat a good answer does: {}\n\n", task.task, task.expect);
+    if let Some(r) = &task.reference {
+        prompt += &format!("Reference answer:\n{}\n\n", clip(r));
+    }
+    prompt += &format!("Answer 1:\n{}\n\nAnswer 2:\n{}", clip(first), clip(second));
+    let reply = match crate::learn::complete(&judge.0, &judge.1, PAIR_PROMPT, &prompt) {
+        Ok((reply, usage)) => {
+            t.usage.extend(usage);
+            reply
+        }
+        Err(e) => {
+            t.notes.push(format!("  judge call failed: {e}"));
+            return None;
+        }
+    };
+    let v: Value = reply.find('{').zip(reply.rfind('}')).and_then(|(s, e)| serde_json::from_str(reply.get(s..=e)?).ok())?;
+    let said = v["better"].as_str().map(str::to_string).or_else(|| v["better"].as_u64().map(|n| n.to_string()))?;
+    Some(match (said.trim(), candidate_first) {
+        ("tie", _) => Pref::Tie,
+        ("1", true) | ("2", false) => Pref::Better,
+        ("1", false) | ("2", true) => Pref::Worse,
+        _ => {
+            t.notes.push(format!("  judge reply unusable: {}", reply.chars().take(120).collect::<String>()));
+            return None;
+        }
+    })
 }
 
 /// Benchmark an agent change (A15): its recent tasks (and test task), done
@@ -612,35 +838,31 @@ fn validate_agent(env: &Env, c: Candidate, agent: &str, instructions: &str, mut 
         t.notes.push(format!("{}: ✓ checks passed; no tasks to benchmark the agent with", c.short()));
         return ev.manager.save_validation(c, v);
     }
-    t.notes.push(format!("{}: benchmarking {} on {} task(s), current vs revised instructions…", c.short(), current.title, tasks.len()));
-    let mut before = Vec::new();
-    let mut after = Vec::new();
-    for (task, expect) in &tasks {
-        for (p, out) in [(&current, &mut before), (&next, &mut after)] {
-            let start = Instant::now();
-            let mut r = BenchResult::default();
-            match crate::agents::bench_answer(&env.url, &env.model, p, task) {
-                Ok((answer, tokens)) => {
-                    r.model_calls = 1;
-                    r.tokens = tokens;
-                    judge(env, task, expect, &answer, &mut r, t);
-                }
-                Err(e) => {
-                    r.errors += 1;
-                    t.notes.push(format!("  benchmark call failed: {e}"));
-                }
+    t.notes.push(format!("{}: benchmarking {} on {} task(s), current vs revised instructions, judged pair by pair…", c.short(), current.title, tasks.len()));
+    let tasks: Vec<BenchTask> = tasks.into_iter().map(|(task, expect)| BenchTask { task, expect, reference: None, history: Vec::new() }).collect();
+    let (fb, fa, compared) = pairwise(env, &tasks, ev.benchmark_samples, t, |task, cand, t| {
+        let start = Instant::now();
+        let mut r = BenchResult::default();
+        let p = if cand { &next } else { &current };
+        let answer = match crate::agents::bench_answer(&env.url, &env.model, p, &task.task) {
+            Ok((answer, tokens)) => {
+                r.model_calls = 1;
+                r.tokens = tokens;
+                Some(answer).filter(|a| !a.trim().is_empty())
             }
-            r.seconds = start.elapsed().as_secs_f32();
-            out.push(r);
-        }
-    }
-    let weights = &ev.manager.settings.fitness;
-    let (fb, fa) = (fitness::fitness(&before, weights), fitness::fitness(&after, weights));
-    let verdict = if fitness::improves(&fb, &fa) { "improves on the baseline" } else { "doesn't beat the baseline" };
-    t.notes.push(format!("  fitness {:.2} → {:.2}: {verdict}", fb.total, fa.total));
-    v.notes.push(format!("benchmarked {} on {} task(s): {verdict}", current.title, tasks.len()));
+            Err(e) => {
+                r.errors += 1;
+                t.notes.push(format!("  benchmark call failed: {e}"));
+                None
+            }
+        };
+        r.seconds = start.elapsed().as_secs_f32();
+        (r, answer)
+    });
+    v.notes.push(format!("benchmarked {} on {} task(s): {}", current.title, tasks.len(), compared.note));
     v.fitness_before = Some(fb);
     v.fitness_after = Some(fa);
+    v.comparison = Some(compared);
     ev.manager.save_validation(c, v)
 }
 
@@ -655,35 +877,64 @@ fn describe_fitness(name: &str, f: &Fitness) -> String {
     )
 }
 
-/// A benchmark task: a recent request, and what a good answer must do.
+/// A benchmark task: a request (with the turns it followed), what a good
+/// answer must do, and an answer someone liked.
 struct BenchTask {
     task: String,
     expect: String,
+    reference: Option<String>,
+    history: Vec<(String, String)>,
 }
 
-/// Tasks to replay: the candidate's evidence first, then other recent
-/// requests. When the user corrected the original answer, their correction
-/// becomes part of the expectation.
+/// Tasks to replay: the candidate's evidence first (the problem it's for),
+/// then the test set (`evolution/golden/`), then other recent requests.
+/// When the user corrected the original answer, their correction becomes
+/// part of the expectation.
 fn benchmark_tasks(ev: &Evolution, c: &Candidate) -> Result<Vec<BenchTask>, String> {
     let runs = ev.manager.runs(ev.manager.settings.window * 2)?;
     let mut tasks: Vec<BenchTask> = Vec::new();
-    let evidence = runs.iter().filter(|r| c.evidence.contains(&r.id));
-    for r in evidence.chain(runs.iter()) {
-        let task = r.task.trim();
-        if task.len() >= 8 && !task.starts_with('/') && !tasks.iter().any(|t| t.task == task) {
-            let mut expect = "a correct, complete and helpful answer to the request".to_string();
-            if let Some(f) = r.feedback.as_ref().filter(|_| r.corrected) {
-                expect += &format!(
-                    ", which also satisfies what the user said after an earlier answer to it was wrong: \"{f}\""
-                );
-            }
-            tasks.push(BenchTask { task: task.to_string(), expect });
+    let usable = |task: &str, tasks: &[BenchTask]| task.len() >= 8 && !task.starts_with('/') && !tasks.iter().any(|t| t.task == task);
+    let from_run = |r: &RunRecord| {
+        let mut expect = "a correct, complete and helpful answer to the request".to_string();
+        if let Some(f) = r.feedback.as_ref().filter(|_| r.corrected) {
+            expect += &format!(", which also satisfies what the user said after an earlier answer to it was wrong: \"{f}\"");
         }
+        BenchTask { task: r.task.trim().to_string(), expect, reference: None, history: r.history.clone() }
+    };
+    for r in runs.iter().filter(|r| c.evidence.contains(&r.id)) {
+        if usable(r.task.trim(), &tasks) {
+            tasks.push(from_run(r));
+        }
+    }
+    for g in lyra_evolution::golden::list(ev.manager.home()).0 {
         if tasks.len() >= ev.benchmark_tasks {
             break;
         }
+        if usable(g.task.trim(), &tasks) {
+            tasks.push(BenchTask { task: g.task.trim().to_string(), expect: g.expect, reference: g.reference, history: g.history });
+        }
     }
+    for r in &runs {
+        if tasks.len() >= ev.benchmark_tasks {
+            break;
+        }
+        if usable(r.task.trim(), &tasks) {
+            tasks.push(from_run(r));
+        }
+    }
+    tasks.truncate(ev.benchmark_tasks.max(1));
     Ok(tasks)
+}
+
+/// Add a request (and the answer someone liked) to the test set; `false`
+/// when it's there already.
+pub fn add_test(ev: &Evolution, task: &str, reference: Option<&str>, history: Vec<(String, String)>, source: &str) -> Result<bool, String> {
+    let task = task.trim();
+    if task.chars().count() < 8 || task.starts_with('/') {
+        return Err("that's too short to test with".into());
+    }
+    let t = lyra_evolution::golden::GoldenTask::new(task, reference, history, source);
+    lyra_evolution::golden::add(ev.manager.home(), &t).map_err(|e| format!("couldn't save the test: {e}"))
 }
 
 /// Changes that only affect planning, so a chat benchmark can't see them.
@@ -738,12 +989,34 @@ impl Variant {
         Self { behavior, workflows, composites, definitions, skill, candidate }
     }
 
+    /// The system prompt as a live turn builds it (E7): the chat's prompt,
+    /// the evolved section, what's remembered about the request, the skills
+    /// that match it (this variant's version of a changed one), the tool rules.
     fn system(&self, env: &Env, task: &str) -> String {
         let mut parts: Vec<String> = env.system_prompt.iter().cloned().collect();
         parts.extend(chat_section(&self.behavior, &self.workflows, task));
+        // Read only: nothing is recorded as used.
+        if let Some(found) = env.tools.as_ref().and_then(|t| t.mem.recall(None, task, 6, false).ok()).filter(|f| !f.is_empty()) {
+            let lines: Vec<String> = found.iter().map(|r| format!("- {}", r.memory.content.chars().take(300).collect::<String>())).collect();
+            parts.push(format!("# What you remember that may help\n\n{}", lines.join("\n")));
+        }
+        let mut skills: Vec<(String, String)> = env
+            .learning
+            .as_ref()
+            .and_then(|l| l.relevant(task).ok())
+            .map(|found| found.into_iter().map(|r| (r.skill.name, r.skill.instructions)).collect())
+            .unwrap_or_default();
         if let Some((name, old, new)) = &self.skill {
             let text = if self.candidate { new } else { old };
-            parts.push(format!("# Learned skills\n\n## {name}\n{text}"));
+            skills.retain(|(n, _)| n != name);
+            skills.insert(0, (name.clone(), text.clone()));
+        }
+        if !skills.is_empty() {
+            let each: Vec<String> = skills.iter().map(|(n, i)| format!("## {n}\n{i}")).collect();
+            parts.push(format!("# Learned skills\n\n{}", each.join("\n\n")));
+        }
+        if !self.definitions.is_empty() {
+            parts.push(crate::turn::TOOL_RULES.to_string());
         }
         parts.join("\n\n")
     }
@@ -752,10 +1025,14 @@ impl Variant {
 /// Run one task headless with a variant and have the model judge the answer.
 /// Only read-only tools really run; anything that would change something is
 /// simulated, and destructive calls count as safety violations.
-fn bench(env: &Env, v: &Variant, task: &str, expect: &str, t: &mut Tested) -> BenchResult {
+fn bench(env: &Env, v: &Variant, bt: &BenchTask, t: &mut Tested) -> (BenchResult, Option<String>) {
     let start = Instant::now();
     let mut r = BenchResult::default();
-    let mut messages = vec![json!({ "role": "system", "content": v.system(env, task) }), json!({ "role": "user", "content": task })];
+    let task = bt.task.as_str();
+    // A follow-up is asked after what it follows.
+    let mut messages = vec![json!({ "role": "system", "content": v.system(env, task) })];
+    messages.extend(bt.history.iter().filter(|(role, _)| matches!(role.as_str(), "user" | "assistant")).map(|(role, text)| json!({ "role": role, "content": text })));
+    messages.push(json!({ "role": "user", "content": task }));
     let mut answer = None;
     for _ in 0..v.behavior.max_tool_rounds.max(1) {
         let (message, tokens) = match crate::plan::chat(&env.url, &env.model, &messages, &v.definitions) {
@@ -782,59 +1059,16 @@ fn bench(env: &Env, v: &Variant, task: &str, expect: &str, t: &mut Tested) -> Be
         }
     }
     r.seconds = start.elapsed().as_secs_f32();
-    let Some(answer) = answer.filter(|a| !a.trim().is_empty()) else {
+    let answer = answer.filter(|a| !a.trim().is_empty());
+    if answer.is_none() {
         r.errors += 1;
-        return r;
-    };
-    judge(env, task, expect, &answer, &mut r, t);
-    r
-}
-
-/// Have the model judge an answer; fills `success` and `accuracy`.
-fn judge(env: &Env, task: &str, expect: &str, answer: &str, r: &mut BenchResult, t: &mut Tested) {
-    // The decision model when it's set up and sure of the verdict; the chat model otherwise.
-    if let Some((success, accuracy)) = decide_judgement(task, expect, answer) {
-        r.success = success;
-        r.accuracy = accuracy;
-        return;
     }
-    match crate::learn::complete(&env.url, &env.model, evolver::JUDGE_PROMPT, &evolver::judge_prompt(task, expect, answer)) {
-        Ok((reply, usage)) => {
-            t.usage.extend(usage);
-            match evolver::parse_judgement(&reply) {
-                Ok(j) => {
-                    r.success = j.success;
-                    r.accuracy = j.accuracy.clamp(0.0, 1.0);
-                }
-                Err(e) => t.notes.push(format!("  judge reply unusable: {e}")),
-            }
-        }
-        Err(e) => t.notes.push(format!("  judge call failed: {e}")),
-    }
-}
-
-/// A benchmark answer graded by the decision model: `(success, accuracy)`.
-fn decide_judgement(task: &str, expect: &str, answer: &str) -> Option<(bool, f32)> {
-    use crate::decide::{Question, ask, confident};
-    let levels: Vec<(String, String)> = [("0", "wrong or useless"), ("25", "mostly wrong"), ("50", "partly right"), ("75", "mostly right"), ("100", "fully right")]
-        .iter()
-        .map(|(id, d)| (id.to_string(), d.to_string()))
-        .collect();
-    let questions = [
-        ("success".to_string(), Question::Yes("Does the answer accomplish the task as expected?".into())),
-        ("accuracy".to_string(), Question::Choice("How accurate and complete is the answer?".into(), levels)),
-    ];
-    let state = evolver::judge_prompt(task, expect, answer);
-    let answers = ask("benchmark judge", &state, &questions)?;
-    let success = confident(&answers, "success")?.yes()?;
-    // The grade is a scale: its most likely level is used even when spread out.
-    let accuracy = answers.get("accuracy").and_then(|a| a.choice.parse::<f32>().ok()).map_or(if success { 1.0 } else { 0.0 }, |p| p / 100.0);
-    Some((success, accuracy.clamp(0.0, 1.0)))
+    (r, answer)
 }
 
 /// Plan and run a task with a variant on a throwaway plan store, approving
 /// steps automatically (tools are sandboxed), then judge the result.
-fn bench_plan(env: &Env, v: &Variant, task: &BenchTask, t: &mut Tested) -> BenchResult {
+fn bench_plan(env: &Env, v: &Variant, task: &BenchTask, t: &mut Tested) -> (BenchResult, Option<String>) {
     use lyra_execution::{Budget, Engine, PlanStatus, PlanStore, Settings};
     let start = Instant::now();
     let rt = BenchRuntime { env, v, r: Mutex::new(BenchResult::default()) };
@@ -842,7 +1076,7 @@ fn bench_plan(env: &Env, v: &Variant, task: &BenchTask, t: &mut Tested) -> Bench
         Ok(store) => store,
         Err(e) => {
             t.notes.push(format!("  benchmark plan store: {e:#}"));
-            return BenchResult { errors: 1, ..Default::default() };
+            return (BenchResult { errors: 1, ..Default::default() }, None);
         }
     };
     let budget = Budget { max_model_calls: Some(30), max_tool_calls: Some(40), max_replans: Some(1), max_minutes: Some(15), max_tokens: Some(200_000) };
@@ -877,11 +1111,11 @@ fn bench_plan(env: &Env, v: &Variant, task: &BenchTask, t: &mut Tested) -> Bench
     }
     let mut r = rt.r.into_inner().unwrap_or_else(|e| e.into_inner());
     r.seconds = start.elapsed().as_secs_f32();
-    match answer.filter(|a| !a.trim().is_empty()) {
-        Some(answer) => judge(env, &task.task, &task.expect, &answer, &mut r, t),
-        None => r.errors += 1,
+    let answer = answer.filter(|a| !a.trim().is_empty());
+    if answer.is_none() {
+        r.errors += 1;
     }
-    r
+    (r, answer)
 }
 
 /// The planner's runtime during a benchmark: the variant's behavior,
@@ -1162,6 +1396,10 @@ fn deploy(env: &Env, c: Candidate, why: &str, done: &mut Done) -> Result<String,
 }
 
 pub fn rollback(env: &Env, arg: &str) -> Done {
+    // A trial rolled back by hand ends as lost.
+    if matches!(env.evolution.manager.trial(), Ok(Some(_))) {
+        let _ = env.evolution.manager.end_trial(lyra_evolution::TrialStatus::Lost, "rolled back by hand");
+    }
     let to = arg.trim().trim_start_matches('g');
     let to = if to.is_empty() { Ok(None) } else { to.parse::<u32>().map(Some).map_err(|_| format!("not a generation number: {arg}")) };
     let notes = match to.and_then(|to| rollback_to(env, to, "requested by the user")) {
@@ -1340,7 +1578,7 @@ pub fn propose_api(ev: &Evolution, caps: Option<&crate::caps::Caps>, url: &str, 
     let proposal = lyra_evolution::evolver::Proposal { change: lyra_evolution::Change::Api { api: api.clone() }, rationale: format!("Its OpenAPI description at {url} gives {} operations.", api.reads + api.writes), confidence: 0.7 };
     let c = ev.manager.propose(&op, vec![proposal])?.into_iter().next().ok_or("nothing was proposed")?;
     // Checked already (it read, it has operations): ready for an admin's yes.
-    let v = Validation { valid: true, notes: vec![format!("read {} operations from {url}", api.reads + api.writes)], fitness_before: None, fitness_after: None, checks: Vec::new() };
+    let v = Validation { valid: true, notes: vec![format!("read {} operations from {url}", api.reads + api.writes)], fitness_before: None, fitness_after: None, checks: Vec::new(), comparison: None };
     let c = ev.manager.save_validation(c, v)?;
     let key = api.auth_secret.as_ref().map(|s| format!(" It needs a key: lyra secret {s} on the server (before or after approving)."), ).unwrap_or_default();
     Ok(format!(
@@ -1460,7 +1698,54 @@ pub const COMMANDS: &str = "\
 /evolve reject <id>          discard it
 /evolve rollback [gen]       restore the previous (or a given) generation
 /evolve generations|history|runs   deployed generations · evolution events · recorded runs
-/evolve code <problem>       propose a source patch (needs [evolution] source_repo)";
+/evolve code <problem>       propose a source patch (needs [evolution] source_repo)
+/evolve trial · keep         the change on trial and how it's doing · keep it now
+/evolve tests [add | remove <id>]  lyra's tests (from replies rated 👍) · add the last reply · remove one";
+
+/// The change on trial, side by side with the generation before it.
+pub fn trial_text(ev: &Evolution) -> Result<String, String> {
+    let Some(s) = ev.manager.trial_standing()? else { return Ok("nothing is on trial".into()) };
+    let rate = |a: &lyra_evolution::Arm| a.success_rate().map_or("—".into(), |r| format!("{:.0}%", r * 100.0));
+    Ok(format!(
+        "generation {} is on trial on {:.0}% of turns since {}\n  on trial: {} turns, {} with an outcome, {} good · corrected {}\n  generation {}: {} turns, {} with an outcome, {} good · corrected {}\n  decided once it has {} turns with an outcome (and the other side half that) · /evolve keep keeps it now · /evolve rollback ends it",
+        s.generation,
+        s.share * 100.0,
+        s.started.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M"),
+        s.trial.runs, s.trial.judged, rate(&s.trial), s.trial.corrected,
+        s.parent, s.control.runs, s.control.judged, rate(&s.control), s.control.corrected,
+        s.needed
+    ))
+}
+
+/// Keep the change on trial now (an admin's call).
+pub fn keep(env: &Env) -> Result<String, String> {
+    let ev = &env.evolution;
+    let g = ev.manager.end_trial(lyra_evolution::TrialStatus::Kept, "kept by hand before its trial ended")?;
+    let notes = ev.reload(env.tools.as_deref());
+    Ok(format!("✓ generation {} is kept{}", g.number, if notes.is_empty() { String::new() } else { format!("\n{}", notes.join("\n")) }))
+}
+
+/// lyra's tests, newest first.
+pub fn tests_text(ev: &Evolution) -> String {
+    let (tests, errors) = lyra_evolution::golden::list(ev.manager.home());
+    let mut out = vec![format!("{} test(s) in {} (benchmarks use up to {} tasks, {} answer(s) each side)", tests.len(), crate::context::show(&lyra_evolution::golden::dir(ev.manager.home())), ev.benchmark_tasks, ev.benchmark_samples)];
+    for t in tests.iter().take(30) {
+        out.push(format!("  {} [{}] {}{}", t.id, t.source, truncate(&t.task, 80), if t.history.is_empty() { "" } else { " (a follow-up)" }));
+    }
+    out.extend(errors.into_iter().map(|e| format!("  ✗ {e}")));
+    if tests.is_empty() {
+        out.push("  none yet: rate replies 👍 (the owner's become tests), or /evolve tests add".into());
+    }
+    out.join("\n")
+}
+
+pub fn remove_test(ev: &Evolution, id: &str) -> Result<String, String> {
+    match lyra_evolution::golden::remove(ev.manager.home(), id) {
+        Ok(true) => Ok(format!("removed test {id}")),
+        Ok(false) => Err(format!("no single test matches {id:?}: /evolve tests lists them")),
+        Err(e) => Err(format!("couldn't remove it: {e}")),
+    }
+}
 
 pub fn status(ev: &Evolution) -> Result<String, String> {
     let s = ev.snapshot()?;
@@ -1474,7 +1759,10 @@ pub fn status(ev: &Evolution) -> Result<String, String> {
         st.avg_model_calls,
         st.avg_tool_calls
     ));
-    out.push(format!("evolved: {} guideline(s) · {} workflow(s) · {} composite tool(s)", s.guidelines, s.workflows, s.tools));
+    out.push(format!("evolved: {} guideline(s) · {} workflow(s) · {} composite tool(s) · {} test(s)", s.guidelines, s.workflows, s.tools, s.tests));
+    if let Some(t) = &s.trial {
+        out.push(format!("on trial: {t} (/evolve trial)"));
+    }
     if !s.settings.is_empty() {
         out.push(format!("settings: {}", s.settings.join(" · ")));
     }
@@ -1537,6 +1825,9 @@ pub fn show(ev: &Evolution, key: &str) -> Result<String, String> {
     if let Some(v) = &c.validation {
         out.push(format!("validation: {}", if v.valid { "passed checks" } else { "failed checks" }));
         out.extend(v.notes.iter().map(|n| format!("  {n}")));
+        if let Some(cmp) = &v.comparison {
+            out.push(format!("  judged pair by pair by {}: {} better · {} worse · {} as good over {} task(s) × {}", cmp.judge, cmp.wins, cmp.losses, cmp.ties, cmp.tasks, cmp.samples));
+        }
         if let Some(f) = &v.fitness_before {
             out.push(format!("  {}", describe_fitness("baseline", f)));
         }
@@ -1711,6 +2002,140 @@ mod tests {
             }
         });
         url
+    }
+
+    /// A chat model answering every request with `answer(request)`; the requests are kept.
+    fn fake_model(answer: impl Fn(&Value) -> String + Send + Sync + 'static) -> (String, Arc<Mutex<Vec<Value>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let kept = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut len = 0;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; len];
+                let _ = reader.read_exact(&mut body);
+                let request: Value = serde_json::from_slice(&body).unwrap_or(json!({}));
+                let content = answer(&request);
+                kept.lock().unwrap().push(request);
+                let reply = json!({ "choices": [{ "message": { "role": "assistant", "content": content } }], "usage": { "prompt_tokens": 10, "completion_tokens": 5 } }).to_string();
+                let mut stream = stream;
+                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len());
+            }
+        });
+        (url, seen)
+    }
+
+    #[test]
+    fn a_change_passes_only_when_blind_pairs_show_it_better_beyond_the_noise() {
+        crate::config::with_test_home(|home| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let manager = EvolutionManager::open(home, rt.handle().clone(), Default::default()).unwrap();
+            let ev = Arc::new(Evolution::new(manager, rt.handle().clone(), None, 4).with_samples(2));
+            // The candidate's guideline makes the answers careful; the judge prefers careful ones.
+            let (url, seen) = fake_model(|req| {
+                let system = req["messages"][0]["content"].as_str().unwrap_or("");
+                if system.starts_with("You compare two answers") {
+                    let user = req["messages"][1]["content"].as_str().unwrap_or("");
+                    let second = user.split("Answer 2:").nth(1).unwrap_or("");
+                    let first = user.split("Answer 1:").nth(1).unwrap_or("").split("Answer 2:").next().unwrap_or("");
+                    return match (first.contains("CAREFUL"), second.contains("CAREFUL")) {
+                        (true, false) => r#"{"better": "1", "reason": "checks the dates"}"#,
+                        (false, true) => r#"{"better": "2", "reason": "checks the dates"}"#,
+                        _ => r#"{"better": "tie", "reason": "the same"}"#,
+                    }
+                    .into();
+                }
+                if system.contains("Double-check the dates.") { "CAREFUL: the meeting is Tuesday".into() } else { "The meeting is Monday".into() }
+            });
+            // The test set: replies the owner liked (one a follow-up).
+            assert!(add_test(&ev, "When is the planning meeting this week?", Some("Tuesday at 10."), vec![], "rated").unwrap());
+            assert!(add_test(&ev, "And the budget review?", Some("Thursday."), vec![("user".into(), "When is the planning meeting?".into()), ("assistant".into(), "Tuesday.".into())], "rated").unwrap());
+            assert!(add_test(&ev, "What's due before Friday's deadline?", None, vec![], "added").unwrap());
+            assert!(!add_test(&ev, "what's due before friday's deadline?", None, vec![], "added").unwrap(), "once");
+            assert!(tests_text(&ev).contains("3 test(s)"));
+            let op = lyra_evolution::Opportunity { kind: "frequent_corrections".into(), problem: "dates are wrong".into(), categories: vec![Category::Prompt], evidence: vec![], details: json!({}) };
+            let env = Env { url, model: "m".into(), evolution: ev.clone(), tools: None, learning: None, caps: None, goals: None, system_prompt: None };
+            let propose = |add: &str| ev.manager.propose(&op, vec![evolver::Proposal { change: Change::Prompt { add: vec![add.into()], remove: vec![] }, rationale: "r".into(), confidence: 0.6 }]).unwrap().remove(0);
+
+            let t = test(&env, propose("Double-check the dates."));
+            let v = t.candidate.expect("tested").validation.expect("validated");
+            let cmp = v.comparison.clone().expect("judged pair by pair");
+            assert_eq!((cmp.tasks, cmp.samples, cmp.wins, cmp.losses), (3, 2, 6, 0), "{:?}", t.notes);
+            assert!(cmp.passes && v.improves(), "{}", cmp.note);
+            assert!(t.notes.iter().any(|n| n.contains("6 better · 0 worse")), "{:?}", t.notes);
+            // The follow-up was asked after what it follows.
+            let asked = seen.lock().unwrap().iter().any(|r| r["messages"].as_array().is_some_and(|m| m.len() == 4 && m[1]["content"] == "When is the planning meeting?" && m[3]["content"] == "And the budget review?"));
+            assert!(asked, "the earlier turns were replayed");
+
+            // A change that doesn't change the answers: as good on every pair, not better.
+            let t = test(&env, propose("Use British spelling."));
+            let v = t.candidate.expect("tested").validation.expect("validated");
+            assert!(!v.improves(), "{}", v.comparison.as_ref().unwrap().note);
+            assert_eq!(v.comparison.as_ref().map(|c| c.ties), Some(6));
+        });
+    }
+
+    #[test]
+    fn a_deployed_change_runs_on_trial_beside_the_old_one_and_its_results_decide() {
+        crate::config::with_test_home(|home| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let settings = lyra_evolution::Settings { trial_runs: 4, ..Default::default() };
+            let manager = EvolutionManager::open(home, rt.handle().clone(), settings).unwrap();
+            let ev = Arc::new(Evolution::new(manager, rt.handle().clone(), None, 1));
+            let env = Env { url: String::new(), model: String::new(), evolution: ev.clone(), tools: None, learning: None, caps: None, goals: None, system_prompt: None };
+            let op = lyra_evolution::Opportunity { kind: "k".into(), problem: "p".into(), categories: vec![Category::Prompt], evidence: vec![], details: json!({}) };
+            let deploy_one = |add: &str| {
+                let c = ev.manager.propose(&op, vec![evolver::Proposal { change: Change::Prompt { add: vec![add.into()], remove: vec![] }, rationale: "r".into(), confidence: 0.6 }]).unwrap().remove(0);
+                let mut done = Done { notes: Vec::new(), usage: Vec::new() };
+                deploy(&env, c, "approved", &mut done).unwrap()
+            };
+            assert_eq!(ev.arm(Uuid::new_v4()), None, "nothing on trial");
+            deploy_one("Cite the source of each fact.");
+            // Each turn is on one side, and sees that side's behavior.
+            let ids: Vec<Uuid> = (0..400).map(|_| Uuid::new_v4()).collect();
+            let on_trial: Vec<&Uuid> = ids.iter().filter(|r| ev.arm(**r) == Some(true)).collect();
+            let share = on_trial.len() as f32 / ids.len() as f32;
+            assert!((0.2..0.4).contains(&share), "about 30% on trial: {share}");
+            let control = ids.iter().find(|r| ev.arm(**r) == Some(false)).unwrap();
+            assert!(ev.chat_section_for("hi", *on_trial[0]).is_some_and(|s| s.contains("Cite the source")));
+            assert!(ev.chat_section_for("hi", *control).is_none(), "the other turns keep the old behavior");
+            assert_eq!(ev.arm(*on_trial[0]), ev.arm(*on_trial[0]), "the same run stays on its side");
+            // Its turns did better: kept, and everyone gets it.
+            for (arm, good) in [(true, true), (true, true), (true, true), (true, false), (false, true), (false, false), (false, false), (false, false), (false, true)] {
+                let mut r = RunRecord::new(lyra_evolution::RunKind::Chat, "a request", 0);
+                r.outcome = if good { lyra_evolution::RunOutcome::Success } else { lyra_evolution::RunOutcome::Failure };
+                let id = ev.record(r, Some(arm)).unwrap();
+                assert_eq!(ev.manager.runs(1).unwrap()[0].generation, if arm { 2 } else { 1 }, "{id}");
+            }
+            let notes = monitor(&env);
+            assert!(notes[0].starts_with("✓ generation 2 won its trial"), "{notes:?}");
+            assert!(ev.chat_section_for("hi", *control).is_some_and(|s| s.contains("Cite the source")), "kept for everyone");
+            assert!(trial_text(&ev).unwrap().contains("nothing is on trial"));
+            // The next one loses its trial: rolled back.
+            deploy_one("Answer in one word.");
+            assert!(ev.snapshot().unwrap().trial.is_some_and(|t| t.starts_with("g3 on 30%")));
+            for (arm, good) in [(true, false), (true, false), (true, false), (true, true), (false, true), (false, true), (false, true), (false, true), (false, false)] {
+                let mut r = RunRecord::new(lyra_evolution::RunKind::Chat, "a request", 0);
+                r.outcome = if good { lyra_evolution::RunOutcome::Success } else { lyra_evolution::RunOutcome::Failure };
+                ev.record(r, Some(arm)).unwrap();
+            }
+            let notes = monitor(&env);
+            assert!(notes[0].starts_with("↩ generation 3 lost its trial"), "{notes:?}");
+            assert!(ev.chat_section_for("hi", *control).is_some_and(|s| !s.contains("one word")), "rolled back");
+            assert_eq!(ev.arm(*control), None);
+        });
     }
 
     const PARCELS: &str = r#"{"openapi":"3.0.0","info":{"title":"Parcel Tracker","version":"1"},"servers":[{"url":"https://parcels.example/v1"}],

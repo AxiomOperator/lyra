@@ -196,6 +196,11 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
         "activity" => json!(app.activity.iter().rev().take(200).map(|a| json!({ "time": a.time, "level": level_name(a.level), "text": a.text })).collect::<Vec<_>>()),
         "agents" => text(app.agents.as_deref().map(crate::agents::list).ok_or("agents are off".into())),
         // What evolution proposes (admins: not a member's page), newest first, with what each needs.
+        // How lyra is doing (admins): counts only.
+        "evolution_health" => match app.evolution_env() {
+            None => json!({ "error": "evolution is off ([evolution] enabled)" }),
+            Some(env) => crate::evolve::health(&env).unwrap_or_else(|e| json!({ "error": e })),
+        },
         "evolution_candidates" => match &app.evolution {
             None => json!({ "error": "evolution is off ([evolution] enabled)" }),
             Some(ev) => match ev.manager.candidates(80) {

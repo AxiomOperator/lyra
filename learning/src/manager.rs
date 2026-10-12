@@ -659,6 +659,19 @@ impl<S: SkillStore> SkillManager<S> {
         Ok(notes)
     }
 
+    /// The same, crediting only the skills the reply followed (`skills`).
+    pub async fn record_outcome_for(&self, run: Uuid, skills: &[Uuid], outcome: SkillOutcome, explicit: bool) -> Result<Vec<String>> {
+        let affected = self.ledger.set_outcome_for(run, skills, outcome, explicit).await?;
+        if affected.is_empty() {
+            return Ok(Vec::new());
+        }
+        let all = self.list(None).await?;
+        let names: Vec<&str> = affected.iter().filter_map(|id| all.iter().find(|s| s.id == *id).map(|s| s.name.as_str())).collect();
+        let mut notes = vec![format!("{outcome}: {}", names.join(", "))];
+        notes.extend(self.enforce(Some(run)).await?);
+        Ok(notes)
+    }
+
     // ---- curation (V7)
 
     /// The checks that need no model: near-duplicates and stale skills.

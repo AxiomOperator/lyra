@@ -103,6 +103,13 @@ impl Learning {
         self.run(self.manager.record_outcome(run, outcome, explicit))
     }
 
+    /// The same, for only the skills the reply followed (by name); the
+    /// other skills in its prompt get no credit for it.
+    pub fn record_outcome_for(&self, run: Uuid, followed: &[String], outcome: SkillOutcome, explicit: bool) -> Result<Vec<String>, String> {
+        let ids: Vec<Uuid> = followed.iter().filter_map(|n| self.find(n.trim_end_matches(" (trial)")).ok().map(|s| s.id)).collect();
+        self.run(self.manager.record_outcome_for(run, &ids, outcome, explicit))
+    }
+
     /// Version skill files that are new or were edited by hand.
     pub fn sync(&self) -> Result<Vec<String>, String> {
         self.run(self.manager.sync())

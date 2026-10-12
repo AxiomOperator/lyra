@@ -72,6 +72,16 @@ pub struct RunRecord {
     /// It stopped at the tool-call limit, part done.
     #[serde(default)]
     pub limited: bool,
+    /// During a trial: which side this run was on ("trial" or "control").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arm: Option<String>,
+    /// The conversation's turns just before it (role, text), owner's only, so
+    /// a benchmark can replay a follow-up with what it follows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<(String, String)>,
+    /// How its outcome came in: "rated", "signal", "judged" or "hint".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_source: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -99,6 +109,9 @@ impl RunRecord {
             generation,
             person: None,
             limited: false,
+            arm: None,
+            history: Vec::new(),
+            outcome_source: None,
             created_at: Utc::now(),
         }
     }
@@ -299,6 +312,42 @@ pub struct Validation {
     pub fitness_after: Option<Fitness>,
     /// For code: the checks run in the sandbox, and their output tails.
     pub checks: Vec<(String, bool, String)>,
+    /// The candidate's answers judged against the current ones, pair by pair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<Comparison>,
+}
+
+impl Validation {
+    /// Whether the benchmark says it's better: the pairwise comparison when
+    /// there was one (the gain beat the noise), else the fitness totals.
+    pub fn improves(&self) -> bool {
+        match (&self.comparison, &self.fitness_before, &self.fitness_after) {
+            (Some(c), ..) => c.passes,
+            (None, Some(b), Some(a)) => crate::fitness::improves(b, a),
+            _ => false,
+        }
+    }
+}
+
+/// Candidate vs current, judged blind pair by pair (E7).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Comparison {
+    pub tasks: usize,
+    /// Answers per task on each side.
+    pub samples: usize,
+    pub wins: usize,
+    pub losses: usize,
+    pub ties: usize,
+    /// The candidate's mean preference per task (-1 worse … +1 better), with
+    /// its 95% confidence interval.
+    pub mean: f32,
+    pub low: f32,
+    pub high: f32,
+    /// The model that judged.
+    pub judge: String,
+    pub passes: bool,
+    /// Why it passes or not, in words.
+    pub note: String,
 }
 
 /// A proposed improvement.
@@ -349,6 +398,70 @@ pub struct Generation {
     /// back past this generation restores `from_version`.
     #[serde(default)]
     pub skill: Option<SkillRevision>,
+    /// Deployed on trial: tried on part of the turns against the one before,
+    /// kept only if it does at least as well.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial: Option<Trial>,
+}
+
+/// A generation on trial (E8): `share` of the turns use it, the rest the
+/// generation before (the control), until `runs` of its turns have an outcome.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Trial {
+    pub share: f32,
+    pub runs: usize,
+    pub started: DateTime<Utc>,
+    pub status: TrialStatus,
+    #[serde(default)]
+    pub note: String,
+}
+
+/// How a trial stands.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrialStanding {
+    pub generation: u32,
+    /// The generation it's compared with.
+    pub parent: u32,
+    pub trial: Arm,
+    pub control: Arm,
+    /// Turns with an outcome it needs.
+    pub needed: usize,
+    pub share: f32,
+    pub started: DateTime<Utc>,
+}
+
+/// One side of a trial: its turns, those with an outcome, the good and corrected ones.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Arm {
+    pub runs: usize,
+    pub judged: usize,
+    pub good: usize,
+    pub corrected: usize,
+}
+
+impl Arm {
+    pub fn of(runs: &[RunRecord]) -> Self {
+        let judged: Vec<&RunRecord> = runs.iter().filter(|r| r.outcome != RunOutcome::Unknown).collect();
+        Arm { runs: runs.len(), judged: judged.len(), good: judged.iter().filter(|r| r.outcome == RunOutcome::Success).count(), corrected: runs.iter().filter(|r| r.corrected).count() }
+    }
+
+    pub fn success_rate(&self) -> Option<f32> {
+        (self.judged > 0).then(|| self.good as f32 / self.judged as f32)
+    }
+
+    pub fn correction_rate(&self) -> f32 {
+        if self.runs == 0 { 0.0 } else { self.corrected as f32 / self.runs as f32 }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrialStatus {
+    Running,
+    /// It did at least as well: it's the agent now.
+    Kept,
+    /// It did worse: rolled back.
+    Lost,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -476,4 +589,69 @@ mod tests {
         assert_eq!("rolled_back".parse::<CandidateStatus>().unwrap(), CandidateStatus::RolledBack);
         assert_eq!(Category::Configuration.to_string(), "configuration");
     }
+}
+
+/// How lyra is doing (counts only).
+#[derive(Debug, Clone, Serialize)]
+pub struct Health {
+    pub weeks: Vec<Week>,
+    /// Outcomes by how they came in: rated, signal, judged, hint.
+    pub sources: std::collections::BTreeMap<String, usize>,
+    pub all: Arm,
+    pub generations: Vec<GenerationHealth>,
+    pub skills: Vec<SkillEffect>,
+    pub trial: Option<TrialStanding>,
+    pub owner_runs: usize,
+    /// Everyone else's turns (counted, never shown).
+    pub other_runs: usize,
+}
+
+/// One week's turns and how they went.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Week {
+    pub start: chrono::NaiveDate,
+    pub runs: usize,
+    pub judged: usize,
+    pub good: usize,
+    pub partial: usize,
+    pub bad: usize,
+    pub corrected: usize,
+    pub limited: usize,
+    pub rated: usize,
+}
+
+impl Week {
+    pub fn add(&mut self, r: &RunRecord) {
+        self.runs += 1;
+        match r.outcome {
+            RunOutcome::Success => self.good += 1,
+            RunOutcome::Partial => self.partial += 1,
+            RunOutcome::Failure => self.bad += 1,
+            RunOutcome::Unknown => {}
+        }
+        if r.outcome != RunOutcome::Unknown {
+            self.judged += 1;
+        }
+        self.corrected += r.corrected as usize;
+        self.limited += r.limited as usize;
+        self.rated += (r.outcome_source.as_deref() == Some("rated")) as usize;
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GenerationHealth {
+    pub number: u32,
+    pub reason: String,
+    pub created_at: DateTime<Utc>,
+    pub trial: Option<Trial>,
+    /// Its own turns (a trial's, not the control's).
+    pub record: Arm,
+}
+
+/// How replies that used a skill went, against those that didn't.
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillEffect {
+    pub name: String,
+    pub with: Arm,
+    pub without: Arm,
 }

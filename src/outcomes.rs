@@ -255,6 +255,51 @@ fn clip(text: &str, max: usize) -> String {
     if t.chars().count() <= max { t.to_string() } else { format!("{}…", t.chars().take(max).collect::<String>()) }
 }
 
+// ---- credit (which skills a reply followed)
+
+/// Of the skills in a reply's prompt (`skills`: name and what it says), the
+/// ones the reply actually followed: the decision model when it's sure of
+/// each, else the fallback model (`light`). `None`: no telling, so every one
+/// gets the credit, as before.
+pub fn followed(reply: &str, tools: &[String], skills: &[(String, String)], light: Option<(&str, &str)>) -> Option<Vec<String>> {
+    if skills.is_empty() {
+        return Some(Vec::new());
+    }
+    let did = format!("lyra's reply: {}\n\nTools it used: {}", clip(reply, 1200), if tools.is_empty() { "none".to_string() } else { tools.join(", ") });
+    by_decision_model_credit(&did, skills).or_else(|| light.and_then(|(url, model)| by_light_model_credit(url, model, &did, skills)))
+}
+
+fn by_decision_model_credit(did: &str, skills: &[(String, String)]) -> Option<Vec<String>> {
+    use crate::decide::{Question, ask, confident};
+    let questions: Vec<(String, Question)> = skills
+        .iter()
+        .enumerate()
+        .map(|(i, (name, what))| (format!("s{i}"), Question::Yes(format!("Did the reply follow the skill \"{name}\": {}?", clip(what, 200)))))
+        .collect();
+    let answers = ask("which skills did it follow?", did, &questions)?;
+    let mut out = Vec::new();
+    for (i, (name, _)) in skills.iter().enumerate() {
+        if confident(&answers, &format!("s{i}"))?.yes()? {
+            out.push(name.clone());
+        }
+    }
+    Some(out)
+}
+
+const CREDIT_PROMPT: &str = "\
+You're given an AI assistant's reply, the tools it used, and the learned skills that were in its instructions. \
+Say which skills the reply actually followed (it did what the skill says), not which were merely relevant. \
+Answer with JSON only: {\"followed\": [\"skill name\", …]} (an empty list when it followed none).";
+
+fn by_light_model_credit(url: &str, model: &str, did: &str, skills: &[(String, String)]) -> Option<Vec<String>> {
+    let list: Vec<String> = skills.iter().map(|(n, w)| format!("- {n}: {}", clip(w, 300))).collect();
+    let (reply, _) = crate::learn::complete_light_short(url, model, CREDIT_PROMPT, &format!("{did}\n\nSkills:\n{}", list.join("\n")), 200).ok()?;
+    let v = json_in(&reply)?;
+    let named: Vec<String> = v["followed"].as_array()?.iter().filter_map(Value::as_str).map(str::to_string).collect();
+    // Only names it was given.
+    Some(skills.iter().filter(|(n, _)| named.iter().any(|x| x.trim().eq_ignore_ascii_case(n))).map(|(n, _)| n.clone()).collect())
+}
+
 // ---- tool failures
 
 /// What kind of failure a tool result is.
@@ -407,6 +452,25 @@ mod tests {
     }
 
     #[test]
+    fn only_the_skills_a_reply_followed_get_the_credit() {
+        let _guard = crate::decide::tests::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let skills = vec![("restart-printer".to_string(), "Power-cycle, then clear the queue".to_string()), ("vpn-reset".to_string(), "Re-import the profile".to_string())];
+        // The decision model, sure of each.
+        let (url, server) = crate::decide::tests::fake(json!({ "answers": { "s0": { "type": "noul", "noul": 0.97 }, "s1": { "type": "noul", "noul": 0.03 } } }));
+        crate::decide::configure(Some(crate::decide::tests::settings(&url)));
+        assert_eq!(followed("I power-cycled it and cleared the queue.", &["shell".into()], &skills, None), Some(vec!["restart-printer".to_string()]));
+        assert!(server.join().unwrap().contains("restart-printer"));
+        // Down: the fallback model names them (only names it was given count).
+        crate::decide::configure(Some(crate::decide::tests::settings("http://127.0.0.1:9/v1")));
+        let (chat, _req) = crate::decide::tests::fake(json!({ "choices": [{ "message": { "role": "assistant", "content": "{\"followed\": [\"VPN-reset\", \"made-up\"]}" } }] }));
+        assert_eq!(followed("Re-import the VPN profile.", &[], &skills, Some((&format!("{chat}/chat/completions"), "m"))), Some(vec!["vpn-reset".to_string()]));
+        // Nobody can tell: no answer (everyone gets the credit).
+        assert_eq!(followed("x", &[], &skills, None), None);
+        crate::decide::configure(None);
+        assert_eq!(followed("x", &[], &[], None), Some(vec![]));
+    }
+
+    #[test]
     fn a_stronger_verdict_replaces_a_weaker_one_and_a_rating_always_does() {
         let mild = Verdict::new(SkillOutcome::Success, Strength::Mild, "copied");
         let judged = Verdict::new(SkillOutcome::Failure, Strength::Judged, "corrected");
@@ -508,6 +572,19 @@ mod app_tests {
             again.rate(None, "good", "").unwrap();
             let v = again.messages.iter().rev().find_map(|m| m.run.as_ref()).unwrap().verdict.clone().unwrap();
             assert_eq!(v.outcome, SkillOutcome::Success);
+            // A reply the owner liked joins lyra's tests, with the answer they liked.
+            let (tests, _) = lyra_evolution::golden::list(ev.manager.home());
+            assert_eq!(tests.len(), 1);
+            assert_eq!((tests[0].task.as_str(), tests[0].reference.as_deref(), tests[0].source.as_str()), ("what's the weather in Austin today", Some("It's sunny."), "rated"));
+            // An admin adds another reply by hand; once is enough.
+            turn(&mut again, "and tomorrow in Austin?", "Rain after noon.");
+            assert!(again.rate(None, "test", "").unwrap().contains("added to lyra's tests"));
+            assert!(again.rate(None, "test", "").unwrap().contains("already"));
+            let (tests, _) = lyra_evolution::golden::list(ev.manager.home());
+            assert_eq!(tests.len(), 2);
+            assert!(tests.iter().any(|t| t.task == "and tomorrow in Austin?" && t.history.iter().any(|(_, x)| x == "what's the weather in Austin today")), "with the turns it follows");
+            again.admin = false;
+            assert!(again.rate(None, "test", "").unwrap_err().contains("for admins"));
         });
     }
 

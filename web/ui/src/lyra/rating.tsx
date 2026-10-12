@@ -4,7 +4,7 @@
 // memories, agents and evolution all learn from them.
 
 import { cn } from "@/lib/utils";
-import { Check, Copy, Send, ThumbsDown, ThumbsUp } from "lucide-react";
+import { Check, Copy, FlaskConical, Send, ThumbsDown, ThumbsUp } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { useLyra } from "./store";
 
@@ -27,6 +27,26 @@ export function CopyButton({ index, text }: { index: number; text: string }) {
   return (
     <button type="button" aria-label="Copy" title="Copy" onClick={copy} className="rounded p-0.5 hover:text-foreground">
       {done ? <Check className="size-3.5 text-emerald-400" /> : <Copy className="size-3.5" />}
+    </button>
+  );
+}
+
+/** An admin's "add to tests": this request and reply join the test set lyra's changes are measured on. */
+export function AddTestButton({ index }: { index: number }) {
+  const rate = useRate();
+  const { user } = useLyra();
+  const [added, setAdded] = useState(false);
+  if (!(user?.admin ?? true)) return null;
+  return (
+    <button
+      type="button"
+      aria-label="Add to tests"
+      title={added ? "Added to lyra's tests" : "Add to lyra's tests: changes to lyra are measured on this request and answer (other admins can see it)"}
+      disabled={added}
+      onClick={() => rate(index, "test") && setAdded(true)}
+      className={cn("rounded p-0.5 hover:text-foreground", added && "text-sky-400")}
+    >
+      <FlaskConical className="size-3.5" />
     </button>
   );
 }

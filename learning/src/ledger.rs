@@ -200,6 +200,37 @@ impl Ledger {
         rows.iter().map(|r| Ok(Uuid::parse_str(r.try_get("skill_id")?)?)).collect()
     }
 
+    /// The same for some of the run's skills only (those the reply followed);
+    /// with `overwrite`, the others lose any outcome they were given. Returns
+    /// the skills given it.
+    pub async fn set_outcome_for(&self, run_id: Uuid, skills: &[Uuid], outcome: SkillOutcome, overwrite: bool) -> Result<Vec<Uuid>> {
+        let used: Vec<Uuid> = sqlx::query("SELECT skill_id FROM skill_usage WHERE run_id = ?")
+            .bind(run_id.to_string())
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|r| Ok(Uuid::parse_str(r.try_get("skill_id")?)?))
+            .collect::<Result<_>>()?;
+        let mut affected = Vec::new();
+        for id in used {
+            if skills.contains(&id) {
+                let done = sqlx::query("UPDATE skill_usage SET outcome = ? WHERE run_id = ? AND skill_id = ? AND (? OR outcome = 'unknown')")
+                    .bind(outcome.as_str())
+                    .bind(run_id.to_string())
+                    .bind(id.to_string())
+                    .bind(overwrite)
+                    .execute(&self.pool)
+                    .await?;
+                if done.rows_affected() > 0 {
+                    affected.push(id);
+                }
+            } else if overwrite {
+                sqlx::query("UPDATE skill_usage SET outcome = 'unknown' WHERE run_id = ? AND skill_id = ?").bind(run_id.to_string()).bind(id.to_string()).execute(&self.pool).await?;
+            }
+        }
+        Ok(affected)
+    }
+
     /// Usage numbers for every skill that has been used.
     pub async fn usage(&self) -> Result<HashMap<Uuid, Usage>> {
         let rows = sqlx::query(

@@ -24,7 +24,7 @@ import { AskCard, ChatOnlyButton, EditButton, EffortButton, EditLast, FoldedTrie
 import { BoardCard, ComposerModel, PlanCard, ToolFileContent, ToolFileTree, ToolTerminal, type BoardView, type PlanView } from "./chat-parts2";
 import { HandsFreeBar, HandsFreeButton, useHandsFreeOn } from "./handsfree";
 import { SpeakButton, VoiceButton, useAutoRead } from "./voice";
-import { CopyButton, RateButtons, useRate } from "./rating";
+import { AddTestButton, CopyButton, RateButtons, useRate } from "./rating";
 import { AgentTask, ApprovalAt, ApprovalDetail, ComposerAttachments, ReplyContext, ReplySources, SentAttachments, StarterSuggestions, approvalCall, splitAttached, webSources } from "./chat-parts";
 
 /** The approval waiting, and the call it's shown at. */
@@ -138,6 +138,7 @@ function Footer({ m, max, model, id, retry, index }: { m: ChatMessage; max: numb
       <SpeakButton id={id} text={m.content} onRead={m.rateable ? () => rate(index, "read") : undefined} />
       {m.rateable && <CopyButton index={index} text={m.content} />}
       {m.rateable && <RateButtons index={index} rated={m.rated} />}
+      {m.rateable && <AddTestButton index={index} />}
       {retry && <RetryButtons />}
       {m.usage && <ReplyContext usage={m.usage} max={max} model={model} />}
       {m.stats && <span>{m.stats}</span>}

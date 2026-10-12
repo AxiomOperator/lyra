@@ -621,7 +621,7 @@ pub(crate) fn open_evolution(config: &Config, runtime: &tokio::runtime::Handle) 
         Ok(manager) => {
             let code = if c.source_repo().is_some() { " · code lab on" } else { "" };
             let status = format!("evolution · {} · mode {:?}{code}", context::show(&home.join("evolution")), c.settings.mode);
-            let evolution = Evolution::new(manager, runtime.clone(), c.source_repo(), c.benchmark_tasks.max(1));
+            let evolution = Evolution::new(manager, runtime.clone(), c.source_repo(), c.benchmark_tasks.max(1)).with_samples(c.benchmark_samples);
             (Some(Arc::new(evolution)), Ok(status))
         }
         Err(e) => (None, Err(format!("evolution off: {e:#}"))),

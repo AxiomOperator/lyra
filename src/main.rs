@@ -1308,7 +1308,7 @@ impl App {
         };
         self.judge_delegations(id, outcome, verdict.said.as_deref().unwrap_or(&verdict.reason));
         if let Some(evo) = run.evo {
-            self.record_evolution_outcome(evo, outcome, verdict.correction, feedback.as_deref());
+            self.record_evolution_outcome(evo, outcome, verdict.correction, feedback.as_deref(), source);
         }
         if outcome == SkillOutcome::Failure && verdict.correction {
             self.corrected_skills = run.skills.clone();
@@ -1327,17 +1327,67 @@ impl App {
                 let _ = tx.send(StreamEvent::MemoryNotes(vec![note]));
             });
         }
+        // The owner's 👍: the request and that answer join lyra's tests.
+        if verdict.strength == outcomes::Strength::Rated
+            && outcome == SkillOutcome::Success
+            && self.personal().is_none()
+            && let Ok(true) = self.test_from(id, "rated")
+        {
+            self.log(Level::Evolve, "added to lyra's tests (a reply you liked)".into());
+        }
         let Some(learning) = self.learning.clone() else { return };
         if run.skills.is_empty() {
             return;
         }
         // A verdict replacing another overwrites it in the ledger too.
         let overwrite = before.is_some() || verdict.strength == outcomes::Strength::Rated;
-        let tx = self.tx.clone();
+        // Only the skills the reply followed get the credit (E2.1).
+        let (reply, tools) = self.reply_of(id);
+        let (url, model, tx) = (format!("{}/chat/completions", self.base_url.trim_end_matches('/')), self.model.clone(), self.tx.clone());
+        let owner = self.owner.clone();
         crate::acting::spawn(move || {
-            let notes = learning.record_outcome(id, outcome, overwrite).unwrap_or_else(|e| vec![format!("recording outcome failed: {e}")]);
+            crate::acting::set(&owner);
+            let described: Vec<(String, String)> = run
+                .skills
+                .iter()
+                .map(|n| {
+                    let name = n.trim_end_matches(" (trial)").to_string();
+                    let what = learning.find(&name).map(|s| format!("{} {}", s.description, s.instructions.chars().take(200).collect::<String>())).unwrap_or_default();
+                    (name, what)
+                })
+                .collect();
+            let notes = match outcomes::followed(&reply, &tools, &described, Some((&url, &model))) {
+                Some(names) => {
+                    let skipped: Vec<&str> = described.iter().map(|(n, _)| n.as_str()).filter(|n| !names.iter().any(|x| x == n)).collect();
+                    let mut notes = learning.record_outcome_for(id, &names, outcome, overwrite).unwrap_or_else(|e| vec![format!("recording outcome failed: {e}")]);
+                    if !skipped.is_empty() {
+                        notes.push(format!("no credit for {} (the reply didn't follow {})", skipped.join(", "), if skipped.len() == 1 { "it" } else { "them" }));
+                    }
+                    notes
+                }
+                None => learning.record_outcome(id, outcome, overwrite).unwrap_or_else(|e| vec![format!("recording outcome failed: {e}")]),
+            };
             let _ = tx.send(StreamEvent::LearnNotes(notes));
         });
+    }
+
+    /// A reply's text and the tools its turn used, by its run.
+    fn reply_of(&self, id: Uuid) -> (String, Vec<String>) {
+        let Some(i) = self.messages.iter().rposition(|m| m.run.as_ref().is_some_and(|r| r.id == id)) else { return (String::new(), Vec::new()) };
+        let start = self.messages[..i].iter().rposition(|m| m.role == "user").map_or(0, |u| u + 1);
+        let tools = self.messages[start..=i].iter().flat_map(|m| m.tool_calls.iter().map(|c| c.function.name.clone())).collect();
+        (self.messages[i].content.clone(), tools)
+    }
+
+    /// The request a reply answered, the reply, and the turns before, as a
+    /// test (`source`: "rated", "added"). `false`: it's a test already.
+    fn test_from(&self, id: Uuid, source: &str) -> Result<bool, String> {
+        let ev = self.evolution.as_ref().ok_or("evolution is off ([evolution] enabled)")?;
+        let i = self.messages.iter().rposition(|m| m.run.as_ref().is_some_and(|r| r.id == id)).ok_or("that reply can't be a test")?;
+        let u = self.messages[..i].iter().rposition(|m| m.role == "user").ok_or("there's no request before it")?;
+        let before: Vec<&Message> = self.messages[..u].iter().filter(|m| matches!(m.role.as_str(), "user" | "assistant") && !m.content.trim().is_empty()).collect();
+        let history = before.iter().rev().take(4).rev().map(|m| (m.role.clone(), m.content.chars().take(800).collect())).collect();
+        evolve::add_test(ev, &self.messages[u].content, Some(&self.messages[i].content), history, source)
     }
 
     /// The person's 👍 / 👎 on a reply (`index`: its message; `None`: the
@@ -1353,6 +1403,19 @@ impl App {
             },
         };
         let id = self.messages[at].run.as_ref().map(|r| r.id).ok_or("that reply can't be rated")?;
+        // An admin's "add to tests": this request and reply join the test set.
+        if word == "test" {
+            if !self.admin {
+                return Err("adding tests is for admins".into());
+            }
+            return match self.test_from(id, "added")? {
+                true => {
+                    self.log(Level::Evolve, "added a reply to lyra's tests".into());
+                    Ok("added to lyra's tests: changes are measured on it from now on".into())
+                }
+                false => Ok("that's one of lyra's tests already".into()),
+            };
+        }
         let verdict = verdict_for(word, note)?;
         let said = verdict.word();
         self.apply_verdict(id, verdict);
@@ -1935,9 +1998,16 @@ impl App {
             run.outcome = lyra_evolution::RunOutcome::Failure;
         }
         let id = run.id;
+        // The turns it follows, so a benchmark can replay it as asked (owner's only).
+        if person.is_none() {
+            let before: Vec<&Message> = self.messages[..start].iter().filter(|m| matches!(m.role.as_str(), "user" | "assistant") && !m.content.trim().is_empty()).collect();
+            run.history = before.iter().rev().take(4).rev().map(|m| (m.role.clone(), m.content.chars().take(800).collect())).collect();
+        }
+        // During a trial: the side this turn was on.
+        let arm = self.run.and_then(|r| evolution.arm(r));
         // Written now (one row), so an outcome that follows at once (Stop, the
         // tool-call limit) finds it.
-        if let Err(e) = evolution.record(run) {
+        if let Err(e) = evolution.record(run, arm) {
             self.log(Level::Error, format!("recording the run failed: {e}"));
         }
         let tx = self.tx.clone();
@@ -1948,7 +2018,7 @@ impl App {
     }
 
     /// The user's reaction tells how a run went; then check for a regression.
-    fn record_evolution_outcome(&self, id: Uuid, outcome: SkillOutcome, corrected: bool, feedback: Option<&str>) {
+    fn record_evolution_outcome(&self, id: Uuid, outcome: SkillOutcome, corrected: bool, feedback: Option<&str>, source: &'static str) {
         let Some(env) = self.evolution_env() else { return };
         let outcome = match outcome {
             SkillOutcome::Success => lyra_evolution::RunOutcome::Success,
@@ -1959,7 +2029,7 @@ impl App {
         let (tx, feedback) = (self.tx.clone(), feedback.map(str::to_string));
         crate::acting::spawn(move || {
             let mut notes = Vec::new();
-            if let Err(e) = env.evolution.manager.set_outcome(id, outcome, corrected, feedback.as_deref()) {
+            if let Err(e) = env.evolution.manager.set_outcome(id, outcome, corrected, feedback.as_deref(), Some(source)) {
                 notes.push(format!("recording the outcome failed: {e}"));
             }
             notes.extend(evolve::monitor(&env));
@@ -2006,7 +2076,7 @@ impl App {
         let (tx, id) = (self.tx.clone(), run.id);
         crate::acting::spawn(move || {
             let mut notes = Vec::new();
-            if let Err(e) = evolution.record(run) {
+            if let Err(e) = evolution.record(run, None) {
                 notes.push(format!("recording the plan run failed: {e}"));
             }
             if let Some(env) = env {

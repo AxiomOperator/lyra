@@ -112,6 +112,12 @@ impl EvolutionStore {
         Ok(())
     }
 
+    /// A generation's details changed (its trial).
+    pub async fn update_generation(&self, g: &Generation) -> Result<()> {
+        sqlx::query("UPDATE generations SET generation = ? WHERE id = ?").bind(serde_json::to_string(g)?).bind(g.id.to_string()).execute(&self.pool).await?;
+        Ok(())
+    }
+
     /// Newest first.
     pub async fn generations(&self) -> Result<Vec<Generation>> {
         let rows = sqlx::query("SELECT generation FROM generations ORDER BY number DESC").fetch_all(&self.pool).await?;
