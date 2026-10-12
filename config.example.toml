@@ -223,6 +223,14 @@ currency = "$"
 # reliability = 0.1
 # safety = 0.1
 
+# A small model (3–8B) for lyra's own work: judging how replies went, its
+# checks, page summaries, memory capture. Tried first for those, so they don't
+# take the chat model's time; when it's down they go to the fallbacks as before.
+# Without one, that work waits while a reply is being written.
+# [light_model]
+# url = "http://gpu3:8080/v1"
+# model = "qwen3-4b"
+
 # Voice on your own servers (see README): speech to text with a Whisper server
 # and lyra's voice with Kokoro (anything OpenAI-compatible). Devices' audio goes
 # through lyra, so these stay inside the network. Without it the app uses the

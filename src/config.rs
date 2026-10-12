@@ -43,6 +43,10 @@ pub struct Config {
     /// Answers when the fallback can't be reached either (and may take background jobs).
     #[serde(default)]
     pub second_fallback_model: Option<crate::fallback::Settings>,
+    /// `[light_model]`: a small model (3–8B) for lyra's own work: judging
+    /// replies, its checks, page summaries, memory capture. Tried first for
+    /// those, so they don't take the chat model's time.
+    pub light_model: Option<crate::fallback::Settings>,
     /// `[coding]` table: coding work handed to Claude Code / OpenCode.
     pub coding: crate::coding::Settings,
     /// `[diagnose]` table: problems researched by themselves.
@@ -351,6 +355,7 @@ impl Default for Config {
             vision_model: None,
             fallback_model: None,
             second_fallback_model: None,
+            light_model: None,
             backup: Default::default(),
             groups: Default::default(),
             health: Default::default(),

@@ -1526,6 +1526,24 @@ at it. Only one lyra runs per `~/.lyra`: starting the TUI while `lyra serve`
 is running (say, over SSH) is refused with a note, because each would keep
 its own copy of the conversation (`--force` overrides).
 
+## Speed: the prompt cache and lyra's own work
+
+- **The prompt's start stays the same from turn to turn,** so the model's
+  prompt cache can keep everything before your latest message and doesn't
+  read the whole conversation again:
+  - The system prompt holds only what doesn't change: who lyra is, your
+    profile and style, the rules, the agents.
+  - What changes with each message goes in a marked block just before it, and
+    isn't kept in the conversation: memories, skills, goals, evolved
+    guidelines and workflow, avoid notes, the chat gate's note.
+  - Each conversation's tool list keeps its order and only grows at its end.
+- **lyra's own work stays off your replies:** judging how a reply went, its
+  checks, memory capture, skill reviews, curation.
+  - A `[light_model]` (a small 3–8B model) takes this work first.
+  - Without one, or while it's down, background work waits until no reply is
+    being written. A reply's own steps (a page's summary, compacting) don't
+    wait.
+
 ## Web search
 
 lyra can look things up: **`web_search`** asks a SearXNG instance and

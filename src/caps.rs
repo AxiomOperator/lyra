@@ -4,7 +4,7 @@
 //! workflows and helper agents — and is the one way the chat and plans call
 //! anything: policy first, then the call, usage recorded, writes verified.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -24,6 +24,11 @@ use crate::tools::{CallContext, Tools};
 
 /// The tool the model uses to find capabilities it wasn't offered.
 pub const SEARCH_TOOL: &str = "capability_search";
+
+/// Each conversation's tools in the order first offered (see `stable_tools`).
+static OFFERED: std::sync::Mutex<Option<HashMap<String, Vec<Value>>>> = std::sync::Mutex::new(None);
+/// Most tools a conversation's list grows to before it starts again.
+const MAX_OFFERED: usize = 32;
 
 pub struct Caps {
     pub manager: CapabilityManager,
@@ -864,6 +869,35 @@ impl Caps {
         defs
     }
 
+    /// A turn's whole tool list (`now`), in an order that only grows for
+    /// this conversation (`key`): the tools offered before come first, in
+    /// their order (still offered, even if this message wouldn't pick them),
+    /// and new ones after. The tool list is at the very start of the prompt,
+    /// so a list in a new order each message would make the model read the
+    /// whole conversation again; this keeps it the same (its prompt cache
+    /// holds). Past `MAX_OFFERED` tools it starts again from this message's.
+    pub fn stable_tools(key: &str, now: Vec<Value>) -> Vec<Value> {
+        let name = |d: &Value| d["function"]["name"].as_str().unwrap_or("").to_string();
+        let mut guard = OFFERED.lock().unwrap_or_else(|e| e.into_inner());
+        let offered = guard.get_or_insert_with(HashMap::new);
+        let before = offered.get(key).cloned().unwrap_or_default();
+        // Each as offered now (its description may have changed), else as before.
+        let mut out: Vec<Value> = before.iter().map(|b| now.iter().find(|d| name(d) == name(b)).cloned().unwrap_or_else(|| b.clone())).collect();
+        for d in &now {
+            if !out.iter().any(|o| name(o) == name(d)) {
+                out.push(d.clone());
+            }
+        }
+        if out.len() > MAX_OFFERED {
+            out = now;
+        }
+        if offered.len() > 500 {
+            offered.clear();
+        }
+        offered.insert(key.to_string(), out.clone());
+        out
+    }
+
     /// The tools for a turn that's just conversation: only the search tool (so a
     /// real need can still find one) and whatever it found earlier in the turn.
     pub fn chat_definitions(&self, extra: &HashSet<String>) -> Vec<Value> {
@@ -1342,6 +1376,21 @@ pub fn show(caps: &Caps, key: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_conversations_tool_list_only_grows_at_its_end() {
+        let t = |n: &str| serde_json::json!({ "type": "function", "function": { "name": n } });
+        let names = |v: &[Value]| v.iter().map(|d| d["function"]["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let key = format!("test-{}", lyra_memory::Uuid::new_v4());
+        let one = Caps::stable_tools(&key, vec![t("note_find"), t("capability_search"), t("delegate")]);
+        assert_eq!(names(&one), ["note_find", "capability_search", "delegate"]);
+        // The next message picks other tools: the earlier ones stay where they were, the new one goes last.
+        let two = Caps::stable_tools(&key, vec![t("note_find"), t("project_write"), t("capability_search"), t("delegate")]);
+        assert_eq!(names(&two), ["note_find", "capability_search", "delegate", "project_write"]);
+        let three = Caps::stable_tools(&key, vec![t("mail_send"), t("capability_search"), t("delegate")]);
+        assert_eq!(names(&three), ["note_find", "capability_search", "delegate", "project_write", "mail_send"], "kept, in order");
+        assert_eq!(names(&Caps::stable_tools("another", vec![t("x")])), ["x"], "each conversation its own");
+    }
+
     use super::*;
     use crate::mem::Mem;
     use lyra_memory::{MemoryManager, Settings};

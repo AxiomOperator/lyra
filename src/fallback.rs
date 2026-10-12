@@ -31,6 +31,31 @@ pub struct Settings {
     pub price: crate::usage::Price,
 }
 
+/// `[light_model]`: a small model for lyra's own work (judging, gates, page
+/// summaries, capture), tried first for light jobs.
+static LIGHT: RwLock<Option<Settings>> = RwLock::new(None);
+/// When the light model last failed (rested for `REST`, as the fallbacks are).
+static LIGHT_DOWN: Mutex<Option<Instant>> = Mutex::new(None);
+/// Background work waits this long at most for replies to finish.
+const WAIT_FOR_REPLIES: Duration = Duration::from_secs(600);
+
+pub fn configure_light(light: Option<Settings>) {
+    *LIGHT.write().unwrap_or_else(|e| e.into_inner()) = light;
+    *LIGHT_DOWN.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// The light model, if one is set up and answering (not marked down, not resting).
+pub fn light_model() -> Option<Settings> {
+    let l = LIGHT.read().unwrap_or_else(|e| e.into_inner()).clone()?;
+    let resting = LIGHT_DOWN.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|t| t.elapsed() < REST);
+    (!resting && !crate::known_down::is_down("light")).then_some(l)
+}
+
+/// The light model as set up (for the Status page), whether or not it's answering.
+pub fn light_settings() -> Option<Settings> {
+    LIGHT.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// The fallbacks in order, each with its known-down id.
 const IDS: [&str; 2] = ["fallback", "fallback2"];
 
@@ -152,6 +177,27 @@ pub fn call<T>(url: &str, model: &str, light: bool, mut send: impl FnMut(&str, &
         return Err(why);
     }
     let mut tried: Vec<(String, String)> = Vec::new();
+    // lyra's own small jobs: the light model first, when one is set up.
+    if light && let Some(l) = light_model() {
+        let (u, m) = (full(&l), l.model.clone());
+        match send(&u, &m) {
+            Ok(r) => return Ok((r, m)),
+            Err(e) => {
+                if unreachable(&e) {
+                    LIGHT_DOWN.lock().unwrap_or_else(|e| e.into_inner()).replace(std::time::Instant::now());
+                }
+                tried.push((u, m));
+            }
+        }
+    }
+    // Background work (not part of a reply) doesn't compete with replies on
+    // the chat models: it waits for them to finish (10 minutes at most).
+    if light && !crate::acting::in_reply() {
+        let since = std::time::Instant::now();
+        while crate::acting::replies() > 0 && since.elapsed() < WAIT_FOR_REPLIES {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
     if light && let Some((u, m)) = self::light().filter(|(u, _)| u != url) {
         match send(&u, &m) {
             Ok(r) => return Ok((r, m)),
@@ -217,6 +263,41 @@ mod tests {
 
     fn fb(url: &str, model: &str, background: bool) -> Option<Settings> {
         Some(Settings { url: url.into(), model: model.into(), background, price: Default::default() })
+    }
+
+    #[test]
+    fn lyras_own_work_goes_to_the_light_model_and_otherwise_waits_for_replies() {
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        configure(None, None);
+        configure_light(fb("http://light:8080/v1", "qwen3-4b", false));
+        let mut asked = Vec::new();
+        let (_, used) = call("http://main/v1/chat/completions", "big", true, |u, m| {
+            asked.push((u.to_string(), m.to_string()));
+            Ok::<_, String>(())
+        })
+        .unwrap();
+        assert_eq!(used, "qwen3-4b");
+        assert_eq!(asked, [("http://light:8080/v1/chat/completions".to_string(), "qwen3-4b".to_string())], "the chat model wasn't asked");
+        // A reply's own light work (a page summary) isn't the light model's to wait for… nor
+        // the main model's: chat calls (not light) never go to the light model.
+        let (_, used) = call("http://main/v1/chat/completions", "big", false, |_, _| Ok::<_, String>(())).unwrap();
+        assert_eq!(used, "big");
+        // The light model down: back to the chat model, but only once no reply is being written.
+        configure_light(None);
+        let writing = std::thread::spawn(|| {
+            let _r = crate::acting::Replying::start();
+            std::thread::sleep(Duration::from_millis(700));
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        let started = Instant::now();
+        call("http://main/v1/chat/completions", "big", true, |_, _| Ok::<_, String>(())).unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(400), "it waited for the reply");
+        writing.join().unwrap();
+        // Inside a reply it doesn't wait (it's part of that reply).
+        let _r = crate::acting::Replying::start();
+        let started = Instant::now();
+        call("http://main/v1/chat/completions", "big", true, |_, _| Ok::<_, String>(())).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(300));
     }
 
     #[test]

@@ -6,6 +6,41 @@ use std::cell::RefCell;
 
 thread_local! {
     static USER: RefCell<String> = RefCell::new(lyra_web::users::OWNER.to_string());
+    /// This thread works on a reply someone's waiting for (its own light
+    /// calls, a page's summary, compacting, go ahead; lyra's background work
+    /// waits for replies to finish).
+    static REPLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Replies being written now (anywhere), for background work to wait on.
+static REPLIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// While it's held, this thread is writing a reply.
+pub struct Replying;
+
+impl Replying {
+    pub fn start() -> Self {
+        REPLY.with(|r| r.set(true));
+        REPLIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Replying
+    }
+}
+
+impl Drop for Replying {
+    fn drop(&mut self) {
+        REPLY.with(|r| r.set(false));
+        REPLIES.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// This thread (or the one that started it) is writing a reply.
+pub fn in_reply() -> bool {
+    REPLY.with(|r| r.get())
+}
+
+/// How many replies are being written now.
+pub fn replies() -> usize {
+    REPLIES.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Work for this person from now on, on this thread.
@@ -30,10 +65,11 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let (user, job) = (current(), crate::usage::job());
+    let (user, job, reply) = (current(), crate::usage::job(), in_reply());
     std::thread::spawn(move || {
         set(&user);
         crate::usage::set_job(job);
+        REPLY.with(|r| r.set(reply));
         f()
     })
 }

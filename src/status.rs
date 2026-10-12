@@ -266,6 +266,17 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
             }),
         );
     }
+    // The light model, for lyra's own work.
+    if let Some(l) = crate::fallback::light_settings() {
+        spawn(
+            &mut jobs,
+            Box::new(move || {
+                let target = host(&l.url);
+                let (url, model) = (l.url.clone(), l.model.clone());
+                vec![check("light", "Models", "Light model", &target, move || crate::models(&url).map(|offered| chat_state(&model, &offered)))]
+            }),
+        );
+    }
     match i.embedding.clone() {
         Some(ep) => spawn(
             &mut jobs,

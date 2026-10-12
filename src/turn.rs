@@ -143,6 +143,8 @@ impl App {
         self.can_continue = false;
         let job = self.session_id.clone();
         crate::acting::spawn(move || {
+            // A reply someone's waiting for: lyra's background work waits for it.
+            let _replying = crate::acting::Replying::start();
             // This turn works in its person's PMI account; its calls count for this conversation.
             pmi::set_user(&owner);
             usage::set_job(Some(job.clone()));
@@ -177,10 +179,10 @@ impl App {
             }
             // Evolved behavior: guidelines and the matching workflow.
             if let Some(section) = evolution.as_ref().and_then(|e| e.chat_section_for(&content, run)) {
-                add_to_system(&mut history, &section);
+                add_to_turn(&mut history, &section);
             }
             if let Some(section) = &goals_section {
-                add_to_system(&mut history, section);
+                add_to_turn(&mut history, section);
             }
             if let Some(section) = &style_section {
                 add_to_system(&mut history, section);
@@ -197,7 +199,7 @@ impl App {
             let notes = crate::avoid::relevant(viewer.as_deref(), &content, &skills, &recent_tools);
             if let Some(section) = crate::avoid::section(&notes) {
                 let _ = tx.send(StreamEvent::Log(format!("avoid notes in the prompt: {}", notes.iter().map(|a| a.tool.as_deref().or(a.skill.as_deref()).unwrap_or("")).collect::<Vec<_>>().join(", "))));
-                add_to_system(&mut history, &section);
+                add_to_turn(&mut history, &section);
             }
             // Just talking (a greeting, a thank-you, "test"): no tools offered but
             // the search for one, so nothing gets sent or changed by a guess.
@@ -206,7 +208,7 @@ impl App {
                 Offer::Nothing
             } else if looks.is_empty() && chatting(&content, &last_reply) {
                 let _ = tx.send(StreamEvent::Log("just chatting: no tools offered".into()));
-                add_to_system(&mut history, CHATTING);
+                add_to_turn(&mut history, CHATTING);
                 Offer::Search
             } else {
                 if caps.is_some() {
@@ -225,9 +227,10 @@ impl App {
                     add_to_system(&mut history, &format!("{}\nSpecialist agents you can hand work to with the delegate tool: {names}. Keep simple requests yourself.", agents::MAIN_ROLE));
                 }
                 if agents::auto_delegate(env, &content, run, &mut history).is_some() {
-                    add_to_system(&mut history, agents::MAIN_NOTE);
+                    add_to_turn(&mut history, agents::MAIN_NOTE);
                 }
             }
+            finish_turn_context(&mut history);
             let result = converse(&url, &model, history, caps.as_deref(), agent_env.as_ref().filter(|_| !chatting), &content, how, max_rounds, run, &tx, &cancel, viewer.as_deref(), member);
             // The turn's browser, if it opened one: its container goes now.
             if crate::sandbox::end(caps.as_ref().and_then(|c| c.remote()).as_deref(), &job) {
@@ -339,7 +342,7 @@ pub(crate) fn apply_skills(
     learning: &Learning,
     message: &str,
     run: Uuid,
-    history: &mut Vec<Value>,
+    history: &mut [Value],
     tx: &Sender<StreamEvent>,
 ) -> Vec<String> {
     match learning.relevant(message) {
@@ -355,7 +358,7 @@ pub(crate) fn apply_skills(
                 .collect();
             let tokens = learn::approx_tokens(&section);
             let _ = tx.send(StreamEvent::SkillsApplied { names: names.clone(), tokens });
-            add_to_system(history, &section);
+            add_to_turn(history, &section);
             names
         }
         Ok(_) => Vec::new(),
@@ -367,6 +370,41 @@ pub(crate) fn apply_skills(
 }
 
 /// Append a section to the system message, adding one if there isn't one.
+/// This turn's own notes (memories, skills, goals, the workflow, avoid
+/// notes…): they change with every message, so they go with the latest user
+/// message, not in the system prompt. The start of the prompt then stays the
+/// same from turn to turn, and the model's prompt cache keeps it (everything
+/// before this message isn't read again). Gathered here, put in by
+/// `finish_turn_context` just before the request goes out; never saved.
+pub(crate) fn add_to_turn(history: &mut [Value], section: &str) {
+    let Some(last) = history.iter_mut().rev().find(|m| m["role"] == "user") else { return };
+    match last.get_mut(TURN_CONTEXT).and_then(Value::as_array_mut) {
+        Some(list) => list.push(json!(section)),
+        None => last[TURN_CONTEXT] = json!([section]),
+    }
+}
+
+/// Where a message's notes wait until the request goes out.
+const TURN_CONTEXT: &str = "_lyra_context";
+
+/// Put this turn's notes in front of the latest user message, marked as
+/// lyra's (not the person's words).
+pub(crate) fn finish_turn_context(history: &mut [Value]) {
+    let Some(last) = history.iter_mut().rev().find(|m| m["role"] == "user") else { return };
+    let Some(Value::Array(list)) = last.as_object_mut().and_then(|o| o.remove(TURN_CONTEXT)) else { return };
+    let notes: Vec<&str> = list.iter().filter_map(Value::as_str).filter(|s| !s.trim().is_empty()).collect();
+    if notes.is_empty() {
+        return;
+    }
+    let block = format!("<lyra_context>\n(lyra's notes for this message, not written by the person)\n\n{}\n</lyra_context>\n\n", notes.join("\n\n"));
+    match &mut last["content"] {
+        Value::String(text) => *text = format!("{block}{text}"),
+        // With pictures: the notes as the first part.
+        Value::Array(parts) => parts.insert(0, json!({ "type": "text", "text": block })),
+        other => *other = json!(block),
+    }
+}
+
 pub(crate) fn add_to_system(history: &mut Vec<Value>, section: &str) {
     match history.first_mut() {
         Some(first) if first["role"] == "system" => {
@@ -381,7 +419,7 @@ pub(crate) fn add_to_system(history: &mut Vec<Value>, section: &str) {
 /// and the working memory to the system prompt.
 /// `mine`: a member's own scope (`user:<id>`): only their memories, and none
 /// of the owner's working memory or project.
-pub(crate) fn apply_memories(mem: &Mem, message: &str, run: Uuid, history: &mut Vec<Value>, tx: &Sender<StreamEvent>, mine: Option<&str>) {
+pub(crate) fn apply_memories(mem: &Mem, message: &str, run: Uuid, history: &mut [Value], tx: &Sender<StreamEvent>, mine: Option<&str>) {
     if let Some(scope) = mine {
         match mem.compile_for(message, run, scope) {
             Ok(compiled) => {
@@ -392,7 +430,7 @@ pub(crate) fn apply_memories(mem: &Mem, message: &str, run: Uuid, history: &mut 
                     let _ = tx.send(StreamEvent::MemoriesApplied { ids, texts, tokens: compiled.tokens as u64 });
                 }
                 section.push_str(&format!("\n\nThis person's memories are theirs alone: save and recall them in scope \"{scope}\"."));
-                add_to_system(history, section.trim());
+                add_to_turn(history, section.trim());
             }
             Err(e) => {
                 let _ = tx.send(StreamEvent::Log(format!("memory recall failed: {e}")));
@@ -422,7 +460,7 @@ pub(crate) fn apply_memories(mem: &Mem, message: &str, run: Uuid, history: &mut 
         ));
     }
     if !sections.is_empty() {
-        add_to_system(history, &sections.join("\n\n"));
+        add_to_turn(history, &sections.join("\n\n"));
     }
 }
 
@@ -734,6 +772,10 @@ pub(crate) fn converse(
                         definitions.push(agents::swarm_tool(&talkers));
                     }
                 }
+            }
+            // In the same order as before in this conversation (the prompt cache).
+            if matches!(how.offer, Offer::All) {
+                definitions = Caps::stable_tools(&crate::usage::job().unwrap_or_default(), definitions);
             }
             if !definitions.is_empty() {
                 body["tools"] = Value::Array(definitions);
@@ -1124,7 +1166,7 @@ pub(crate) fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: 
 
 #[cfg(test)]
 mod tests {
-    use super::{Effort, UNREACHED, compact, fit, gave_up, short_why, small_talk};
+    use super::{Effort, TURN_CONTEXT, UNREACHED, add_to_turn, compact, finish_turn_context, fit, gave_up, short_why, small_talk};
     use serde_json::json;
 
     #[test]
@@ -1194,6 +1236,34 @@ mod tests {
         if std::env::var_os("LYRA_MODEL_SILENCE_SECONDS").is_none() {
             assert_eq!(super::silence(), std::time::Duration::from_secs(180));
         }
+    }
+
+    #[test]
+    fn a_turns_own_notes_go_with_its_message_so_the_prompts_start_stays_the_same() {
+        let mut turn1 = vec![json!({ "role": "system", "content": "You are lyra." }), json!({ "role": "user", "content": "hi" })];
+        add_to_turn(&mut turn1, "# Memories\n- likes tea");
+        add_to_turn(&mut turn1, "# Skills\n- greet");
+        finish_turn_context(&mut turn1);
+        assert_eq!(turn1[0]["content"], "You are lyra.", "the system prompt is untouched");
+        let said = turn1[1]["content"].as_str().unwrap();
+        assert!(said.starts_with("<lyra_context>") && said.contains("likes tea") && said.contains("# Skills") && said.ends_with("hi"), "{said}");
+        assert!(turn1[1].get(TURN_CONTEXT).is_none(), "the holder is gone before sending");
+        // The next turn: earlier messages go as they're kept (without notes), so
+        // everything before the new message is what the model saw before.
+        let mut turn2 = vec![json!({ "role": "system", "content": "You are lyra." }), json!({ "role": "user", "content": "hi" }), json!({ "role": "assistant", "content": "hello" }), json!({ "role": "user", "content": "and now?" })];
+        add_to_turn(&mut turn2, "# Memories\n- likes coffee now");
+        finish_turn_context(&mut turn2);
+        assert_eq!((&turn2[0], &turn2[1]["content"]), (&json!({ "role": "system", "content": "You are lyra." }), &json!("hi")));
+        assert!(turn2[3]["content"].as_str().unwrap().contains("likes coffee now"));
+        // A message with pictures: the notes are its first part.
+        let mut pic = vec![json!({ "role": "user", "content": [{ "type": "text", "text": "what's this?" }, { "type": "image_url", "image_url": { "url": "data:x" } }] })];
+        add_to_turn(&mut pic, "note");
+        finish_turn_context(&mut pic);
+        assert!(pic[0]["content"][0]["text"].as_str().unwrap().contains("note") && pic[0]["content"][1]["text"] == "what's this?");
+        // Nothing added: nothing changes.
+        let mut plain = vec![json!({ "role": "user", "content": "x" })];
+        finish_turn_context(&mut plain);
+        assert_eq!(plain[0]["content"], "x");
     }
 
     #[test]

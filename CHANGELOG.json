@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.82.0.240",
+    "date": "2026-10-12",
+    "title": "Faster replies in long conversations",
+    "improved": [
+      "Replies in long conversations start much sooner. Things that change with each message (memories, skills, goals) now go just before your message instead of at the top of the conversation, so the model doesn't have to read the whole conversation again each time. The tools lyra offers also stay in the same order through a conversation, for the same reason.",
+      "lyra's own work (judging how a reply went, its checks, memory capture, skill reviews) no longer competes with your replies. It waits until no reply is being written, and with a small model set up as [light_model], it runs there instead."
+    ]
+  },
+  {
     "version": "0.81.0.239",
     "date": "2026-10-12",
     "title": "Where lyra can be faster",
