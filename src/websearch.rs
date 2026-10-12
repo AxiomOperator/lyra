@@ -138,10 +138,18 @@ fn fetch(s: &Settings, args: &Value) -> Result<Value, String> {
         .and_then(|i| body[i..].find("</title>").map(|j| body[i..i + j].trim().to_string()))
         .unwrap_or_default();
     // A long page: what matters, not the whole thing (the conversation stays small).
-    if s.reader && args["full"] != true && condense(text.chars().count(), conversation_size())
-        && let Some(short) = read(&final_url, &title, &text, args["focus"].as_str().unwrap_or(""))
-    {
-        return Ok(json!({ "url": final_url, "title": title, "condensed": short, "note": format!("condensed from {} characters; web_fetch with full: true for the whole page", text.chars().count()) }));
+    if s.reader && args["full"] != true && condense(text.chars().count(), conversation_size()) {
+        match read_within(&final_url, &title, &text, args["focus"].as_str().unwrap_or(""), READ_WITHIN) {
+            Some(Some(short)) => {
+                return Ok(json!({ "url": final_url, "title": title, "condensed": short, "note": format!("condensed from {} characters; web_fetch with full: true for the whole page", text.chars().count()) }));
+            }
+            // The models are busy: the start of the page, rather than waiting minutes.
+            None => {
+                let start: String = text.chars().take(READ_OVER).collect();
+                return Ok(json!({ "url": final_url, "title": title, "text": start, "note": format!("the first {READ_OVER} of {} characters (condensing it took too long); web_fetch with full: true for the whole page", text.chars().count()) }));
+            }
+            Some(None) => {}
+        }
     }
     Ok(json!({ "url": final_url, "title": title, "text": text }))
 }
@@ -181,6 +189,21 @@ const READER: &str = "You condense a web page for a researcher. Keep what it is 
      numbers, versions, names and short quotes that matter, and the links worth following as [text](url) (take URLs from the page's link list). \
      Drop navigation, ads, cookie notices and boilerplate. Plain Markdown, at most about 300 words: be brief, bullet points are fine. If the page has nothing on what they're looking for, \
      say so in one line. Never add anything that isn't on the page.";
+
+/// Condensing a page may take this long; past it the start of the page goes
+/// instead (the models are busy, and a reply shouldn't wait minutes per page).
+const READ_WITHIN: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// `read`, within `limit`: `None` when it took longer (it's left to finish on
+/// its own), `Some(None)` when it didn't work.
+fn read_within(url: &str, title: &str, text: &str, focus: &str, limit: std::time::Duration) -> Option<Option<String>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (url, title, text, focus) = (url.to_string(), title.to_string(), text.to_string(), focus.to_string());
+    crate::acting::spawn(move || {
+        let _ = tx.send(read(&url, &title, &text, &focus));
+    });
+    rx.recv_timeout(limit).ok()
+}
 
 /// The page condensed by the background model (the fallback when it takes
 /// background jobs); `None` when that didn't work (the page goes as it is).
@@ -316,6 +339,26 @@ impl Searches {
 #[cfg(test)]
 mod searches_tests {
     use super::*;
+
+    #[test]
+    fn a_page_waits_only_so_long_for_its_summary() {
+        // No chat model set up: condensing doesn't work, and says so at once.
+        let started = std::time::Instant::now();
+        let got = read_within("https://x", "X", &"words ".repeat(2000), "", std::time::Duration::from_millis(200));
+        assert!(matches!(got, Some(None) | None) && started.elapsed() < std::time::Duration::from_secs(2));
+        // A model that takes the request and says nothing: it's not waited for.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let held: Vec<_> = listener.incoming().take(3).collect();
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            drop(held);
+        });
+        crate::learn::set_chat(&url, "slow");
+        let started = std::time::Instant::now();
+        assert_eq!(read_within("https://x", "X", &"words ".repeat(2000), "", std::time::Duration::from_millis(300)), None, "past the limit");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
 
     #[test]
     fn a_reply_doesnt_search_the_same_thing_twice_or_endlessly() {

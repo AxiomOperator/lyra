@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.80.2.237",
+    "date": "2026-10-12",
+    "title": "Pages don't hold up a reply",
+    "fixed": [
+      "Reading a long web page could hold up a reply for minutes: lyra had the models summarize each page, and when they were busy, each summary took 7 to 10 minutes. That's why the morning brief seemed stuck. Now it waits at most 45 seconds, then works from the start of the page instead."
+    ]
+  },
+  {
     "version": "0.80.1.236",
     "date": "2026-10-12",
     "title": "Clearer when no model can answer",
