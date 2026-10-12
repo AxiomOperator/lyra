@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.84.0.242",
+    "date": "2026-10-12",
+    "title": "Smoother replies in the app",
+    "improved": [
+      "Replies stream more smoothly in long conversations: only the message being written is redrawn, not every message and page, and the words that arrive within one screen frame are shown together.",
+      "Tool cards are no longer worked out again for every word of a reply: each tool's result is read once."
+    ]
+  },
+  {
     "version": "0.83.0.241",
     "date": "2026-10-12",
     "title": "A quieter server",

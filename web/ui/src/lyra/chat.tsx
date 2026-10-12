@@ -15,10 +15,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { AtSign, Clock, CloudOff, Link2, Paperclip, Pencil, Play, RefreshCw, ShieldAlert, ShieldCheck, ShieldX, Slash, TriangleAlert, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { loadDraft, saveDraft, type Queued } from "./outbox";
 import { TemplatesButton } from "./templates";
-import { useLyra } from "./store";
+import { parseJson } from "./json";
+import { useLyra, useMessages } from "./store";
 import type { Approval, ChatAsk, ChatMessage, PairRequest } from "./types";
 import { AskCard, ChatOnlyButton, EditButton, EffortButton, EditLast, FoldedTries, RetryButtons, foldFailures } from "./chat-asks";
 import { BoardCard, ComposerModel, PlanCard, ToolFileContent, ToolFileTree, ToolTerminal, type BoardView, type PlanView } from "./chat-parts2";
@@ -34,11 +35,8 @@ type Asking = { callId: string; a: Approval; more: number } | null;
 // ---- messages
 
 function parse(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
+  const v = parseJson(text);
+  return v === undefined ? text : v;
 }
 
 /** One tool call, with its result when it has come back. */
@@ -177,7 +175,30 @@ function BrowserPicture({ src }: { src: string }) {
   );
 }
 
-function MessageView({ m, results, streaming, asking, asks, max, model, turn, id, editable, retry, index }: { m: ChatMessage; results: Map<string, string>; streaming: boolean; asking: Asking; asks: ChatAsk[]; max: number; model?: string; turn?: ChatMessage[]; id: string; editable?: boolean; retry?: boolean; index: number }) {
+/** Drawn again only when its own message (or what it shows with it) changes,
+ *  not for each word of the reply being written below it. */
+const MessageView = memo(MessageViewInner, (a, b) =>
+  a.m === b.m &&
+  a.results === b.results &&
+  a.streaming === b.streaming &&
+  a.asks === b.asks &&
+  a.max === b.max &&
+  a.model === b.model &&
+  a.id === b.id &&
+  a.editable === b.editable &&
+  a.retry === b.retry &&
+  a.index === b.index &&
+  a.asking?.callId === b.asking?.callId &&
+  a.asking?.a === b.asking?.a &&
+  a.asking?.more === b.asking?.more &&
+  sameTurn(a.turn, b.turn),
+);
+
+function sameTurn(a?: ChatMessage[], b?: ChatMessage[]) {
+  return a === b || (!!a && !!b && a.length === b.length && a.every((m, i) => m === b[i]));
+}
+
+function MessageViewInner({ m, results, streaming, asking, asks, max, model, turn, id, editable, retry, index }: { m: ChatMessage; results: Map<string, string>; streaming: boolean; asking: Asking; asks: ChatAsk[]; max: number; model?: string; turn?: ChatMessage[]; id: string; editable?: boolean; retry?: boolean; index: number }) {
   const { status } = useLyra();
   // A call, and the approval (or question) it waits for when it's this one.
   const call = (c: ChatMessage["calls"][number]) => {
@@ -678,11 +699,17 @@ function QueuedMessages() {
 // ---- the page
 
 export function ChatPage() {
-  const { messages, status, ready } = useLyra();
-  // Tool results, by the call they answer.
+  const { status, ready } = useLyra();
+  const messages = useMessages();
+  // Tool results, by the call they answer: the same map until one comes in
+  // or changes (so a streaming reply doesn't redraw every tool card).
+  const lastResults = useRef(new Map<string, string>());
   const results = useMemo(() => {
     const map = new Map<string, string>();
     for (const m of messages) if ((m.role === "tool" || m.role === "agent_tool") && m.tool_call_id) map.set(m.tool_call_id, m.content);
+    const before = lastResults.current;
+    if (map.size === before.size && [...map].every(([k, v]) => before.get(k) === v)) return before;
+    lastResults.current = map;
     return map;
   }, [messages]);
   const attached = useMemo(() => new Set(messages.flatMap((m) => (m.calls ?? []).map((c) => c.id))), [messages]);

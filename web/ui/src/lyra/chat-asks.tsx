@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { Brain, ChevronDown, ChevronRight, CircleHelp, ListChecks, MessagesSquare, Pencil, RefreshCw, RotateCcw, SkipForward, X } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useLyra } from "./store";
+import { parseJson } from "./json";
 import type { ChatAsk, ChatMessage } from "./types";
 
 /** A missing piece of a call, as a form: filled in, the call goes on. */
@@ -151,12 +152,8 @@ export interface Fold {
 
 function errorOf(result: string | undefined): string | null {
   if (result === undefined) return null;
-  try {
-    const v = JSON.parse(result);
-    return v && typeof v === "object" && "error" in v ? String(v.error) : null;
-  } catch {
-    return null;
-  }
+  const v = parseJson(result) as Record<string, unknown> | undefined;
+  return v && typeof v === "object" && "error" in v ? String(v.error) : null;
 }
 
 /** Runs of the same tool failing (and being denied) again and again, by where they start. */

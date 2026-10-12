@@ -12,7 +12,7 @@ import { AudioLines, Loader2, Mic, Pause, Plus, Square, Volume2 } from "lucide-r
 import { useEffect, useMemo } from "react";
 import { endHandsFree, HANDS_FREE_WORDS, setTalkOpen, startHandsFree, useCanHandsFree, useHandsFree, type HandsFreeState } from "./handsfree";
 import { useServerSpeech } from "./speech";
-import { useLyra, usePhase } from "./store";
+import { useLyra, useMessages, usePhase } from "./store";
 import { speakable, VoiceButton } from "./voice";
 
 const LOOK: Record<HandsFreeState, { ring: string; core: string; label: string }> = {
@@ -26,7 +26,8 @@ const LOOK: Record<HandsFreeState, { ring: string; core: string; label: string }
 };
 
 export function TalkPage() {
-  const { messages, status, say, send, connected } = useLyra();
+  const { status, say, send, connected } = useLyra();
+  const messages = useMessages();
   const can = useCanHandsFree();
   const server = useServerSpeech();
   const approvals = useMemo(() => status.approvals ?? [], [status.approvals]);

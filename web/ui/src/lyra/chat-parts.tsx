@@ -16,6 +16,7 @@ import { Brain, ChevronDown, Globe, ShieldAlert } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { agentLook } from "./agents";
 import { useLyra } from "./store";
+import { parseJson } from "./json";
 import type { Approval, ChatMessage } from "./types";
 
 // ---- attachments
@@ -208,12 +209,8 @@ export function AgentTask({ head, working, steps, children, look }: { head: stri
 
 function parse(text: string | undefined): Record<string, unknown> | null {
   if (!text) return null;
-  try {
-    const v = JSON.parse(text);
-    return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
+  const v = parseJson(text);
+  return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
 }
 
 /** The pages a reply read (web_fetch), else what its searches found (web_search),

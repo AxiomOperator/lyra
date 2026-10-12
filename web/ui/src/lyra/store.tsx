@@ -31,6 +31,8 @@ type Update = { type: string; seq?: number; [k: string]: unknown };
 const empty: State = { ready: false, seq: 0, messages: [], status: {}, commands: [], device: null, user: null, serverVersion: "" };
 
 function reduce(state: State, msg: Update): State {
+  // Everything that came in during one screen frame, at once.
+  if (msg.type === "batch") return (msg.updates as Update[]).reduce(reduce, state);
   if (msg.type === "snapshot") {
     return {
       ready: true,
@@ -84,7 +86,9 @@ function reduce(state: State, msg: Update): State {
 
 type Listener = (what: string, data: unknown) => void;
 
-interface Lyra extends State {
+// Not the messages (useMessages): a page that doesn't show them isn't redrawn
+// for each word of a reply.
+interface Lyra extends Omit<State, "messages" | "seq"> {
   token: string;
   connected: boolean;
   banner: string;
@@ -107,6 +111,12 @@ interface Lyra extends State {
 }
 
 const Ctx = createContext<Lyra | null>(null);
+const MessagesCtx = createContext<ChatMessage[]>([]);
+
+/** The conversation's messages (they change with every word of a reply). */
+export function useMessages(): ChatMessage[] {
+  return useContext(MessagesCtx);
+}
 
 export function useLyra(): Lyra {
   const v = useContext(Ctx);
@@ -127,6 +137,28 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
   const gen = useRef(0);
   const [outbox, setOutbox] = useState<Queued[]>(loadOutbox);
   const [tick, setTick] = useState(0);
+  // Updates that came in since the last screen frame, applied together.
+  const pending = useRef<Update[]>([]);
+  const flushing = useRef<{ frame: number; timer: number } | null>(null);
+  const flush = useCallback(() => {
+    if (flushing.current) {
+      cancelAnimationFrame(flushing.current.frame);
+      window.clearTimeout(flushing.current.timer);
+      flushing.current = null;
+    }
+    const updates = pending.current;
+    pending.current = [];
+    if (updates.length === 1) dispatch(updates[0]);
+    else if (updates.length) dispatch({ type: "batch", updates });
+  }, []);
+  const apply = useCallback(
+    (msg: Update) => {
+      pending.current.push(msg);
+      // The next frame, or soon in a hidden tab (it gets no frames).
+      if (!flushing.current) flushing.current = { frame: requestAnimationFrame(flush), timer: window.setTimeout(flush, 100) };
+    },
+    [flush],
+  );
   const changeOutbox = useCallback((change: (list: Queued[]) => Queued[]) => {
     setOutbox((list) => {
       const next = change(list);
@@ -205,13 +237,14 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
             // fine
           }
         }
-        if (msg.type !== "pong") dispatch(msg);
+        if (msg.type !== "pong") apply(msg);
       };
       sock.onclose = () => {
         setConnected(false);
         // Nothing comes back for questions asked on this connection.
         waiting.current.forEach((done) => done({ error: "lost the connection to lyra", ok: false, text: "lost the connection to lyra" }));
         waiting.current.clear();
+        flush();
         dispatch({ type: "lost" });
         if (stopped || ws.current !== sock) return;
         ws.current = null;
@@ -257,7 +290,7 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
       offFolders();
       ws.current?.close();
     };
-  }, [token, onUnpaired]);
+  }, [token, onUnpaired, apply, flush]);
 
   const send = useCallback((obj: object) => {
     const s = ws.current;
@@ -331,10 +364,12 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
   // and not answering, and taken out once the conversation shows it. One sent
   // on a connection that then dropped, or not shown after a while, goes again.
   const approvalsWaiting = (state.status.approvals ?? []).length > 0;
+  // The messages matter here only while something waits to go (not for each word of a reply).
+  const watched = outbox.length ? state.messages : null;
   useEffect(() => {
     const first = outbox.find((q) => q.session === session || !q.session);
     if (!first || !state.ready || !session) return;
-    const said = timesSaid(state.messages, first.text);
+    const said = timesSaid(watched ?? [], first.text);
     if (first.sentAt !== undefined) {
       if (said > (first.seen ?? 0)) {
         changeOutbox((list) => list.filter((x) => x.id !== first.id));
@@ -353,14 +388,19 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
       const at = Date.now();
       changeOutbox((list) => list.map((x) => (x.id === first.id ? { ...x, session, sentAt: at, gen: gen.current, seen: said } : x)));
     }
-  }, [outbox, session, state.ready, state.messages, state.status.waiting, approvalsWaiting, connected, send, changeOutbox, tick]);
+  }, [outbox, session, state.ready, watched, state.status.waiting, approvalsWaiting, connected, send, changeOutbox, tick]);
 
   const mine = useMemo(() => outbox.filter((q) => q.session === session || !q.session), [outbox, session]);
+  const { ready, status, commands, device, user, serverVersion } = state;
   const value = useMemo<Lyra>(
-    () => ({ ...state, token, connected, banner, send, say, ask, call, run, onData, setPush, unpaired, outbox: mine, queue, unqueue }),
-    [state, token, connected, banner, send, say, ask, call, run, onData, setPush, unpaired, mine, queue, unqueue],
+    () => ({ ready, status, commands, device, user, serverVersion, token, connected, banner, send, say, ask, call, run, onData, setPush, unpaired, outbox: mine, queue, unqueue }),
+    [ready, status, commands, device, user, serverVersion, token, connected, banner, send, say, ask, call, run, onData, setPush, unpaired, mine, queue, unqueue],
   );
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return (
+    <Ctx.Provider value={value}>
+      <MessagesCtx.Provider value={state.messages}>{children}</MessagesCtx.Provider>
+    </Ctx.Provider>
+  );
 }
 
 /** The folders this page lends lyra, for it to route requests here. */
