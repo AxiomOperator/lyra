@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.73.0.225",
+    "date": "2026-10-11",
+    "title": "A plan for lyra learning on its own",
+    "improved": [
+      "A review of how lyra learns and improves itself, with what it has actually learned so far and a prioritised list of upgrades, is now in the project's docs."
+    ]
+  },
+  {
     "version": "0.73.0.224",
     "date": "2026-10-11",
     "title": "lyra can propose new tools",
