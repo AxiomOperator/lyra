@@ -589,6 +589,29 @@ mod app_tests {
     }
 
     #[test]
+    fn reviews_wait_in_a_queue_one_per_turn() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        config::with_test_home(|home| {
+            let (mut app, _) = app(home, &rt);
+            let manager = rt.block_on(lyra_learning::SkillManager::open(&home.join("skills"), Default::default())).unwrap();
+            app.learning = Some(Arc::new(learn::Learning::new(Arc::new(manager), rt.handle().clone(), "skills".into())));
+            turn(&mut app, "remember how we did this: restart the printer queue", "Done: cleared and restarted.");
+            app.reviewing = true; // one is running
+            app.review(true);
+            app.review(true);
+            assert_eq!(app.review_queue.len(), 1, "one per turn");
+            turn(&mut app, "and the scanner the same way", "Done.");
+            app.review(true);
+            assert_eq!(app.review_queue.len(), 2);
+            assert!(app.activity.iter().any(|a| a.text.contains("a review is waiting")));
+            // The running one finishes: the next starts (and leaves the queue).
+            app.next_review();
+            assert!(app.reviewing);
+            assert_eq!(app.review_queue.len(), 1);
+        });
+    }
+
+    #[test]
     fn signals_count_and_a_members_turn_is_counts_only() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         config::with_test_home(|home| {

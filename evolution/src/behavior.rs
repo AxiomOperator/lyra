@@ -6,6 +6,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// The most tool-call rounds a reply may take, wherever it's set (the
+/// Settings page, a person's own limit, evolution): one range for all.
+pub const MAX_TOOL_ROUNDS: u32 = 64;
+
 /// `~/.lyra/config/behavior.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -40,7 +44,7 @@ impl Default for Behavior {
 
 /// The knobs evolution may change, with their allowed values.
 pub const KEYS: &[(&str, &str)] = &[
-    ("max_tool_rounds", "integer 1–16"),
+    ("max_tool_rounds", "integer 1–64"),
     ("plan_step_rounds", "integer 1–12"),
     ("recall_before_answering", "true or false"),
     ("search_skills_before_planning", "true or false"),
@@ -74,7 +78,7 @@ impl Behavior {
         };
         let boolean = || value.as_bool().ok_or(format!("{key} must be true or false"));
         match key {
-            "max_tool_rounds" => self.max_tool_rounds = int(1, 16)?,
+            "max_tool_rounds" => self.max_tool_rounds = int(1, MAX_TOOL_ROUNDS as u64)?,
             "plan_step_rounds" => self.plan_step_rounds = int(1, 12)?,
             "recall_before_answering" => self.recall_before_answering = boolean()?,
             "search_skills_before_planning" => self.search_skills_before_planning = boolean()?,

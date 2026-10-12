@@ -92,7 +92,7 @@ currency = "$"
 # allowed_scopes = ["*"]              # e.g. ["user", "agent", "project:*"]
 # capture = "auto"                    # auto | off
 # maintenance = "propose"             # off | propose | auto
-# curate = "manual"                   # manual | daily | weekly
+# curate = "weekly"                   # manual | daily | weekly
 # inject = true
 # project = "auto"                    # auto (git checkout name) | none | a name
 # same_wording = 0.85
@@ -143,7 +143,7 @@ currency = "$"
 # Skills are Markdown files in dir; their history is in dir/ledger.db.
 # [learning]
 # mode = "propose"          # off | propose (changes wait for /approve) | auto
-# curate = "manual"         # manual | daily | weekly
+# curate = "weekly"         # manual | daily | weekly
 # dir = "~/.lyra/skills"    # default
 # min_confidence = 0.6      # drop lessons the reviewer is less sure of
 # max_skills = 3            # skills added to the prompt per message
@@ -169,7 +169,8 @@ currency = "$"
 # [evolution]
 # enabled = true
 # mode = "propose"          # off (record runs only) | propose | auto
-# review = "manual"         # manual | daily | weekly
+# review = "weekly"         # manual | daily | weekly (a review also tests
+#                           # its best candidates, and the owner gets a digest)
 # window = 50               # recent runs the detectors look at
 # benchmark_tasks = 10      # tasks per benchmark: the problem's, the test set's
 #                           # (evolution/golden/), then recent ones

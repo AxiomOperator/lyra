@@ -151,7 +151,7 @@ pub struct EvolutionConfig {
 
 impl Default for EvolutionConfig {
     fn default() -> Self {
-        Self { enabled: true, review: Schedule::Manual, benchmark_tasks: 10, benchmark_samples: 2, source_repo: None, settings: Default::default() }
+        Self { enabled: true, review: Schedule::Weekly, benchmark_tasks: 10, benchmark_samples: 2, source_repo: None, settings: Default::default() }
     }
 }
 
@@ -203,9 +203,10 @@ pub struct LearningConfig {
 #[derive(Deserialize, Default, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Schedule {
-    #[default]
     Manual,
     Daily,
+    /// The default: lyra looks after itself once a week.
+    #[default]
     Weekly,
 }
 
@@ -272,7 +273,7 @@ impl Default for MemoryConfig {
             path: None,
             table: "memories".into(),
             vector_index_threshold: 10_000,
-            curate: Schedule::Manual,
+            curate: Schedule::Weekly,
             project: None,
             settings: Default::default(),
         }

@@ -804,10 +804,11 @@ fn skills_panel(app: &App, width: usize) -> (String, Vec<Line<'static>>) {
         (Ok(_), Some(Ok(snapshot))) => snapshot,
     };
     let h = &snapshot.health;
-    let busy = match (app.reviewing, app.curating) {
-        (true, _) => " · reviewing…",
-        (_, true) => " · curating…",
-        _ => "",
+    let busy = match (app.reviewing, app.curating, app.review_queue.len()) {
+        (true, _, 0) => " · reviewing…".to_string(),
+        (true, _, n) => format!(" · reviewing… +{n} waiting"),
+        (_, true, _) => " · curating…".to_string(),
+        _ => String::new(),
     };
     let title = format!(" Skills · {} active{busy} ", h.active);
 

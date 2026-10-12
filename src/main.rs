@@ -374,6 +374,19 @@ enum Level {
 /// A finished run, awaiting the user's reaction.
 type LastRun = outcomes::RunRef;
 
+/// A skill review waiting for the one running: its turn (`key`, so one per
+/// turn), why, the transcript as it was, whose.
+struct QueuedReview {
+    key: Uuid,
+    trigger: Option<&'static str>,
+    transcript: String,
+    run: Option<Uuid>,
+    owner: Option<String>,
+}
+
+/// Reviews that may wait at once; more are dropped (the next turn brings its own).
+const MAX_QUEUED_REVIEWS: usize = 5;
+
 /// One line in the activity log.
 struct Activity {
     time: String,
@@ -437,6 +450,8 @@ struct App {
     skills: Option<Result<SkillsSnapshot, String>>,
     /// A learning review is running in the background.
     reviewing: bool,
+    /// Reviews waiting for the one running (3.4).
+    review_queue: std::collections::VecDeque<QueuedReview>,
     /// A curation is running in the background.
     curating: bool,
     /// Days between automatic curations (`[learning] curate`), if scheduled.
@@ -619,6 +634,7 @@ impl App {
             learning_status,
             skills: None,
             reviewing: false,
+            review_queue: Default::default(),
             curating: false,
             curate_every: config.learning.curate.every_days(),
             run: None,
@@ -872,7 +888,7 @@ impl App {
                 self.applied_skills_tokens = tokens;
             }
             StreamEvent::Reviewed(Review { outcome, usage }) => {
-                self.reviewing = false;
+                self.next_review();
                 self.totals.add_review(usage.as_ref());
                 let tokens = usage_text(usage.as_ref());
                 match outcome {
@@ -977,7 +993,7 @@ impl App {
                 if memory {
                     self.capturing = false;
                 } else {
-                    self.reviewing = false;
+                    self.next_review();
                 }
             }
             StreamEvent::MemoryReview { curation, review: Review { outcome, usage } } => {
@@ -1077,6 +1093,22 @@ impl App {
                 }
                 if show && !done.notes.is_empty() {
                     self.messages.push(Message::new("info", format!("🧬 {}", done.notes.join("\n"))));
+                }
+                // A scheduled review's digest: to the owner's devices, opening the Proposals page.
+                if let Some(digest) = done.digest {
+                    self.log(Level::Evolve, format!("weekly review: {}", digest.replace('\n', " · ")));
+                    if let Some(hub) = &self.hub {
+                        hub.notify(lyra_web::Notification {
+                            title: "lyra's weekly review".into(),
+                            body: digest,
+                            tag: "evolution-digest".into(),
+                            approval: None,
+                            actions: vec![],
+                            reference: None,
+                            to: lyra_web::To::User(lyra_web::users::OWNER.into()),
+                            url: Some("/?page=proposals".into()),
+                        });
+                    }
                 }
                 self.tools_changed();
                 self.refresh_evolution();
@@ -1211,7 +1243,7 @@ impl App {
             && evolution.review_due(self.evolution_review_every)
         {
             self.log(Level::Evolve, "scheduled evolution review is due".into());
-            self.evolve_in_background("reviewing", false, evolve::review);
+            self.evolve_in_background("reviewing", false, evolve::scheduled_review);
         }
         if !self.memory_curating
             && let Some(mem) = self.mem()
@@ -1469,12 +1501,13 @@ impl App {
     }
 
     /// Review the conversation for a reusable lesson in the background: after
-    /// every turn when a trigger fires, or on /learn (`forced`).
+    /// every turn when a trigger fires, or on /learn (`forced`). While one runs,
+    /// the next waits in a queue (3.4): one per turn, a few at most.
     fn review(&mut self, forced: bool) {
         // The owner's lessons become shared skills; anyone else's are theirs alone.
         let owner = self.personal();
         let Some(learning) = self.learning.clone() else { return };
-        if learning.mode() == Mode::Off || self.reviewing {
+        if learning.mode() == Mode::Off {
             return;
         }
         let owned = self.history_text();
@@ -1496,13 +1529,35 @@ impl App {
                 self.corrected_skills.join(", ")
             );
         }
+        let run = self.last_run.as_ref().map(|r| r.id);
+        let job = QueuedReview { key: run.unwrap_or_else(Uuid::new_v4), trigger, transcript, run, owner };
+        if self.reviewing {
+            if self.review_queue.iter().any(|q| q.key == job.key) || self.review_queue.len() >= MAX_QUEUED_REVIEWS {
+                return;
+            }
+            self.log(Level::Learn, format!("a review is waiting for the one running ({} queued)", self.review_queue.len() + 1));
+            self.review_queue.push_back(job);
+            return;
+        }
+        self.start_review(learning, job);
+    }
+
+    /// The next queued review, if any (after one finishes).
+    fn next_review(&mut self) {
+        self.reviewing = false;
+        if let (Some(learning), Some(job)) = (self.learning.clone(), self.review_queue.pop_front()) {
+            self.start_review(learning, job);
+        }
+    }
+
+    fn start_review(&mut self, learning: Arc<Learning>, job: QueuedReview) {
+        let QueuedReview { trigger, transcript, run, owner, .. } = job;
         if let Some(trigger) = trigger {
             self.log(Level::Learn, format!("reviewing for a lesson: {trigger}"));
         }
         self.reviewing = true;
-
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let (model, tx, run) = (self.model.clone(), self.tx.clone(), self.last_run.as_ref().map(|r| r.id));
+        let (model, tx) = (self.model.clone(), self.tx.clone());
         crate::acting::spawn(move || {
             let trigger = match trigger {
                 Some(t) => t,
@@ -2034,7 +2089,7 @@ impl App {
             }
             notes.extend(evolve::monitor(&env));
             let show = notes.iter().any(|n| n.starts_with('⚠') || n.starts_with('↩'));
-            let _ = tx.send(StreamEvent::Evolved { done: evolve::Done { notes, usage: Vec::new() }, show });
+            let _ = tx.send(StreamEvent::Evolved { done: evolve::Done { notes, ..Default::default() }, show });
         });
     }
 
@@ -2083,7 +2138,7 @@ impl App {
                 notes.extend(evolve::monitor(&env));
             }
             let show = notes.iter().any(|n| n.starts_with('⚠') || n.starts_with('↩'));
-            let _ = tx.send(StreamEvent::Evolved { done: evolve::Done { notes, usage: Vec::new() }, show });
+            let _ = tx.send(StreamEvent::Evolved { done: evolve::Done { notes, ..Default::default() }, show });
         });
         Some(id)
     }

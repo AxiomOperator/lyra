@@ -136,6 +136,8 @@ pub(crate) fn get_page(
                         c.changed = true;
                     }
                     convs[0].app.log(Level::Agent, format!("settings changed from the app by {}: {}", who.user, changed.join(", ")));
+                    let keys: Vec<String> = arg["changes"].as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default();
+                    convs[0].app.note_settings_edit(&who.user, &keys);
                     json!({ "ok": true, "changed": changed, "page": crate::settings::page() })
                 }
                 Err(e) => json!({ "ok": false, "error": e }),

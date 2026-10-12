@@ -4,8 +4,8 @@
 //! Settings page and tuned by evolution), else 8. A reply that reaches it
 //! stops with a note and can be continued.
 
-/// The most an admin may allow (one person or everyone).
-pub const MAX_TOOL_ROUNDS: u32 = 64;
+/// The most an admin may allow (one person or everyone), and evolution too.
+pub const MAX_TOOL_ROUNDS: u32 = lyra_evolution::behavior::MAX_TOOL_ROUNDS;
 
 /// Without any setting.
 pub const DEFAULT_TOOL_ROUNDS: u32 = 8;

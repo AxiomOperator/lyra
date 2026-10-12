@@ -143,6 +143,8 @@ pub enum Category {
 pub enum Level {
     Skill,
     Behavior,
+    /// A subagent's instructions: always a person's call.
+    Agent,
     Workflow,
     Tool,
     Configuration,
@@ -172,14 +174,14 @@ impl Level {
             Category::Skill => Level::Skill,
             Category::Tool => Level::Tool,
             Category::Code => Level::Code,
-            Category::Agent => Level::Behavior,
+            Category::Agent => Level::Agent,
         }
     }
 
     pub fn policy(self) -> Policy {
         match self {
             Level::Skill | Level::Behavior => Policy::AutoEventually,
-            Level::Workflow | Level::Tool | Level::Configuration => Policy::Propose,
+            Level::Workflow | Level::Tool | Level::Configuration | Level::Agent => Policy::Propose,
             Level::Code => Policy::Manual,
             Level::Architecture => Policy::Never,
         }
@@ -402,6 +404,12 @@ pub struct Generation {
     /// kept only if it does at least as well.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trial: Option<Trial>,
+    /// A person's own change (the Settings page): who, and the behavior keys.
+    /// A rollback past it keeps those values (3.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edited_keys: Vec<String>,
 }
 
 /// A generation on trial (E8): `share` of the turns use it, the rest the
@@ -579,6 +587,7 @@ mod tests {
         assert_eq!(Level::of(Category::Skill).policy(), Policy::AutoEventually);
         assert_eq!(Level::of(Category::Workflow).policy(), Policy::Propose);
         assert_eq!(Level::of(Category::Tool).policy(), Policy::Propose);
+        assert_eq!(Level::of(Category::Agent).policy(), Policy::Propose, "an agent's instructions are a person's call");
         assert_eq!(Level::of(Category::Configuration).policy(), Policy::Propose);
         assert_eq!(Level::of(Category::Code).policy(), Policy::Manual);
         assert_eq!(Level::Architecture.policy(), Policy::Never);

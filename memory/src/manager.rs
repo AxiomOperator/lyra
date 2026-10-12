@@ -959,8 +959,23 @@ impl MemoryManager {
             let resolve = |keys: &[String]| -> Option<Vec<&Memory>> {
                 keys.iter().map(|k| all.iter().find(|m| m.id.to_string().starts_with(k.trim_matches(['[', ']'])))).collect()
             };
+            // Word-for-word the same: merged on their own, whatever the mode (3.5).
+            let mut merged: Vec<Uuid> = Vec::new();
+            for group in curator::exact_duplicates(&all) {
+                let found: Vec<&Memory> = group.iter().filter_map(|id| all.iter().find(|m| m.id == *id)).collect();
+                let mut tags: Vec<String> = found.iter().flat_map(|m| m.tags.clone()).collect();
+                tags.sort();
+                tags.dedup();
+                let change = MemoryChange::Merge { memories: group.clone(), scope: found[0].scope.clone(), content: found[0].content.trim().to_string(), tags };
+                self.apply_change(&change, "exact duplicates", run).await?;
+                notes.push(format!("merged {} copies of the same fact: {}", group.len(), found[0].content.chars().take(80).collect::<String>()));
+                merged.extend(group);
+            }
             for c in plan.consolidations {
                 let Some(found) = resolve(&c.memories).filter(|f| f.len() >= 2) else { continue };
+                if found.iter().any(|m| merged.contains(&m.id)) {
+                    continue;
+                }
                 // Only facts are consolidated, and never across scopes.
                 let mixed = found.iter().any(|m| m.scope != found[0].scope || m.kind != MemoryKind::Semantic);
                 if mixed || c.content.trim().is_empty() {
@@ -978,7 +993,7 @@ impl MemoryManager {
                 };
                 notes.push(self.propose_or_apply(change, &c.reason, run).await?);
             }
-            for id in stale {
+            for id in stale.iter().filter(|i| !merged.contains(i)) {
                 notes.push(self.propose_or_apply(MemoryChange::Archive { memory: *id }, "unused and not important", run).await?);
             }
             for c in plan.contradictions {
@@ -1481,6 +1496,24 @@ mod tests {
         // Contradicted memories rank below otherwise equal ones.
         assert!(m.stats().await.unwrap().contradictions == 1);
         assert!(m.last_curated().await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn exact_duplicates_merge_on_their_own_even_in_propose_mode() {
+        let m = manager(Settings::default()).await;
+        let a = m.remember(fact("user", "The NAS backs up at 2am.")).await.unwrap().memory().clone();
+        // Remembering catches a copy; older data and other paths may not have.
+        let mut b = a.clone();
+        b.id = Uuid::new_v4();
+        b.content = "the NAS backs up at 2am".into();
+        b.created_at = a.created_at + Duration::seconds(1);
+        m.store.create(&b).await.unwrap();
+        let other = m.remember(fact("project:a", "The NAS backs up at 2am.")).await.unwrap().memory().clone();
+        let notes = m.apply_curation(curator::Plan::default(), &[b.id], None).await.unwrap();
+        assert!(notes.iter().any(|n| n.starts_with("merged 2 copies")), "{notes:?}");
+        assert_eq!(m.get(a.id).await.unwrap().unwrap().status, MemoryStatus::Superseded);
+        assert_eq!(m.get(other.id).await.unwrap().unwrap().status, MemoryStatus::Active, "never across scopes");
+        assert!(m.proposals().await.unwrap().is_empty(), "nothing waits: the merged one isn't archived either");
     }
 
     #[tokio::test]

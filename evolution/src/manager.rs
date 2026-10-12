@@ -201,6 +201,8 @@ impl EvolutionManager {
             created_at: Utc::now(),
             skill: None,
             trial: None,
+            edited_by: None,
+            edited_keys: Vec::new(),
         };
         self.db(self.store.add_generation(&g))?;
         Ok(g)
@@ -482,6 +484,8 @@ impl EvolutionManager {
             created_at: Utc::now(),
             skill: Some(revision),
             trial: None,
+            edited_by: None,
+            edited_keys: Vec::new(),
         };
         // The files may have been edited since; snapshot what's there now.
         g.snapshot = self.snapshot();
@@ -522,9 +526,29 @@ impl EvolutionManager {
         if target.number == current.number {
             return Err(format!("generation {} is already current", current.number));
         }
-        self.write_snapshot(&target.snapshot)?;
-        let reason = format!("rollback to generation {}: {why}", target.number);
-        let generation = self.add_generation(target.snapshot.clone(), Some(&current), None, &reason)?;
+        // What people set by hand since the target stays as they set it.
+        let mut snapshot = target.snapshot.clone();
+        let kept: Vec<String> = generations.iter().filter(|g| g.number > target.number).flat_map(|g| g.edited_keys.iter().cloned()).collect();
+        let mut reason = format!("rollback to generation {}: {why}", target.number);
+        if !kept.is_empty() {
+            let now = parse_behavior(&self.snapshot().behavior)?;
+            let mut b = parse_behavior(&snapshot.behavior)?;
+            let mut names = Vec::new();
+            for k in &kept {
+                if let Some(v) = now.get(k)
+                    && b.set(k, &v).is_ok()
+                    && !names.contains(k)
+                {
+                    names.push(k.clone());
+                }
+            }
+            snapshot.behavior = b.render();
+            if !names.is_empty() {
+                reason += &format!(" (kept your {})", names.join(", "));
+            }
+        }
+        self.write_snapshot(&snapshot)?;
+        let generation = self.add_generation(snapshot.clone(), Some(&current), None, &reason)?;
         // Changes made after the target are undone. `generations` is newest first.
         let after: Vec<&Generation> = generations.iter().filter(|g| g.number > target.number).collect();
         let skills: Vec<SkillRevision> = after.iter().filter_map(|g| g.skill.clone()).collect();
@@ -582,6 +606,27 @@ impl EvolutionManager {
             return Ok(Some(format!("generation {cur} hits {ea:.1} errors per run vs {eb:.1} for generation {par}")));
         }
         Ok(None)
+    }
+
+    /// Someone changed behavior settings by hand (the Settings page): it
+    /// becomes a generation, so a rollback keeps it. During a trial it's only
+    /// noted (a generation would end the trial's comparison).
+    pub fn record_edit(&self, who: &str, keys: &[String]) -> Result<Option<Generation>, String> {
+        if keys.is_empty() {
+            return Ok(None);
+        }
+        let note = format!("{} set by {who}", keys.join(", "));
+        if self.trial()?.is_some() {
+            self.event(None, "edited", note, None, None, None)?;
+            return Ok(None);
+        }
+        let current = self.generation()?;
+        let mut g = self.add_generation(self.snapshot(), Some(&current), None, &format!("settings: {note}"))?;
+        g.edited_by = Some(who.to_string());
+        g.edited_keys = keys.to_vec();
+        self.db(self.store.update_generation(&g))?;
+        self.event(None, "edited", note, Some(current.number), None, None)?;
+        Ok(Some(g))
     }
 
     // ---- how lyra is doing
@@ -827,6 +872,24 @@ mod tests {
             r.outcome = if i < good { RunOutcome::Success } else { RunOutcome::Failure };
             m.record_run(&r).unwrap();
         }
+    }
+
+    #[test]
+    fn a_rollback_keeps_what_someone_set_by_hand() {
+        let (_rt, m, _home) = manager(Mode::Propose);
+        let c = m.propose(&op(), vec![proposal(Change::Prompt { add: vec!["Be brief.".into()], remove: vec![] })]).unwrap().remove(0);
+        m.deploy(c, "approved").unwrap();
+        // The Settings page: 20 tool-call rounds, written to the file and recorded.
+        let mut b = m.behavior().unwrap();
+        b.set("max_tool_rounds", &json!(20)).unwrap();
+        std::fs::write(m.home().join("config/behavior.toml"), b.render()).unwrap();
+        let g = m.record_edit("owner", &["max_tool_rounds".into()]).unwrap().unwrap();
+        assert_eq!((g.number, g.edited_keys.clone()), (3, vec!["max_tool_rounds".to_string()]));
+        let (back, _) = m.rollback(Some(1), "test").unwrap();
+        assert!(back.reason.contains("kept your max_tool_rounds"), "{}", back.reason);
+        let now = m.behavior().unwrap();
+        assert_eq!((now.max_tool_rounds, now.guidelines.len()), (20, 0), "the guideline went, the hand edit stayed");
+        assert!(m.record_edit("owner", &[]).unwrap().is_none());
     }
 
     #[test]

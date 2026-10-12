@@ -1,5 +1,20 @@
 [
   {
+    "version": "0.76.0.229",
+    "date": "2026-10-11",
+    "title": "lyra looks after itself every week",
+    "new": [
+      "lyra now reviews itself once a week: how replies went, what to improve. In propose mode, it tests the most promising change for each problem, so the Proposals page shows them ready, with their scores. You then get a short digest on your devices.",
+      "Reviews remember what was tried before. A problem already proposed, or rejected or rolled back in the last two weeks, isn't proposed again, and new proposals learn from how earlier ones went."
+    ],
+    "improved": [
+      "Skill and memory curation also run weekly by default. Copies of the same fact, word for word, are now merged on their own; anything else still waits for you.",
+      "Changing a setting on the Settings page is now a step in lyra's history, so rolling back one of lyra's own changes keeps what you set. Tool calls per reply have one range everywhere: 1 to 64.",
+      "Changes to an agent's instructions always wait for an admin's yes, and skills are left alone while learning is off.",
+      "When several lessons come up at once, lyra reviews them one after another instead of skipping all but the first."
+    ]
+  },
+  {
     "version": "0.75.0.228",
     "date": "2026-10-11",
     "title": "A live check for the blind comparison",

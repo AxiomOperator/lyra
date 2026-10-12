@@ -270,8 +270,24 @@ impl App {
         if !arg.trim().is_empty() && !text.contains(" is already ") {
             self.reload();
             self.log(Level::Agent, format!("settings changed: {}", arg.trim()));
+            let key = arg.split_whitespace().next().unwrap_or("");
+            let owner = self.owner.clone();
+            self.note_settings_edit(&owner, &[key.to_string()]);
         }
         Ok(text)
+    }
+
+    /// Behavior settings changed by hand become an evolution generation, so a
+    /// rollback keeps them (3.3). `keys`: the changed settings' keys.
+    pub(crate) fn note_settings_edit(&mut self, who: &str, keys: &[String]) {
+        let keys: Vec<String> = keys.iter().filter_map(|k| k.strip_prefix("behavior.")).map(str::to_string).collect();
+        let Some(ev) = self.evolution.clone().filter(|_| !keys.is_empty()) else { return };
+        match ev.manager.record_edit(who, &keys) {
+            Ok(Some(g)) => self.log(Level::Evolve, format!("generation {}: {} set by hand (a rollback keeps it)", g.number, keys.join(", "))),
+            Ok(None) => {}
+            Err(e) => self.log(Level::Error, format!("recording the settings change for evolution failed: {e}")),
+        }
+        self.reload_evolution();
     }
 
     /// `/usage [days]`: everyone's and each person's for admins, one's own for members.

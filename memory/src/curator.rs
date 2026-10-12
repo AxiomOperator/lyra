@@ -58,6 +58,27 @@ pub fn duplicates(
     out
 }
 
+/// Facts in the same scope that say exactly the same thing (case, spacing
+/// and end punctuation aside): safe to merge without asking (3.5). Groups of
+/// two or more, oldest first in each.
+pub fn exact_duplicates(memories: &[Memory]) -> Vec<Vec<Uuid>> {
+    let norm = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").trim_end_matches(['.', '!', ';']).to_lowercase();
+    let mut groups: HashMap<(String, String), Vec<&Memory>> = HashMap::new();
+    for m in memories.iter().filter(|m| m.status == MemoryStatus::Active && m.kind == MemoryKind::Semantic) {
+        groups.entry((m.scope.clone(), norm(&m.content))).or_default().push(m);
+    }
+    let mut out: Vec<Vec<Uuid>> = groups
+        .into_values()
+        .filter(|g| g.len() > 1)
+        .map(|mut g| {
+            g.sort_by_key(|m| m.created_at);
+            g.into_iter().map(|m| m.id).collect()
+        })
+        .collect();
+    out.sort();
+    out
+}
+
 /// Active memories that haven't been used in `days`, are older than that, and
 /// aren't marked important: candidates for archiving.
 pub fn stale(memories: &[Memory], days: i64, now: DateTime<Utc>) -> Vec<Uuid> {

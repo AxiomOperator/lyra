@@ -191,9 +191,10 @@ aside). `/memory` shows the store's size and how fast each operation is
   so durable facts it discovered are remembered.
 - **Upkeep.** Expired memories are archived, old ones fade in ranking
   (half-lives per kind, and per category for facts tagged `preference`,
-  `decision` or `configuration`), and `/memory curate` (or `curate =
-  "daily"`/`"weekly"`, checked while lyra runs too) proposes consolidating
-  duplicates and flags contradictions.
+  `decision` or `configuration`), and `/memory curate` (weekly by default,
+  `curate =`, checked while lyra runs too) proposes consolidating
+  duplicates and flags contradictions. Exact copies of a fact (the same
+  words in the same scope) are merged on their own.
 - **Provenance.** Each memory records its source, the run and tool call it came
   from, and the session (conversation) it was saved in.
 - **Safety.** Passwords, tokens, keys and other credentials are refused before
@@ -223,7 +224,7 @@ default_scope = "user"
 allowed_scopes = ["*"]       # e.g. ["user", "agent", "project:*"]
 capture = "auto"             # auto | off
 maintenance = "propose"      # off | propose | auto
-curate = "manual"            # manual | daily | weekly
+curate = "weekly"            # manual | daily | weekly
 inject = true                # add relevant memories to each prompt
 project = "auto"             # auto (the git checkout's name) | none | a name
 same_wording = 0.85          # word overlap that counts as the same memory
@@ -402,7 +403,7 @@ How it works:
    2 successes and no failures is promoted; an active skill whose reliability
    falls below 0.4 after 5 outcomes is deprecated (never deleted). Thresholds
    are in `[learning.lifecycle]`.
-5. **Curation.** `/curate` (or `curate = "daily"`/`"weekly"`) looks for
+5. **Curation.** `/curate` (weekly by default, `curate =`) looks for
    near-duplicates, stale skills and, with the model's help, merges, splits and
    contradictions. Merges and splits are proposed; conflicts are flagged.
 
@@ -425,7 +426,7 @@ Commands: `/skills` (what to review, and every skill's track record),
 ```toml
 [learning]
 mode = "propose"          # off | propose | auto
-curate = "manual"         # manual | daily | weekly
+curate = "weekly"         # manual | daily | weekly
 min_confidence = 0.6
 max_skills = 3
 
@@ -1811,6 +1812,16 @@ evidence about its own runs, progressively and reversibly. Built following
   one candidate rejects its competitors. `/evolve rollback` restores any
   earlier generation, skill versions included, and the rollback is itself a
   generation.
+- **Scheduled reviews** run weekly by default (`review =`):
+  - A review remembers what was tried before. A problem with a proposal
+    still open, or one rejected or rolled back in the last two weeks, is
+    skipped; otherwise the evolver is shown the earlier attempts and how they
+    went.
+  - In propose mode a review also tests the most likely candidate for each
+    problem (up to three), so the Proposals page shows them ready, with their
+    scores.
+  - The owner then gets a digest on their devices: what beat the current
+    lyra, what's waiting, and how a trial stands.
 - **Trial.** A deployed guideline, chat setting or workflow change starts on
   **trial**:
   - It runs on `trial_share` (30%) of replies; the rest still use the
@@ -1821,6 +1832,10 @@ evidence about its own runs, progressively and reversibly. Built following
     not. A trial clearly losing half way stops early.
   - `/evolve trial` shows how it stands, `/evolve keep` keeps it now, and
     `/evolve rollback` ends it. Nothing else deploys while one runs.
+- **Your settings stay yours.** A change on the Settings page (or
+  `/settings`) to a behavior setting is a generation of its own, and a
+  rollback keeps what you set by hand. Tool calls per reply have one range
+  everywhere: 1–64.
 - **Monitor.** Changes that aren't on trial (skills, agents, tools, planner
   settings) are compared with their parent once they have enough runs:
   success rate over judged runs, and how often answers get corrected and how
@@ -1864,7 +1879,7 @@ Commands: `/evolve` (status), `/evolve review`, `/evolve list`,
 [evolution]
 enabled = true
 mode = "propose"            # off (record runs only) | propose | auto
-review = "manual"           # manual | daily | weekly
+review = "weekly"           # manual | daily | weekly
 window = 50                 # recent runs the detectors look at
 benchmark_tasks = 10        # tasks per benchmark (evidence, tests, recent)
 benchmark_samples = 2       # answers per task on each side, judged in pairs

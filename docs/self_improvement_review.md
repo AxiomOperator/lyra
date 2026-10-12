@@ -214,6 +214,13 @@ Ordered by value for effort. Phase 1 alone would wake every loop up.
 
 ### Phase 3: let the loops run (safely)
 
+**Done in 0.76.0.229.** All of 3.1–3.5 are in place:
+- **Reviews:** weekly by default. In propose mode they test their best candidates, and the owner gets an in-app digest.
+- **Attempt memory:** problems are matched by fingerprint, so open or recently rejected ones are skipped and the evolver sees past attempts.
+- **Gates:** an agent's instructions are now their own level and always wait for approval. Skill changes follow the learning mode. Edits on the Settings page are generations, a rollback keeps them, and tool calls per reply use one range, 1–64.
+- **Review queue:** reviews wait their turn (one per turn, up to 5) instead of being dropped.
+- **Memory:** exact duplicates merge on their own.
+
 | # | Upgrade |
 |---|---|
 | 3.1 | **Scheduled reviews by default:** evolution weekly, and skill and memory curation weekly. In propose mode a review also **tests** its candidates, so the Proposals page shows ready-to-approve items with their scores. A weekly digest (in-app, or by email to the owner only) lists them. |

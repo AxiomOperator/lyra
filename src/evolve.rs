@@ -84,10 +84,13 @@ pub struct Env {
 }
 
 /// The outcome of background evolution work.
+#[derive(Default)]
 pub struct Done {
     pub notes: Vec<String>,
     /// Model calls made (their tokens count toward the session totals).
     pub usage: Vec<Usage>,
+    /// A scheduled review's digest for the owner (what's ready to approve).
+    pub digest: Option<String>,
 }
 
 impl Evolution {
@@ -353,7 +356,7 @@ fn chat_section(behavior: &Behavior, workflows: &[WorkflowDef], request: &str) -
 /// mode, low-risk candidates are benchmarked and the best one that beats the
 /// baseline is deployed.
 pub fn review(env: &Env) -> Done {
-    let mut done = Done { notes: Vec::new(), usage: Vec::new() };
+    let mut done = Done::default();
     if let Err(e) = review_inner(env, &mut done) {
         done.notes.push(format!("evolution review failed: {e}"));
     }
@@ -465,8 +468,19 @@ fn review_inner(env: &Env, done: &mut Done) -> Result<(), String> {
     let agent_list: Vec<(String, String)> = agents.as_ref().map(|a| a.registry.enabled().into_iter().map(|p| (p.name, p.instructions)).collect()).unwrap_or_default();
     let ctx = evolver::Context { behavior: &behavior, workflows: &workflows, tools: &tool_list, skills: &skill_list, agents: &agent_list };
     let mut created: Vec<Candidate> = Vec::new();
+    let past = ev.manager.candidates(500)?;
     for op in ops.iter().take(ev.manager.settings.max_problems.max(1)) {
         done.notes.push(format!("problem: {}", op.problem));
+        // Attempt memory (3.2): what was tried for this problem before.
+        let before = attempts(&past, &op.problem);
+        if let Some(open) = before.iter().find(|c| matches!(c.status, CandidateStatus::Proposed | CandidateStatus::Testing)) {
+            done.notes.push(format!("  already proposed for it: {} (/evolve show {})", open.short(), open.short()));
+            continue;
+        }
+        if let Some(recent) = before.iter().find(|c| matches!(c.status, CandidateStatus::Rejected | CandidateStatus::RolledBack) && Utc::now() - c.updated_at < chrono::Duration::days(RETRY_AFTER_DAYS)) {
+            done.notes.push(format!("  tried {} days ago ({} {}): not again yet", (Utc::now() - recent.updated_at).num_days(), recent.short(), recent.status));
+            continue;
+        }
         let allowed: Vec<Category> = op
             .categories
             .iter()
@@ -486,7 +500,14 @@ fn review_inner(env: &Env, done: &mut Done) -> Result<(), String> {
             continue;
         }
         let evidence = ev.manager.evidence(op)?;
-        let prompt = evolver::prompt(op, &evidence, &ctx, &allowed);
+        let mut prompt = evolver::prompt(op, &evidence, &ctx, &allowed);
+        if !before.is_empty() {
+            prompt += "\n\nTried before for this problem (don't propose these again; learn from how they went):\n";
+            for c in before.iter().take(6) {
+                let how = c.validation.as_ref().and_then(|v| v.comparison.as_ref().map(|x| x.note.clone())).unwrap_or_default();
+                prompt += &format!("- {} — {}{}\n", c.change.summary(), c.status, if how.is_empty() { String::new() } else { format!(" ({how})") });
+            }
+        }
         let reply = match crate::learn::complete(&env.url, &env.model, evolver::EVOLVER_PROMPT, &prompt) {
             Ok((text, usage)) => {
                 done.usage.extend(usage);
@@ -515,9 +536,77 @@ fn review_inner(env: &Env, done: &mut Done) -> Result<(), String> {
     if ev.mode() == Mode::Auto {
         auto_deploy(env, created, done)?;
     } else if !created.is_empty() {
-        done.notes.push("/evolve compare <id> tests and ranks a problem's candidates · /evolve approve <id>".into());
+        // Propose mode (3.1): the most likely candidate for each problem is
+        // tested now, so the Proposals page shows it ready, with its score.
+        let mut groups: Vec<Uuid> = created.iter().map(|c| c.group).collect();
+        groups.dedup();
+        for group in groups.into_iter().take(MAX_TESTED_PER_REVIEW) {
+            let Some(best) = created.iter().filter(|c| c.group == group && !matches!(c.change, Change::Code { .. })).max_by(|a, b| a.confidence.total_cmp(&b.confidence)) else { continue };
+            let t = test(env, ev.manager.find(&best.id.to_string())?);
+            done.notes.extend(t.notes);
+            done.usage.extend(t.usage);
+        }
+        done.notes.push("/evolve compare <id> tests and ranks a problem's candidates · /evolve approve <id> · or the Proposals page".into());
     }
     Ok(())
+}
+
+/// Problems a review tests a candidate for at once (each is a full benchmark).
+const MAX_TESTED_PER_REVIEW: usize = 3;
+/// A change rejected or rolled back isn't proposed again for this long.
+const RETRY_AFTER_DAYS: i64 = 14;
+
+/// A problem as itself, whatever its numbers this time ("4 of 4 answers" = "5 of 6").
+pub fn fingerprint(problem: &str) -> String {
+    let t: String = problem.to_lowercase().chars().map(|c| if c.is_ascii_digit() { '#' } else { c }).collect();
+    let mut out = String::new();
+    for w in t.split_whitespace() {
+        let w = if w.chars().all(|c| c == '#' || c == '.' || c == '%' || c == ',') { "#" } else { w };
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(w);
+    }
+    out
+}
+
+/// Candidates proposed before for the same problem, newest first.
+fn attempts<'a>(past: &'a [Candidate], problem: &str) -> Vec<&'a Candidate> {
+    let f = fingerprint(problem);
+    past.iter().filter(|c| fingerprint(&c.problem) == f).collect()
+}
+
+/// A scheduled review (3.1): the review, then a digest for the owner of
+/// what's ready to approve (in the app; the Proposals page has the details).
+pub fn scheduled_review(env: &Env) -> Done {
+    let mut done = review(env);
+    let ev = &env.evolution;
+    let ready: Vec<Candidate> = ev
+        .manager
+        .candidates(200)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| matches!(c.status, CandidateStatus::Proposed | CandidateStatus::Testing))
+        .collect();
+    let passed: Vec<&Candidate> = ready.iter().filter(|c| c.validation.as_ref().is_some_and(|v| v.valid && v.improves())).collect();
+    let trial = ev.manager.trial_standing().ok().flatten();
+    if ready.is_empty() && trial.is_none() {
+        return done;
+    }
+    let mut lines = Vec::new();
+    if !passed.is_empty() {
+        lines.push(format!("{} change(s) beat the current lyra and are ready to approve:", passed.len()));
+        lines.extend(passed.iter().take(5).map(|c| format!("• {} — {}", truncate(&c.change.summary(), 80), c.validation.as_ref().and_then(|v| v.comparison.as_ref()).map_or(String::new(), |x| x.note.clone()))));
+    }
+    let waiting = ready.len() - passed.len();
+    if waiting > 0 {
+        lines.push(format!("{waiting} other proposal(s) wait for a look."));
+    }
+    if let Some(t) = trial {
+        lines.push(format!("Generation {} is on trial: {} of its {} replies have an outcome.", t.generation, t.trial.judged, t.needed));
+    }
+    done.digest = Some(lines.join("\n"));
+    done
 }
 
 /// Auto mode: benchmark the candidates that may deploy on their own and
@@ -593,7 +682,7 @@ pub struct Tested {
 
 impl From<Tested> for Done {
     fn from(t: Tested) -> Self {
-        Done { notes: t.notes, usage: t.usage }
+        Done { notes: t.notes, usage: t.usage, digest: None }
     }
 }
 
@@ -1302,7 +1391,7 @@ fn sandboxed(env: &Env, v: &Variant, name: &str, arguments: &str, r: &mut BenchR
 /// a new generation; skill changes go through the skill manager; code changes
 /// become a local branch for the user to review (never merged or pushed).
 pub fn approve(env: &Env, key: &str) -> Done {
-    let mut done = Done { notes: Vec::new(), usage: Vec::new() };
+    let mut done = Done::default();
     match approve_inner(env, key, &mut done) {
         Ok(note) => done.notes.push(note),
         Err(e) => done.notes.push(format!("✗ {e}")),
@@ -1384,6 +1473,10 @@ fn deploy(env: &Env, c: Candidate, why: &str, done: &mut Done) -> Result<String,
     }
     if let Change::Skill { skill, instructions } = c.change.clone() {
         let learning = env.learning.as_ref().ok_or("learning is off")?;
+        // Skills follow the learning mode: off means nothing changes them.
+        if learning.mode() == lyra_learning::Mode::Off {
+            return Err("learning is off ([learning] mode): skills aren't changed".into());
+        }
         let to = learning.refine(&skill, &instructions, &format!("evolution: {}", c.rationale))?;
         let revision = lyra_evolution::SkillRevision { name: skill.clone(), from_version: to - 1, to_version: to, agent: false };
         let g = ev.manager.deploy_skill(c, revision, why)?;
@@ -1406,12 +1499,12 @@ pub fn rollback(env: &Env, arg: &str) -> Done {
         Ok(notes) => notes,
         Err(e) => vec![format!("✗ {e}")],
     };
-    Done { notes, usage: Vec::new() }
+    Done { notes, ..Default::default() }
 }
 
 /// Test every open candidate in a group on the same tasks and rank them.
 pub fn compare(env: &Env, key: &str) -> Done {
-    let mut done = Done { notes: Vec::new(), usage: Vec::new() };
+    let mut done = Done::default();
     let ev = &env.evolution;
     let group = match ev.manager.find(key) {
         Ok(c) => c.group,
@@ -1615,7 +1708,7 @@ fn deploy_api(env: &Env, c: Candidate, api: &lyra_evolution::ApiProvider) -> Res
 
 /// `/evolve api <url> [name]`.
 pub fn propose_api_command(env: &Env, rest: &str) -> Done {
-    let mut done = Done { notes: Vec::new(), usage: Vec::new() };
+    let mut done = Done::default();
     let (url, name) = rest.trim().split_once(' ').map_or((rest.trim(), ""), |(u, n)| (u, n.trim()));
     done.notes.push(match propose_api(&env.evolution, env.caps.as_deref(), url, name, "") {
         Ok(t) => t,
@@ -1628,7 +1721,7 @@ pub fn propose_api_command(env: &Env, rest: &str) -> Done {
 /// writes a diff against the current commit. The patch is only stored as a
 /// candidate; `/evolve test` checks it in a sandbox.
 pub fn propose_code(env: &Env, problem: &str) -> Done {
-    let mut done = Done { notes: Vec::new(), usage: Vec::new() };
+    let mut done = Done::default();
     if let Err(e) = propose_code_inner(env, problem, &mut done) {
         done.notes.push(format!("✗ code proposal failed: {e}"));
     }
@@ -2120,6 +2213,64 @@ mod tests {
     }
 
     #[test]
+    fn a_scheduled_review_tests_what_it_proposes_and_says_whats_ready_then_doesnt_repeat_it() {
+        crate::config::with_test_home(|home| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let settings = lyra_evolution::Settings { trial_share: 0.0, ..Default::default() };
+            let manager = EvolutionManager::open(home, rt.handle().clone(), settings).unwrap();
+            let ev = Arc::new(Evolution::new(manager, rt.handle().clone(), None, 3).with_samples(1));
+            let (url, _seen) = fake_model(|req| {
+                let system = req["messages"][0]["content"].as_str().unwrap_or("");
+                if system.starts_with("You improve an AI assistant") {
+                    return r#"{"candidates": [{"category": "prompt", "add": ["When asked for one line, answer in one short sentence."], "rationale": "they keep asking for shorter", "confidence": 0.8}]}"#.into();
+                }
+                if system.starts_with("You compare two answers") {
+                    let user = req["messages"][1]["content"].as_str().unwrap_or("");
+                    let first = user.split("Answer 1:").nth(1).unwrap_or("").split("Answer 2:").next().unwrap_or("");
+                    return if first.contains("SHORT") { r#"{"better": "1"}"# } else { r#"{"better": "2"}"# }.into();
+                }
+                if system.contains("one short sentence") { "SHORT.".into() } else { "A very long answer that goes on and on.".into() }
+            });
+            // Four replies corrected for being too long.
+            for q in ["In one line: what is DNS?", "In one line: what is NTP?", "In one line: what is TLS?", "In one line: what is SSH?"] {
+                let mut r = RunRecord::new(lyra_evolution::RunKind::Chat, q, 1);
+                r.outcome = lyra_evolution::RunOutcome::Failure;
+                r.corrected = true;
+                r.feedback = Some("too long".into());
+                ev.manager.record_run(&r).unwrap();
+            }
+            let env = Env { url, model: "m".into(), evolution: ev.clone(), tools: None, learning: None, caps: None, goals: None, system_prompt: None };
+            let done = scheduled_review(&env);
+            assert!(done.notes.iter().any(|n| n.contains("benchmarking 3 task(s)")), "tested in propose mode: {:?}", done.notes);
+            let digest = done.digest.expect("a digest for the owner");
+            assert!(digest.starts_with("1 change(s) beat the current lyra and are ready to approve"), "{digest}");
+            assert!(digest.contains("one short sentence"), "{digest}");
+            // The next review knows it's already proposed.
+            let again = review(&env);
+            assert!(again.notes.iter().any(|n| n.contains("already proposed for it")), "{:?}", again.notes);
+            assert_eq!(ev.manager.candidates(10).unwrap().len(), 1, "not proposed twice");
+        });
+    }
+
+    #[test]
+    fn a_problem_is_known_again_whatever_its_numbers_and_isnt_reproposed() {
+        assert_eq!(fingerprint("4 of 4 recent answers were corrected"), fingerprint("5 of 6 recent answers were corrected"));
+        assert_eq!(fingerprint("capability web_fetch takes 30.5s on average over 184 uses"), fingerprint("capability web_fetch takes 12.1s on average over 200 uses"));
+        assert_ne!(fingerprint("capability web_fetch is slow"), fingerprint("capability files_read is slow"));
+        crate::config::with_test_home(|home| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let manager = EvolutionManager::open(home, rt.handle().clone(), Default::default()).unwrap();
+            let op = lyra_evolution::Opportunity { kind: "k".into(), problem: "4 of 4 recent answers were corrected".into(), categories: vec![Category::Prompt], evidence: vec![], details: json!({}) };
+            let c = manager.propose(&op, vec![evolver::Proposal { change: Change::Prompt { add: vec!["x".into()], remove: vec![] }, rationale: "r".into(), confidence: 0.6 }]).unwrap().remove(0);
+            let past = manager.candidates(10).unwrap();
+            assert_eq!(attempts(&past, "6 of 7 recent answers were corrected").len(), 1);
+            manager.reject(c, "no").unwrap();
+            let past = manager.candidates(10).unwrap();
+            assert_eq!(attempts(&past, "6 of 7 recent answers were corrected")[0].status, CandidateStatus::Rejected);
+        });
+    }
+
+    #[test]
     fn a_deployed_change_runs_on_trial_beside_the_old_one_and_its_results_decide() {
         crate::config::with_test_home(|home| {
             let rt = tokio::runtime::Runtime::new().unwrap();
@@ -2130,7 +2281,7 @@ mod tests {
             let op = lyra_evolution::Opportunity { kind: "k".into(), problem: "p".into(), categories: vec![Category::Prompt], evidence: vec![], details: json!({}) };
             let deploy_one = |add: &str| {
                 let c = ev.manager.propose(&op, vec![evolver::Proposal { change: Change::Prompt { add: vec![add.into()], remove: vec![] }, rationale: "r".into(), confidence: 0.6 }]).unwrap().remove(0);
-                let mut done = Done { notes: Vec::new(), usage: Vec::new() };
+                let mut done = Done::default();
                 deploy(&env, c, "approved", &mut done).unwrap()
             };
             assert_eq!(ev.arm(Uuid::new_v4()), None, "nothing on trial");
@@ -2195,7 +2346,7 @@ mod tests {
             assert!(api.sample.iter().all(|s| s.starts_with("parcel-tracker.")), "under its own name: {:?}", api.sample);
             // Approved: live now, and kept in config.toml.
             let env = Env { url: String::new(), model: String::new(), evolution: ev.clone(), tools: None, learning: None, caps: Some(caps.clone()), goals: None, system_prompt: None };
-            let mut done = Done { notes: Vec::new(), usage: Vec::new() };
+            let mut done = Done::default();
             let out = approve_inner(&env, &c.short(), &mut done).unwrap();
             assert!(out.contains("added API parcel-tracker: 2 operations") && out.contains("needs its key"), "{out}");
             assert_eq!(caps.openapi_names(), ["parcel-tracker"]);
