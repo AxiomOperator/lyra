@@ -255,3 +255,86 @@ mod tests {
         assert!(none["note"].as_str().unwrap().contains("brave"), "says why nothing came back");
     }
 }
+
+/// Searches in one reply (the tool loop's), so it doesn't search the same
+/// thing over and over: a search nearly the same as one made already isn't
+/// run again (the earlier results come back, with a nudge to open one), and
+/// after `MAX_PER_REPLY` searches the reply works from what it found.
+#[derive(Default)]
+pub struct Searches {
+    /// Each search's words and its results (empty while it runs).
+    done: Vec<(Vec<String>, String, String)>,
+}
+
+/// Searches one reply may make.
+pub const MAX_PER_REPLY: usize = 8;
+
+fn query_words(arguments: &str) -> (String, Vec<String>) {
+    let query = serde_json::from_str::<Value>(arguments).ok().and_then(|v| v["query"].as_str().map(str::to_string)).unwrap_or_default();
+    let mut words: Vec<String> = query.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.len() > 2).map(str::to_string).collect();
+    words.sort();
+    words.dedup();
+    (query, words)
+}
+
+impl Searches {
+    /// The result to give instead of searching (a near-repeat, or past the
+    /// budget); `None`: go ahead (it's counted from now).
+    pub fn check(&mut self, arguments: &str) -> Option<String> {
+        let (query, words) = query_words(arguments);
+        let like = |w: &Vec<String>| {
+            let shared = words.iter().filter(|x| w.contains(x)).count();
+            let union = words.len() + w.len() - shared;
+            union > 0 && shared as f32 / union as f32 >= 0.6
+        };
+        if let Some((_, earlier, results)) = self.done.iter().find(|(w, ..)| like(w)) {
+            let results: Value = serde_json::from_str(results).unwrap_or(Value::Null);
+            return Some(
+                json!({
+                    "note": format!("You searched for nearly this already (\"{earlier}\"), so it wasn't searched again: these are those results. Open the most useful with web_fetch, or search for something different."),
+                    "results": results.get("results").cloned().unwrap_or(Value::Array(vec![])),
+                })
+                .to_string(),
+            );
+        }
+        if self.done.len() >= MAX_PER_REPLY {
+            return Some(json!({ "note": format!("That's {MAX_PER_REPLY} searches in this reply, the most for one: work from what you found. Open the best results with web_fetch, then answer (and say what you couldn't find).") }).to_string());
+        }
+        self.done.push((words, query, String::new()));
+        None
+    }
+
+    /// A search's results, once it ran.
+    pub fn record(&mut self, arguments: &str, results: &str) {
+        let (_, words) = query_words(arguments);
+        if let Some(d) = self.done.iter_mut().find(|(w, ..)| *w == words) {
+            d.2 = results.to_string();
+        }
+    }
+}
+
+#[cfg(test)]
+mod searches_tests {
+    use super::*;
+
+    #[test]
+    fn a_reply_doesnt_search_the_same_thing_twice_or_endlessly() {
+        let mut s = Searches::default();
+        let q = |t: &str| json!({ "query": t }).to_string();
+        assert!(s.check(&q("Claude 4 release news Oct 2026 Anthropic blog news")).is_none());
+        s.record(&q("Claude 4 release news Oct 2026 Anthropic blog news"), r#"{"results":[{"title":"Claude","url":"https://claude.com/"}]}"#);
+        // The same, reworded: not searched again; the earlier results come back.
+        let again = s.check(&q("Claude 4 news release Oct 10 2026 Anthropic announcement blog")).expect("a near-repeat");
+        let v: Value = serde_json::from_str(&again).unwrap();
+        assert!(v["note"].as_str().unwrap().contains("web_fetch"));
+        assert_eq!(v["results"][0]["url"], "https://claude.com/");
+        assert!(s.check(&q("OpenAI GPT-5 release date news Oct 2026 OpenAI blog news")).is_none(), "something different");
+        assert!(s.check(&q("OpenAI GPT-5 announcement news Oct 2026 OpenAI newsroom blog")).is_some(), "and its rewording");
+        // The budget.
+        for t in ["vLLM release", "SGLang release", "MCP SDK release", "arXiv reasoning papers", "CrewAI framework", "DeepSeek model card"] {
+            assert!(s.check(&q(t)).is_none(), "{t}");
+        }
+        let over = s.check(&q("Gemini 3 news")).expect("past the budget");
+        assert!(over.contains("8 searches in this reply"));
+    }
+}

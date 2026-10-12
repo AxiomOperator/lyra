@@ -422,6 +422,8 @@ pub fn delegate(
         json!({ "role": "user", "content": delegation::user_prompt(&request) }),
     ];
     let (mut model_calls, mut tool_calls, mut tokens) = (0u32, 0u32, 0u64);
+    // This delegation's searches: no near-repeats, and a budget.
+    let mut searches = crate::websearch::Searches::default();
     let write_refs: Option<Vec<&str>> = write.as_ref().map(|w| w.iter().map(String::as_str).collect());
     let read_refs: Option<Vec<&str>> = read.as_ref().map(|r| r.iter().map(String::as_str).collect());
     let mut result = DelegationResult {
@@ -485,6 +487,9 @@ pub fn delegate(
                 json!({ "error": "stopped by the user" }).to_string()
             } else if tool_calls >= s.budget.max_tool_calls {
                 json!({ "error": "this delegation's tool budget is used up" }).to_string()
+            } else if let Some(instead) = (name == "web_search").then(|| searches.check(args)).flatten() {
+                // Nearly searched already, or past the budget: not searched again.
+                instead
             } else if name == "delegate" && can_delegate {
                 tool_calls += 1;
                 nested(env, profile, args, depth, run)
@@ -522,7 +527,13 @@ pub fn delegate(
                             Ok(()) => c.invoke(name, args, ctx, true, true),
                             Err(why) => json!({ "error": why }).to_string(),
                         },
-                        None => c.invoke(name, args, ctx, false, true),
+                        None => {
+                            let out = c.invoke(name, args, ctx, false, true);
+                            if name == "web_search" {
+                                searches.record(args, &out);
+                            }
+                            out
+                        }
                     },
                 }
             } else {

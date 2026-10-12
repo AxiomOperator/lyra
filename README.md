@@ -1532,6 +1532,13 @@ lyra can look things up: **`web_search`** asks a SearXNG instance and
 **`web_fetch`** reads a page as plain text (scripts, styles and menus
 dropped). Both only read, so the main agent uses them directly (and the
 Researcher agent has them too); replies cite the pages they used as links.
+One reply doesn't search the same thing over and over:
+- **Near-repeats:** a search nearly the same as one it made already (most of
+  the same words) isn't run again. The earlier results come back, with a
+  nudge to open one.
+- **A budget:** after 8 searches in one reply, it works from what it found.
+
+This holds for agents and routines too.
 
 ```toml
 [search]

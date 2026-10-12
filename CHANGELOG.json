@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.78.2.233",
+    "date": "2026-10-12",
+    "title": "No more searching in circles",
+    "fixed": [
+      "lyra no longer searches the web for the same thing again and again in one reply, as the morning brief did, making 33 searches with the same few questions reworded. A search nearly the same as one already made gives back those results, with a nudge to open the best one. After 8 searches in one reply, lyra works from what it found. The same goes for agents and routines."
+    ]
+  },
+  {
     "version": "0.78.1.232",
     "date": "2026-10-12",
     "title": "Notifications are easy to find; machines can connect by IP",

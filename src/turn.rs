@@ -676,6 +676,8 @@ pub(crate) fn converse(
     let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Tools the user said no to in this turn: not asked about again.
     let mut refused: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // This reply's searches: no near-repeats, and a budget.
+    let mut searches = crate::websearch::Searches::default();
     for round in 1..=max_rounds.max(1) {
         let shortened = fit(&mut history, room());
         if shortened > 0 {
@@ -794,7 +796,13 @@ pub(crate) fn converse(
         // How big this conversation is: the web reader condenses pages only once it's big.
         let size: usize = history.iter().map(|m| m["content"].as_str().map_or(0, str::len)).sum();
         crate::websearch::set_conversation_size(size);
-        let side_by_side: Vec<&ToolCall> = round.tool_calls.iter().filter(|c| matches!(c.function.name.as_str(), "web_search" | "web_fetch") && !skipped.contains(&c.id)).collect();
+        // A search nearly made already (or past the budget) isn't run again.
+        for c in round.tool_calls.iter().filter(|c| c.function.name == "web_search" && !skipped.contains(&c.id)) {
+            if let Some(instead) = searches.check(&c.function.arguments) {
+                ready.insert(c.id.clone(), instead);
+            }
+        }
+        let side_by_side: Vec<&ToolCall> = round.tool_calls.iter().filter(|c| matches!(c.function.name.as_str(), "web_search" | "web_fetch") && !skipped.contains(&c.id) && !ready.contains_key(&c.id)).collect();
         if side_by_side.len() > 1 && !stopped(cancel) {
             let (user, job) = (crate::acting::current(), crate::usage::job());
             std::thread::scope(|s| {
@@ -814,6 +822,9 @@ pub(crate) fn converse(
                     .collect();
                 for h in handles {
                     if let Ok((id, out)) = h.join() {
+                        if let Some(c) = side_by_side.iter().find(|c| c.id == id && c.function.name == "web_search") {
+                            searches.record(&c.function.arguments, &out);
+                        }
                         ready.insert(id, out);
                     }
                 }
@@ -890,7 +901,11 @@ pub(crate) fn converse(
                     None => json!({ "error": "that needs the user's approval, and approvals need agents on ([agents] enabled)" }).to_string(),
                 }
             } else {
-                caps.invoke(&call.function.name, arguments, ctx, false, true)
+                let out = caps.invoke(&call.function.name, arguments, ctx, false, true);
+                if name == "web_search" {
+                    searches.record(arguments, &out);
+                }
+                out
             };
             // A failure says so in its structure (for the detectors and skill reviews).
             let content = crate::outcomes::mark(content);
