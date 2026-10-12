@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.72.0.223",
+    "date": "2026-10-11",
+    "title": "Hands-free",
+    "new": [
+      "Hands-free mode (the microphone button by the message box): talk to lyra without touching the screen, in the car or at your desk. It listens, sends what you said, reads the reply aloud, and listens again.",
+      "When lyra needs your yes, hands-free reads the question out and takes a spoken yes or no. Say \"stop\" or \"that's all\" to end it, and after three silences in a row it pauses until you tap Go on.",
+      "The screen stays awake while it's on, and everything is heard and spoken on your device itself."
+    ]
+  },
+  {
     "version": "0.71.1.222",
     "date": "2026-10-11",
     "title": "Machines get the new sandbox limit",

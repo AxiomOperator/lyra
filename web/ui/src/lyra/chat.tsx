@@ -22,6 +22,7 @@ import { useLyra } from "./store";
 import type { Approval, ChatAsk, ChatMessage, PairRequest } from "./types";
 import { AskCard, ChatOnlyButton, EditButton, EffortButton, EditLast, FoldedTries, RetryButtons, foldFailures } from "./chat-asks";
 import { BoardCard, ComposerModel, PlanCard, ToolFileContent, ToolFileTree, ToolTerminal, type BoardView, type PlanView } from "./chat-parts2";
+import { HandsFreeBar, HandsFreeButton, useHandsFreeOn } from "./handsfree";
 import { SpeakButton, VoiceButton, useAutoRead } from "./voice";
 import { AgentTask, ApprovalAt, ApprovalDetail, ComposerAttachments, ReplyContext, ReplySources, SentAttachments, StarterSuggestions, approvalCall, splitAttached, webSources } from "./chat-parts";
 
@@ -556,6 +557,7 @@ function Composer() {
               />
             )}
             <VoiceButton />
+            <HandsFreeButton />
             <TemplatesButton text={text} use={(prompt) => setText(prompt)} />
             <ChatOnlyButton />
             <EffortButton />
@@ -656,7 +658,8 @@ export function ChatPage() {
     for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "assistant" && messages[i].content.trim()) return { id: `${status.session ?? ""}-${i}`, text: messages[i].content };
     return null;
   }, [messages, status.session]);
-  useAutoRead(lastReply, !!status.waiting);
+  const handsFree = useHandsFreeOn();
+  useAutoRead(lastReply, !!status.waiting, handsFree);
   // Each turn's answer (its last reply with words) gets the turn's messages, for its sources.
   const turns = useMemo(() => {
     const out = new Map<number, ChatMessage[]>();
@@ -754,6 +757,7 @@ export function ChatPage() {
         ))}
         {!!status.plan && (user?.admin ?? true) && <PlanCard plan={status.plan as PlanView} />}
         {!!status.board && <BoardCard board={status.board as BoardView} />}
+        <HandsFreeBar lastReply={lastReply} waiting={!!status.waiting} approvals={approvals} />
         {approvals[0] && !asking && <ApprovalCard a={approvals[0]} more={approvals.length - 1} />}
         {loose.map((a) => (
           <div key={a.id} className="mx-3 mb-2">

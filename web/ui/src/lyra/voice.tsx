@@ -67,10 +67,11 @@ function setSpeaking(id: string | null) {
   speakingListeners.forEach((fn) => fn(id));
 }
 
-export function speak(id: string, text: string) {
-  if (!canSpeak) return;
+/** Say `text` (as `id`, for the speaker buttons); `done` once it's said, or stopped. */
+export function speak(id: string, text: string, done?: () => void) {
+  if (!canSpeak) return done?.();
   const say = speakable(text);
-  if (!say) return;
+  if (!say) return done?.();
   speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(say);
   const v = speechSynthesis.getVoices().find((v) => v.voiceURI === prefs.voice);
@@ -79,7 +80,10 @@ export function speak(id: string, text: string) {
     u.lang = v.lang;
   }
   u.rate = prefs.rate;
-  u.onend = u.onerror = () => speakingId === id && setSpeaking(null);
+  u.onend = u.onerror = () => {
+    if (speakingId === id) setSpeaking(null);
+    done?.();
+  };
   setSpeaking(id);
   speechSynthesis.speak(u);
 }
@@ -185,14 +189,19 @@ export function VoiceButton() {
 }
 
 /** Speaks each finished reply when "read replies aloud" is on. */
-export function useAutoRead(lastReply: { id: string; text: string } | null, waiting: boolean) {
+export function useAutoRead(lastReply: { id: string; text: string } | null, waiting: boolean, handsFree = false) {
   const p = useVoicePrefs();
   const [spoken, setSpoken] = useState<string | null>(null);
   useEffect(() => {
+    // Hands-free reads its own replies (and listens after).
+    if (handsFree) {
+      if (lastReply) setSpoken(lastReply.id);
+      return;
+    }
     if (!p.auto || waiting || !lastReply || lastReply.id === spoken) return;
     setSpoken(lastReply.id);
     speak(lastReply.id, lastReply.text);
-  }, [p.auto, waiting, lastReply, spoken]);
+  }, [p.auto, waiting, lastReply, spoken, handsFree]);
   // Don't read out the reply that was there when it was switched on.
   useEffect(() => {
     if (p.auto && lastReply) setSpoken(lastReply.id);
