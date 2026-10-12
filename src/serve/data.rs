@@ -195,6 +195,33 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
         "machines" => json!(machines_detail(hub, node_build)),
         "activity" => json!(app.activity.iter().rev().take(200).map(|a| json!({ "time": a.time, "level": level_name(a.level), "text": a.text })).collect::<Vec<_>>()),
         "agents" => text(app.agents.as_deref().map(crate::agents::list).ok_or("agents are off".into())),
+        // What evolution proposes (admins: not a member's page), newest first, with what each needs.
+        "evolution_candidates" => match &app.evolution {
+            None => json!({ "error": "evolution is off ([evolution] enabled)" }),
+            Some(ev) => match ev.manager.candidates(80) {
+                Err(e) => json!({ "error": e }),
+                Ok(all) => json!(all
+                    .into_iter()
+                    .filter(|c| matches!(c.status, lyra_evolution::CandidateStatus::Proposed | lyra_evolution::CandidateStatus::Testing))
+                    .map(|c| {
+                        let v = c.validation.clone();
+                        let api = match &c.change {
+                            lyra_evolution::Change::Api { api } => Some(json!({
+                                "name": api.name, "title": api.title, "spec": api.spec, "reads": api.reads, "writes": api.writes, "sample": api.sample,
+                                "key": api.auth_secret, "key_saved": api.auth_secret.as_deref().is_some_and(|k| crate::secrets::token(k).is_some()),
+                            })),
+                            _ => None,
+                        };
+                        json!({
+                            "id": c.short(), "level": c.level.to_string(), "status": c.status.to_string(), "problem": c.problem, "rationale": c.rationale,
+                            "change": c.change.summary(), "confidence": c.confidence, "created": c.created_at,
+                            "tested": v.is_some(), "valid": v.as_ref().is_some_and(|v| v.valid), "notes": v.map(|v| v.notes).unwrap_or_default(),
+                            "api": api, "code": matches!(c.change, lyra_evolution::Change::Code { .. }),
+                        })
+                    })
+                    .collect::<Vec<_>>()),
+            },
+        },
         "goals" => page(app.goals.clone().ok_or("goals are off ([goals] enabled)".to_string()).and_then(|g| crate::goals::page(&g))),
         "skills" => page(app.learning.clone().ok_or("learning is off".to_string()).and_then(|l| l.page_for(app.personal().as_deref(), app.admin))),
         "memory" => {

@@ -387,8 +387,8 @@ impl EvolutionManager {
             Change::Tool { tool } => {
                 next.tools.insert(tool.name.clone(), tool.render());
             }
-            Change::Skill { .. } | Change::Code { .. } | Change::Agent { .. } => {
-                return Err("skill, agent and code changes deploy through their own systems".into());
+            Change::Skill { .. } | Change::Code { .. } | Change::Agent { .. } | Change::Api { .. } => {
+                return Err("skill, agent, code and API changes deploy through their own systems".into());
             }
         }
         Ok(next)

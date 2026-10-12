@@ -477,6 +477,18 @@ fn test_inner(env: &Env, c: Candidate, t: &mut Tested) -> Result<Candidate, Stri
         return Err(format!("candidate {} is {}", c.short(), c.status));
     }
     let mut v = Validation { valid: true, ..Default::default() };
+    // An API: its description read again (no benchmark: it adds tools, it doesn't change answers).
+    if let Change::Api { api } = &c.change {
+        match api_config(api).and_then(crate::caps::Caps::try_openapi) {
+            Ok((client, _)) => v.notes.push(format!("read {} operations from {}", client.capabilities().len(), api.spec)),
+            Err(e) => {
+                v.valid = false;
+                v.notes.push(e);
+            }
+        }
+        t.notes.push(format!("{}: {} {}", c.short(), if v.valid { "✓" } else { "✗" }, v.notes.join("; ")));
+        return ev.manager.save_validation(c, v);
+    }
     if let Change::Code { base_commit, diff } = &c.change {
         let lab = code_lab(ev)?;
         t.notes.push(format!("{}: checking the patch in a sandbox (clippy, tests)…", c.short()));
@@ -1109,6 +1121,9 @@ fn approve_inner(env: &Env, arg: &str, done: &mut Done) -> Result<String, String
             ev.source_repo.as_ref().map_or(String::new(), |p| crate::context::show(p))
         ));
     }
+    if let Change::Api { api } = c.change.clone() {
+        return deploy_api(env, c, &api);
+    }
     deploy(env, c, if force { "approved despite its benchmark" } else { "approved" }, done)
 }
 
@@ -1217,6 +1232,158 @@ pub fn compare(env: &Env, key: &str) -> Done {
 fn code_lab(ev: &Evolution) -> Result<CodeLab, String> {
     let repo = ev.source_repo.clone().ok_or("code evolution is off: set [evolution] source_repo to lyra's source checkout")?;
     Ok(CodeLab::new(repo, ev.manager.home()))
+}
+
+// ---- APIs proposed from a URL (approved by an admin, then live)
+
+/// How a service's description says to sign in: (header, scheme), or why
+/// lyra can't (OAuth needs a person in a browser).
+fn sign_in(spec: &Value) -> Result<Option<(String, String)>, String> {
+    let schemes = spec["components"]["securitySchemes"].as_object().or_else(|| spec["securityDefinitions"].as_object());
+    let Some(schemes) = schemes.filter(|s| !s.is_empty()) else { return Ok(None) };
+    for s in schemes.values() {
+        match (s["type"].as_str().unwrap_or(""), s["scheme"].as_str().unwrap_or("").to_lowercase().as_str()) {
+            ("http", "bearer") => return Ok(Some(("Authorization".into(), "Bearer".into()))),
+            ("http", "basic") | ("basic", _) => return Ok(Some(("Authorization".into(), "Basic".into()))),
+            ("apiKey", _) if s["in"] == "header" => return Ok(Some((s["name"].as_str().unwrap_or("X-API-Key").to_string(), String::new()))),
+            _ => {}
+        }
+    }
+    Err("it signs in a way lyra can't use on its own (OAuth or a key in the address): add it to config.toml by hand if you still want it".into())
+}
+
+/// A lyra name for the service: the one asked for, else its title's.
+fn api_name(asked: &str, title: &str, taken: &[String]) -> Result<String, String> {
+    let from = if asked.trim().is_empty() { title } else { asked };
+    let base: String = from.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let base = base.split('-').filter(|p| !p.is_empty()).take(3).collect::<Vec<_>>().join("-");
+    if base.is_empty() {
+        return Err("give it a name: /evolve api <url> <name>".into());
+    }
+    if taken.contains(&base) {
+        return Err(format!("there's already an API called {base} (give another name)"));
+    }
+    Ok(base)
+}
+
+/// The provider's entry in config.toml, as TOML (also what it's checked with).
+fn api_toml(api: &lyra_evolution::ApiProvider) -> String {
+    let mut t = toml_edit::Table::new();
+    t["name"] = toml_edit::value(api.name.clone());
+    t["spec"] = toml_edit::value(api.spec.clone());
+    if let Some(b) = &api.base_url {
+        t["base_url"] = toml_edit::value(b.clone());
+    }
+    if let Some(s) = &api.auth_secret {
+        t["auth_secret"] = toml_edit::value(s.clone());
+    }
+    if let Some(h) = &api.auth_header {
+        t["auth_header"] = toml_edit::value(h.clone());
+    }
+    if let Some(s) = &api.auth_scheme {
+        t["auth_scheme"] = toml_edit::value(s.clone());
+    }
+    t.to_string()
+}
+
+fn api_config(api: &lyra_evolution::ApiProvider) -> Result<lyra_capabilities::openapi::OpenApiConfig, String> {
+    toml::from_str(&api_toml(api)).map_err(|e| format!("its settings don't read: {e}"))
+}
+
+/// Read the service's OpenAPI description at `url` and propose it as an
+/// API candidate (an admin approves it: /evolve approve, or the app's
+/// Proposals page). Nothing is added until then; its writes will still ask.
+pub fn propose_api(ev: &Evolution, caps: Option<&crate::caps::Caps>, url: &str, name: &str, why: &str) -> Result<String, String> {
+    let url = url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("give the address of its OpenAPI description (https://…/openapi.json)".into());
+    }
+    let taken = caps.map(|c| c.openapi_names()).unwrap_or_default();
+    // A first look, under a scratch name, to read its title and sign-in.
+    let probe = lyra_evolution::ApiProvider { name: format!("proposed-{}", &Uuid::new_v4().simple().to_string()[..6]), spec: url.into(), base_url: None, auth_secret: None, auth_header: None, auth_scheme: None, title: String::new(), reads: 0, writes: 0, sample: Vec::new() };
+    let (client, text) = crate::caps::Caps::try_openapi(api_config(&probe)?)?;
+    let spec: Value = serde_json::from_str(&text).or_else(|_| serde_yaml_ng::from_str(&text)).map_err(|e| format!("its description doesn't read: {e}"))?;
+    let title = spec["info"]["title"].as_str().unwrap_or("").trim().to_string();
+    let name = api_name(name, &title, &taken)?;
+    let auth = sign_in(&spec)?;
+    let caps_found = client.capabilities();
+    if caps_found.is_empty() {
+        return Err("its description has no operations lyra can use".into());
+    }
+    let writes = caps_found.iter().filter(|c| c.risk != lyra_capabilities::RiskLevel::ReadOnly).count();
+    let api = lyra_evolution::ApiProvider {
+        auth_secret: auth.as_ref().map(|_| format!("api-{name}")),
+        auth_header: auth.as_ref().map(|(h, _)| h.clone()),
+        auth_scheme: auth.as_ref().map(|(_, s)| s.clone()),
+        name,
+        spec: url.into(),
+        base_url: None,
+        title,
+        reads: caps_found.len() - writes,
+        writes,
+        sample: Vec::new(),
+    };
+    // Its operations under the name it'll have (they were read under a scratch one).
+    let mut api = api;
+    api.sample = caps_found
+        .iter()
+        .take(8)
+        .map(|c| format!("{}.{} — {}", api.name, c.id.split_once('.').map_or(c.id.as_str(), |(_, op)| op), c.description.chars().take(80).collect::<String>()))
+        .collect();
+    let op = lyra_evolution::Opportunity {
+        kind: "api_proposed".into(),
+        problem: if why.trim().is_empty() { format!("lyra could use {}", if api.title.is_empty() { &api.name } else { &api.title }) } else { why.trim().to_string() },
+        categories: vec![lyra_evolution::Category::Tool],
+        evidence: Vec::new(),
+        details: json!({ "url": url }),
+    };
+    let proposal = lyra_evolution::evolver::Proposal { change: lyra_evolution::Change::Api { api: api.clone() }, rationale: format!("Its OpenAPI description at {url} gives {} operations.", api.reads + api.writes), confidence: 0.7 };
+    let c = ev.manager.propose(&op, vec![proposal])?.into_iter().next().ok_or("nothing was proposed")?;
+    // Checked already (it read, it has operations): ready for an admin's yes.
+    let v = Validation { valid: true, notes: vec![format!("read {} operations from {url}", api.reads + api.writes)], fitness_before: None, fitness_after: None, checks: Vec::new() };
+    let c = ev.manager.save_validation(c, v)?;
+    let key = api.auth_secret.as_ref().map(|s| format!(" It needs a key: lyra secret {s} on the server (before or after approving)."), ).unwrap_or_default();
+    Ok(format!(
+        "Proposed API {} ({}): {} read and {} write operations. Candidate {}: an admin approves it with /evolve approve {} or on the Proposals page; until then nothing is added, and its writes will still ask each time.{key}",
+        api.name,
+        if api.title.is_empty() { url } else { &api.title },
+        api.reads,
+        api.writes,
+        c.short(),
+        c.short()
+    ))
+}
+
+/// An approved API: into config.toml (`[[capabilities.openapi]]`) and live now.
+fn deploy_api(env: &Env, c: Candidate, api: &lyra_evolution::ApiProvider) -> Result<String, String> {
+    let caps = env.caps.as_ref().ok_or("capabilities are off")?;
+    if caps.openapi_names().contains(&api.name) {
+        return Err(format!("there's already an API called {}", api.name));
+    }
+    let n = caps.add_openapi(api_config(api)?)?;
+    let path = crate::config::path().ok_or("no home directory")?;
+    let entry: toml_edit::Table = api_toml(api).parse::<toml_edit::DocumentMut>().map_err(|e| e.to_string())?.as_table().clone();
+    crate::config::update_file(&path, |doc| {
+        let caps = doc.entry("capabilities").or_insert(toml_edit::table()).as_table_mut().ok_or("[capabilities] in config.toml isn't a table")?;
+        let list = caps.entry("openapi").or_insert(toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
+        list.as_array_of_tables_mut().ok_or("capabilities.openapi in config.toml isn't a list of tables")?.push(entry);
+        Ok(())
+    })?;
+    caps.refresh();
+    let key = api.auth_secret.as_ref().filter(|s| crate::secrets::token(s).is_none()).map(|s| format!(" It needs its key before it works: lyra secret {s} on the server, then /reload."));
+    env.evolution.manager.mark_deployed_elsewhere(c, &format!("added to config.toml as [[capabilities.openapi]] {}", api.name))?;
+    Ok(format!("✓ added API {}: {n} operations, live now (its writes ask each time). It's in config.toml under [[capabilities.openapi]]; remove that entry to take it away.{}", api.name, key.unwrap_or_default()))
+}
+
+/// `/evolve api <url> [name]`.
+pub fn propose_api_command(env: &Env, rest: &str) -> Done {
+    let mut done = Done { notes: Vec::new(), usage: Vec::new() };
+    let (url, name) = rest.trim().split_once(' ').map_or((rest.trim(), ""), |(u, n)| (u, n.trim()));
+    done.notes.push(match propose_api(&env.evolution, env.caps.as_deref(), url, name, "") {
+        Ok(t) => t,
+        Err(e) => format!("✗ couldn't propose it: {e}"),
+    });
+    done
 }
 
 /// Ask the model for a source patch for a problem: it picks files, then
@@ -1351,6 +1518,10 @@ pub fn show(ev: &Evolution, key: &str) -> Result<String, String> {
     match &c.change {
         Change::Workflow { workflow } => out.push(workflow.render()),
         Change::Tool { tool } => out.push(tool.render()),
+        Change::Api { api } => {
+            out.push(api_toml(api));
+            out.extend(api.sample.iter().map(|s| format!("  {s}")));
+        }
         Change::Skill { instructions, .. } | Change::Agent { instructions, .. } => out.push(instructions.clone()),
         Change::Code { base_commit, diff } => {
             out.push(format!("against {}", &base_commit[..base_commit.len().min(10)]));
@@ -1525,5 +1696,62 @@ mod tests {
         assert!(t.notes.iter().any(|n| n.contains("as plans")), "planner-only change benchmarked as plans");
         assert!(v.fitness_before.is_some() && v.fitness_after.is_some());
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// A tiny web server answering every request with `body`.
+    fn serve(body: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/openapi.json", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            }
+        });
+        url
+    }
+
+    const PARCELS: &str = r#"{"openapi":"3.0.0","info":{"title":"Parcel Tracker","version":"1"},"servers":[{"url":"https://parcels.example/v1"}],
+        "paths":{"/parcels/{id}":{"get":{"operationId":"getParcel","summary":"A parcel's status","parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"ok"}}}},
+                 "/parcels":{"post":{"operationId":"createParcel","summary":"Send a parcel","responses":{"201":{"description":"made"}}}}},
+        "components":{"securitySchemes":{"token":{"type":"http","scheme":"bearer"}}}}"#;
+
+    #[test]
+    fn an_api_is_proposed_from_its_description_then_approved_into_place() {
+        crate::config::with_test_home(|home| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let manager = EvolutionManager::open(&home.join("evolution"), rt.handle().clone(), Default::default()).unwrap();
+            let ev = Arc::new(Evolution::new(manager, rt.handle().clone(), None, 1));
+            let caps_manager = rt.block_on(lyra_capabilities::CapabilityManager::open(&home.join("capabilities"), Default::default())).unwrap();
+            let caps = Arc::new(crate::caps::Caps::new(caps_manager, rt.handle().clone(), Vec::new(), Vec::new()));
+            let url = serve(PARCELS);
+            // Proposed: read, named from its title, its sign-in found; nothing added yet.
+            let said = propose_api(&ev, Some(&caps), &url, "", "track parcels").unwrap();
+            assert!(said.contains("Proposed API parcel-tracker") && said.contains("1 read and 1 write") && said.contains("lyra secret api-parcel-tracker"), "{said}");
+            assert!(caps.openapi_names().is_empty(), "not until approved");
+            let c = ev.manager.candidates(5).unwrap().remove(0);
+            let Change::Api { api } = &c.change else { panic!("an API candidate") };
+            assert_eq!((api.auth_header.as_deref(), api.auth_scheme.as_deref(), api.reads, api.writes), (Some("Authorization"), Some("Bearer"), 1, 1));
+            assert!(c.validation.as_ref().is_some_and(|v| v.valid), "checked when proposed");
+            assert!(api.sample.iter().all(|s| s.starts_with("parcel-tracker.")), "under its own name: {:?}", api.sample);
+            // Approved: live now, and kept in config.toml.
+            let env = Env { url: String::new(), model: String::new(), evolution: ev.clone(), tools: None, learning: None, caps: Some(caps.clone()), goals: None, system_prompt: None };
+            let mut done = Done { notes: Vec::new(), usage: Vec::new() };
+            let out = approve_inner(&env, &c.short(), &mut done).unwrap();
+            assert!(out.contains("added API parcel-tracker: 2 operations") && out.contains("needs its key"), "{out}");
+            assert_eq!(caps.openapi_names(), ["parcel-tracker"]);
+            assert!(caps.manager.get("parcel-tracker.createParcel").is_some_and(|c| c.metadata.requires_approval), "its writes still ask");
+            let config = std::fs::read_to_string(crate::config::path().unwrap()).unwrap();
+            assert!(config.contains("[[capabilities.openapi]]") && config.contains("name = \"parcel-tracker\"") && config.contains("auth_secret = \"api-parcel-tracker\""), "{config}");
+            assert_eq!(ev.manager.find(&c.short()).unwrap().status, CandidateStatus::Deployed);
+            // The same name again: refused; and a description that signs in with OAuth.
+            assert!(propose_api(&ev, Some(&caps), &url, "", "").unwrap_err().contains("already an API called parcel-tracker"));
+            assert!(propose_api(&ev, Some(&caps), "ftp://x", "", "").is_err());
+            assert!(sign_in(&json!({ "components": { "securitySchemes": { "o": { "type": "oauth2" } } } })).unwrap_err().contains("OAuth"));
+            assert_eq!(sign_in(&json!({ "components": { "securitySchemes": { "k": { "type": "apiKey", "in": "header", "name": "X-Key" } } } })).unwrap(), Some(("X-Key".to_string(), String::new())));
+            assert_eq!(sign_in(&json!({})).unwrap(), None);
+        });
     }
 }

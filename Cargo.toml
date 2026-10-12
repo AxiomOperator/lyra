@@ -34,6 +34,7 @@ futures-util = "0.3"
 html2text = "0.17"
 toml = "1.1.6"
 toml_edit = "0.25.15"
+serde_yaml_ng = "0.10"
 qrcode = { version = "0.14.1", default-features = false }
 tar = "0.4.46"
 flate2 = "1.1.10"

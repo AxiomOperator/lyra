@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.73.0.224",
+    "date": "2026-10-11",
+    "title": "lyra can propose new tools",
+    "new": [
+      "When a task needs a web service lyra has no tools for and it publishes an OpenAPI description, lyra can propose adding it. It reads the description, names it, counts its operations and works out how it signs in. Nothing is added until an admin approves.",
+      "A new Proposals page (Automation, admins) lists what lyra proposes to add or change: new APIs, tools, workflows and settings. It shows what each is and why, with Approve, Test and Reject. You can also propose an API yourself there by pasting its description's URL, or with /evolve api <url>.",
+      "An approved API is live at once, with no restart, and is kept in config.toml. Its writes still ask for your Allow each time, and if it needs a key the page says which secret to save."
+    ]
+  },
+  {
     "version": "0.72.0.223",
     "date": "2026-10-11",
     "title": "Hands-free",

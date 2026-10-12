@@ -60,6 +60,8 @@ How to read it:
 | Agent look and sharing (since 0.67): a colour and icon per agent (its cards in the chat, the terminal's panel); duplicate an agent to start a new one; admins choose which agents members may use (never the Operator or the Coder) | `agents/` (`Look`, `shared`, `duplicate`), `agents.rs` (`Env::may_use`), the Agents page |
 | Monitoring the web (since 0.68): "tell me when this page changes, a price drops below 500, it says in stock, or a search finds something new", checked every few hours and told once | `watches.rs` (`web_page`, `web_search`, `check_web`) |
 | Browser use in a sandbox (since 0.69): a real browser in a throw-away container on one machine with Docker, for signing in, filling in and sending forms and sites without an API. It works on the page's structure (links, buttons and fields by number), so text models can use it. Sending a form waits for an Allow; payment fields and uploads never happen; saved sign-ins never reach the model; the containers can't reach the LAN | `sandbox.rs`, `node/src/sandbox.rs`, `lyra_system::browser` |
+| Hands-free voice (since 0.72): listen → send → read the reply aloud → listen again, with lyra's questions read out and answered by a spoken yes or no; on the device itself | `web/ui/src/lyra/handsfree.tsx` |
+| Building tools on the fly (since 0.73): lyra proposes adding a web service from its OpenAPI description when a task needs one (or an admin gives the URL); an admin approves it on the Proposals page and it's live at once, its writes still asking each time | `evolve.rs` (`propose_api`, `deploy_api`), `caps.rs` (`api_propose`, `add_openapi`), the Proposals page |
 | Named, persistent agents with roles, instructions, routing and a conversational creation wizard with templates | `agents/` (profiles as TOML, versions, rule / semantic / model routing, `builder`, `templates`) |
 | Separate memory per agent (its own `agent:<name>` scope, or none, read-only, or scoped) | `agents/src/model.rs` memory modes |
 | Persistent sessions: saved conversations, resume (`-c` / `-r`), folders, pins, archive, search across them, age limits | `sessions.rs`, `retention.rs` |
@@ -85,9 +87,7 @@ How to read it:
 | What | The others | lyra today | What closing it would take |
 |---|---|---|---|
 | **Learning from demonstrations** | Watch a person do it, turn it into a skill (Grok) | Skills come from corrections and successful runs, not from watching | A "show me" recording in the app (steps typed or picked) that the skill evaluator turns into a proposed skill |
-| **Dynamic tool building** | Builds tools when integrations fall short (Muse) | Evolution proposes composite tools and workflows, benchmarked and approved; OpenAPI and MCP providers are added by an admin | Let the evolver propose an OpenAPI provider from a URL; still behind approval |
 | **Channels** | WhatsApp, Telegram, Discord, Slack, Signal, iMessage, Teams (OpenClaw); WhatsApp (Muse) | The PWA, the TUI, push and email to yourself; Teams is read (and watched), not answered | A Teams bot or chat reply path first (it's already connected); other channels would need their own sign-in and isolation per person |
-| **Voice** | Voice calls and spoken conversation (Grok, OpenClaw) | Dictation in and read-aloud out, per device | A hands-free mode that chains the two (listen, send, speak, listen) |
 
 ## Full gaps
 
@@ -116,7 +116,7 @@ In order of value for lyra's users, keeping its rules:
 5. ~~**A browser on a named node**~~ (done in 0.69, as a Docker sandbox), read-first, with every submit behind an
    Allow. It closes the largest functional gap while keeping approvals in Rust
    and nothing off the host unless named.
-6. **Hands-free voice**, by joining dictation and read-aloud.
+6. ~~**Hands-free voice**~~ (done in 0.72), by joining dictation and read-aloud.
 
 Left out on purpose: payments and purchases, a marketplace, and channels that
 would send as the person without an Allow.

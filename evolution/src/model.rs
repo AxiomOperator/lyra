@@ -189,6 +189,36 @@ pub enum Change {
     Tool { tool: CompositeTool },
     Code { base_commit: String, diff: String },
     Agent { agent: String, instructions: String },
+    /// A web service lyra can call, from its OpenAPI description (added to
+    /// lyra's config when approved; its writes still ask each time).
+    Api { api: ApiProvider },
+}
+
+/// A proposed OpenAPI provider: where its description is, how it signs in,
+/// and what lyra found in it (for the person deciding).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApiProvider {
+    /// Its name in lyra (its capabilities are `name.operation`).
+    pub name: String,
+    /// The OpenAPI description's URL.
+    pub spec: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// The secrets.toml entry its key goes in (`lyra secret <it>`), when it needs one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_header: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_scheme: Option<String>,
+    /// The service's own title (its description's `info.title`).
+    #[serde(default)]
+    pub title: String,
+    pub reads: usize,
+    pub writes: usize,
+    /// A few of its operations, for the person deciding.
+    #[serde(default)]
+    pub sample: Vec<String>,
 }
 
 impl Change {
@@ -201,6 +231,7 @@ impl Change {
             Change::Tool { .. } => Category::Tool,
             Change::Code { .. } => Category::Code,
             Change::Agent { .. } => Category::Agent,
+            Change::Api { .. } => Category::Tool,
         }
     }
 
@@ -225,6 +256,15 @@ impl Change {
                 tool.steps.iter().map(|s| s.tool.as_str()).collect::<Vec<_>>().join(" + ")
             ),
             Change::Code { diff, .. } => format!("code patch ({} lines)", diff.lines().count()),
+            Change::Api { api } => format!(
+                "API {}{}: {} operations ({} read, {} write) from {}",
+                api.name,
+                if api.title.is_empty() { String::new() } else { format!(" ({})", api.title) },
+                api.reads + api.writes,
+                api.reads,
+                api.writes,
+                api.spec
+            ),
         }
     }
 }

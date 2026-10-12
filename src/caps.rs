@@ -31,7 +31,8 @@ pub struct Caps {
     pub tools: Option<Arc<Tools>>,
     pub learning: Option<Arc<Learning>>,
     pub evolution: Option<Arc<Evolution>>,
-    openapi: Vec<OpenApiClient>,
+    /// OpenAPI providers: from config at start, and ones an admin approved since (`add_openapi`).
+    openapi: std::sync::RwLock<Vec<Arc<OpenApiClient>>>,
     mcp: Vec<McpClient>,
     /// Long-lived goals: the model can read them and note progress.
     goals: std::sync::OnceLock<Arc<crate::goals::Goals>>,
@@ -250,6 +251,24 @@ fn native(name: &str, description: &str, parameters: &Value) -> Capability {
     c
 }
 
+/// Proposing a web service lyra could use (an admin approves it).
+fn api_propose_tool() -> Capability {
+    let mut c = Capability::new(
+        "api_propose",
+        CapabilityKind::NativeTool,
+        "When a task needs a web service lyra has no tools for, and it publishes an OpenAPI (Swagger) description: propose adding it. lyra reads the description and an admin decides; nothing is added until they approve, and its writes still ask each time. Give the description's URL (often …/openapi.json or …/swagger.json).",
+        RiskLevel::LowWrite,
+    );
+    c.input_schema = json!({ "type": "object", "properties": {
+        "url": { "type": "string", "description": "The OpenAPI description's URL." },
+        "name": { "type": "string", "description": "A short name for it (optional; from its title otherwise)." },
+        "why": { "type": "string", "description": "What it's for: the task that needs it." },
+    }, "required": ["url"] });
+    c.source = "evolve-api".into();
+    c.tags = ["api", "openapi", "swagger", "integration", "service", "connect", "add a tool"].iter().map(|t| t.to_string()).collect();
+    c
+}
+
 /// The model's view of long-lived goals.
 fn goal_tools() -> Vec<Capability> {
     let id = json!({ "type": "string", "description": "Goal id (the 8 characters shown is enough) or part of its title." });
@@ -418,8 +437,39 @@ impl Caps {
         (specs, servers, notes)
     }
 
+    fn with_openapi(self, openapi: Vec<OpenApiClient>) -> Self {
+        *self.openapi.write().unwrap_or_else(|e| e.into_inner()) = openapi.into_iter().map(Arc::new).collect();
+        self
+    }
+
+    /// An OpenAPI provider, read and checked (not added): for proposing one.
+    pub fn try_openapi(mut config: OpenApiConfig) -> Result<(OpenApiClient, String), String> {
+        if let Some(name) = &config.auth_secret {
+            config.secret = crate::secrets::token(name);
+        }
+        let text = spec_from_url(&config.name, &config.spec)?;
+        let client = OpenApiClient::load(config, &text)?;
+        Ok((client, text))
+    }
+
+    /// Add (or replace) an OpenAPI provider while lyra runs (an approved
+    /// proposal); its capabilities appear at the next refresh. How many it gives.
+    pub fn add_openapi(&self, config: OpenApiConfig) -> Result<usize, String> {
+        let (client, _) = Self::try_openapi(config)?;
+        let n = client.capabilities().len();
+        let mut all = self.openapi.write().unwrap_or_else(|e| e.into_inner());
+        all.retain(|c| c.config.name != client.config.name);
+        all.push(Arc::new(client));
+        Ok(n)
+    }
+
+    /// The OpenAPI providers' names.
+    pub fn openapi_names(&self) -> Vec<String> {
+        self.openapi.read().unwrap_or_else(|e| e.into_inner()).iter().map(|c| c.config.name.clone()).collect()
+    }
+
     pub fn new(manager: CapabilityManager, rt: Handle, openapi: Vec<OpenApiClient>, mcp: Vec<McpClient>) -> Self {
-        Self { manager, rt, groups: Default::default(), tools: None, learning: None, evolution: None, openapi, mcp, goals: std::sync::OnceLock::new(), agents: std::sync::OnceLock::new(), system: None, remote: std::sync::OnceLock::new(), search: None }
+        Self { manager, rt, groups: Default::default(), tools: None, learning: None, evolution: None, openapi: Default::default(), mcp, goals: std::sync::OnceLock::new(), agents: std::sync::OnceLock::new(), system: None, remote: std::sync::OnceLock::new(), search: None }.with_openapi(openapi)
     }
 
     /// Add the goal tools (goal_list, goal_get, goal_create, goal_note).
@@ -561,7 +611,7 @@ impl Caps {
     /// Every OpenAPI and MCP provider, checked now: (kind, name, where, health,
     /// how many capabilities it gives). Blocking: call from a worker thread.
     pub fn providers(&self) -> Vec<(&'static str, String, String, lyra_capabilities::CapabilityHealth, usize)> {
-        let mut out: Vec<_> = self.openapi.iter().map(|c| ("OpenAPI", c.config.name.clone(), c.base_url().to_string(), c.health(), c.capabilities().len())).collect();
+        let mut out: Vec<_> = self.openapi.read().unwrap_or_else(|e| e.into_inner()).iter().map(|c| ("OpenAPI", c.config.name.clone(), c.base_url().to_string(), c.health(), c.capabilities().len())).collect();
         out.extend(self.mcp.iter().map(|c| ("MCP", c.config.name.clone(), format!("{} {}", c.config.command, c.config.args.join(" ")).trim().to_string(), c.health(), c.capabilities().len())));
         out
     }
@@ -635,6 +685,10 @@ impl Caps {
         if crate::coding::settings().enabled {
             caps.push(crate::coding::capability());
         }
+        // Proposing an API from its description (evolution decides with an admin).
+        if self.evolution.is_some() {
+            caps.push(api_propose_tool());
+        }
         // The browser sandbox, once its machine is ready.
         if crate::sandbox::ready(self.remote.get().map(|r| r.as_ref())) {
             caps.extend(crate::sandbox::capabilities());
@@ -658,7 +712,7 @@ impl Caps {
             let windows = self.remote.get().map(|r| r.windows_machines()).unwrap_or_default();
             caps.extend(system_tools(&machines, &windows));
         }
-        caps.extend(self.openapi.iter().flat_map(OpenApiClient::capabilities));
+        caps.extend(self.openapi.read().unwrap_or_else(|e| e.into_inner()).iter().flat_map(|c| c.capabilities()));
         caps.extend(self.mcp.iter().flat_map(McpClient::capabilities));
         // Learned procedures and workflows are capabilities too (C10): the
         // planner can use them as workflow steps.
@@ -695,7 +749,8 @@ impl Caps {
     /// Check every provider's availability (C8). Blocking; returns notes.
     pub fn check_health(&self) -> Vec<String> {
         let mut notes = Vec::new();
-        for c in &self.openapi {
+        let openapi: Vec<Arc<OpenApiClient>> = self.openapi.read().unwrap_or_else(|e| e.into_inner()).clone();
+        for c in &openapi {
             let h = c.health();
             self.manager.set_health(&format!("{}.*", c.config.name), h);
             if h != CapabilityHealth::Healthy {
@@ -956,7 +1011,7 @@ impl Caps {
         }
         let start = Instant::now();
         let outcome: Result<Value, String> = match c.kind {
-            CapabilityKind::OpenApi => match self.openapi.iter().find(|o| o.has(&c.id)) {
+            CapabilityKind::OpenApi => match self.openapi.read().unwrap_or_else(|e| e.into_inner()).iter().find(|o| o.has(&c.id)).cloned() {
                 Some(client) => client.call(&c.id, &args),
                 None => Err(format!("{} has no provider", c.id)),
             },
@@ -997,6 +1052,12 @@ impl Caps {
                 None => crate::projects::call(self.remote.get().map(|r| r.as_ref()), &c.name, &args, true),
             },
             _ if c.source == "style" => crate::style::call(&c.name, &args),
+            // A proposal for an admin (members can't add tools).
+            _ if c.source == "evolve-api" => match (&self.evolution, ctx.member) {
+                (_, true) => Err("adding tools is for admins".into()),
+                (None, _) => Err("evolution is off".into()),
+                (Some(ev), false) => crate::evolve::propose_api(ev, Some(self), args["url"].as_str().unwrap_or(""), args["name"].as_str().unwrap_or(""), args["why"].as_str().unwrap_or("")).map(|t| json!({ "proposed": t })),
+            },
             // The browser sandbox (admins; a form waits for the user's yes, on both sides).
             _ if c.source == "sandbox" => crate::sandbox::call(self.remote.get().map(|r| r.as_ref()), &c.name, &args, approved, ctx.member),
             // What the person this turn is for asked to be told about.

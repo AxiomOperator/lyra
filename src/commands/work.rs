@@ -367,6 +367,14 @@ impl App {
                 self.evolve_in_background("rolling back", true, move |env| evolve::rollback(env, &rest));
                 Ok("rolling back…".into())
             }
+            // A web service lyra could use, from its OpenAPI description (proposed; an admin approves).
+            "api" => {
+                if rest.is_empty() {
+                    return Err("usage: /evolve api <the OpenAPI description's URL> [name]".into());
+                }
+                self.evolve_in_background("reading the API's description", true, move |env| evolve::propose_api_command(env, &rest));
+                Ok("reading the API's description (it only becomes a candidate)…".into())
+            }
             "code" => {
                 if rest.is_empty() {
                     return Err("usage: /evolve code <the problem to fix>".into());
