@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.80.1.236",
+    "date": "2026-10-12",
+    "title": "Clearer when no model can answer",
+    "fixed": [
+      "When none of the chat models can answer, the message now names each one lyra tried and why (unreachable, or took the request and then said nothing). Before, it named only the last one, which looked as if the main model was the problem when it wasn't."
+    ]
+  },
+  {
     "version": "0.80.0.235",
     "date": "2026-10-12",
     "title": "Talk",

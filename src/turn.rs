@@ -692,6 +692,8 @@ pub(crate) fn converse(
     let mut refused: std::collections::HashSet<String> = std::collections::HashSet::new();
     // This reply's searches: no near-repeats, and a budget.
     let mut searches = crate::websearch::Searches::default();
+    // Each model that couldn't answer, and why (all named if none can).
+    let mut tried: Vec<String> = Vec::new();
     for round in 1..=max_rounds.max(1) {
         let shortened = fit(&mut history, room());
         if shortened > 0 {
@@ -749,6 +751,7 @@ pub(crate) fn converse(
         {
             // Known down: no note in every reply, just where it went.
             let why = (!crate::known_down::is_down("chat")).then_some("it failed a moment ago");
+            tried.push(format!("{model} ({})", why.unwrap_or("marked down")));
             switch(&mut current, next, why);
         }
         body["model"] = json!(current.1);
@@ -764,7 +767,8 @@ pub(crate) fn converse(
                 }
                 // Not there (before saying anything): the next in line takes this round and the rest.
                 Err(e) if e.starts_with(UNREACHED) && crate::fallback::unreachable(&e) => {
-                    let Some(next) = crate::fallback::after(&current.0, &current.1) else { return Err(e) };
+                    let Some(next) = crate::fallback::after(&current.0, &current.1) else { return Err(gave_up(&tried, &current.1, &e)) };
+                    tried.push(format!("{} ({})", current.1, short_why(&e)));
                     if current.0 == url {
                         crate::fallback::main_failed();
                     } else {
@@ -965,6 +969,26 @@ pub(crate) fn silence() -> Duration {
 /// How a failure before the model said anything starts (the fallback may take over then).
 pub(crate) const UNREACHED: &str = "couldn't reach the chat model: ";
 
+/// Why a model couldn't answer, in a few words.
+fn short_why(e: &str) -> String {
+    let e = e.trim_start_matches(UNREACHED);
+    if e.contains("said nothing") {
+        "took the request, then said nothing".into()
+    } else if e.contains("error sending request") || e.contains("connection") {
+        "unreachable".into()
+    } else {
+        e.chars().take(80).collect()
+    }
+}
+
+/// No model in line could answer: each one named, with why.
+fn gave_up(tried: &[String], last: &str, e: &str) -> String {
+    if tried.is_empty() {
+        return e.to_string();
+    }
+    format!("{UNREACHED}no chat model could answer: {}, and {last} ({})", tried.join(", "), short_why(e))
+}
+
 /// POST the request, forward each delta as it arrives, and measure the reply.
 pub(crate) fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: &Cancel) -> Result<Round, String> {
     // No overall timeout: a long generation is fine as long as tokens keep coming.
@@ -1100,7 +1124,7 @@ pub(crate) fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: 
 
 #[cfg(test)]
 mod tests {
-    use super::{Effort, compact, fit, small_talk};
+    use super::{Effort, UNREACHED, compact, fit, gave_up, short_why, small_talk};
     use serde_json::json;
 
     #[test]
@@ -1170,6 +1194,15 @@ mod tests {
         if std::env::var_os("LYRA_MODEL_SILENCE_SECONDS").is_none() {
             assert_eq!(super::silence(), std::time::Duration::from_secs(180));
         }
+    }
+
+    #[test]
+    fn when_no_model_answers_each_is_named() {
+        let e = format!("{UNREACHED}error sending request for url (http://172.16.0.12:8080/v1/chat/completions)");
+        assert_eq!(gave_up(&[], "m3", &e), e, "only one tried: its own error");
+        let said = gave_up(&["main-27b (unreachable)".into(), "fallback-27b (took the request, then said nothing)".into()], "gemma4", &e);
+        assert_eq!(said, format!("{UNREACHED}no chat model could answer: main-27b (unreachable), fallback-27b (took the request, then said nothing), and gemma4 (unreachable)"));
+        assert_eq!(short_why(&format!("{UNREACHED}timed out: the model took the request but said nothing for 180s")), "took the request, then said nothing");
     }
 
     #[test]
