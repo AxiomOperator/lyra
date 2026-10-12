@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.86.0.246",
+    "date": "2026-10-12",
+    "title": "lyra's own tasks: the plan settled",
+    "improved": [
+      "The plan for lyra's own tasks now has its decisions: projects with status updates (no risks for now), tasks given to someone wait for them to accept, everyone starts fresh (nothing is brought over from PMI), everyone switches together once it's all built, and a two-way sync with Microsoft To Do comes later."
+    ]
+  },
+  {
     "version": "0.86.0.245",
     "date": "2026-10-12",
     "title": "A plan for lyra's own tasks",

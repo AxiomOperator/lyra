@@ -56,9 +56,11 @@ item can be made into a task, and a goal can have tasks.
 - **Behind it, two backends:**
   - **lyra** (new): the in-house store.
   - **pmi** (today's `pmi.rs`): kept only while people move over.
-- **The setting:** `[tasks] backend = "lyra" | "pmi"`.
-  - It starts as `pmi` on production so nothing changes on day one.
-  - It becomes `lyra` after the import, and then `pmi` is removed.
+- **The setting:** `[tasks] backend = "lyra" | "pmi"`, one for everyone.
+  - It stays `pmi` on production while the in-house side is built, so nothing
+    changes for anyone until then.
+  - It becomes `lyra` once the whole feature is done (decision 4), and then
+    `pmi` is removed.
 - **What this buys:** every consumer in §1 (briefing, planner, proactive,
   recap, people, watches, meetings, nags, the page) switches once, to
   `tasks::`, and needs no change when PMI goes.
@@ -80,21 +82,23 @@ SQLite for (plans, the skills ledger, evolution).
     (a rule: "every weekday", "monthly on the 1st").
   - Links: `project_id` (FK, nullable), `parent_id` (subtasks, FK), `goal_id`
     (nullable).
-  - Origin: `source` (`chat`, `mail`, `meeting`, `routine`, `import`, `page`)
-    and `source_ref` (a mail id, a meeting id).
-  - Times: `created`, `updated`, `completed`.
-  - Import: `pmi_id` (unique, to make the import repeatable).
+  - Origin: `source` (`chat`, `mail`, `meeting`, `routine`, `page`) and
+    `source_ref` (a mail id, a meeting id).
+  - Times: `created`, `updated`, `completed`, `deleted` (a deleted task is
+    kept, marked, so a later sync can tell another side; see §2.8).
 - **`task_assignees`** (`task_id`, `user`, `accepted`): a task given to someone
   else, accepted or not yet. This replaces PMI's "transfers".
 - **`projects`:** `id`, `name`, `description`, `owner`, `status` (`active`,
-  `on_hold`, `done`), `health` (`on_track`, `at_risk`, `off_track`), `due`,
-  `pmi_id`.
+  `on_hold`, `done`), `health` (`on_track`, `at_risk`, `off_track`), `due`.
 - **`project_members`** (`project_id`, `user`, `role`: `owner`, `member`).
 - **`task_events`:** what changed, by whom and when: comments, status changes,
   reassignments. This is the task's history, and what watches and the recap
   read.
-- **`project_updates`:** status updates (text, health, by, at) and risks
-  (text, likelihood, impact, owner, status).
+- **`project_updates`:** status updates (text, health, by, at). No risks for
+  now (decision 1).
+- **`task_links`** (`task_id`, `service`, `external_id`, `etag`, `synced`):
+  empty until the Microsoft To Do sync (§2.8). It's in the schema from the
+  start so the sync needs no migration of tasks.
 
 **SQL rules that apply:**
 - `sqlx` with bound parameters.
@@ -128,7 +132,7 @@ The tools are the same set, renamed from `pmi_*` to `task_*` and `project_*`:
   `task_complete`, `task_remind`, `task_comment`, `task_assign`.
 - `tasks_waiting`: requests for you to accept.
 - `project_list`, `project_get`, `project_add`, `project_update_draft`,
-  `project_update_post`, `project_add_risk`.
+  `project_update_post`.
 
 **How they behave:**
 - The argument shapes stay as they are today (`title`, `where`, `due` as said,
@@ -167,34 +171,39 @@ The tools are the same set, renamed from `pmi_*` to `task_*` and `project_*`:
   - **Editing:** a dialog for title, notes, due, reminder, repeat, priority,
     project, assignees and checklist.
   - **Projects:** a list with health and progress. Each project's page shows
-    its tasks, updates, risks and members.
+    its tasks, updates and members.
   - **Members get it too:** it moves to the members' pages (`MEMBER_PAGES`).
 - **Notes:** a list item gets "Make a task".
 - **Today page / briefing:** read `tasks::`.
 
-### 2.7 Moving off PMI: the import
+### 2.7 Moving off PMI: start fresh
 
-`/tasks import pmi` (admin), run per person who has a PMI token:
-1. **Preview:** how many tasks, projects and comments would come over, and who
-   they'd belong to. Nothing is written.
-2. **Users:** PMI users are matched to lyra users by email. Anyone with no
-   match is listed, and their tasks go to the importer or are skipped,
-   whichever the admin chooses.
-3. **What comes over:**
-   - Open tasks, and the last 90 days of done ones, with due dates, reminders,
-     repeat rules, priority, checklist, subtasks and assignees.
-   - Projects the person is in, with their members, last status update and
-     open risks.
-   - Comments, as task events.
-4. **Repeatable:** `pmi_id` makes a second run update rather than duplicate.
-   So the import can run once early, PMI can be used for a while, and then the
-   import can run again just before switching.
-5. **After the switch:** `[tasks] backend = "lyra"`. PMI becomes read-only
-   from lyra's side (its tools gone, the import still possible). Later, `[pmi]`,
-   the `pmi` tokens and `pmi.rs` are removed, and the changelog says so.
+Nothing is imported from PMI (decision 3).
+- **Until the switch:** PMI keeps working as it does now. The in-house side is
+  built and tried on demo servers and by admins.
+- **Before the switch:** everyone with a PMI token gets a notice a week ahead,
+  in the briefing and as a push, saying that tasks move into lyra on that
+  date, PMI's stay in PMI, and they should re-add what they still need.
+- **The switch:** `[tasks] backend = "lyra"` for everyone at once, once every
+  phase is done (decision 4). From then on, lyra's tools and pages show only
+  lyra's own tasks.
+- **Afterwards:** `[pmi]`, the `pmi` tokens and `pmi.rs` are removed, and the
+  changelog says so.
 
-`src/migrate.rs` does nothing here: the import is a deliberate admin step, not
-something automatic at startup.
+`src/migrate.rs` has nothing to do: there's no old data to bring over.
+
+### 2.8 Later: two-way sync with Microsoft To Do
+
+Not built now (decision 5), but the design leaves room for it:
+- **Matching:** `task_links` maps a lyra task to its To Do task (`service =
+  "todo"`, the Graph id and its etag).
+- **Comparing:** `updated` on each task and the `deleted` mark tell what
+  changed on lyra's side. Graph's delta queries tell what changed in To Do.
+- **Conflicts:** when both sides changed the same task, the newer change wins,
+  and the other version is kept in `task_events` so nothing is lost.
+- **Whose list:** each person's own Outlook connection (`graph.rs`), with a
+  To Do list of their choosing. Only their own tasks sync; a shared project's
+  tasks stay in lyra.
 
 ## 3. Phases
 
@@ -221,32 +230,29 @@ TUI panel review.
 
 **Phase 3: sharing and projects**
 - Assigning with Accept / Decline; "waiting on me".
-- Projects, members, status updates (draft, then post), risks and comments.
+- Projects, members, status updates (draft, then post) and comments. No
+  risks.
 - Approvals for anything another person sees.
 - The Project Manager agent on the new tools.
 
-**Phase 4: the import from PMI**
-- Preview, user matching, repeatable runs, and a report.
-- Tried on a copy of production's data first: the server's PMI is read, and a
-  demo home is written to.
-
-**Phase 5: the switch and sunset**
-- `backend = "lyra"` on production.
+**Phase 4: the switch and sunset**
+- The week-ahead notice, then `backend = "lyra"` for everyone.
 - The old `pmi_*` names stay as aliases for a release, then go.
 - `pmi.rs`, `[pmi]`, the PMI Status row and the PMI tokens are removed.
-- README and CLAUDE.md updated, and this doc moved to `docs/done/`.
+- README and CLAUDE.md updated.
 
-## 4. Decisions for you
+**Phase 5 (later): two-way Microsoft To Do sync** (§2.8)
+- This doc moves to `docs/done/` after this phase (or when the sync is
+  dropped).
 
-1. **Projects:** do you want projects with status updates and risks (what PMI
-   has), or only tasks with a project label to start? Projects are Phase 3, so
-   the label is a smaller start.
-2. **Assigning between people:** with Accept / Decline as proposed, or simply
-   assigned?
-3. **Import:** bring over open tasks and projects (proposed), the done history
-   too, or start fresh?
-4. **The switch:** one date for everyone, or person by person? The backend
-   setting can be per person if needed.
-5. **Outlook / Microsoft To Do:** lyra already talks to Microsoft 365. Should
-   tasks also show in To Do (a one-way sync later), or stay in lyra only?
-   This plan keeps them in lyra only.
+## 4. Decisions (2026-10-12)
+
+1. **Projects:** yes, with members, health and status updates. No risks for
+   now.
+2. **Assigning between people:** a task given to someone waits for their
+   Accept / Decline.
+3. **Import:** none. Everyone starts fresh in lyra; PMI's tasks stay in PMI.
+4. **The switch:** one date for everyone, once the whole feature (Phases 1–3)
+   is complete.
+5. **Microsoft To Do:** a two-way sync, later (Phase 5). The schema is ready
+   for it from the start.
