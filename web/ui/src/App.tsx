@@ -162,6 +162,21 @@ type TabItem = {
   badge?: number;
 };
 
+/** Each rail group's color: its icons are tinted with it, an open group is
+ *  shaded with it, and the page you're on stands out in it (with a bar at its
+ *  left edge). Full class names, so Tailwind keeps them. */
+type Tone = { icon: string; here: string; open: string; bar: string };
+const TONES: Record<string, Tone> = {
+  chat: { icon: "text-sky-400", here: "bg-sky-500/20 text-sky-200 hover:bg-sky-500/25 hover:text-sky-100", open: "bg-sky-500/10 ring-1 ring-sky-500/25", bar: "bg-sky-400" },
+  talk: { icon: "text-violet-400", here: "bg-violet-500/20 text-violet-200 hover:bg-violet-500/25 hover:text-violet-100", open: "bg-violet-500/10 ring-1 ring-violet-500/25", bar: "bg-violet-400" },
+  work: { icon: "text-amber-400", here: "bg-amber-500/20 text-amber-200 hover:bg-amber-500/25 hover:text-amber-100", open: "bg-amber-500/10 ring-1 ring-amber-500/25", bar: "bg-amber-400" },
+  knowledge: { icon: "text-emerald-400", here: "bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/25 hover:text-emerald-100", open: "bg-emerald-500/10 ring-1 ring-emerald-500/25", bar: "bg-emerald-400" },
+  automation: { icon: "text-fuchsia-400", here: "bg-fuchsia-500/20 text-fuchsia-200 hover:bg-fuchsia-500/25 hover:text-fuchsia-100", open: "bg-fuchsia-500/10 ring-1 ring-fuchsia-500/25", bar: "bg-fuchsia-400" },
+  system: { icon: "text-orange-400", here: "bg-orange-500/20 text-orange-200 hover:bg-orange-500/25 hover:text-orange-100", open: "bg-orange-500/10 ring-1 ring-orange-500/25", bar: "bg-orange-400" },
+  help: { icon: "text-zinc-400", here: "bg-zinc-500/25 text-zinc-100 hover:bg-zinc-500/30", open: "bg-zinc-500/10 ring-1 ring-zinc-500/25", bar: "bg-zinc-300" },
+};
+const toneOf = (group: string) => TONES[group] ?? TONES.help;
+
 /** The icon rail: a few groups, each a small menu of its pages (one page
  *  alone opens at once). Badges add up on the group. */
 const railGroups: { id: string; label: string; icon: typeof MessageSquare; pages: Tab[] }[] = [
@@ -265,23 +280,25 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
       {child}
     </span>
   );
-  const railItem = (t: TabItem) =>
+  const railItem = (t: TabItem, tone: Tone = toneOf(railGroups.find((g) => g.pages.includes(t.id))?.id ?? "help")) =>
     plain(
       <button
         type="button"
         aria-label={t.label}
+        aria-current={tab === t.id ? "page" : undefined}
         onClick={() => go(t.id)}
         className={cn(
-          "relative flex shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [&>svg]:size-[18px]",
+          "relative flex shrink-0 items-center justify-center rounded-md text-sidebar-foreground/75 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [&>svg]:size-[18px]",
           // A phone has no hover: each icon says what it is.
           // Each icon says what it is, on a phone and on a desktop.
           "w-14 flex-col gap-0.5 py-1",
           // A short screen (a phone, a laptop): tighter, so more of them show.
           "[@media(max-height:820px)]:gap-0 [@media(max-height:820px)]:py-0.5 [@media(max-height:820px)]:[&>svg]:size-4",
-          tab === t.id && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary",
+          tab === t.id && cn(tone.here, "font-medium"),
         )}
       >
-        <t.icon />
+        {tab === t.id && <span aria-hidden className={cn("absolute top-1.5 bottom-1.5 left-0 w-[3px] rounded-r", tone.bar)} />}
+        <t.icon className={tone.icon} />
         <span className="w-full truncate text-center text-[10px] leading-tight">{t.label}</span>
         {!!t.badge && <span data-badge className="absolute top-0.5 right-2 min-w-4 rounded-full bg-amber-400 px-1 text-center font-semibold text-[10px] text-black leading-4">{t.badge}</span>}
       </button>,
@@ -298,12 +315,13 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
   const [pinned, setPinned] = useState<string[]>(loadOpen);
   useEffect(() => onOpenChange(setPinned), []);
   const railGroup = (label: string, Icon: typeof MessageSquare, items: TabItem[], key: string) => {
+    const tone = toneOf(key);
     const kept = pinned.includes(key);
     const open = kept || unfolded === key;
     const here = items.some((t) => t.id === tab);
     const waiting = items.reduce((n, t) => n + (t.badge ?? 0), 0);
     return (
-      <div key={key} className={cn("flex w-full flex-col items-center rounded-md", open && "bg-sidebar-accent/40 pb-0.5")}>
+      <div key={key} className={cn("flex w-full flex-col items-center rounded-md", open && cn(tone.open, "pb-0.5"))}>
         <button
           type="button"
           aria-label={label}
@@ -312,18 +330,19 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
           onClick={() => !kept && setUnfolded(open ? null : key)}
           className={cn(
             "relative flex w-14 shrink-0 flex-col items-center justify-center gap-0.5 rounded-md py-1 text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [&>svg]:size-[18px]",
-            here && !open && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary",
-            open && "text-sidebar-foreground",
+            here && !open && tone.here,
+            open && "font-medium text-sidebar-foreground",
           )}
         >
-          <Icon />
+          {here && !open && <span aria-hidden className={cn("absolute top-1.5 bottom-1.5 left-0 w-[3px] rounded-r", tone.bar)} />}
+          <Icon className={tone.icon} />
           <span className="w-full truncate text-center text-[10px] leading-tight">{label}</span>
           {kept ? <Pin className="!size-2.5 absolute top-2 left-0.5 opacity-60" /> : <ChevronDown className={cn("!size-2.5 absolute top-2 left-0.5 opacity-60 transition-transform", open && "rotate-180")} />}
           {waiting > 0 && !open && <span data-badge className="absolute top-0.5 right-2 min-w-4 rounded-full bg-amber-400 px-1 text-center font-semibold text-[10px] text-black leading-4">{waiting}</span>}
         </button>
         {open && (
           <div className="flex flex-col items-center [&_button]:py-0.5 [&_button>svg]:size-4">
-            {items.map(railItem)}
+            {items.map((t) => railItem(t, tone))}
             <button
               type="button"
               aria-label={kept ? `Let ${label} fold` : `Keep ${label} open`}

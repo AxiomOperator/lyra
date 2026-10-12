@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.81.0.238",
+    "date": "2026-10-12",
+    "title": "A clearer sidebar",
+    "improved": [
+      "Each group on the left has its own color, so they're easier to tell apart: Chat blue, Talk violet, Work amber, Knowledge green, Automation pink, System orange. An open group is shaded in its color, and the page you're on is highlighted with a bar on its left."
+    ]
+  },
+  {
     "version": "0.80.2.237",
     "date": "2026-10-12",
     "title": "Pages don't hold up a reply",
