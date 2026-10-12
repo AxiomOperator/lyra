@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.88.0.248",
+    "date": "2026-10-12",
+    "title": "Activity for everyone",
+    "new": [
+      "Activity (under Work) shows everything lyra does for you, in all your conversations, routines and reminders: your messages, each round and tool, agents, memory and learning checks, and problems. Find words, show one kind, go back up to 90 days, and it keeps up by itself.",
+      "All activity (under System, admins) shows everyone's, and lyra's own background work, with whose each line is; pick one person to see only theirs."
+    ],
+    "improved": [
+      "What lyra does is now kept for 3 months ([retention] activity_months) instead of only while a conversation is open, and checks made after someone's reply are counted as theirs."
+    ]
+  },
+  {
     "version": "0.87.0.247",
     "date": "2026-10-12",
     "title": "Tasks live in lyra",

@@ -54,8 +54,9 @@ static SETTINGS: RwLock<Option<Settings>> = RwLock::new(None);
 /// After a failure the endpoint is left alone for a minute, so a model that's
 /// down doesn't slow every message.
 static DOWN_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
-/// Lines for the Activity panel, taken by the app.
-static NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Lines for the Activity panel, taken by the app:
+/// (whose work it was, the conversation, the note).
+static NOTES: Mutex<Vec<(String, String, String)>> = Mutex::new(Vec::new());
 /// It failed and hasn't answered since (for the warning when it's back).
 static WAS_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Gates the fallback model answered for it.
@@ -83,14 +84,14 @@ pub fn stats() -> (u64, u64, u64) {
 }
 
 /// What happened since the last call, for the Activity panel.
-pub fn take_notes() -> Vec<String> {
+pub fn take_notes() -> Vec<(String, String, String)> {
     std::mem::take(&mut *NOTES.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 fn note(text: String) {
     let mut notes = NOTES.lock().unwrap_or_else(|e| e.into_inner());
     if notes.len() < 50 {
-        notes.push(text);
+        notes.push((crate::acting::current(), crate::usage::job().unwrap_or_default(), text));
     }
 }
 
@@ -398,7 +399,7 @@ pub(crate) mod tests {
 
         configure(Some(settings("http://127.0.0.1:9/v1")));
         assert!(yes("test", "s", "q?").is_none(), "down: the chat model decides");
-        assert!(take_notes().iter().any(|n| n.starts_with("⚠") && n.contains("is down")));
+        assert!(take_notes().iter().any(|(_, _, n)| n.starts_with("⚠") && n.contains("is down")));
         configure(None);
     }
 
@@ -414,15 +415,15 @@ pub(crate) mod tests {
         assert!(request.join().unwrap().contains("Is there a reusable lesson?"));
         assert!(down(), "it shows as down");
         let notes = take_notes();
-        assert!(notes.iter().any(|n| n.starts_with("⚠ the decision model is down")), "{notes:?}");
-        assert!(notes.iter().any(|n| n.contains("the fallback model")), "{notes:?}");
+        assert!(notes.iter().any(|(_, _, n)| n.starts_with("⚠ the decision model is down")), "{notes:?}");
+        assert!(notes.iter().any(|(_, _, n)| n.contains("the fallback model")), "{notes:?}");
         // Back up: said once, and no longer down.
         let (url, _server) = fake(json!({ "answers": { "q": { "type": "noul", "noul": 0.05 } } }));
         configure(Some(settings(&url)));
         WAS_DOWN.store(true, Ordering::Relaxed);
         assert_eq!(gate("worth remembering?", "hi", "Worth remembering?", ("http://127.0.0.1:9/v1/chat/completions", "m")), Some((false, "the decision model")));
         assert!(!down());
-        assert!(take_notes().iter().any(|n| n.contains("answers again")));
+        assert!(take_notes().iter().any(|(_, _, n)| n.contains("answers again")));
         configure(None);
     }
 }

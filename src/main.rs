@@ -1,4 +1,5 @@
 mod acting;
+mod activity;
 mod actions;
 mod alerts;
 mod avoid;
@@ -1190,7 +1191,15 @@ impl App {
     }
 
     fn log(&mut self, level: Level, text: String) {
+        let (owner, session) = (self.owner.clone(), self.session_id.clone());
+        self.log_for(&owner, &session, level, text);
+    }
+
+    /// A log line that's about someone else's work (kept as theirs).
+    fn log_for(&mut self, user: &str, session: &str, level: Level, text: String) {
         let time = chrono::Local::now().format("%H:%M:%S").to_string();
+        // Kept, with whose it is (the Activity pages).
+        activity::record(user, session, serve::level_name(level), &text);
         self.activity.push(Activity { time, level, text });
         self.logged += 1;
         if self.activity.len() > MAX_ACTIVITY {
@@ -1629,7 +1638,11 @@ impl App {
         self.reviewing = true;
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let (model, tx) = (self.model.clone(), self.tx.clone());
+        let (person, session) = (self.owner.clone(), self.session_id.clone());
         crate::acting::spawn(move || {
+            // For this conversation's person (its notes and calls are theirs).
+            crate::acting::set(&person);
+            crate::usage::set_job(Some(session));
             let trigger = match trigger {
                 Some(t) => t,
                 None => match decide::gate("a lesson here?", &transcript, LESSON_GATE, (&url, &model)) {
@@ -1648,9 +1661,15 @@ impl App {
 
     /// What the decision model decided (or that it's down), into Activity.
     fn decide_notes(&mut self) {
-        for note in decide::take_notes() {
+        for (user, session, note) in decide::take_notes() {
             // Down is a warning (its checks moved to the fallback model).
-            self.log(if note.starts_with('⚠') { Level::Error } else { Level::Info }, note);
+            let level = if note.starts_with('⚠') { Level::Error } else { Level::Info };
+            // Kept as theirs whose reply it was about; shown here too.
+            if user == self.owner {
+                self.log(level, note);
+            } else {
+                self.log_for(&user, &session, level, note);
+            }
         }
     }
 

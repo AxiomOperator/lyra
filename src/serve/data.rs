@@ -213,7 +213,6 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
             })).collect::<Vec<_>>())
         }
         "machines" => json!(machines_detail(hub, node_build)),
-        "activity" => json!(app.activity.iter().rev().take(200).map(|a| json!({ "time": a.time, "level": level_name(a.level), "text": a.text })).collect::<Vec<_>>()),
         "agents" => text(app.agents.as_deref().map(crate::agents::list).ok_or("agents are off".into())),
         // What evolution proposes (admins: not a member's page), newest first, with what each needs.
         // How lyra is doing (admins): counts only.
@@ -372,6 +371,11 @@ pub(crate) fn slow(app: &App, what: &str, arg: &Value, loaded: &Loaded) -> Optio
         "sessions" => {
             let loaded = loaded.clone();
             Box::new(move || sessions_page(&owner, &current, &loaded))
+        }
+        // What lyra did: their own (everyone may), or everyone's (admins: the gate is in the loop).
+        "activity" | "activity_all" => {
+            let (admin, everyone, arg) = (app.admin, what == "activity_all", arg.clone());
+            Box::new(move || crate::activity::page(&owner, admin, everyone, &arg))
         }
         // The Agents page's New agent: drafted by the model and tried on a
         // test task (a minute or two: off the loop), then kept for Activate.

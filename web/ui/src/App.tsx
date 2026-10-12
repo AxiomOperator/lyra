@@ -147,7 +147,7 @@ function Loading() {
   return <div className="flex flex-1 items-center justify-center text-muted-foreground text-sm">Loading…</div>;
 }
 
-type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "more" | Manage;
+type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "activity_all" | "more" | Manage;
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
 type Manage = "talk" | "today" | "agents" | "proposals" | "health" | "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "me" | "running" | "profile";
@@ -182,10 +182,10 @@ const toneOf = (group: string) => TONES[group] ?? TONES.help;
 const railGroups: { id: string; label: string; icon: typeof MessageSquare; pages: Tab[] }[] = [
   { id: "chat", label: "Chat", icon: MessageSquare, pages: ["chat"] },
   { id: "talk", label: "Talk", icon: AudioLines, pages: ["talk"] },
-  { id: "work", label: "Work", icon: Briefcase, pages: ["today", "tasks", "meetings", "notes", "projects"] },
+  { id: "work", label: "Work", icon: Briefcase, pages: ["today", "tasks", "meetings", "notes", "projects", "activity"] },
   { id: "knowledge", label: "Knowledge", icon: Brain, pages: ["memory", "skills"] },
   { id: "automation", label: "Automation", icon: Zap, pages: ["agents", "proposals", "health", "routines", "goals", "coding"] },
-  { id: "system", label: "System", icon: Shield, pages: ["status", "machines", "devices", "users", "usage", "running", "model", "activity", "settings"] },
+  { id: "system", label: "System", icon: Shield, pages: ["status", "machines", "devices", "users", "usage", "running", "activity_all", "model", "settings"] },
   { id: "help", label: "Help", icon: CircleHelp, pages: ["qa", "feedback", "whatsnew"] },
 ];
 
@@ -516,7 +516,7 @@ function Shell() {
     const go = (page: string | null) => {
       // Documents are notes now.
       if (page === "documents") page = "notes";
-      if (page && (["status", "machines", "devices", "activity", "more", ...manage] as string[]).includes(page)) setTab(page as Tab);
+      if (page && (["status", "machines", "devices", "activity", "activity_all", "more", ...manage] as string[]).includes(page)) setTab(page as Tab);
     };
     const asked = new URLSearchParams(location.search).get("page");
     if (asked) {
@@ -575,6 +575,7 @@ function Shell() {
     { id: "model", label: "Model", icon: Cpu },
     { id: "usage", label: "Usage", icon: Gauge },
     { id: "running", label: "Running now", icon: Timer },
+    { id: "activity_all", label: "All activity", icon: ScrollText },
     { id: "users", label: "Users", icon: Users, badge: status.users_waiting ?? 0 },
     { id: "settings", label: "Settings", icon: SettingsIcon },
     { id: "profile", label: "Profile", icon: UserRound },
@@ -670,7 +671,8 @@ function Shell() {
           {tab === "health" && admin && <HealthPage onBack={toMore} />}
           {tab === "machines" && <MachinesPage mention={mention} toStatus={() => setTab("status")} toChat={() => setTab("chat")} />}
           {tab === "devices" && <DevicesPage />}
-          {tab === "activity" && <ActivityPage />}
+          {tab === "activity" && <ActivityPage key="mine" />}
+          {tab === "activity_all" && admin && <ActivityPage key="all" everyone />}
           {tab === "more" && <MorePage toChat={() => setTab("chat")} open={setTab} update={updateApp} />}
           {tab === "tasks" && <TasksPage onBack={toMore} />}
           {tab === "notes" && <NotesPage onBack={toMore} />}

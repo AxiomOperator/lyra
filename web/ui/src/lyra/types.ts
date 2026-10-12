@@ -191,7 +191,11 @@ export interface Session {
 }
 
 export interface ActivityLine {
-  time: string;
+  at: string;
+  /** Whose it is, and their name. */
+  user: string;
+  name: string;
+  session: string;
   level: string;
   text: string;
 }

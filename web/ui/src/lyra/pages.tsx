@@ -5,9 +5,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { Activity as ActivityIcon, AlarmClock, Code2, Archive, Bell, BellOff, Bot, Brain, FolderOpen, Gauge, Check, Copy, Cpu, Download, GraduationCap, MessageSquarePlus, RefreshCw, Server, ShieldCheck, Smartphone, Target, Terminal, Trash2, CalendarDays, FileText, Settings as SettingsIcon, UserRound, Unplug, Users as UsersIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { PairCard } from "./chat";
 import { DiagnosisNote } from "./diagnosis";
 import { RulesDialog } from "./manage";
@@ -333,32 +334,111 @@ const levelColor: Record<string, string> = {
   evolve: "text-emerald-400",
 };
 
-export function ActivityPage() {
-  const [lines, refresh] = useData<ActivityLine[]>("activity");
+const LEVELS: { id: string; label: string }[] = [
+  { id: "info", label: "Chat" },
+  { id: "tool", label: "Tools" },
+  { id: "agent", label: "Agents" },
+  { id: "plan", label: "Plans & routines" },
+  { id: "memory", label: "Memory" },
+  { id: "learn", label: "Learning" },
+  { id: "evolve", label: "Evolution" },
+  { id: "error", label: "Problems" },
+];
+
+/** "14:03:22", or "Mon 14:03" when it isn't today. */
+function when(at: string) {
+  const d = new Date(at);
+  const today = new Date().toDateString() === d.toDateString();
+  return today ? d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : d.toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * What lyra has been doing, newest first: yours (`everyone` off), or
+ * everyone's (admins), with whose each line is. Filters by kind, words, how
+ * far back and (everyone's) a person; it keeps up by itself.
+ */
+export function ActivityPage({ everyone = false }: { everyone?: boolean }) {
+  const { call } = useLyra();
+  const [levels, setLevels] = useState<string[]>([]);
+  const [q, setQ] = useState("");
+  const [days, setDays] = useState(7);
+  const [user, setUser] = useState("");
+  const [data, setData] = useState<{ lines: ActivityLine[]; more: boolean; people?: { id: string; name: string }[] } | null>(null);
+  const [older, setOlder] = useState<ActivityLine[]>([]);
+  const what = everyone ? "activity_all" : "activity";
+  const load = useCallback(async () => {
+    const r = await call<{ lines: ActivityLine[]; more: boolean; people?: { id: string; name: string }[]; error?: string }>(what, { levels, q, days, user });
+    if (!r.error) setData(r);
+  }, [call, what, levels, q, days, user]);
   useEffect(() => {
-    const t = setInterval(() => document.visibilityState === "visible" && refresh(), 5000);
+    setOlder([]);
+    void load();
+    const t = setInterval(() => document.visibilityState === "visible" && void load(), 5000);
     return () => clearInterval(t);
-  }, [refresh]);
+  }, [load]);
+  const lines = [...(data?.lines ?? []), ...older];
+  const more = async () => {
+    const last = lines[lines.length - 1];
+    if (!last) return;
+    const r = await call<{ lines: ActivityLine[] }>(what, { levels, q, days, user, before: last.at });
+    setOlder((o) => [...o, ...(r.lines ?? [])]);
+  };
   return (
     <Page
-      title="Activity"
-      description="What lyra has been doing, newest first."
+      title={everyone ? "All activity" : "Activity"}
+      description={everyone ? "Everything lyra is doing, for everyone, and its own work: newest first." : "Everything lyra is doing for you: replies, tools, agents, routines, reminders. Newest first."}
       action={
-        <Button size="icon" variant="ghost" onClick={refresh}>
+        <Button size="icon" variant="ghost" onClick={() => void load()} aria-label="Refresh">
           <RefreshCw />
         </Button>
       }
     >
+      <div className="flex flex-wrap items-center gap-2">
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find words…" className="h-8 w-48" aria-label="Find words" />
+        <select value={days} onChange={(e) => setDays(Number(e.target.value))} className="h-8 rounded-md border bg-background px-2 text-sm" aria-label="How far back">
+          <option value={1}>Today</option>
+          <option value={7}>7 days</option>
+          <option value={30}>30 days</option>
+          <option value={90}>90 days</option>
+        </select>
+        {everyone && (
+          <select value={user} onChange={(e) => setUser(e.target.value)} className="h-8 rounded-md border bg-background px-2 text-sm" aria-label="Whose">
+            <option value="">Everyone</option>
+            {(data?.people ?? []).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1.5" aria-label="Kinds">
+        {LEVELS.map((l) => {
+          const on = levels.includes(l.id);
+          return (
+            <Button key={l.id} size="sm" variant={on ? "secondary" : "outline"} className={cn("h-7", on && levelColor[l.id])} aria-pressed={on} onClick={() => setLevels(on ? levels.filter((x) => x !== l.id) : [...levels, l.id])}>
+              {l.label}
+            </Button>
+          );
+        })}
+      </div>
       <Card className="py-2">
         <CardContent className="divide-y divide-border px-3">
-          {(lines ?? []).map((a, i) => (
-            <div key={i} className={cn("py-1.5 text-xs leading-relaxed", levelColor[a.level])}>
-              <span className="mr-2 font-mono text-muted-foreground">{a.time}</span>
+          {lines.map((a, i) => (
+            <div key={`${a.at}-${i}`} className={cn("py-1.5 text-xs leading-relaxed", levelColor[a.level])}>
+              <span className="mr-2 font-mono text-muted-foreground">{when(a.at)}</span>
+              {everyone && <span className="mr-2 text-muted-foreground">{a.name}</span>}
               <span className="break-words">{a.text}</span>
             </div>
           ))}
+          {data && lines.length === 0 && <p className="py-2 text-muted-foreground text-sm">Nothing{q || levels.length ? " that matches" : " yet"}.</p>}
         </CardContent>
       </Card>
+      {data?.more && (
+        <Button variant="ghost" size="sm" onClick={() => void more()} className="self-center">
+          Older
+        </Button>
+      )}
     </Page>
   );
 }

@@ -1452,8 +1452,20 @@ cancel a code.
 **The app** (React with shadcn/ui and Vercel AI Elements; source in `web/ui`, see its README) has tabs: **Chat** (with `/` commands, `@` machines, approval
 and pairing cards), **Machines** (online, versions, update, remove, the
 install command for a new machine), **Devices** (who's paired and online;
-unpair), **Activity** (lyra's log) and **More** (saved conversations, new
-conversation, notifications, agents, goals, skills, memory, versions). When
+unpair), **Activity** and **More** (saved conversations, new
+conversation, notifications, agents, goals, skills, memory, versions).
+
+**Activity** is everything lyra does, kept (`~/.lyra/activity/<YYYY-MM>.jsonl`, 3 months by
+`[retention] activity_months`):
+- **Activity** (Work, everyone): what lyra did for you, in every one of your conversations,
+  routines and reminders: messages, each round and tool, agents, memory and learning checks,
+  problems.
+- **All activity** (System, admins): everyone's, and lyra's own background work, with whose
+  each line is.
+
+Both find words, show one kind (chat, tools, agents, plans and routines, memory, learning,
+evolution, problems), go back a day to 90 days, page back to older lines, and keep up by
+themselves. All activity can also show just one person. When
 lyra is updated, an installed app shows **"A new version of the lyra app is
 ready · Update"**; More → *Check for app update* does it by hand.
 

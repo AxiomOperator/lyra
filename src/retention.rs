@@ -23,13 +23,15 @@ pub struct Settings {
     pub usage_months: u64,
     /// Months of "what lyra did" (About me) kept.
     pub actions_months: u64,
+    /// Months of the activity log (everything lyra did, the Activity pages) kept.
+    pub activity_months: u64,
     /// Phones and browsers unseen this long are unpaired.
     pub devices_days: u64,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { sessions_days: 365, uploads_days: 90, usage_months: 13, actions_months: 12, devices_days: 90 }
+        Self { sessions_days: 365, uploads_days: 90, usage_months: 13, actions_months: 12, activity_months: 3, devices_days: 90 }
     }
 }
 
@@ -110,7 +112,7 @@ pub fn tidy(home: &Path, devices: Option<&lyra_web::Devices>) -> Vec<String> {
     }
     // Month logs: usage, and everyone's actions.
     let now = chrono::Utc::now();
-    let mut logs: Vec<(std::path::PathBuf, u64, &str)> = vec![(home.join("usage"), s.usage_months, "usage"), (home.join("actions"), s.actions_months, "actions")];
+    let mut logs: Vec<(std::path::PathBuf, u64, &str)> = vec![(home.join("usage"), s.usage_months, "usage"), (home.join("actions"), s.actions_months, "actions"), (home.join("activity"), s.activity_months, "activity")];
     for person in std::fs::read_dir(home.join("users")).into_iter().flatten().flatten() {
         logs.push((person.path().join("actions"), s.actions_months, "actions"));
     }
@@ -208,7 +210,7 @@ mod tests {
     #[test]
     fn old_things_go_and_kept_things_stay() {
         crate::config::with_test_home(|home| {
-            configure(Settings { sessions_days: 30, uploads_days: 30, usage_months: 2, actions_months: 2, devices_days: 30 });
+            configure(Settings { sessions_days: 30, uploads_days: 30, usage_months: 2, actions_months: 2, activity_months: 2, devices_days: 30 });
             let sessions = home.join("sessions");
             std::fs::create_dir_all(&sessions).unwrap();
             let old = SystemTime::now() - Duration::from_secs(60 * 86_400);

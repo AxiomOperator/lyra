@@ -523,4 +523,5 @@ currency = "$"
 # uploads_days = 90      # files sent from devices
 # usage_months = 13      # the AI usage log
 # actions_months = 12    # what lyra did (About me)
+# activity_months = 3    # the activity log (the Activity pages)
 # devices_days = 90      # phones and browsers nobody has used in this long are unpaired
