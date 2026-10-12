@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.78.0.231",
+    "date": "2026-10-12",
+    "title": "A review on demand works like the weekly one",
+    "improved": [
+      "/evolve review now does what the weekly review does: it tests the most promising change for each problem and sends you the digest of what's ready to approve."
+    ]
+  },
+  {
     "version": "0.77.0.230",
     "date": "2026-10-11",
     "title": "lyra learns more kinds of things",

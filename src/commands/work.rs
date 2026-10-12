@@ -359,7 +359,8 @@ impl App {
                 if evolution.mode() == lyra_evolution::Mode::Off {
                     return Err("evolution mode is off ([evolution] mode in config.toml); runs are still recorded".into());
                 }
-                self.evolve_in_background("reviewing", true, evolve::review);
+                // As the weekly one does: its best candidates tested, and a digest for the owner.
+                self.evolve_in_background("reviewing", true, evolve::scheduled_review);
                 Ok("looking for problems in recent runs…".into())
             }
             "test" => {

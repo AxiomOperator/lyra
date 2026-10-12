@@ -1105,10 +1105,10 @@ impl App {
                 }
                 // A scheduled review's digest: to the owner's devices, opening the Proposals page.
                 if let Some(digest) = done.digest {
-                    self.log(Level::Evolve, format!("weekly review: {}", digest.replace('\n', " · ")));
+                    self.log(Level::Evolve, format!("review digest: {}", digest.replace('\n', " · ")));
                     if let Some(hub) = &self.hub {
                         hub.notify(lyra_web::Notification {
-                            title: "lyra's weekly review".into(),
+                            title: "lyra's review: what's ready".into(),
                             body: digest,
                             tag: "evolution-digest".into(),
                             approval: None,
