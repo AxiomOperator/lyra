@@ -1799,17 +1799,28 @@ async fn download_node_exe_sha(State(s): State<Arc<Shared>>) -> Response {
     }
 }
 
+/// The address a machine installed by a script pairs with: the one the
+/// script was fetched from. Through the reverse proxy (it says so with
+/// `X-Forwarded-*`), or by the public name, that's `public_url`; fetched
+/// straight from lyra by its LAN address (`http://172.16.0.5:8484/install.sh`,
+/// an internal machine), that address, so the node connects to it directly.
+fn install_base(public_url: &str, headers: &HeaderMap) -> String {
+    let get = |k: &str| headers.get(k).and_then(|h| h.to_str().ok()).map(str::to_string);
+    let host = get("x-forwarded-host").or_else(|| get(header::HOST.as_str())).unwrap_or_else(|| "localhost".into());
+    let proxied = get("x-forwarded-proto").is_some() || get("x-forwarded-for").is_some() || get("x-forwarded-host").is_some();
+    let public_host = public_url.split("://").nth(1).unwrap_or("").trim_end_matches('/');
+    if !public_url.is_empty() && (proxied || host.eq_ignore_ascii_case(public_host)) {
+        return public_url.to_string();
+    }
+    let proto = get("x-forwarded-proto").unwrap_or_else(|| "http".into());
+    format!("{proto}://{host}")
+}
+
 const INSTALL_PS1: &str = include_str!("../assets/install.ps1");
 
 /// `irm https://lyra…/install.ps1 | iex` (as administrator) on Windows.
 async fn install_ps1(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Response {
-    let url = if s.public_url.is_empty() {
-        let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("localhost");
-        let proto = headers.get("x-forwarded-proto").and_then(|h| h.to_str().ok()).unwrap_or("http");
-        format!("{proto}://{host}")
-    } else {
-        s.public_url.clone()
-    };
+    let url = install_base(&s.public_url, &headers);
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], INSTALL_PS1.replace("__LYRA_URL__", &url)).into_response()
 }
 
@@ -1817,13 +1828,7 @@ const INSTALL_SH: &str = include_str!("../assets/install.sh");
 
 /// `curl -fsSL https://lyra…/install.sh | sh -s -- --name web1`
 async fn install_script(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Response {
-    let url = if s.public_url.is_empty() {
-        let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("localhost");
-        let proto = headers.get("x-forwarded-proto").and_then(|h| h.to_str().ok()).unwrap_or("http");
-        format!("{proto}://{host}")
-    } else {
-        s.public_url.clone()
-    };
+    let url = install_base(&s.public_url, &headers);
     ([(header::CONTENT_TYPE, "text/x-shellscript; charset=utf-8")], INSTALL_SH.replace("__LYRA_URL__", &url)).into_response()
 }
 
@@ -1853,6 +1858,22 @@ fn app_version() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_install_script_fetched_by_ip_pairs_with_that_ip() {
+        let h = |pairs: &[(&'static str, &str)]| {
+            let mut m = HeaderMap::new();
+            for (k, v) in pairs {
+                m.insert(*k, v.parse().unwrap());
+            }
+            m
+        };
+        let public = "https://lyra.example.com";
+        assert_eq!(super::install_base(public, &h(&[("host", "172.16.0.5:8484")])), "http://172.16.0.5:8484", "an internal machine: straight to lyra");
+        assert_eq!(super::install_base(public, &h(&[("host", "lyra.example.com"), ("x-forwarded-proto", "https")])), public, "through the proxy");
+        assert_eq!(super::install_base(public, &h(&[("host", "lyra.example.com")])), public);
+        assert_eq!(super::install_base("", &h(&[("host", "10.0.0.2:8484")])), "http://10.0.0.2:8484");
+    }
+
     use super::*;
 
     #[test]

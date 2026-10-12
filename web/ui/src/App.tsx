@@ -397,8 +397,22 @@ function AppSidebar({ tabs, more, tab, setTab, update }: { tabs: TabItem[]; more
                   <SettingsIcon /> Settings
                 </DropdownMenuItem>
               )}
+              {/* Turning notifications on lives on the Profile page's Notifications tab. */}
+              <DropdownMenuItem
+                onClick={() => {
+                  try {
+                    localStorage.setItem("lyra-profile-tab", "notifications");
+                  } catch {
+                    // the Profile page opens on its first tab then
+                  }
+                  setTab("more");
+                  setTimeout(() => go("profile"), 0);
+                }}
+              >
+                <Bell /> Notifications
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => go("more")}>
-                <Bell /> Notifications & more
+                <Ellipsis /> More
               </DropdownMenuItem>
               <DropdownMenuItem onClick={update}>
                 <RefreshCw /> Update the app

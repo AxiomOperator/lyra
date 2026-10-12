@@ -115,8 +115,11 @@ fn a_headless_machine_pairs_when_a_device_approves() {
     assert_eq!(get("/download/lyra-node").bytes().unwrap().as_ref(), b"pretend program");
     let sum = get("/download/lyra-node.sha256").text().unwrap();
     assert_eq!(sum.split_whitespace().next().unwrap(), hub.node_build().unwrap());
-    let script = get("/install.sh").text().unwrap();
+    // Through the proxy: the public address; straight from lyra (an internal machine): lyra's own.
+    let script = client.get(format!("{base}/install.sh")).header("x-forwarded-proto", "https").header("host", "lyra.example.com").send().unwrap().text().unwrap();
     assert!(script.contains("URL=\"https://lyra.example.com\"") && script.contains("lyra-node\" pair"));
+    let direct = get("/install.sh").text().unwrap();
+    assert!(direct.contains(&format!("URL=\"{base}\"")), "fetched by its own address, it pairs with that");
     // The app is stamped with its version.
     let page = get("/").text().unwrap();
     assert!(page.contains(&format!("content=\"{}\"", hub.app_version())), "the page carries the app's version");

@@ -1615,6 +1615,14 @@ headless box needs nothing but `curl`:
 curl -fsSL https://lyra.example.com/install.sh | sh -s -- --name web1
 ```
 
+A machine on the same network as lyra can skip the public address: fetch the
+script from lyra's own address (`[web] listen`, with its port open to that
+network), and the machine pairs with and connects to that address directly.
+
+```sh
+curl -fsSL http://172.16.0.5:8484/install.sh | sh -s -- --name web1
+```
+
 The installer downloads `lyra-node`, checks it against the server's checksum,
 installs it (root: `/usr/local/bin`, else `~/.local/bin`), asks lyra to pair
 and starts its service (a system service as root, a user service otherwise).
