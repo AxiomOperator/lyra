@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.86.0.245",
+    "date": "2026-10-12",
+    "title": "A plan for lyra's own tasks",
+    "improved": [
+      "A plan for lyra to keep tasks, reminders and projects itself, for everyone (not only people with a PMI account), and to move off PMI, is now in the project's docs."
+    ]
+  },
+  {
     "version": "0.86.0.244",
     "date": "2026-10-12",
     "title": "New agents from the Agents page",
