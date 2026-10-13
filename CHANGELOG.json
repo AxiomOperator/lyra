@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.91.1.253",
+    "date": "2026-10-12",
+    "title": "Check config and gateway passthroughs",
+    "fixed": [
+      "Check config no longer reports a model behind a gateway's passthrough (Syntra's /native/…) as missing when its server lists the model under its own name."
+    ]
+  },
+  {
     "version": "0.91.0.252",
     "date": "2026-10-12",
     "title": "Every setting in the app, with its history",

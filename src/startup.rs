@@ -944,7 +944,11 @@ fn check_server(name: &str, url: &str, model: &str, key: &str) -> Value {
         Ok(r) => {
             let v: Value = r.json().unwrap_or(Value::Null);
             let ids: Vec<String> = v["data"].as_array().or(v["models"].as_array()).into_iter().flatten().filter_map(|m| m["id"].as_str().or(m["name"].as_str()).map(str::to_string)).collect();
-            if ids.is_empty() || ids.iter().any(|i| i == model) {
+            // A gateway's passthrough to a server's own API (Syntra's /native/…): the
+            // server lists its own model names, while the gateway answers to its group's.
+            if !ids.is_empty() && !ids.iter().any(|i| i == model) && url.contains("/native/") {
+                (true, format!("answers, with {keyed} (a passthrough: its server has {})", ids.iter().take(3).cloned().collect::<Vec<_>>().join(", ")))
+            } else if ids.is_empty() || ids.iter().any(|i| i == model) {
                 (true, format!("answers, with {keyed}{}", if ids.is_empty() { String::new() } else { format!(", and has {model}") }))
             } else {
                 (false, format!("answers, but doesn't list {model} (it has {})", ids.iter().take(6).cloned().collect::<Vec<_>>().join(", ")))
