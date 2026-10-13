@@ -68,9 +68,7 @@ import { loadOpen, onOpenChange, setOpen } from "./lyra/rail";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ComponentType, type FormEvent, type ReactNode } from "react";
 import { ChatPage } from "./lyra/chat";
 import { ConversationList } from "./lyra/conversations";
-import { EverythingSearch } from "./lyra/everything";
-import { UpdatedNote, WhatsNewPage } from "./lyra/whatsnew";
-import { CodingPage } from "./lyra/coding";
+import { UpdatedNote } from "./lyra/updatednote";
 import { SearchBox, SearchHits, useConversationSearch } from "./lyra/search";
 import { APP_VERSION, LyraProvider, useData, useLyra, usePhase } from "./lyra/store";
 import type { Session } from "./lyra/types";
@@ -137,6 +135,9 @@ const AgentsPage = page(() => import("./lyra/agents"), "AgentsPage");
 const ProposalsPage = page(() => import("./lyra/proposals"), "ProposalsPage");
 const HealthPage = page(() => import("./lyra/health"), "HealthPage");
 const TalkPage = page(() => import("./lyra/talk"), "TalkPage");
+const WhatsNewPage = page(() => import("./lyra/whatsnew"), "WhatsNewPage");
+const CodingPage = page(() => import("./lyra/coding"), "CodingPage");
+const EverythingSearch = page(() => import("./lyra/everything"), "EverythingSearch");
 const ActivityPage = page(() => import("./lyra/pages"), "ActivityPage");
 const DevicesPage = page(() => import("./lyra/pages"), "DevicesPage");
 const MachinesPage = page(() => import("./lyra/pages"), "MachinesPage");
@@ -622,7 +623,11 @@ function Shell() {
               <span className="hidden text-xs md:inline">Search</span>
               <kbd className="hidden rounded border px-1 font-mono text-[10px] md:inline">Ctrl K</kbd>
             </Button>
-            <EverythingSearch open={searching} setOpen={setSearching} go={(p) => setTab(p as Tab)} />
+            {searching && (
+              <Suspense fallback={null}>
+                <EverythingSearch open={searching} setOpen={setSearching} go={(p: string) => setTab(p as Tab)} />
+              </Suspense>
+            )}
             {ready && (
               <Badge
                 variant="outline"

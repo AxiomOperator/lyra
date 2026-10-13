@@ -346,6 +346,7 @@ pub(crate) fn main() {
     }
     ratatui::run(|terminal| run(terminal, &mut app)).expect("terminal error");
     app.save_session();
+    sessions::flush();
 }
 
 /// `lyra serve`: no terminal UI; phones and browsers connect over the web.

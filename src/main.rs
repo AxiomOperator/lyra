@@ -276,6 +276,8 @@ enum StreamEvent {
     /// The conversation's oldest turns were summarized to fit the model's
     /// context: how many history messages the note now stands for, and the note.
     Compacted { upto: usize, summary: String },
+    /// The goal loop's look, worked out off the loop.
+    GoalsLooked { notes: Vec<String>, resume: Option<Uuid> },
     /// The browser sandbox's page after a step: shown under that call, never sent to the model.
     Picture { id: String, data: String },
     /// Something to say in the chat (a remote update finished, …).
@@ -389,6 +391,8 @@ struct QueuedReview {
     transcript: String,
     run: Option<Uuid>,
     owner: Option<String>,
+    /// The turn as both post-turn gates read it (one question for the two).
+    gate: String,
 }
 
 /// Reviews that may wait at once; more are dropped (the next turn brings its own).
@@ -545,6 +549,8 @@ struct App {
     palette_hidden: bool,
     /// When goals were last checked, and how often to.
     goals_checked: Instant,
+    /// The goal loop's look is being worked out (off the loop).
+    goals_looking: bool,
     /// The person's tasks in a line ("2 overdue · 1 today"), for the Goals
     /// panel, and when it was read (the tasks' revision, the time).
     tasks_line: Option<String>,
@@ -698,6 +704,7 @@ impl App {
             palette: 0,
             palette_hidden: false,
             goals_checked: Instant::now(),
+            goals_looking: false,
             tasks_line: None,
             tasks_read: (0, Instant::now()),
             goals_every: Duration::from_secs(config.goals.tick_seconds.max(10)),
@@ -827,6 +834,8 @@ impl App {
                 self.review(false);
                 self.capture(false);
                 self.offer_pattern();
+                // A long conversation is summarized now, not when the next message waits for it.
+                self.precompact();
             }
             StreamEvent::Limit(rounds) => {
                 let own = limits::own_tool_rounds(&self.owner).is_some();
@@ -886,7 +895,12 @@ impl App {
                 m.tool_call_id = Some(id);
                 self.messages.push(m);
             }
+            StreamEvent::GoalsLooked { notes, resume } => self.goals_looked(notes, resume),
             StreamEvent::Compacted { upto, summary } => {
+                // Made in the background after an older reply: a newer note (the turn's own) stays.
+                if self.compacted.as_ref().is_some_and(|(n, _)| *n >= upto) {
+                    return;
+                }
                 let words = summary.split_whitespace().count();
                 self.log(Level::Memory, format!("conversation compacted: its first {upto} messages summarized in {words} words to fit the model's context"));
                 self.messages.push(Message::new("info", format!("The older part of this conversation was summarized ({upto} messages, {words} words) so it fits the model's context; everything stays here.")));
@@ -1612,7 +1626,7 @@ impl App {
             );
         }
         let run = self.last_run.as_ref().map(|r| r.id);
-        let job = QueuedReview { key: run.unwrap_or_else(Uuid::new_v4), trigger, transcript, run, owner };
+        let job = QueuedReview { key: run.unwrap_or_else(Uuid::new_v4), trigger, transcript, run, owner, gate: learn::transcript(&history, 16) };
         if self.reviewing {
             if self.review_queue.iter().any(|q| q.key == job.key) || self.review_queue.len() >= MAX_QUEUED_REVIEWS {
                 return;
@@ -1633,7 +1647,7 @@ impl App {
     }
 
     fn start_review(&mut self, learning: Arc<Learning>, job: QueuedReview) {
-        let QueuedReview { trigger, transcript, run, owner, .. } = job;
+        let QueuedReview { key, trigger, transcript, run, owner, gate } = job;
         if let Some(trigger) = trigger {
             self.log(Level::Learn, format!("reviewing for a lesson: {trigger}"));
         }
@@ -1647,7 +1661,7 @@ impl App {
             crate::usage::set_job(Some(session));
             let trigger = match trigger {
                 Some(t) => t,
-                None => match decide::gate("a lesson here?", &transcript, LESSON_GATE, (&url, &model)) {
+                None => match decide::gate_both(&key.to_string(), &gate, LESSON_GATE, MEMORY_GATE, (&url, &model)).0 {
                     Some((true, "the decision model")) => "the decision model saw a reusable lesson",
                     Some((true, _)) => "the fallback model saw a reusable lesson",
                     _ => {
@@ -1745,6 +1759,9 @@ impl App {
         let owned = self.history_text();
         let history: Vec<(&str, &str)> = owned.iter().map(|(r, c)| (*r, c.as_str())).collect();
         let transcript = learn::transcript(&history, if episode { 30 } else { 8 });
+        // Asked with the lesson gate, in one question (whichever comes first asks both).
+        let gate = learn::transcript(&history, 16);
+        let gate_key = self.last_run.as_ref().map_or_else(|| format!("{}-{}", self.session_id, self.messages.len()), |r| r.id.to_string());
         let reply = self.messages.iter().rev().find(|m| m.role == "assistant").map_or("", |m| m.content.as_str());
         let query = format!("{user}\n{reply}");
         if let Some(reason) = reason {
@@ -1760,7 +1777,7 @@ impl App {
             crate::acting::set(&owner);
             let reason = match reason {
                 Some(r) => r,
-                None => match decide::gate("worth remembering?", &transcript, MEMORY_GATE, (&url, &model)) {
+                None => match decide::gate_both(&gate_key, &gate, LESSON_GATE, MEMORY_GATE, (&url, &model)).1 {
                     Some((true, "the decision model")) => "the decision model found something worth remembering",
                     Some((true, _)) => "the fallback model found something worth remembering",
                     _ => {
@@ -2031,50 +2048,75 @@ impl App {
     /// The goal loop (G8–G11), every few seconds while idle: fire triggers,
     /// lift blockers whose cause went away, resume interrupted plans, and,
     /// within the autonomy policy, work on the next goal.
+    /// The goal loop's look (every `goals_every`): triggers, blockers whose
+    /// cause went away and plans to resume are worked out off this thread
+    /// (`goals_looked`); then resuming one and autonomy happen here.
     fn goals_tick(&mut self) {
         self.goals_checked = Instant::now();
         let Some(goals) = self.goals.clone() else { return };
-        let caps = self.caps.clone();
-        let mut notes = goals.manager.fire_triggers(chrono::Utc::now(), &|c| goals::condition(c, caps.as_deref())).unwrap_or_default();
-        let mode = goals.mode();
-        // Blockers whose cause went away.
-        if let Some(engine) = self.engine.clone() {
-            for b in goals.manager.blockers(None, true).unwrap_or_default() {
-                let lift = match b.blocker_type {
-                    lyra_goals::BlockerType::ApprovalRequired => goals
-                        .manager
-                        .plans(b.goal_id)
-                        .ok()
-                        .and_then(|p| p.last().cloned())
-                        .and_then(|p| engine.plan(p.plan_id).ok().flatten())
-                        .is_some_and(|plan| !plan.steps.iter().any(|s| s.needs_approval())),
-                    lyra_goals::BlockerType::CapabilityUnavailable => caps.as_ref().is_some_and(|c| {
-                        c.manager.all().iter().all(|x| c.manager.health(x) != lyra_capabilities::CapabilityHealth::Unavailable)
-                    }),
-                    _ => false,
-                };
-                if lift && let Ok(g) = goals.manager.unblock(b.goal_id, &format!("{} resolved", b.blocker_type.as_str())) {
-                    notes.push(format!("goal {} unblocked: {} resolved", g.title, b.blocker_type.as_str()));
+        if self.goals_looking {
+            return;
+        }
+        self.goals_looking = true;
+        let (caps, engine, tx) = (self.caps.clone(), self.engine.clone(), self.tx.clone());
+        let resume_allowed = goals.mode() != lyra_goals::AutonomyMode::Reactive && !self.plan_busy;
+        crate::acting::spawn(move || {
+            let mut notes = goals.manager.fire_triggers(chrono::Utc::now(), &|c| goals::condition(c, caps.as_deref())).unwrap_or_default();
+            let mut resume = None;
+            // Blockers whose cause went away.
+            if let Some(engine) = engine {
+                for b in goals.manager.blockers(None, true).unwrap_or_default() {
+                    let lift = match b.blocker_type {
+                        lyra_goals::BlockerType::ApprovalRequired => goals
+                            .manager
+                            .plans(b.goal_id)
+                            .ok()
+                            .and_then(|p| p.last().cloned())
+                            .and_then(|p| engine.plan(p.plan_id).ok().flatten())
+                            .is_some_and(|plan| !plan.steps.iter().any(|s| s.needs_approval())),
+                        lyra_goals::BlockerType::CapabilityUnavailable => caps.as_ref().is_some_and(|c| {
+                            c.manager.all().iter().all(|x| c.manager.health(x) != lyra_capabilities::CapabilityHealth::Unavailable)
+                        }),
+                        _ => false,
+                    };
+                    if lift && let Ok(g) = goals.manager.unblock(b.goal_id, &format!("{} resolved", b.blocker_type.as_str())) {
+                        notes.push(format!("goal {} unblocked: {} resolved", g.title, b.blocker_type.as_str()));
+                    }
                 }
-            }
-            // G8: plans for goals that were interrupted or approved resume (not in reactive mode).
-            if mode != lyra_goals::AutonomyMode::Reactive && !self.plan_busy {
-                for gp in goals.manager.open_plans().unwrap_or_default() {
-                    let Ok(Some(plan)) = engine.plan(gp.plan_id) else { continue };
-                    let waiting = plan.steps.iter().any(|s| s.needs_approval() || s.status == lyra_execution::StepStatus::Blocked);
-                    let goal_ok = goals.manager.get(gp.goal_id).ok().flatten().is_some_and(|g| g.status == lyra_goals::GoalStatus::Active);
-                    if plan.status == PlanStatus::Paused && !waiting && goal_ok {
-                        notes.push(format!("resuming plan {} for its goal", lyra_execution::short(plan.id)));
-                        self.plan_busy = true;
-                        self.autonomous_plans.insert(plan.id);
-                        let (rt, tx) = (self.autonomous_runtime(), self.tx.clone());
-                        crate::acting::spawn(move || {
-                            let _ = tx.send(StreamEvent::PlanFinished(engine.run(plan.id, &rt)));
-                        });
-                        break;
+                // G8: plans for goals that were interrupted or approved resume (not in reactive mode).
+                if resume_allowed {
+                    for gp in goals.manager.open_plans().unwrap_or_default() {
+                        let Ok(Some(plan)) = engine.plan(gp.plan_id) else { continue };
+                        let waiting = plan.steps.iter().any(|s| s.needs_approval() || s.status == lyra_execution::StepStatus::Blocked);
+                        let goal_ok = goals.manager.get(gp.goal_id).ok().flatten().is_some_and(|g| g.status == lyra_goals::GoalStatus::Active);
+                        if plan.status == PlanStatus::Paused && !waiting && goal_ok {
+                            resume = Some(plan.id);
+                            break;
+                        }
                     }
                 }
             }
+            let _ = tx.send(StreamEvent::GoalsLooked { notes, resume });
+        });
+    }
+
+    /// What the goal loop's look found: told, a plan resumed, then autonomy.
+    fn goals_looked(&mut self, notes: Vec<String>, resume: Option<Uuid>) {
+        self.goals_looking = false;
+        let Some(goals) = self.goals.clone() else { return };
+        let mode = goals.mode();
+        let mut notes = notes;
+        if let (Some(id), Some(engine)) = (resume, self.engine.clone())
+            && mode != lyra_goals::AutonomyMode::Reactive
+            && !self.plan_busy
+        {
+            notes.push(format!("resuming plan {} for its goal", lyra_execution::short(id)));
+            self.plan_busy = true;
+            self.autonomous_plans.insert(id);
+            let (rt, tx) = (self.autonomous_runtime(), self.tx.clone());
+            crate::acting::spawn(move || {
+                let _ = tx.send(StreamEvent::PlanFinished(engine.run(id, &rt)));
+            });
         }
         for note in &notes {
             self.log(Level::Plan, note.clone());
@@ -2295,9 +2337,8 @@ impl App {
         s.chat_only = self.chat_only;
         s.summary = self.compacted.clone();
         s.effort = self.effort.map(|e| e.as_str().to_string());
-        if let Err(e) = sessions::save(&dir, &s) {
-            self.log(Level::Error, format!("couldn't save the session: {e}"));
-        }
+        // Written off this thread (a few saves in one turn are one write).
+        sessions::save_later(&dir, s);
     }
 
     /// Carry on a saved conversation (`lyra -c`, `lyra -r <id>`, `/resume <id>`).

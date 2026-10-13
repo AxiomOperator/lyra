@@ -5,6 +5,8 @@
 
 // A new version of the app gets a new cache (the old one is dropped on activate).
 const CACHE = "lyra-shell-__LYRA_VERSION__";
+// Built files (hashed names) are kept across versions: an update fetches only what changed.
+const ASSETS = "lyra-assets";
 const SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {
@@ -13,12 +15,12 @@ self.addEventListener("install", (e) => {
 
 self.addEventListener("activate", (e) => {
   e.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim()),
+    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== ASSETS).map((k) => caches.delete(k)))).then(() => self.clients.claim()),
   );
 });
 
-// The app: network first (always the latest), the cache when offline. The
-// bundle's files have content hashes in their names, so caching them is safe.
+// The app: the shell network first (always the latest), the cache when
+// offline; the built files (content hashes in their names) from the cache.
 // "Share to lyra" (Android): keep what was shared, then open lyra, which
 // puts it in the composer (the token stays with the page).
 function keepShared(value) {
@@ -54,7 +56,30 @@ self.addEventListener("fetch", (e) => {
     return;
   }
   if (e.request.method !== "GET" || url.origin !== location.origin || url.pathname.startsWith("/api/") || url.pathname === "/ws") return;
-  const keep = SHELL.includes(url.pathname) || url.pathname.startsWith("/assets/");
+  // Built files have their content's hash in their names: one never changes,
+  // so the copy kept is used at once (and only fetched the first time).
+  if (url.pathname.startsWith("/assets/")) {
+    e.respondWith(
+      caches.match(url.pathname).then(
+        (hit) =>
+          hit ||
+          fetch(e.request).then((r) => {
+            if (r.ok) {
+              const copy = r.clone();
+              caches.open(ASSETS).then(async (c) => {
+                await c.put(url.pathname, copy);
+                // Old versions' files go once there are many.
+                const keys = (await c.keys()).filter((k) => new URL(k.url).pathname.startsWith("/assets/"));
+                for (const k of keys.slice(0, Math.max(0, keys.length - 300))) await c.delete(k);
+              });
+            }
+            return r;
+          }),
+      ),
+    );
+    return;
+  }
+  const keep = SHELL.includes(url.pathname);
   e.respondWith(
     fetch(e.request)
       .then((r) => {

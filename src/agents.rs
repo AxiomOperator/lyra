@@ -286,7 +286,8 @@ impl Agents {
         if !s.routing.model_fallback {
             return None;
         }
-        let (reply, _) = crate::learn::complete(&env.url, &env.model, router::ROUTE_PROMPT, &router::route_prompt(&candidates, message)).ok()?;
+        // A small question with a small answer: the light model first (a reply's own step: it doesn't wait).
+        let (reply, _) = crate::learn::complete_light_short(&env.url, &env.model, router::ROUTE_PROMPT, &router::route_prompt(&candidates, message), 300).ok()?;
         let d = router::parse_route(&reply, &candidates).ok()?;
         (d.agent != MAIN && d.confidence >= 0.6).then_some(d)
     }

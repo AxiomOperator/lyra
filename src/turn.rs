@@ -93,11 +93,21 @@ impl App {
             self.compacted = None;
         }
         let (already, prior) = self.compacted.clone().map_or((0, None), |(n, s)| (n, Some(s)));
+        // Pictures go again only with the latest exchanges (an old one is mentioned, not re-sent).
+        let since = {
+            let users: Vec<usize> = self.messages.iter().enumerate().filter(|(_, m)| m.role == "user").map(|(i, _)| i).collect();
+            users.len().checked_sub(PICTURE_TURNS).map_or(0, |k| users[k])
+        };
+        let recent: std::collections::HashSet<*const Message> = self.messages[since..].iter().map(|m| m as *const Message).collect();
         let history: Vec<Value> = system
             .iter()
             .chain(self.messages.iter().filter(|m| m.is_history()).skip(already))
             .map(|m| {
                 let mut v = serde_json::to_value(m).expect("message serializes");
+                if self.vision && !m.images.is_empty() && !recent.contains(&(m as *const Message)) {
+                    v["content"] = json!(format!("{}\n\n(with {} picture{} sent earlier in the conversation)", m.content, m.images.len(), if m.images.len() == 1 { "" } else { "s" }));
+                    return v;
+                }
                 // A model that can see gets the images as parts of the message.
                 if self.vision && !m.images.is_empty() {
                     let mut parts = vec![json!({ "type": "text", "text": m.content })];
@@ -584,6 +594,9 @@ fn room() -> usize {
     tokens * 7 / 2 * 6 / 10
 }
 
+/// Pictures are sent again with this many of the latest exchanges; older ones are mentioned.
+const PICTURE_TURNS: usize = 2;
+
 /// How many of the latest exchanges always stay whole when a conversation is compacted.
 const KEEP_TURNS: usize = 4;
 
@@ -642,6 +655,31 @@ fn compact(history: &mut Vec<Value>, prior: Option<&str>, room: usize, summarize
     Some((cut - start, note))
 }
 
+impl crate::App {
+    /// After a reply: when the conversation is near the model's context, its
+    /// oldest turns become a note now, in the background (lyra's own work: it
+    /// waits for replies), so the next message doesn't wait for it.
+    pub(crate) fn precompact(&mut self) {
+        let kept = self.messages.iter().filter(|m| m.is_history()).count();
+        let (already, prior) = self.compacted.clone().filter(|(upto, _)| *upto < kept).map_or((0, None), |(n, s)| (n, Some(s)));
+        let mut history: Vec<Value> = self.messages.iter().filter(|m| m.is_history()).skip(already).map(|m| serde_json::to_value(m).expect("message serializes")).collect();
+        let size: usize = history.iter().map(|m| m["content"].as_str().map_or(0, str::len) + m["tool_calls"].to_string().len()).sum();
+        if size <= room() * 8 / 10 {
+            return;
+        }
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let (model, tx, owner, session) = (self.model.clone(), self.tx.clone(), self.owner.clone(), self.session_id.clone());
+        crate::acting::spawn(move || {
+            crate::acting::set(&owner);
+            crate::usage::set_job(Some(session));
+            let summarize = |text: &str| crate::learn::complete_light(&url, &model, SUMMARIZE, text).map(|(s, _)| s);
+            if let Some((n, note)) = compact(&mut history, prior.as_deref(), room(), summarize) {
+                let _ = tx.send(StreamEvent::Compacted { upto: already + n, summary: note });
+            }
+        });
+    }
+}
+
 /// Older tool results shortened when the conversation outgrows the model's
 /// context (long research: dozens of fetched pages). The newest few stay whole.
 fn fit(history: &mut [Value], room: usize) -> usize {
@@ -652,14 +690,18 @@ fn fit(history: &mut [Value], room: usize) -> usize {
     let tools: Vec<usize> = history.iter().enumerate().filter(|(_, m)| m["role"] == "tool").map(|(i, _)| i).collect();
     let keep = tools.len().saturating_sub(6);
     let mut cut = 0;
+    // Measured once, then kept up to date as each result is shortened.
+    let mut total = size(history);
     for &i in &tools[..keep] {
-        if size(history) <= room {
+        if total <= room {
             break;
         }
         let text = history[i]["content"].as_str().unwrap_or("").to_string();
         if text.len() > 1500 {
             let start: String = text.chars().take(1200).collect();
-            history[i]["content"] = json!(format!("{start}\n… (shortened to fit the conversation: {} characters left out)", text.len() - start.len()));
+            let short = format!("{start}\n… (shortened to fit the conversation: {} characters left out)", text.len() - start.len());
+            total = total - text.len() + short.len();
+            history[i]["content"] = json!(short);
             cut += 1;
         }
     }
@@ -752,6 +794,8 @@ pub(crate) fn converse(
     };
     // Capabilities the model found with the search tool, offered from then on.
     let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // The turn's tool list, worked out once and again only when the search found more.
+    let mut offered: Option<(usize, Vec<Value>)> = None;
     // Tools the user said no to in this turn: not asked about again.
     let mut refused: std::collections::HashSet<String> = std::collections::HashSet::new();
     // This reply's searches: no near-repeats, and a budget.
@@ -775,7 +819,9 @@ pub(crate) fn converse(
         if let Some(e) = how.effort {
             e.apply(&mut body);
         }
-        if let Some(caps) = caps {
+        if let Some(caps) = caps
+            && offered.as_ref().is_none_or(|(n, _)| *n != found.len())
+        {
             let mut definitions = match how.offer {
                 Offer::All => caps.definitions(request, &found),
                 Offer::Search => caps.chat_definitions(&found),
@@ -803,9 +849,10 @@ pub(crate) fn converse(
             if matches!(how.offer, Offer::All) {
                 definitions = Caps::stable_tools(&crate::usage::job().unwrap_or_default(), definitions);
             }
-            if !definitions.is_empty() {
-                body["tools"] = Value::Array(definitions);
-            }
+            offered = Some((found.len(), definitions));
+        }
+        if let Some((_, definitions)) = offered.as_ref().filter(|(_, d)| !d.is_empty()) {
+            body["tools"] = Value::Array(definitions.clone());
         }
         if stopped(cancel) {
             return Ok((finish(total), false, current.1.clone()));

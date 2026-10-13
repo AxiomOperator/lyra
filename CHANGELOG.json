@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.92.0.255",
+    "date": "2026-10-12",
+    "title": "Quicker and lighter, the rest",
+    "improved": [
+      "After each reply, lyra's two checks (a lesson here? worth remembering?) are one question to the decision model instead of two.",
+      "A long conversation is summarized in the background after a reply, so the next message doesn't wait for it; finding the right agent asks the small model, not the big one.",
+      "The tools offered are worked out once per reply instead of again on every step.",
+      "The app opens faster and updates download less: its own code is a quarter of the size, libraries stay cached between updates, and pages like What's new and Coding load when you open them. Code in a reply being written is highlighted a few times a second, not on every word.",
+      "The server does less: the Status page's history is a few queries instead of four per check, conversations are saved in the background, old pictures aren't sent to the model again, and the goal loop works off the main loop."
+    ]
+  },
+  {
     "version": "0.91.2.254",
     "date": "2026-10-12",
     "title": "Fallback prices in the example config",

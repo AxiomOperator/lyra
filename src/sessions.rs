@@ -167,7 +167,53 @@ pub fn save(dir: &Path, s: &Session) -> Result<(), String> {
     crate::store::write_text(&dir.join(format!("{}.json", s.id)), &text)
 }
 
+// ---- saving off the loop: the newest copy of each conversation, written by
+// a thread of its own (a burst of saves in one turn is one write)
+
+type Pending = std::collections::HashMap<PathBuf, Session>;
+static PENDING: std::sync::Mutex<Option<Pending>> = std::sync::Mutex::new(None);
+static WAKE: std::sync::Condvar = std::sync::Condvar::new();
+/// One writer at a time (the thread, or a flush).
+static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Save a conversation soon, off this thread; until it's written, reading it gives this copy.
+pub fn save_later(dir: &Path, s: Session) {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        std::thread::spawn(|| loop {
+            {
+                let mut p = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+                while p.as_ref().is_none_or(|m| m.is_empty()) {
+                    p = WAKE.wait(p).unwrap_or_else(|e| e.into_inner());
+                }
+            }
+            // A moment for the rest of a burst to come in.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            flush();
+        });
+    });
+    PENDING.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(dir.join(format!("{}.json", s.id)), s);
+    WAKE.notify_one();
+}
+
+/// Write every conversation waiting to be saved, now (before lyra stops).
+pub fn flush() {
+    let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    let todo: Vec<(PathBuf, Session)> = PENDING.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(|m| m.drain().collect()).unwrap_or_default();
+    for (path, s) in todo {
+        if let Some(dir) = path.parent()
+            && let Err(e) = save(dir, &s)
+        {
+            crate::trouble::report(format!("couldn't save conversation {}: {e}", s.id));
+        }
+    }
+}
+
 fn load_file(path: &Path) -> Result<Session, String> {
+    // Saved a moment ago and not written yet: that copy.
+    if let Some(s) = PENDING.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(path)) {
+        return Ok(s.clone());
+    }
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -346,6 +392,19 @@ pub fn describe(sessions: &[Session], limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_save_is_read_back_at_once_and_written_by_the_flush() {
+        let dir = std::env::temp_dir().join(format!("lyra-sessions-{}", lyra_memory::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let s = convo("20260105-000000-dddddd", &[("user", "hello"), ("assistant", "hi")]);
+        save_later(&dir, s);
+        // Not written yet, but it reads (a conversation put away and opened again at once).
+        assert_eq!(load_file(&dir.join("20260105-000000-dddddd.json")).unwrap().messages.len(), 2);
+        flush();
+        assert!(dir.join("20260105-000000-dddddd.json").exists(), "written by the flush");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn convo(id: &str, lines: &[(&str, &str)]) -> Session {
         let messages: Vec<SavedMessage> = lines

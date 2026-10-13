@@ -126,6 +126,35 @@ fn listed(model: &str, offered: &[String]) -> (State, String) {
     }
 }
 
+/// The lyra home's disk (`df`), asked at most every 10 minutes (it changes slowly).
+fn disk_of(home: &Path) -> Option<Value> {
+    static LAST: Mutex<Option<(Instant, Option<Value>)>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, d)) = last.as_ref().filter(|(at, _)| at.elapsed() < Duration::from_secs(600)) {
+        return d.clone();
+    }
+    let out = std::process::Command::new("df").args(["-P", "-k"]).arg(home).output().ok();
+    let d = out.and_then(|o| lyra_node::health::disks(&String::from_utf8_lossy(&o.stdout)).into_iter().next());
+    *last = Some((Instant::now(), d.clone()));
+    d
+}
+
+/// `[speech]` from config.toml, read again only when the file changed.
+fn speech_settings() -> lyra_web::Speech {
+    static LAST: Mutex<Option<(Option<std::time::SystemTime>, u64, lyra_web::Speech)>> = Mutex::new(None);
+    let meta = crate::config::path().and_then(|p| std::fs::metadata(p).ok());
+    let stamp = (meta.as_ref().and_then(|m| m.modified().ok()), meta.as_ref().map_or(0, |m| m.len()));
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((t, len, sp)) = last.as_ref()
+        && (*t, *len) == stamp
+    {
+        return sp.clone();
+    }
+    let sp = crate::config::Config::load().map(|c| c.speech.web()).unwrap_or_default();
+    *last = Some((stamp.0, stamp.1, sp.clone()));
+    sp
+}
+
 /// A speech server's models (`GET /models`).
 fn speech_models(url: &str) -> Result<Vec<String>, String> {
     let c = reqwest::blocking::Client::builder().connect_timeout(std::time::Duration::from_secs(4)).timeout(std::time::Duration::from_secs(10)).build().map_err(|e| e.to_string())?;
@@ -324,7 +353,7 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
     }
 
     // Voice on lyra's own servers ([speech]): each answers, and has its model.
-    let speech = crate::config::Config::load().map(|c| c.speech.web()).unwrap_or_default();
+    let speech = speech_settings();
     match speech.stt {
         Some(stt) => spawn(
             &mut jobs,
@@ -447,10 +476,7 @@ pub fn pass(i: Inputs) -> Vec<Probe> {
                 vec![check("storage", "lyra", "Storage", &target, move || {
                     let broken: Vec<String> = stores.iter().filter_map(|(n, r)| r.as_ref().err().map(|e| format!("{n}: {e}"))).collect();
                     let memories = mem.as_ref().and_then(|m| m.run(m.manager.stats()).ok()).map(|s| s.active);
-                    let disk = home.as_ref().and_then(|h| {
-                        let out = std::process::Command::new("df").args(["-P", "-k"]).arg(h).output().ok()?;
-                        lyra_node::health::disks(&String::from_utf8_lossy(&out.stdout)).into_iter().next()
-                    });
+                    let disk = home.as_ref().and_then(|h| disk_of(h));
                     let used = disk.as_ref().and_then(|d| d["used_pct"].as_u64()).unwrap_or(0);
                     let mut parts = Vec::new();
                     if let Some(n) = memories {
@@ -622,12 +648,18 @@ impl Board {
 
 // ---- history (SQLite)
 
+/// When added up, up to which unix time, and each check's (answered, checked).
+type WeekCounts = (Instant, i64, HashMap<String, (i64, i64)>);
+
 pub struct Store {
     rt: tokio::runtime::Runtime,
     pool: sqlx::SqlitePool,
     /// Each check's last state, to notice changes.
     last: HashMap<String, State>,
     pruned: Option<Instant>,
+    /// The week's counts per check (answered, checked) up to `until` (a unix time), added up
+    /// again at most hourly; each pass adds only the samples since (a week is a lot to add up).
+    week: Option<WeekCounts>,
 }
 
 impl Store {
@@ -652,7 +684,7 @@ impl Store {
             .block_on(sqlx::query_as("SELECT check_id, to_state FROM changes c WHERE at = (SELECT MAX(at) FROM changes WHERE check_id = c.check_id)").fetch_all(&pool))
             .map_err(|e| e.to_string())?;
         let last = rows.into_iter().map(|(id, s)| (id, State::parse(&s))).collect();
-        Ok(Store { rt, pool, last, pruned: None })
+        Ok(Store { rt, pool, last, pruned: None, week: None })
     }
 
     /// Keep this pass and return the board with history.
@@ -702,13 +734,76 @@ impl Store {
                 tx.commit().await
             })
             .map_err(|e| e.to_string())?;
-        let mut rows = Vec::new();
-        for p in probes.iter().cloned() {
-            rows.push(self.row(p, at)?);
-        }
+        let rows = self.rows(probes.clone(), at)?;
         Ok(Board { at: now, overall: overall(&probes), rows })
     }
 
+    /// Every check's history at once: a few grouped queries a pass, not four per check.
+    fn rows(&mut self, probes: Vec<Probe>, now: i64) -> Result<Vec<Row>, String> {
+        let pool = self.pool.clone();
+        let fresh_week = self.week.as_ref().is_none_or(|(t, _, _)| t.elapsed() >= Duration::from_secs(3600));
+        let until = if fresh_week { now } else { self.week.as_ref().map_or(now, |(_, u, _)| *u) };
+        // Uptime: up or degraded, out of every sample that wasn't off (portable CASE sums).
+        const UPTIME: &str = "SELECT check_id, SUM(CASE WHEN state IN ('up', 'degraded') THEN 1 ELSE 0 END), SUM(CASE WHEN state <> 'off' THEN 1 ELSE 0 END) FROM samples WHERE at >= ? GROUP BY check_id";
+        let (day, week, spark, changes) = self
+            .rt
+            .block_on(async move {
+                let day: Vec<(String, i64, i64)> = sqlx::query_as(UPTIME).bind(now - 86400).fetch_all(&pool).await?;
+                // The week up to `until` (when it's added up again), and what came since.
+                let week: Option<Vec<(String, i64, i64)>> = if fresh_week {
+                    Some(sqlx::query_as("SELECT check_id, SUM(CASE WHEN state IN ('up', 'degraded') THEN 1 ELSE 0 END), SUM(CASE WHEN state <> 'off' THEN 1 ELSE 0 END) FROM samples WHERE at >= ? AND at < ? GROUP BY check_id").bind(now - 7 * 86400).bind(until).fetch_all(&pool).await?)
+                } else {
+                    None
+                };
+                let since: Vec<(String, i64, i64)> = sqlx::query_as(UPTIME).bind(until).fetch_all(&pool).await?;
+                // The last 60 latencies and the last 10 changes of each check (from the last few hours / a month).
+                let spark: Vec<(String, Option<i64>)> = sqlx::query_as(
+                    "SELECT check_id, latency_ms FROM (SELECT check_id, latency_ms, at, ROW_NUMBER() OVER (PARTITION BY check_id ORDER BY at DESC) AS n FROM samples WHERE at >= ?) recent WHERE n <= 60 ORDER BY check_id, at",
+                )
+                .bind(now - 6 * 3600)
+                .fetch_all(&pool)
+                .await?;
+                let changes: Vec<(String, i64, String, String, String)> = sqlx::query_as(
+                    "SELECT check_id, at, from_state, to_state, detail FROM (SELECT check_id, at, from_state, to_state, detail, ROW_NUMBER() OVER (PARTITION BY check_id ORDER BY at DESC) AS n FROM changes) recent WHERE n <= 10 ORDER BY check_id, at DESC",
+                )
+                .fetch_all(&pool)
+                .await?;
+                Ok::<_, sqlx::Error>((day, (week, since), spark, changes))
+            })
+            .map_err(|e| e.to_string())?;
+        let (week, since) = week;
+        let pct = |ok: i64, all: i64| (all > 0).then(|| ok as f64 / all as f64 * 100.0);
+        let day: HashMap<String, f64> = day.into_iter().filter_map(|(id, ok, all)| Some((id, pct(ok, all)?))).collect();
+        if let Some(week) = week {
+            self.week = Some((Instant::now(), until, week.into_iter().map(|(id, ok, all)| (id, (ok, all))).collect()));
+        }
+        let mut counts = self.week.as_ref().map(|(_, _, w)| w.clone()).unwrap_or_default();
+        for (id, ok, all) in since {
+            let c = counts.entry(id).or_insert((0, 0));
+            *c = (c.0 + ok, c.1 + all);
+        }
+        let week: HashMap<String, f64> = counts.into_iter().filter_map(|(id, (ok, all))| Some((id, pct(ok, all)?))).collect();
+        let mut sparks: HashMap<String, Vec<Option<u64>>> = HashMap::new();
+        for (id, ms) in spark {
+            sparks.entry(id).or_default().push(ms.map(|m| m.max(0) as u64));
+        }
+        let mut changed: HashMap<String, Vec<Change>> = HashMap::new();
+        for (id, at, from, to, detail) in changes {
+            if let Some(at) = DateTime::from_timestamp(at, 0) {
+                changed.entry(id).or_default().push(Change { at, from: State::parse(&from), to: State::parse(&to), detail });
+            }
+        }
+        Ok(probes
+            .into_iter()
+            .map(|probe| {
+                let changes = changed.remove(&probe.id).unwrap_or_default();
+                Row { since: changes.first().map(|c| c.at), uptime_24h: day.get(&probe.id).copied(), uptime_7d: week.get(&probe.id).copied(), spark: sparks.remove(&probe.id).unwrap_or_default(), changes, probe }
+            })
+            .collect())
+    }
+
+    /// One check's history, four queries (the reference `rows` is tested against).
+    #[cfg(test)]
     fn row(&self, probe: Probe, now: i64) -> Result<Row, String> {
         let pool = self.pool.clone();
         let id = probe.id.clone();
@@ -945,6 +1040,27 @@ mod tests {
         let mut again = Store::open(&dir).unwrap();
         let b = again.record(vec![p("chat", State::Up)], Utc::now()).unwrap();
         assert_eq!(b.rows[0].changes.len(), 3, "no new change: still up");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_checks_history_in_a_few_queries_is_the_same_as_one_by_one() {
+        let dir = std::env::temp_dir().join(format!("lyra-status-batch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut store = Store::open(&dir).unwrap();
+        let t0 = Utc::now() - chrono::Duration::minutes(30);
+        for i in 0..12 {
+            let at = t0 + chrono::Duration::minutes(i);
+            let probes = vec![p("chat", if i % 4 == 0 { State::Down } else { State::Up }), p("embedding", State::Up), p("tts", if i < 6 { State::Off } else { State::Degraded })];
+            store.record(probes, at).unwrap();
+        }
+        let now = t0 + chrono::Duration::minutes(12);
+        let probes = vec![p("chat", State::Up), p("embedding", State::Up), p("tts", State::Degraded)];
+        let board = store.record(probes.clone(), now).unwrap();
+        for (batched, probe) in board.rows.iter().zip(probes) {
+            let one = store.row(probe, now.timestamp()).unwrap();
+            assert_eq!(batched, &one, "{}", one.probe.id);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

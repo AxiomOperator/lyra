@@ -70,6 +70,18 @@ export async function getHighlighter(lang: string): Promise<{ highlighter: Highl
 }
 
 const cache = new Map<string, TokensResult>();
+const KEEP = 500;
+
+/** Kept, the oldest going first past KEEP (a Map keeps the order things went in). */
+function keep(key: string, result: TokensResult) {
+  cache.delete(key);
+  cache.set(key, result);
+  if (cache.size > KEEP) cache.delete(cache.keys().next().value as string);
+}
+
+/** A code block still being written: highlighted at most this often (ms). */
+const STREAMING_EVERY = 150;
+let lastStreaming: { at: number; code: string; result: TokensResult } | null = null;
 
 /** Streamdown's code plugin, on the small highlighter above. */
 export const lyraCode: CodeHighlighterPlugin = {
@@ -81,14 +93,19 @@ export const lyraCode: CodeHighlighterPlugin = {
   highlight({ code, language, isIncomplete }, callback) {
     const key = `${resolveLanguage(language)}\n${code}`;
     const hit = cache.get(key);
-    if (hit) return hit;
+    if (hit) {
+      keep(key, hit);
+      return hit;
+    }
+    // Still streaming, and highlighted a moment ago: that result until the next turn comes.
+    if (isIncomplete && lastStreaming && Date.now() - lastStreaming.at < STREAMING_EVERY && code.startsWith(lastStreaming.code)) {
+      return lastStreaming.result;
+    }
     getHighlighter(language)
       .then(({ highlighter, lang }) => {
         const result = highlighter.codeToTokens(code, { lang, themes: { light: "github-light", dark: "github-dark" } });
-        if (!isIncomplete) {
-          if (cache.size > 500) cache.clear();
-          cache.set(key, result);
-        }
+        if (isIncomplete) lastStreaming = { at: Date.now(), code, result };
+        else keep(key, result);
         callback?.(result);
       })
       .catch((e) => console.error("[lyra] highlighting failed:", e));

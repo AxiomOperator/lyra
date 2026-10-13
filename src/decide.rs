@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -233,27 +233,61 @@ pub fn gated() -> u64 {
     GATED.load(Ordering::Relaxed)
 }
 
-/// A yes/no gate (a lesson here? worth remembering?): the decision model
-/// when it's sure; when it's down or unsure, the fallback model reads the
-/// same (`light`: the chat URL and model, as a light job), so the gate
-/// doesn't quietly stay shut. `None`: neither could say.
-pub fn gate(what: &str, state: &str, question: &str, light: (&str, &str)) -> Option<(bool, &'static str)> {
-    if let Some((yes, _)) = yes(what, state, question) {
-        return Some((yes, "the decision model"));
-    }
-    let prompt = format!("{question}\n\nAnswer with one word: yes or no.");
-    let (reply, _) = crate::learn::complete_light_short(light.0, light.1, &prompt, &clip(state, 6000), 20).ok()?;
-    let word = reply.trim().trim_start_matches(|c: char| !c.is_alphabetic()).to_lowercase();
-    let yes = if word.starts_with("yes") {
-        true
-    } else if word.starts_with("no") {
-        false
-    } else {
-        return None;
+/// The two gates' answers (yes or no, and who said it): a lesson here, worth remembering.
+pub type Gates = (Option<(bool, &'static str)>, Option<(bool, &'static str)>);
+
+/// Both gates after a turn (a lesson here? worth remembering?) in one
+/// question to the decision model, and for whatever it's unsure of, one
+/// question to the fallback model: asked once per turn (`key`) by whichever
+/// of the two asks first; the other gets its answer from here.
+pub fn gate_both(key: &str, state: &str, lesson: &str, memory: &str, light: (&str, &str)) -> Gates {
+    type Pair = Gates;
+    static TURNS: Mutex<Vec<(String, Arc<OnceLock<Pair>>)>> = Mutex::new(Vec::new());
+    let cell = {
+        let mut all = TURNS.lock().unwrap_or_else(|e| e.into_inner());
+        match all.iter().find(|(k, _)| k == key) {
+            Some((_, c)) => c.clone(),
+            None => {
+                let c = Arc::new(OnceLock::new());
+                all.push((key.to_string(), c.clone()));
+                if all.len() > 20 {
+                    all.remove(0);
+                }
+                c
+            }
+        }
     };
-    GATED.fetch_add(1, Ordering::Relaxed);
-    note(format!("{what}: {} — the fallback model (the decision model was down or unsure)", if yes { "yes" } else { "no" }));
-    Some((yes, "the fallback model"))
+    *cell.get_or_init(|| {
+        let qs = [("lesson".to_string(), Question::Yes(lesson.into())), ("memory".to_string(), Question::Yes(memory.into()))];
+        let answers = ask("after the turn", state, &qs);
+        let sure = |id: &str| answers.as_ref().and_then(|a| confident(a, id)).and_then(Answer::yes).map(|y| (y, "the decision model"));
+        let (mut l, mut m) = (sure("lesson"), sure("memory"));
+        // What it couldn't say: the fallback model reads the same, both in one question.
+        if l.is_none() || m.is_none() {
+            let prompt = format!(
+                "Answer each on its own line, \"lesson: yes\" or \"lesson: no\" and \"remember: yes\" or \"remember: no\".\nlesson: {lesson}\nremember: {memory}"
+            );
+            if let Ok((reply, _)) = crate::learn::complete_light_short(light.0, light.1, &prompt, &clip(state, 6000), 40) {
+                let said = |name: &str| {
+                    reply.lines().find_map(|line| {
+                        let line = line.trim().trim_start_matches(|c: char| !c.is_alphabetic()).to_lowercase();
+                        let rest = line.strip_prefix(name)?.trim_start_matches([':', ' ', '*']).to_string();
+                        if rest.starts_with("yes") { Some(true) } else if rest.starts_with("no") { Some(false) } else { None }
+                    })
+                };
+                for (slot, name, what) in [(&mut l, "lesson", "a lesson here?"), (&mut m, "remember", "worth remembering?")] {
+                    if slot.is_none()
+                        && let Some(yes) = said(name)
+                    {
+                        GATED.fetch_add(1, Ordering::Relaxed);
+                        note(format!("{what}: {} — the fallback model (the decision model was down or unsure)", if yes { "yes" } else { "no" }));
+                        *slot = Some((yes, "the fallback model"));
+                    }
+                }
+            }
+        }
+        (l, m)
+    })
 }
 
 /// For Status: is it there? (its model list: no question, nothing counted
@@ -406,26 +440,30 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_gate_goes_to_the_fallback_model_while_the_decision_model_is_down() {
+    fn both_gates_are_one_question_and_go_to_the_fallback_model_while_the_decision_model_is_down() {
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         configure(Some(settings("http://127.0.0.1:9/v1")));
         take_notes();
-        // The fallback (a light job on the chat endpoint) answers instead.
-        let (chat, request) = fake(json!({ "choices": [{ "message": { "role": "assistant", "content": "Yes." } }] }));
-        let said = gate("a lesson here?", "the user showed how to restart the printer", "Is there a reusable lesson?", (&format!("{chat}/chat/completions"), "m"));
-        assert_eq!(said, Some((true, "the fallback model")));
-        assert!(request.join().unwrap().contains("Is there a reusable lesson?"));
+        // The fallback (a light job on the chat endpoint) answers both, in one reply.
+        let (chat, request) = fake(json!({ "choices": [{ "message": { "role": "assistant", "content": "lesson: yes\nremember: no" } }] }));
+        let said = gate_both("turn-1", "the user showed how to restart the printer", "Is there a reusable lesson?", "Worth remembering?", (&format!("{chat}/chat/completions"), "m"));
+        assert_eq!(said, (Some((true, "the fallback model")), Some((false, "the fallback model"))));
+        let asked = request.join().unwrap();
+        assert!(asked.contains("Is there a reusable lesson?") && asked.contains("Worth remembering?"), "one question for both");
+        // The other gate of the same turn: answered from there (the fake served once).
+        assert_eq!(gate_both("turn-1", "", "", "", ("http://127.0.0.1:9/v1/chat/completions", "m")).1, Some((false, "the fallback model")));
         assert!(down(), "it shows as down");
         let notes = take_notes();
         assert!(notes.iter().any(|(_, _, n)| n.starts_with("⚠ the decision model is down")), "{notes:?}");
         assert!(notes.iter().any(|(_, _, n)| n.contains("the fallback model")), "{notes:?}");
-        // Back up: said once, and no longer down.
-        let (url, _server) = fake(json!({ "answers": { "q": { "type": "noul", "noul": 0.05 } } }));
+        // Back up: both from one decision-model call.
+        let (url, _server) = fake(json!({ "answers": { "lesson": { "type": "noul", "noul": 0.05 }, "memory": { "type": "noul", "noul": 0.97 } } }));
         configure(Some(settings(&url)));
         WAS_DOWN.store(true, Ordering::Relaxed);
-        assert_eq!(gate("worth remembering?", "hi", "Worth remembering?", ("http://127.0.0.1:9/v1/chat/completions", "m")), Some((false, "the decision model")));
+        assert_eq!(gate_both("turn-2", "hi", "Lesson?", "Worth remembering?", ("http://127.0.0.1:9/v1/chat/completions", "m")), (Some((false, "the decision model")), Some((true, "the decision model"))));
         assert!(!down());
         assert!(take_notes().iter().any(|(_, _, n)| n.contains("answers again")));
         configure(None);
     }
+
 }

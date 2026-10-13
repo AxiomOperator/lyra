@@ -944,6 +944,7 @@ fn drain_step(convs: &mut [Conv], draining: &mut Option<Instant>, finishing: usi
             println!("stopping: {} routine run(s) will start again: {}", again.len(), again.iter().map(|a| a.1.as_str()).collect::<Vec<_>>().join(", "));
             crate::routines::save_resume(&again);
         }
+        crate::sessions::flush();
         println!("stopped");
         std::process::exit(0);
     }
