@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.96.0.260",
+    "date": "2026-10-13",
+    "title": "Automations: when this happens, do that",
+    "new": [
+      "Automations: a routine can run each time something happens instead of at a time. \"When a mail from Accounts Payable arrives, add a task due Friday and draft a reply\", \"when a Teams message from Dana about the release\", \"when someone comments on my tasks\". lyra looks every couple of minutes and the run is told exactly which mail, message or task set it off.",
+      "Make one in the chat by just asking, or on the Routines page: pick \"or each time\" and fill in who or what. Automations show with their own badge and say what they react to.",
+      "They follow the same rules as routines: each change still asks you first, unless it only looks."
+    ],
+    "fixed": [
+      "The task and project windows keep their Save and Close buttons with the form, instead of cutting the window in two above the comments and history."
+    ]
+  },
+  {
     "version": "0.95.0.259",
     "date": "2026-10-13",
     "title": "Asked again, answered at once",

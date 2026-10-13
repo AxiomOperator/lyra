@@ -267,13 +267,26 @@ pub fn find(name: &str) -> Result<Routine, String> {
 }
 
 pub fn save(r: &Routine) -> Result<(), String> {
-    parse_schedule(&r.schedule)?;
+    check_schedule(&r.schedule)?;
     if r.prompt.trim().is_empty() {
         return Err("a routine needs something to do".into());
     }
     let dir = dir().ok_or("no lyra home")?;
     let text = toml::to_string_pretty(r).map_err(|e| e.to_string())?;
     crate::store::write_text(&dir.join(format!("{}.toml", r.name)), &text)
+}
+
+/// A time ("every day at 07:00") or an event ("when mail from …").
+pub fn check_schedule(schedule: &str) -> Result<(), String> {
+    match crate::triggers::parse(schedule) {
+        Some(t) => t.map(|_| ()),
+        None => parse_schedule(schedule).map(|_| ()),
+    }
+}
+
+/// What an automation reacts to ("each new mail from …"), for one whose schedule is an event.
+pub fn on(r: &Routine) -> Option<String> {
+    crate::triggers::parse(&r.schedule)?.ok().map(|t| crate::triggers::describe(&t))
 }
 
 /// From the Routines page: a new routine (no `original`) or changes to one,
@@ -382,7 +395,8 @@ pub fn view(recent: usize) -> serde_json::Value {
             let mine = runs.get(&r.name).cloned().unwrap_or_default();
             serde_json::json!({
                 "name": r.name, "schedule": r.schedule, "prompt": r.prompt, "notify": r.notify.as_str(), "enabled": r.enabled, "changes": r.changes, "email": r.email, "remember": r.remember, "results": results(&r.name).len(),
-                "valid": parse_schedule(&r.schedule).is_ok(),
+                "valid": check_schedule(&r.schedule).is_ok(),
+                "on": on(r),
                 "next": if r.enabled { next_run(r, mine.first().map(|x| x.at)).map(|n| n.to_rfc3339()) } else { None },
                 "running": running.contains(&r.name),
                 "run_now": now_running.iter().find(|(n, _)| *n == r.name).map(|(_, x)| serde_json::json!({ "started": x.started, "session": x.session, "doing": x.doing })),
@@ -480,6 +494,24 @@ pub fn has_requests() -> bool {
 /// Ask for a run as someone (a run a restart cut off).
 pub fn request_run_for(user: &str, name: &str) {
     WANTED.lock().unwrap_or_else(|e| e.into_inner()).push((user.to_string(), name.to_string()));
+}
+
+/// What set off each automation's next run: (whose, which, what happened).
+static EVENTS: Mutex<Vec<(String, String, String)>> = Mutex::new(Vec::new());
+
+/// An automation's event: its run is asked for, and told what happened.
+pub fn request_event(user: &str, name: &str, what: &str) {
+    EVENTS.lock().unwrap_or_else(|e| e.into_inner()).push((user.to_string(), name.to_string(), what.to_string()));
+    request_run_for(user, name);
+}
+
+/// What set this run off (this person's), taken.
+fn take_event(name: &str) -> Option<String> {
+    let user = crate::acting::current();
+    let mut all = EVENTS.lock().unwrap_or_else(|e| e.into_inner());
+    let mine: Vec<String> = all.iter().filter(|(u, n, _)| *u == user && n == name).map(|(_, _, w)| w.clone()).collect();
+    all.retain(|(u, n, _)| !(*u == user && n == name));
+    (!mine.is_empty()).then(|| mine.join("\n\n"))
 }
 
 pub fn take_requests() -> Vec<(String, String)> {
@@ -598,6 +630,16 @@ pub fn results_page(only: Option<&str>, query: &str) -> serde_json::Value {
 }
 
 fn base_message(r: &Routine) -> String {
+    if let Some(on) = on(r) {
+        let what = take_event(&r.name).map_or_else(|| "Nothing new set it off: it was started by hand. Look for the latest one yourself and do it for that.".to_string(), |w| format!("What set it off:\n{w}"));
+        return format!(
+            "[automation \"{}\", on {on}] {}\n\n{what}\n\n(This runs by itself when that happens, with nobody watching: do what's asked for what set it off, then report briefly what you did.{}{})",
+            r.name,
+            r.prompt,
+            if r.changes { " Changes ask the user, who may not answer quickly." } else { " Only look: anything that would change something is refused, so say what you'd do instead." },
+            if r.email { " Your answer is emailed to the user as it is (don't call email_me): write it as the email, in Markdown." } else { "" }
+        );
+    }
     format!(
         "[routine \"{}\", {}] {}\n\n(This runs on a schedule with nobody watching: do it now, then report briefly. Start with a one-line verdict: all clear, or what's wrong.{}{})",
         r.name,
@@ -651,13 +693,13 @@ pub fn capabilities() -> Vec<lyra_capabilities::Capability> {
     };
     let mut create = tool(
         "routine_create",
-        "Schedule something for lyra to do regularly (\"every morning at 7, check disks on all machines\"). It runs by itself in lyra serve; the user gets a notification only when a run finds something that needs them (notify=problems), always, or never. The user approves it first.",
+        "Schedule something for lyra to do regularly (\"every morning at 7, check disks on all machines\"), or each time something happens, an automation (\"when a mail from Accounts Payable arrives, add a task due Friday and draft a reply\": schedule \"when mail from Accounts Payable arrives\", changes true). It runs by itself in lyra serve; the user gets a notification only when a run finds something that needs them (notify=problems), always, or never. The user approves it first.",
         RiskLevel::LowWrite,
         serde_json::json!({ "type": "object", "properties": {
             "name": { "type": "string", "description": "Short name, e.g. morning-check." },
-            "schedule": { "type": "string", "description": "When: \"every day at 07:00\", \"weekdays at 8:30\", \"monday at 9:00\", \"every 30m\", \"every 6h\"." },
-            "prompt": { "type": "string", "description": "What to do each time, as the user would ask it (mention machines with @name or @all)." },
-            "notify": { "type": "string", "enum": ["problems", "always", "never"], "description": "When to tell the user (default problems)." },
+            "schedule": { "type": "string", "description": "When: a time (\"every day at 07:00\", \"weekdays at 8:30\", \"monday at 9:00\", \"every 30m\", \"every 6h\") or an event: \"when mail from <who> [about <words>] arrives\", \"when mail about <words>\", \"when a Teams message from <who> [about <words>]\", \"when a task is assigned to me\", \"when someone comments on my tasks\", \"when a task changes\"." },
+            "prompt": { "type": "string", "description": "What to do each time, as the user would ask it (mention machines with @name or @all). For an event: what to do with what set it off (the run is told which mail, message or task)." },
+            "notify": { "type": "string", "enum": ["problems", "always", "never"], "description": "When to tell the user (default problems; for an event, always)." },
             "changes": { "type": "boolean", "description": "It must change things (restart, clean up, update), each change asked of the user. Default false: it only checks and reports." },
             "email": { "type": "boolean", "description": "Email each result to the user (only them): a morning digest, a summary with links. Default false." },
         }, "required": ["name", "schedule", "prompt"] }),
@@ -672,9 +714,10 @@ pub fn capabilities() -> Vec<lyra_capabilities::Capability> {
 pub fn call(name: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
     match name {
         "routine_create" => {
-            let notify = args["notify"].as_str().map_or(Ok(Notify::Problems), Notify::parse)?;
+            let event = crate::triggers::parse(args["schedule"].as_str().unwrap_or("")).is_some();
+            let notify = args["notify"].as_str().map_or(Ok(if event { Notify::Always } else { Notify::Problems }), Notify::parse)?;
             let r = create(args["name"].as_str().unwrap_or(""), args["schedule"].as_str().unwrap_or(""), args["prompt"].as_str().unwrap_or(""), notify, args["changes"] == true, args["email"] == true)?;
-            let next = next_run(&r, None).map(|n| n.format("%a %Y-%m-%d %H:%M").to_string());
+            let next = on(&r).map(|o| format!("on {o}, looked for every couple of minutes")).or_else(|| next_run(&r, None).map(|n| n.format("%a %Y-%m-%d %H:%M").to_string()));
             Ok(serde_json::json!({ "created": r.name, "schedule": r.schedule, "next_run": next, "notify": r.notify.as_str(), "email": r.email.then(|| crate::mailout::address(&crate::acting::current()).unwrap_or_else(|| "no address on their account yet: an admin adds one (Users)".into())) }))
         }
         "routine_list" => Ok(serde_json::json!({ "routines": describe() })),
@@ -693,11 +736,17 @@ pub fn describe() -> String {
         .iter()
         .map(|r| {
             let last = runs.get(&r.name).and_then(|x| x.first());
-            let next = if r.enabled { next_run(r, last.map(|l| l.at)).map_or("?".into(), |n| n.format("%a %m-%d %H:%M").to_string()) } else { "paused".into() };
+            let next = if !r.enabled {
+                "paused".into()
+            } else if let Some(o) = on(r) {
+                format!("on {o}")
+            } else {
+                next_run(r, last.map(|l| l.at)).map_or("?".into(), |n| format!("next {}", n.format("%a %m-%d %H:%M")))
+            };
             let last = last.map_or("never run".into(), |l| {
                 format!("last {} {}", l.at.with_timezone(&Local).format("%m-%d %H:%M"), if l.outcome != "ok" { l.outcome.as_str() } else if l.needs_user { "⚠ needs you" } else { "all clear" })
             });
-            format!("{} — {} · next {next} · {last} · notify {}{}{}\n    {}", r.name, r.schedule, r.notify.as_str(), if r.changes { " · may change things" } else { "" }, if r.email { " · emailed to you" } else { "" }, r.prompt)
+            format!("{} — {} · {next} · {last} · notify {}{}{}\n    {}", r.name, r.schedule, r.notify.as_str(), if r.changes { " · may change things" } else { "" }, if r.email { " · emailed to you" } else { "" }, r.prompt)
         })
         .collect();
     out.push("/routine run|pause|resume|delete|show <name> · /routine edit <name> schedule|prompt|notify|changes|email <value>".into());

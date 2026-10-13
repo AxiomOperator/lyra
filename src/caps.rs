@@ -369,7 +369,6 @@ fn goal_tool(goals: &crate::goals::Goals, name: &str, args: &Value) -> Result<Va
     }
 }
 
-/// The planner's risk scale.
 // ---- answers reused for a few minutes (the same read asked again)
 
 /// How long a tool's answer may be given again: only reads that don't change
@@ -405,6 +404,7 @@ fn keep_answer(key: String, answer: &str) {
     all.push((Instant::now(), key, answer.to_string()));
 }
 
+/// The planner's risk scale.
 pub fn plan_risk(r: RiskLevel) -> Risk {
     match r {
         RiskLevel::ReadOnly => Risk::ReadOnly,

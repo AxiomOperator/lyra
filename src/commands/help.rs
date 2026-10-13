@@ -30,7 +30,7 @@ pub(crate) const COMMANDS: &str = "\
 /sessions                    saved conversations (lyra -c continues the latest)
 /sessions search <words>     find a conversation by what was said in it
 /routine [list]              scheduled things to ask lyra; runs tell you only when something needs you
-/routine new <name> | <schedule> | <what to do> [| notify problems|always|never] [| changes] [| email]
+/routine new <name> | <schedule, or when mail from …> | <what to do> [| notify problems|always|never] [| changes] [| email]
 /routine run|pause|resume|delete|show <name> · /routine edit <name> schedule|prompt|notify|changes|email <value>
 /coding                      coding jobs handed to Claude Code / OpenCode (ask: 'fix … in ~/Projects/x on @desktop')
 /diagnose [<machine> <problem>]  problems researched (read-only); look into one now

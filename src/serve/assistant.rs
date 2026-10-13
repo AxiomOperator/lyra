@@ -5,6 +5,9 @@
 
 use super::*;
 
+/// A look at someone's watches and automations: (whose, what happened, the automations started).
+type Looked = (String, Vec<(String, String)>, Vec<String>);
+
 pub(crate) struct Assistant {
     last_nag: Instant,
     plan_tx: std::sync::mpsc::Sender<(String, Result<Vec<String>, String>)>,
@@ -26,8 +29,8 @@ pub(crate) struct Assistant {
     recap_rx: std::sync::mpsc::Receiver<(String, crate::recap::Recap)>,
     last_recap_look: Instant,
     recapping: std::collections::HashSet<String>,
-    watch_tx: std::sync::mpsc::Sender<(String, Vec<(String, String)>)>,
-    watch_rx: std::sync::mpsc::Receiver<(String, Vec<(String, String)>)>,
+    watch_tx: std::sync::mpsc::Sender<Looked>,
+    watch_rx: std::sync::mpsc::Receiver<Looked>,
     last_watch: Instant,
     watching: std::collections::HashSet<String>,
     /// Microsoft To Do: each person's sync (every 5 minutes, and soon after their tasks change).
@@ -234,19 +237,26 @@ impl Assistant {
         if self.last_watch.elapsed() >= Duration::from_secs(120) {
             self.last_watch = Instant::now();
             for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id) {
-                if self.watching.contains(&u) || !crate::watches::any(&u) {
+                if self.watching.contains(&u) || !(crate::watches::any(&u) || crate::triggers::any(&u)) {
                     continue;
                 }
                 self.watching.insert(u.clone());
                 let tx = self.watch_tx.clone();
                 crate::acting::spawn(move || {
                     let fired = crate::acting::run(&u, crate::watches::pass);
-                    let _ = tx.send((u, fired));
+                    // Automations: what's new starts their runs (asked of the routine loop).
+                    let started = crate::acting::run(&u, crate::triggers::pass);
+                    let _ = tx.send((u, fired, started));
                 });
             }
         }
-        while let Ok((user, fired)) = self.watch_rx.try_recv() {
+        while let Ok((user, fired, started)) = self.watch_rx.try_recv() {
             self.watching.remove(&user);
+            if user == convs[0].app.owner {
+                for s in started {
+                    convs[0].app.log(Level::Plan, format!("⚡ {s}"));
+                }
+            }
             for (title, body) in fired {
                 if user == convs[0].app.owner {
                     convs[0].app.log(Level::Plan, format!("👀 {title}: {body}"));

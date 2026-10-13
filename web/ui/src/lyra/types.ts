@@ -347,6 +347,8 @@ export interface Routine {
   /** How many whole results are kept (Past results). */
   results?: number;
   valid: boolean;
+  /** An automation: what it reacts to ("each new mail from …"); a timed routine has none. */
+  on?: string | null;
   next: string | null;
   running: boolean;
   /** The run in progress: since when, its conversation, what it's doing now. */

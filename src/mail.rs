@@ -137,7 +137,7 @@ pub fn sent_between(from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<Value>
 pub fn received_since(since: DateTime<Utc>) -> Result<Vec<Value>, String> {
     ready()?;
     let f = format!("receivedDateTime ge {}", since.format("%Y-%m-%dT%H:%M:%SZ"));
-    list(&format!("/me/messages?$filter={}&$top=50&$orderby=receivedDateTime desc&$select=id,subject,from,receivedDateTime,conversationId,isDraft", enc(&f)))
+    list(&format!("/me/messages?$filter={}&$top=50&$orderby=receivedDateTime desc&$select=id,subject,from,receivedDateTime,conversationId,isDraft,bodyPreview", enc(&f)))
 }
 
 /// Every message in a conversation (who answered, when).

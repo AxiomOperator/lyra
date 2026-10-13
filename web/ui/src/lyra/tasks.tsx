@@ -26,6 +26,9 @@ const today = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 
+/** A dialog footer with more below it: in its place, not stuck to the bottom. */
+const inline = "static mx-0 mb-0 rounded-none border-t-0 bg-transparent p-0";
+
 function dueText(due: string | null) {
   if (!due) return null;
   const t = today();
@@ -261,7 +264,8 @@ function TaskDialog({ id, open, onClose, people, projects, said }: { id: string 
               <PeoplePicker people={people} value={form.assignees} onChange={(v) => set({ assignees: v })} label="Give it to" />
             </div>
           )}
-          <DialogFooter className="flex-wrap gap-2">
+          {/* With the task's people, comments and history below, the buttons are a row of the form, not the dialog's bottom bar. */}
+          <DialogFooter className={cn("flex-wrap gap-2", t && inline)}>
             {t && t.mine && (
               <Button type="button" variant="ghost" className="mr-auto text-red-300" disabled={busy} onClick={() => void run("task_delete", { id: t.id }, true)}>
                 <Trash2 /> Delete
@@ -431,7 +435,7 @@ function ProjectDialog({ id, open, onClose, people, said, openTask }: { id: stri
             <span className="text-muted-foreground text-xs">Members{lead ? "" : " (its owner changes them)"}</span>
             {lead ? <PeoplePicker people={people} value={form.members} onChange={(v) => set({ members: v })} label="Members" /> : <p className="text-xs">{p?.members.map((m) => m.name).join(", ")}</p>}
           </div>
-          <DialogFooter className="flex-wrap gap-2">
+          <DialogFooter className={cn("flex-wrap gap-2", p && inline)}>
             {p?.mine && (
               <Button type="button" variant="ghost" className="mr-auto text-red-300" disabled={busy} onClick={() => void run("project_delete", { id: p.id }).then((r) => r && onClose())}>
                 <Trash2 /> Delete

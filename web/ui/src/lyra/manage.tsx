@@ -575,6 +575,8 @@ export function RulesDialog({ machine, onClose }: { machine: string | null; onCl
 // ---- routines
 
 const examples = ["every day at 07:00", "weekdays at 8:30", "monday at 9:00", "every 6h"];
+/** Automations: an event instead of a time. */
+const events = ["when mail from … arrives", "when mail about …", "when a Teams message from …", "when a task is assigned to me"];
 
 /** "in 3 h" / "in 12 min" */
 function until(iso: string) {
@@ -622,7 +624,7 @@ function RoutineDialog({ open, routine, onClose, saved }: { open: boolean; routi
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{routine ? `Edit ${routine.name}` : "New routine"}</DialogTitle>
-          <DialogDescription>Something lyra does on a schedule, by itself. You hear about it only when it matters.</DialogDescription>
+          <DialogDescription>Something lyra does by itself, on a schedule or each time something happens (a mail, a Teams message, a task). You hear about it when it matters.</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           {!routine && <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name, e.g. morning-check" />}
@@ -635,8 +637,27 @@ function RoutineDialog({ open, routine, onClose, saved }: { open: boolean; routi
                 </button>
               ))}
             </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-muted-foreground text-xs">or each time:</span>
+              {events.map((x) => (
+                <button
+                  key={x}
+                  type="button"
+                  onClick={() => {
+                    setSchedule(x);
+                    if (!routine) {
+                      setChanges(true);
+                      setNotify("always");
+                    }
+                  }}
+                  className="rounded-full border border-amber-800/60 px-2 py-0.5 text-amber-200/80 text-xs hover:bg-accent/50"
+                >
+                  {x}
+                </button>
+              ))}
+            </div>
           </div>
-          <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} placeholder="What to do, e.g. check disk space, pending updates and failed services on @all (Markdown works)" />
+          <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} placeholder={/^(when|whenever|on) /i.test(schedule.trim()) ? "What to do with it, e.g. add a task due Friday and draft a reply" : "What to do, e.g. check disk space, pending updates and failed services on @all (Markdown works)"} />
           <label className="flex items-start gap-2 text-sm">
             <input type="checkbox" className="mt-0.5 size-4 accent-teal-500" checked={changes} onChange={(e) => setChanges(e.target.checked)} />
             <span>
@@ -835,7 +856,7 @@ export function RoutinesPage({ onBack, toChat }: { onBack: () => void; toChat: (
   return (
     <Page
       title="Routines"
-      description="Things lyra does on a schedule — it tells you only when something needs you."
+      description="Things lyra does by itself — on a schedule, or each time a mail, a Teams message or a task change comes in."
       action={
         <div className="flex gap-1">
           <Button size="sm" variant="secondary" onClick={() => setPast(past === null ? "" : null)}>
@@ -867,12 +888,13 @@ export function RoutinesPage({ onBack, toChat }: { onBack: () => void; toChat: (
                 {r.name}
                 {r.running && <Badge className="bg-sky-600/80 text-white">running</Badge>}
                 {!r.enabled && <Badge variant="secondary">paused</Badge>}
+                {r.on && <Badge className="bg-amber-600/20 text-amber-200">automation</Badge>}
                 {r.changes && <Badge variant="outline">may change things</Badge>}
                 {r.email && <Badge variant="outline">emailed to you</Badge>}
                 {!r.valid && <Badge className="bg-red-500/20 text-red-300">bad schedule</Badge>}
               </CardTitle>
               <CardDescription className="break-words">
-                {r.schedule}
+                {r.on ? `on ${r.on}` : r.schedule}
                 {r.next && ` · next ${until(r.next)} (${new Date(r.next).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })})`}
                 {` · tells you ${r.notify === "problems" ? "when something needs you" : r.notify === "always" ? "after every run" : "never"}`}
               </CardDescription>

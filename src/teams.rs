@@ -50,6 +50,7 @@ pub fn chats(count: usize) -> Result<Vec<Value>, String> {
                 "last_from": from,
                 "last": crate::text::html_text(last["body"]["content"].as_str().unwrap_or("")).chars().take(200).collect::<String>(),
                 "at": when(&last["createdDateTime"]),
+                "sent": last["createdDateTime"],
                 "unread": at.zip(read).is_some_and(|(a, r)| a > r) && from != my_name,
                 "link": c["webUrl"],
             })
