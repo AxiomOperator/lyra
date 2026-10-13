@@ -664,3 +664,63 @@ pub fn search(ids: &[String], text: &str) -> Result<Vec<String>, String> {
         q.fetch_all(&p).await
     })
 }
+
+// ---- links to the same task elsewhere (Microsoft To Do)
+
+/// A task's link to another service: (its id there, the change stamp it had, when lyra last synced it).
+pub type Link = (String, Option<String>, Option<String>);
+
+pub fn link_of(task: &str, service: &str) -> Result<Option<Link>, String> {
+    let p = pool()?;
+    let (task, service) = (task.to_string(), service.to_string());
+    run(async move {
+        let r = sqlx::query("SELECT external_id, etag, synced FROM task_links WHERE task_id = ? AND service = ?").bind(&task).bind(&service).fetch_optional(&p).await?;
+        Ok(r.map(|r| (r.try_get("external_id").unwrap_or_default(), r.try_get("etag").ok().flatten(), r.try_get("synced").ok().flatten())))
+    })
+}
+
+/// The lyra task linked to an id elsewhere.
+pub fn linked(service: &str, external: &str) -> Result<Option<String>, String> {
+    let p = pool()?;
+    let (service, external) = (service.to_string(), external.to_string());
+    run(async move { sqlx::query_scalar("SELECT task_id FROM task_links WHERE service = ? AND external_id = ?").bind(&service).bind(&external).fetch_optional(&p).await })
+}
+
+pub fn set_link(task: &str, service: &str, external: &str, etag: Option<&str>, synced: &str) -> Result<(), String> {
+    let p = pool()?;
+    let (task, service, external, etag, synced) = (task.to_string(), service.to_string(), external.to_string(), etag.map(str::to_string), synced.to_string());
+    run(async move {
+        sqlx::query(
+            "INSERT INTO task_links (task_id, service, external_id, etag, synced) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (task_id, service) DO UPDATE SET external_id = excluded.external_id, etag = excluded.etag, synced = excluded.synced",
+        )
+        .bind(&task)
+        .bind(&service)
+        .bind(&external)
+        .bind(&etag)
+        .bind(&synced)
+        .execute(&p)
+        .await?;
+        Ok(())
+    })
+}
+
+pub fn remove_link(task: &str, service: &str) -> Result<(), String> {
+    let p = pool()?;
+    let (task, service) = (task.to_string(), service.to_string());
+    run(async move {
+        sqlx::query("DELETE FROM task_links WHERE task_id = ? AND service = ?").bind(&task).bind(&service).execute(&p).await?;
+        Ok(())
+    })
+}
+
+/// A person's own tasks (no project), deleted ones too, with when each was deleted.
+pub fn own_for_sync(user: &str) -> Result<Vec<(Task, Option<String>)>, String> {
+    let p = pool()?;
+    let user = user.to_string();
+    run(async move {
+        let sql = format!("SELECT {TASK_COLUMNS}, deleted FROM tasks WHERE owner = ? AND project_id IS NULL");
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(&user).fetch_all(&p).await?;
+        Ok(rows.iter().map(|r| (task_of(r), r.try_get::<Option<String>, _>("deleted").ok().flatten())).collect())
+    })
+}

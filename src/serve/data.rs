@@ -572,6 +572,7 @@ fn tasks_page(what: &str, arg: &Value) -> Result<Value, String> {
             let me = crate::acting::current();
             v["people"] = json!(crate::config::home().map(|h| lyra_web::Users::open(&h.join("web")).list()).unwrap_or_default().into_iter().filter(|u| u.id != me && u.status == lyra_web::Status::Active).map(|u| json!({ "id": u.id, "name": u.name })).collect::<Vec<_>>());
             v["done"] = json!(done_since(chrono::Utc::now() - chrono::Duration::days(14))?.iter().map(brief).collect::<Vec<_>>());
+            v["todo"] = todo::view(&me);
             v
         }
         "task" => full(&get(&id)?),

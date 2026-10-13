@@ -1212,7 +1212,7 @@ impl App {
     }
 
     /// A log line that's about someone else's work (kept as theirs).
-    fn log_for(&mut self, user: &str, session: &str, level: Level, text: String) {
+    pub(crate) fn log_for(&mut self, user: &str, session: &str, level: Level, text: String) {
         let time = chrono::Local::now().format("%H:%M:%S").to_string();
         // Kept, with whose it is (the Activity pages).
         activity::record(user, session, serve::level_name(level), &text);

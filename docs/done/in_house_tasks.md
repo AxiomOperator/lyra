@@ -1,10 +1,13 @@
 # In-house task management (replacing PMI)
 
-> **Status (2026-10-12):** Phases 1–4 are done (0.87.0.247). lyra keeps tasks itself and PMI
-> is gone. Since nothing was imported and everyone switched at once (decisions 3 and 4), the
+> **Status (2026-10-12): done.** Phases 1–4 in 0.87.0.247: lyra keeps tasks itself and PMI is
+> gone. Since nothing was imported and everyone switched at once (decisions 3 and 4), the
 > two-backend switch of §2.1 wasn't needed: the code moved straight to lyra's tasks and
-> production was updated once, with everything in place. Phase 5 (the To Do sync) is still to
-> do, so this doc stays here.
+> production was updated once. Phase 5 in 0.93.0.256 (`src/tasks/todo.rs`): each person's own
+> tasks and a To Do list ("lyra" by default), both ways, through Graph's delta query and
+> `task_links`. The newer of two changes wins, and the other goes in the task's history. It's
+> opt-in: `[web.entra] todo` asks new connections for Tasks.ReadWrite, and `[tasks] todo_sync`
+> is on by default. Reminders aren't synced.
 
 **Goal:** lyra keeps tasks, reminders and projects itself, for everyone who
 uses lyra, so it no longer depends on PMI.

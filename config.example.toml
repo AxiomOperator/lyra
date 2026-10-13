@@ -390,6 +390,10 @@ currency = "$"
 # OnlineMeetingTranscript.Read.All (admin consent); grant them, then turn this on
 # and connect Outlook again:
 # meetings = false
+# Keeping each person's own tasks in step with Microsoft To Do (both ways) also
+# needs the delegated Tasks.ReadWrite permission on the app registration; then
+# turn this on, and each person connects Outlook again:
+# todo = false
 
 # Web search (see README): web_search asks a SearXNG instance (JSON format on),
 # web_fetch reads a page as text. Both only read; replies cite their sources.
@@ -527,6 +531,9 @@ currency = "$"
 # nag = true          # push again when a reminder went off and the task is still open
 # nag_minutes = 30
 # nag_max = 3
+# todo_sync = true    # each person's own tasks kept in step with their Microsoft To Do, both ways
+#                     # (when their Outlook connection allows it: [web.entra] todo)
+# todo_list = "lyra"  # the To Do list they go to (made when it isn't there)
 
 # How long lyra keeps what grows by itself, tidied once a day; 0 keeps that
 # kind forever. Pinned conversations always stay; paired machines never expire

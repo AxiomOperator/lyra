@@ -957,6 +957,17 @@ Where your tasks show up:
 - **The TUI's Goals panel and `lyra connect`'s panel:** a Tasks line ("2 overdue · 1 today").
 - **The Status page:** a Tasks row.
 
+**Microsoft To Do, both ways** (optional): each person's own tasks (not a project's) are kept
+in step with a To Do list of theirs, "lyra" by default (`[tasks] todo_list`).
+- **When:** every 5 minutes, and about half a minute after a change.
+- **What syncs:** made, changed, finished or deleted on either side shows on the other. A
+  task changed on both sides keeps the newer change, and the other version is in the task's
+  history.
+- **What doesn't:** reminders, since both would remind you.
+- **Setting it up:** give the app registration the delegated **Tasks.ReadWrite** permission
+  and set `[web.entra] todo = true`. Then each person connects Outlook again.
+- **Where it shows:** the Tasks page says when it last synced, or what went wrong.
+
 Reminders are each person's own, on any task they can see. lyra pushes one at its time, with
 **Done**, **In 1 hour** and **Tomorrow** buttons. While the task is still open, it pushes
 "⏰ Still to do: …" again every 30 minutes, at most 3 times, outside your quiet time (outside

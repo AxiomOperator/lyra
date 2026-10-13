@@ -10,6 +10,7 @@
 
 mod store;
 pub mod remind;
+pub mod todo;
 pub mod tools;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,11 +31,16 @@ pub struct Settings {
     pub nag: bool,
     pub nag_minutes: u64,
     pub nag_max: u32,
+    /// Keep each person's own tasks in step with their Microsoft To Do (both
+    /// ways), for those whose connection allows it (`[web.entra] todo`).
+    pub todo_sync: bool,
+    /// The To Do list they go to (made when it isn't there).
+    pub todo_list: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { enabled: true, nag: true, nag_minutes: 30, nag_max: 3 }
+        Self { enabled: true, nag: true, nag_minutes: 30, nag_max: 3, todo_sync: true, todo_list: "lyra".into() }
     }
 }
 

@@ -114,7 +114,7 @@ fn projects_have_members_tasks_and_status_updates() {
 #[test]
 fn reminders_go_off_once_then_again_while_open() {
     crate::config::with_test_home(|_| {
-        configure(Settings { enabled: true, nag: true, nag_minutes: 30, nag_max: 2 });
+        configure(Settings { nag_max: 2, ..Default::default() });
         let soon = (Local::now() + Duration::minutes(1)).format("%Y-%m-%d %H:%M").to_string();
         let t = as_(OWNER, || add(New { title: "Call the vendor".into(), remind: soon, ..Default::default() })).unwrap();
         let quiet = |_: &str| false;

@@ -29,12 +29,17 @@ pub struct Entra {
     /// OnlineMeetingTranscript.Read.All: an admin grants them in Entra first).
     #[serde(default)]
     pub meetings: bool,
+    /// Connections also ask to keep Microsoft To Do in step with lyra's tasks
+    /// (Tasks.ReadWrite: delegated; some organizations need an admin to allow it first).
+    #[serde(default)]
+    pub todo: bool,
 }
 
 impl Entra {
     /// What a connection asks Microsoft for.
-    pub fn connect_scope(&self) -> &'static str {
-        if self.meetings { OUTLOOK_MEETINGS_FILES } else { OUTLOOK_FILES }
+    pub fn connect_scope(&self) -> String {
+        let base = if self.meetings { OUTLOOK_MEETINGS_FILES } else { OUTLOOK_FILES };
+        if self.todo { format!("{base} {TODO}") } else { base.to_string() }
     }
 
     pub fn ready(&self) -> bool {
@@ -72,6 +77,9 @@ pub const OUTLOOK_MEETINGS: &str = "openid profile email offline_access Calendar
 /// refreshing with exactly what they were granted.
 pub const OUTLOOK_FILES: &str = "openid profile email offline_access Calendars.ReadWrite Mail.ReadWrite Mail.Send Chat.Read Files.Read.All Files.ReadWrite";
 pub const OUTLOOK_MEETINGS_FILES: &str = "openid profile email offline_access Calendars.ReadWrite Mail.ReadWrite Mail.Send Chat.Read Files.Read.All Files.ReadWrite OnlineMeetings.Read OnlineMeetingTranscript.Read.All";
+
+/// Microsoft To Do, both ways (`[web.entra] todo`).
+pub const TODO: &str = "Tasks.ReadWrite";
 
 /// PKCE: the code challenge for a verifier.
 pub fn challenge(verifier: &str) -> String {
@@ -190,8 +198,16 @@ mod tests {
 
     const TENANT: &str = "11111111-2222-3333-4444-555555555555";
 
+    #[test]
+    fn to_do_is_asked_for_only_when_turned_on() {
+        let mut e = entra();
+        assert!(!e.connect_scope().contains(TODO));
+        e.todo = true;
+        assert!(e.connect_scope().ends_with(" Tasks.ReadWrite") && e.connect_scope().contains("Files.ReadWrite"));
+    }
+
     fn entra() -> Entra {
-        Entra { tenant: TENANT.into(), client_id: "app-1".into(), owner_email: "me@fbcad.org".into(), secret: Some("s3cret".into()), meetings: false }
+        Entra { tenant: TENANT.into(), client_id: "app-1".into(), owner_email: "me@fbcad.org".into(), secret: Some("s3cret".into()), meetings: false, todo: false }
     }
 
     fn token(claims: Value) -> String {

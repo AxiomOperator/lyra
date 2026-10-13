@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.93.0.256",
+    "date": "2026-10-12",
+    "title": "Tasks and Microsoft To Do, both ways",
+    "new": [
+      "Your own tasks can be kept in step with Microsoft To Do (a list called lyra): made, changed, finished or deleted in either place shows in the other within a few minutes. When a task was changed in both, the newer change wins and the other is kept in its history. Project tasks stay in lyra, and reminders aren't copied (so you're not reminded twice). It needs the To Do permission on lyra's Microsoft app ([web.entra] todo); then connect Outlook again."
+    ]
+  },
+  {
     "version": "0.92.0.255",
     "date": "2026-10-12",
     "title": "Quicker and lighter, the rest",

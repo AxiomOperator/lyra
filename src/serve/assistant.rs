@@ -30,6 +30,12 @@ pub(crate) struct Assistant {
     watch_rx: std::sync::mpsc::Receiver<(String, Vec<(String, String)>)>,
     last_watch: Instant,
     watching: std::collections::HashSet<String>,
+    /// Microsoft To Do: each person's sync (every 5 minutes, and soon after their tasks change).
+    todo_tx: std::sync::mpsc::Sender<(String, Result<crate::tasks::todo::Report, String>)>,
+    todo_rx: std::sync::mpsc::Receiver<(String, Result<crate::tasks::todo::Report, String>)>,
+    last_todo: Instant,
+    todo_seen: (u64, Instant),
+    syncing: std::collections::HashSet<String>,
 }
 
 impl Assistant {
@@ -39,7 +45,13 @@ impl Assistant {
         let (action_tx, action_rx) = std::sync::mpsc::channel();
         let (recap_tx, recap_rx) = std::sync::mpsc::channel();
         let (watch_tx, watch_rx) = std::sync::mpsc::channel();
+        let (todo_tx, todo_rx) = std::sync::mpsc::channel();
         Self {
+            todo_tx,
+            todo_rx,
+            last_todo: Instant::now() - Duration::from_secs(3600),
+            todo_seen: (0, Instant::now()),
+            syncing: Default::default(),
             last_nag: Instant::now(),
             plan_tx,
             plan_rx,
@@ -110,6 +122,41 @@ impl Assistant {
                         convs[0].app.log(Level::Error, format!("reminder {action} failed: {e}"));
                     }
                     hub.notify(Notification { title: "Couldn't update the task".into(), body: e, tag: format!("nag-{task}"), approval: None, url: Some("/?page=tasks".into()), actions: vec![], reference: None, to: To::User(user) });
+                }
+            }
+        }
+        // Microsoft To Do, both ways: every 5 minutes, and half a minute after tasks change.
+        let rev = crate::tasks::revision();
+        if rev != self.todo_seen.0 {
+            self.todo_seen = (rev, Instant::now());
+        }
+        let soon = self.todo_seen.1.elapsed() >= Duration::from_secs(30) && self.todo_seen.1 > self.last_todo;
+        if crate::tasks::settings().todo_sync && (self.last_todo.elapsed() >= Duration::from_secs(300) || soon) {
+            self.last_todo = Instant::now();
+            let list = crate::tasks::settings().todo_list;
+            for u in hub.users().list().into_iter().filter(|u| u.status == lyra_web::Status::Active).map(|u| u.id).chain([lyra_web::users::OWNER.to_string()]) {
+                if self.syncing.contains(&u) || !crate::tasks::todo::ready(&u) {
+                    continue;
+                }
+                self.syncing.insert(u.clone());
+                let (tx, list) = (self.todo_tx.clone(), list.clone());
+                crate::acting::spawn(move || {
+                    let r = crate::acting::run(&u, || crate::tasks::todo::sync(&u, &crate::tasks::todo::Graph, &list));
+                    let _ = tx.send((u, r));
+                });
+            }
+        }
+        while let Ok((u, r)) = self.todo_rx.try_recv() {
+            self.syncing.remove(&u);
+            match r {
+                Ok(report) if report.any() => convs[0].app.log_for(&u, "", Level::Plan, format!("Microsoft To Do: {}", report.text())),
+                Ok(_) => {}
+                Err(e) => {
+                    let first = crate::tasks::todo::state_of(&u).error.as_deref() != Some(e.as_str());
+                    crate::tasks::todo::failed(&u, &e);
+                    if first {
+                        convs[0].app.log_for(&u, "", Level::Error, format!("Microsoft To Do couldn't sync: {e}"));
+                    }
                 }
             }
         }

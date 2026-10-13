@@ -515,12 +515,14 @@ export function TasksPage({ onBack }: { onBack: () => void }) {
   const [project, setProject] = useState<{ id: string | null } | null>(null);
   const [people, setPeople] = useState<People>([]);
   const [done, setDone] = useState<TaskBrief[]>([]);
+  const [todo, setTodo] = useState<{ on: boolean; wanted: boolean; connected: boolean; list: string; last: string | null; error: string | null } | null>(null);
   const [said, setSaid] = useState("");
   // Who tasks can go to, and what was done lately: read again as the view changes.
   useEffect(() => {
-    void call<{ people?: People; done?: TaskBrief[] }>("tasks").then((r) => {
+    void call<{ people?: People; done?: TaskBrief[]; todo?: typeof todo }>("tasks").then((r) => {
       setPeople(r.people ?? []);
       setDone(r.done ?? []);
+      setTodo(r.todo ?? null);
     });
   }, [call, view?.at]);
 
@@ -557,6 +559,13 @@ export function TasksPage({ onBack }: { onBack: () => void }) {
         </div>
       }
     >
+      {todo?.on && (
+        <p className={cn("text-xs", todo.error ? "text-amber-300" : "text-muted-foreground")}>
+          Your own tasks are kept in step with Microsoft To Do (list “{todo.list}”){todo.last ? ` · synced ${ago(todo.last)}` : " · first sync soon"}
+          {todo.error ? ` · last try failed: ${todo.error}` : ""}
+        </p>
+      )}
+      {todo && !todo.on && todo.wanted && todo.connected && <p className="text-muted-foreground text-xs">To keep your tasks in step with Microsoft To Do, connect Outlook again (Profile → Connections) and allow it.</p>}
       <TodayCard />
       <InboxCard />
       <Failed error={view?.error ?? undefined} />

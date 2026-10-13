@@ -30,6 +30,11 @@ pub fn meetings_enabled() -> bool {
     ENTRA.read().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|e| e.meetings)
 }
 
+/// Connections may ask for Microsoft To Do (`[web.entra] todo`).
+pub fn todo_enabled() -> bool {
+    ENTRA.read().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|e| e.todo)
+}
+
 pub fn connected_for(user: &str) -> bool {
     crate::secrets::token_for("graph", user).is_some()
 }
