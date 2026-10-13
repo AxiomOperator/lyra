@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.101.0.266",
+    "date": "2026-10-13",
+    "title": "Tidier insides",
+    "improved": [
+      "lyra's core is split into smaller parts by what each does, so new features and fixes to the chat land faster and with less risk. Nothing changes in how it works."
+    ]
+  },
+  {
     "version": "0.101.0.265",
     "date": "2026-10-13",
     "title": "Chat beside a page",
