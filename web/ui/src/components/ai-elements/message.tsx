@@ -26,6 +26,7 @@ import {
   useState,
 } from "react";
 import { Streamdown } from "streamdown";
+import { KeepTable } from "@/lyra/keeptable";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -320,6 +321,8 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
 // lyra: code highlighting only (mermaid, math and CJK would add megabytes).
 const streamdownPlugins = { code };
+// lyra: a reply's tables sort, chart and download as Excel.
+const streamdownComponents = { table: KeepTable };
 
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
@@ -329,6 +332,7 @@ export const MessageResponse = memo(
         className
       )}
       plugins={streamdownPlugins}
+      components={streamdownComponents}
       {...props}
     />
   ),

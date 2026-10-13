@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.98.0.262",
+    "date": "2026-10-13",
+    "title": "Tables you can keep",
+    "new": [
+      "A table in a reply now sorts: tap a heading (again for the other way). Numbers and amounts sort as numbers.",
+      "Chart shows a table's number columns as bars, with a button for each column.",
+      "Excel downloads the table as a real spreadsheet, numbers as numbers and percentages as percentages, in the order you sorted it. Copy and CSV are still on the table itself."
+    ]
+  },
+  {
     "version": "0.97.0.261",
     "date": "2026-10-13",
     "title": "Shared conversations",
