@@ -254,9 +254,12 @@ read and change. Respond with only a JSON object: {\"files\": [\"path\"], \"plan
 
 pub const CODE_PATCH_PROMPT: &str = "\
 You are improving an AI assistant's own source code to fix a specific, evidenced \
-problem. Make the smallest change that fixes it, in the style of the surrounding code. \
-Respond with only a unified diff (git format, paths relative to the repository root, \
-a/ and b/ prefixes), in a ```diff block.";
+problem. First write a test that reproduces it: a Rust #[test] next to the code it \
+tests, that compiles against the code as it is now and fails because of the problem. \
+Then make the smallest change that fixes it, in the style of the surrounding code, so \
+the test passes. Respond with exactly two unified diffs (git format, paths relative to \
+the repository root, a/ and b/ prefixes), each in its own ```diff block: first the \
+test alone, then the fix alone (applied after the test).";
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -290,6 +293,39 @@ pub fn parse_diff(reply: &str) -> Result<String, String> {
     Ok(format!("{body}\n"))
 }
 
+/// The two diffs out of a reply: the repro test, then the fix.
+pub fn parse_test_and_fix(reply: &str) -> Result<(String, String), String> {
+    let reply = reply.rsplit_once("</think>").map_or(reply, |(_, after)| after);
+    let blocks: Vec<String> = reply
+        .split("```diff")
+        .skip(1)
+        .filter_map(|b| b.split("```").next())
+        .map(|b| format!("{}\n", b.trim_matches('\n')))
+        .filter(|b| b.contains("--- ") && b.contains("+++ ") && b.contains("@@"))
+        .collect();
+    let [test, fix] = blocks.as_slice() else {
+        return Err(format!("expected two diffs (the test, then the fix), got {}", blocks.len()));
+    };
+    if test_names(test).is_empty() {
+        return Err("the first diff adds no #[test]".into());
+    }
+    Ok((test.clone(), fix.clone()))
+}
+
+/// The tests a diff adds (`+    #[test]` followed by `+    fn name(`).
+pub fn test_names(diff: &str) -> Vec<String> {
+    let added: Vec<&str> = diff.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).map(|l| l[1..].trim()).collect();
+    let mut names = Vec::new();
+    for (i, l) in added.iter().enumerate() {
+        if l.starts_with("#[test]")
+            && let Some(name) = added[i + 1..].iter().take(3).find_map(|n| n.strip_prefix("fn ").or_else(|| n.strip_prefix("async fn "))).and_then(|n| n.split('(').next())
+        {
+            names.push(name.trim().to_string());
+        }
+    }
+    names
+}
+
 /// Read the JSON object out of a model reply.
 pub fn json_object<T: for<'de> Deserialize<'de>>(reply: &str, what: &str) -> Result<T, String> {
     let reply = reply.rsplit_once("</think>").map_or(reply, |(_, after)| after);
@@ -304,6 +340,17 @@ pub fn json_object<T: for<'de> Deserialize<'de>>(reply: &str, what: &str) -> Res
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_code_reply_gives_the_repro_test_then_the_fix() {
+        let reply = "Here:\n```diff\n--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1 +1,5 @@\n fn f() {}\n+#[test]\n+fn f_handles_empty() {\n+    assert!(false);\n+}\n```\nand the fix:\n```diff\n--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1 +1 @@\n-fn f() {}\n+fn f() { }\n```";
+        let (test, fix) = super::parse_test_and_fix(reply).unwrap();
+        assert_eq!(super::test_names(&test), ["f_handles_empty"]);
+        assert!(fix.contains("+fn f() { }"));
+        assert!(super::parse_test_and_fix("```diff\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n```").is_err(), "one diff only");
+        let no_test = reply.replace("#[test]", "// no test");
+        assert!(super::parse_test_and_fix(&no_test).unwrap_err().contains("no #[test]"));
+    }
+
     use super::*;
 
     type Tools = Vec<(String, String, bool)>;

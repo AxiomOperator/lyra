@@ -1,5 +1,15 @@
 # Self-learning, self-evolution and self-advancing: a deep dive
 
+> **Status (2026-10-12): done.** Phases 1–4 shipped in 0.74–0.78. Phase 5 (the code loop)
+> shipped in 0.94.0.257:
+> - **5.1:** a code candidate is a repro test plus a fix. The test must fail at the base
+>   commit, and then pass with the fix, with clippy and every test passing too
+>   (`lab::validate_repro`, `branch_repro`).
+> - **5.2:** the Proposals page shows both diffs and every sandbox step, and lists approved
+>   branches with whether each is still waiting to be merged.
+>
+> Merging stays a person's action.
+
 A review of every loop by which lyra gets better on its own (skills, evolution, memory, agents,
 goals), checked against what the production server has actually done (data read on 2026-10-11),
 with proposed upgrades. This is a guide (CLAUDE.md rule 3), not a decision: each upgrade keeps

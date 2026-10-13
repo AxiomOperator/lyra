@@ -730,11 +730,22 @@ fn test_inner(env: &Env, c: Candidate, t: &mut Tested) -> Result<Candidate, Stri
         t.notes.push(format!("{}: {} {}", c.short(), if v.valid { "✓" } else { "✗" }, v.notes.join("; ")));
         return ev.manager.save_validation(c, v);
     }
-    if let Change::Code { base_commit, diff } = &c.change {
+    if let Change::Code { base_commit, diff, test } = &c.change {
         let lab = code_lab(ev)?;
-        t.notes.push(format!("{}: checking the patch in a sandbox (clippy, tests)…", c.short()));
-        v.checks = lab.validate(&c.short(), base_commit, diff, &lab::cargo_checks());
-        v.valid = v.checks.iter().all(|(_, ok, _)| *ok) && v.checks.len() > 1;
+        // A test that reproduces the problem first (5.1): without one, nothing shows the patch fixes it.
+        if test.trim().is_empty() {
+            v.valid = false;
+            v.notes.push("no test reproduces the problem: propose it again (/evolve code …) to get one".into());
+            t.notes.push(format!("{}: ✗ no repro test", c.short()));
+            return ev.manager.save_validation(c, v);
+        }
+        let names = evolver::test_names(test);
+        let mut args = vec!["test", "--workspace", "--"];
+        args.extend(names.iter().map(String::as_str));
+        let test_check = lab::Check::new(&format!("the new test ({})", names.join(", ")), "cargo", &args);
+        t.notes.push(format!("{}: in a sandbox: the new test must fail first, then pass with the fix (and clippy and every test)…", c.short()));
+        v.checks = lab.validate_repro(&c.short(), base_commit, test, diff, &test_check, &lab::cargo_checks());
+        v.valid = v.checks.iter().all(|(_, ok, _)| *ok) && v.checks.len() > 3;
         for (name, ok, output) in &v.checks {
             let tail = if *ok { String::new() } else { format!(": {}", last_lines(output, 6)) };
             t.notes.push(format!("  {} {name}{tail}", if *ok { "✓" } else { "✗" }));
@@ -1445,10 +1456,10 @@ fn approve_inner(env: &Env, arg: &str, done: &mut Done) -> Result<String, String
         ));
     }
     let c = ev.manager.set_status(c, CandidateStatus::Approved, if force { "approved by the user despite its benchmark" } else { "approved by the user" })?;
-    if let Change::Code { base_commit, diff } = c.change.clone() {
+    if let Change::Code { base_commit, diff, test } = c.change.clone() {
         let lab = code_lab(ev)?;
-        let message = format!("evolution: {}\n\n{}", c.problem, c.rationale);
-        let branch = lab.branch(&c.short(), &base_commit, &diff, &message)?;
+        let message = format!("evolution: {}\n\n{}\n\nA test reproduces the problem ({}): it failed before the fix and passes with it.", c.problem, c.rationale, evolver::test_names(&test).join(", "));
+        let branch = if test.is_empty() { lab.branch(&c.short(), &base_commit, &diff, &message)? } else { lab.branch_repro(&c.short(), &base_commit, &test, &diff, &message)? };
         ev.manager.mark_deployed_elsewhere(c, &format!("committed to branch {branch}"))?;
         return Ok(format!(
             "✓ committed the patch to local branch {branch} in {} — review and merge it yourself; \
@@ -1571,6 +1582,37 @@ pub fn compare(env: &Env, key: &str) -> Done {
 }
 
 // ---- code evolution (E6)
+
+/// A code candidate for the Proposals page: its repro test, its fix and what
+/// the sandbox found at each step (outputs' last lines).
+pub(crate) fn code_view(c: &Candidate) -> Option<Value> {
+    let Change::Code { base_commit, diff, test } = &c.change else { return None };
+    let checks: Vec<Value> = c.validation.as_ref().map(|v| v.checks.iter().map(|(name, ok, out)| json!({ "name": name, "ok": ok, "output": last_lines(out, 12) })).collect()).unwrap_or_default();
+    Some(json!({ "base": &base_commit[..base_commit.len().min(10)], "test": test, "diff": diff, "tests": evolver::test_names(test), "checks": checks }))
+}
+
+/// Code changes approved: each on its local branch, waiting for a person to
+/// review and merge it (lyra never does), and whether the branch is still there.
+pub(crate) fn code_branches(ev: &Evolution) -> Value {
+    let lab = code_lab(ev).ok();
+    let all = ev.manager.candidates(200).unwrap_or_default();
+    json!(all
+        .iter()
+        .filter(|c| c.level == lyra_evolution::Level::Code && c.status == CandidateStatus::Deployed)
+        .map(|c| {
+            let branch = format!("evolution/{}", c.short());
+            let mut v = code_view(c).unwrap_or(Value::Null);
+            v["id"] = json!(c.short());
+            v["problem"] = json!(c.problem);
+            v["rationale"] = json!(c.rationale);
+            v["branch"] = json!(branch);
+            v["at"] = json!(c.updated_at);
+            v["there"] = json!(lab.as_ref().is_some_and(|l| l.has_branch(&branch)));
+            v["repo"] = json!(ev.source_repo.as_ref().map(|p| crate::context::show(p)));
+            v
+        })
+        .collect::<Vec<_>>())
+}
 
 fn code_lab(ev: &Evolution) -> Result<CodeLab, String> {
     let repo = ev.source_repo.clone().ok_or("code evolution is off: set [evolution] source_repo to lyra's source checkout")?;
@@ -1772,14 +1814,17 @@ fn propose_code_inner(env: &Env, problem: &str, done: &mut Done) -> Result<(), S
         &format!("{brief}Plan: {}\n\nFiles:{sources}", pick.plan),
     )?;
     done.usage.extend(usage);
-    let diff = evolver::parse_diff(&reply)?;
-    if lyra_evolution::safety_scan(&diff).is_some() {
-        return Err("the patch looks like it contains a secret".into());
+    // The test that reproduces it, then the fix (5.1).
+    let (test, diff) = evolver::parse_test_and_fix(&reply)?;
+    for d in [&test, &diff] {
+        if lyra_evolution::safety_scan(d).is_some() {
+            return Err("the patch looks like it contains a secret".into());
+        }
+        if let Some(why) = lab::refuse(d) {
+            return Err(why);
+        }
     }
-    if let Some(why) = lab::refuse(&diff) {
-        return Err(why);
-    }
-    let c = ev.manager.propose_code(problem, &pick.plan, &base, &diff)?;
+    let c = ev.manager.propose_code(problem, &pick.plan, &base, &diff, &test)?;
     done.notes.push(format!(
         "proposed code change {} ({}) — /evolve show {} to read it · /evolve test {} to check it in a sandbox",
         c.short(),
@@ -1916,8 +1961,13 @@ pub fn show(ev: &Evolution, key: &str) -> Result<String, String> {
             out.extend(api.sample.iter().map(|s| format!("  {s}")));
         }
         Change::Skill { instructions, .. } | Change::Agent { instructions, .. } => out.push(instructions.clone()),
-        Change::Code { base_commit, diff } => {
+        Change::Code { base_commit, diff, test } => {
             out.push(format!("against {}", &base_commit[..base_commit.len().min(10)]));
+            if !test.is_empty() {
+                out.push("the test that reproduces it:".into());
+                out.push(test.clone());
+                out.push("the fix:".into());
+            }
             out.push(diff.clone());
         }
         _ => {}

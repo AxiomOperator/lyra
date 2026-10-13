@@ -162,6 +162,81 @@ impl CodeLab {
         results
     }
 
+    /// Phase 5's way: the repro `test` alone at `base` must fail (`test_check`
+    /// runs just the new tests), then with the `fix` on top every check must
+    /// pass (the new tests included). Returns each step as `(name, passed,
+    /// output)`; "repro test fails before the fix" passes when the test failed.
+    pub fn validate_repro(&self, id: &str, base: &str, test: &str, fix: &str, test_check: &Check, checks: &[Check]) -> Vec<(String, bool, String)> {
+        let mut results = Vec::new();
+        for d in [test, fix] {
+            if let Some(why) = refuse(d) {
+                return vec![("protected paths".into(), false, why)];
+            }
+        }
+        let dir = self.work.join(id);
+        if let Err(e) = self.prepare(&dir, base, None) {
+            return vec![("worktree".into(), false, e)];
+        }
+        let done = |results: Vec<(String, bool, String)>| {
+            self.cleanup(&dir);
+            results
+        };
+        if let Err(e) = self.apply(&dir, &format!("{id}-test"), test) {
+            results.push(("the test applies".into(), false, e));
+            return done(results);
+        }
+        // Before the fix: the new test must build and fail (it reproduces the problem).
+        let (passed, output) = self.run(&dir, test_check);
+        let compiled = !output.contains("error[E") && !output.contains("could not compile");
+        let failed_as_it_should = !passed && compiled;
+        let why = if passed { "the new test already passes without the fix: it doesn't reproduce the problem".to_string() } else if !compiled { format!("the new test doesn't build against the code as it is:\n{output}") } else { output };
+        results.push(("repro test fails before the fix".into(), failed_as_it_should, why));
+        if !failed_as_it_should {
+            return done(results);
+        }
+        if let Err(e) = self.apply(&dir, &format!("{id}-fix"), fix) {
+            results.push(("the fix applies".into(), false, e));
+            return done(results);
+        }
+        results.push(("the fix applies".into(), true, String::new()));
+        let (passed, output) = self.run(&dir, test_check);
+        results.push(("repro test passes with the fix".into(), passed, output));
+        if !passed {
+            return done(results);
+        }
+        for check in checks {
+            let (ok, output) = self.run(&dir, check);
+            results.push((check.name.clone(), ok, output));
+            if !ok {
+                break;
+            }
+        }
+        done(results)
+    }
+
+    /// The test and the fix committed on a new local branch `evolution/<id>`
+    /// at `base`: the user's checkout and branches are untouched, nothing is pushed.
+    pub fn branch_repro(&self, id: &str, base: &str, test: &str, fix: &str, message: &str) -> Result<String, String> {
+        let both = format!("{}{}", test, fix);
+        if let Some(why) = refuse(&both) {
+            return Err(why);
+        }
+        let name = format!("evolution/{id}");
+        let dir = self.work.join(format!("{id}-branch"));
+        self.prepare(&dir, base, Some(&name))?;
+        let result = self.apply(&dir, &format!("{id}-test"), test).and_then(|()| self.apply(&dir, &format!("{id}-fix"), fix)).and_then(|()| {
+            self.git(&dir, &["add", "-A"])?;
+            self.git(&dir, &["commit", "-q", "-m", message])
+        });
+        self.cleanup(&dir);
+        result.map(|_| name)
+    }
+
+    /// Whether a branch is still there (not merged and deleted).
+    pub fn has_branch(&self, name: &str) -> bool {
+        self.git(&self.repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_ok()
+    }
+
     /// Commit the patch on a new local branch `evolution/<id>` at `base`.
     /// The user's checkout and branches are untouched; nothing is pushed.
     pub fn branch(&self, id: &str, base: &str, diff: &str, message: &str) -> Result<String, String> {
@@ -273,6 +348,32 @@ mod tests {
     const DIFF: &str = "--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-fn a() {}\n+fn b() {}\n";
     /// The same change with a wrong hunk header, as models often write them.
     const MISCOUNTED: &str = "--- a/lib.rs\n+++ b/lib.rs\n@@ -1,7 +1,7 @@\n-fn a() {}\n+fn b() {}\n";
+
+    /// A "test" that wants `fn b` in lib.rs (a stand-in for a failing #[test]).
+    const TEST: &str = "--- /dev/null\n+++ b/wants_b.txt\n@@ -0,0 +1 @@\n+lib.rs should have fn b\n";
+
+    #[test]
+    fn a_repro_test_must_fail_before_the_fix_and_pass_with_it() {
+        let (root, head) = repo();
+        let lab = CodeLab::new(root.join("repo"), &root);
+        let test_check = Check::new("the new test", "grep", &["-q", "fn b", "lib.rs"]);
+        let all = [Check::new("everything", "test", &["-f", "wants_b.txt"])];
+        let ok = lab.validate_repro("r1", &head, TEST, DIFF, &test_check, &all);
+        assert_eq!(ok.iter().map(|(n, p, _)| (n.as_str(), *p)).collect::<Vec<_>>(), [("repro test fails before the fix", true), ("the fix applies", true), ("repro test passes with the fix", true), ("everything", true)], "{ok:?}");
+        // A "test" that already passes without the fix reproduces nothing.
+        let passes = Check::new("the new test", "grep", &["-q", "fn a", "lib.rs"]);
+        let no = lab.validate_repro("r2", &head, TEST, DIFF, &passes, &all);
+        assert_eq!(no.len(), 1);
+        assert!(!no[0].1 && no[0].2.contains("doesn't reproduce"), "{no:?}");
+        // Branched with both, the checkout untouched.
+        let name = lab.branch_repro("r3", &head, TEST, DIFF, "evolution: r3").unwrap();
+        assert!(lab.has_branch(&name) && !lab.has_branch("evolution/none"));
+        let files = Command::new("git").arg("-C").arg(root.join("repo")).args(["show", "--name-only", "--format=", &name]).output().unwrap();
+        let files = String::from_utf8_lossy(&files.stdout).to_string();
+        assert!(files.contains("lib.rs") && files.contains("wants_b.txt"), "{files}");
+        assert_eq!(std::fs::read_to_string(root.join("repo/lib.rs")).unwrap(), "fn a() {}\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn patches_are_checked_in_a_sandbox_and_branched_without_touching_the_checkout() {

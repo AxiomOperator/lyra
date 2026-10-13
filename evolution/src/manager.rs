@@ -314,7 +314,7 @@ impl EvolutionManager {
     }
 
     /// A source patch from the code lab's flow (always manual).
-    pub fn propose_code(&self, problem: &str, rationale: &str, base_commit: &str, diff: &str) -> Result<Candidate, String> {
+    pub fn propose_code(&self, problem: &str, rationale: &str, base_commit: &str, diff: &str, test: &str) -> Result<Candidate, String> {
         let now = Utc::now();
         let c = Candidate {
             id: Uuid::new_v4(),
@@ -322,7 +322,7 @@ impl EvolutionManager {
             level: Level::Code,
             problem: problem.into(),
             rationale: rationale.into(),
-            change: Change::Code { base_commit: base_commit.into(), diff: diff.into() },
+            change: Change::Code { base_commit: base_commit.into(), diff: diff.into(), test: test.into() },
             evidence: Vec::new(),
             confidence: 0.5,
             status: CandidateStatus::Proposed,

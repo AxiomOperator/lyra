@@ -2048,9 +2048,18 @@ evidence about its own runs, progressively and reversibly. Built following
   is append-only, enforced by the database.
 
 **Code evolution** is off unless `source_repo` points at a git checkout of
-lyra. `/evolve code <problem>` then has the model pick files and write a
-patch against the current commit. `/evolve test` applies it in a throwaway
-git worktree and runs clippy and the tests there. Patches may not touch the
+lyra. `/evolve code <problem>` then has the model pick files and write two
+diffs against the current commit: a test that reproduces the problem, then the
+fix. `/evolve test` works in a throwaway git worktree, in this order:
+1. The test alone is applied, and it must build and **fail**. A test that already
+   passes reproduces nothing, and the candidate fails its checks.
+2. The fix is applied on top, and the new test must now pass.
+3. Clippy and every test must pass.
+
+A candidate without a repro test can't pass. The Proposals page shows each
+step's result and both diffs; once approved, the branch is listed under
+**Branches** ("waiting to be merged" until it's merged or deleted), with the
+commands to review and merge it. Patches may not touch the
 evolution system or the safety checks (`evolution/`, `src/evolve.rs`,
 `memory/src/safety.rs`) or anything outside the repository. Approving commits
 it to a local branch `evolution/<id>`. Nothing is merged or pushed, and the

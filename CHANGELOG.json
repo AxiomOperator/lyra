@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.94.0.257",
+    "date": "2026-10-12",
+    "title": "Code changes that prove themselves",
+    "new": [
+      "A code change lyra proposes now comes with a test that reproduces the problem. In its sandbox, the test must fail on the code as it is and pass with the fix (with clippy and every test passing too); otherwise the change can't be approved.",
+      "The Proposals page shows a code change's test and fix and each sandbox step, and lists the branches you approved, each marked waiting to be merged until you merge it (with the commands to look at it and merge it). lyra still never merges, pushes or changes the running binary."
+    ]
+  },
+  {
     "version": "0.93.0.256",
     "date": "2026-10-12",
     "title": "Tasks and Microsoft To Do, both ways",

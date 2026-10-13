@@ -240,12 +240,14 @@ pub(crate) fn data(app: &mut App, hub: &Hub, what: &str, arg: &Value, node_build
                             "id": c.short(), "level": c.level.to_string(), "status": c.status.to_string(), "problem": c.problem, "rationale": c.rationale,
                             "change": c.change.summary(), "confidence": c.confidence, "created": c.created_at,
                             "tested": v.is_some(), "valid": v.as_ref().is_some_and(|v| v.valid), "notes": v.map(|v| v.notes).unwrap_or_default(),
-                            "api": api, "code": matches!(c.change, lyra_evolution::Change::Code { .. }),
+                            "api": api, "code": matches!(c.change, lyra_evolution::Change::Code { .. }), "patch": crate::evolve::code_view(&c),
                         })
                     })
                     .collect::<Vec<_>>()),
             },
         },
+        // Code changes approved: their branches, waiting for a person to merge them.
+        "evolution_branches" => app.evolution.as_ref().map_or_else(|| json!([]), |ev| crate::evolve::code_branches(ev)),
         "goals" => page(app.goals.clone().ok_or("goals are off ([goals] enabled)".to_string()).and_then(|g| crate::goals::page(&g))),
         "skills" => page(app.learning.clone().ok_or("learning is off".to_string()).and_then(|l| l.page_for(app.personal().as_deref(), app.admin))),
         "memory" => {

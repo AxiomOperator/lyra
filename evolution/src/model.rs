@@ -230,7 +230,14 @@ pub enum Change {
     Workflow { workflow: WorkflowDef },
     Skill { skill: String, instructions: String },
     Tool { tool: CompositeTool },
-    Code { base_commit: String, diff: String },
+    /// A source patch: `test` adds a test that reproduces the problem (it must
+    /// fail on `base_commit`), `diff` is the fix (with it, everything passes).
+    Code {
+        base_commit: String,
+        diff: String,
+        #[serde(default)]
+        test: String,
+    },
     Agent { agent: String, instructions: String },
     /// A web service lyra can call, from its OpenAPI description (added to
     /// lyra's config when approved; its writes still ask each time).
@@ -298,7 +305,7 @@ impl Change {
                 tool.inputs.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", "),
                 tool.steps.iter().map(|s| s.tool.as_str()).collect::<Vec<_>>().join(" + ")
             ),
-            Change::Code { diff, .. } => format!("code patch ({} lines)", diff.lines().count()),
+            Change::Code { diff, test, .. } => format!("code patch ({} lines{})", diff.lines().count(), if test.is_empty() { String::new() } else { format!(", with a {}-line repro test", test.lines().count()) }),
             Change::Api { api } => format!(
                 "API {}{}: {} operations ({} read, {} write) from {}",
                 api.name,
