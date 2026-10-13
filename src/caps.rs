@@ -5,8 +5,8 @@
 //! anything: policy first, then the call, usage recorded, writes verified.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use lyra_capabilities::mcp::{McpClient, McpConfig};
 use lyra_capabilities::openapi::{OpenApiClient, OpenApiConfig};
@@ -370,6 +370,41 @@ fn goal_tool(goals: &crate::goals::Goals, name: &str, args: &Value) -> Result<Va
 }
 
 /// The planner's risk scale.
+// ---- answers reused for a few minutes (the same read asked again)
+
+/// How long a tool's answer may be given again: only reads that don't change
+/// in minutes (what's out there, or an item by its id).
+fn reuse_for(name: &str) -> Option<Duration> {
+    Some(match name {
+        "web_search" | "web_fetch" => Duration::from_secs(600),
+        "mail_read" | "mail_thread" | "files_read" | "teams_read" => Duration::from_secs(300),
+        _ => return None,
+    })
+}
+
+/// The arguments with their keys in order and spacing gone (`{"a":1, "b":2}` = `{"b":2,"a":1}`).
+fn normalized(arguments: &str) -> String {
+    serde_json::from_str::<Value>(arguments).map(|v| v.to_string()).unwrap_or_else(|_| arguments.trim().to_string())
+}
+
+type Answers = Vec<(Instant, String, String)>;
+static ANSWERS: Mutex<Answers> = Mutex::new(Vec::new());
+
+fn recent_answer(key: &str, ttl: Duration) -> Option<String> {
+    let mut all = ANSWERS.lock().unwrap_or_else(|e| e.into_inner());
+    all.retain(|(at, _, _)| at.elapsed() < Duration::from_secs(600));
+    all.iter().find(|(at, k, _)| k == key && at.elapsed() < ttl).map(|(_, _, v)| v.clone())
+}
+
+fn keep_answer(key: String, answer: &str) {
+    let mut all = ANSWERS.lock().unwrap_or_else(|e| e.into_inner());
+    all.retain(|(_, k, _)| *k != key);
+    if all.len() >= 200 {
+        all.remove(0);
+    }
+    all.push((Instant::now(), key, answer.to_string()));
+}
+
 pub fn plan_risk(r: RiskLevel) -> Risk {
     match r {
         RiskLevel::ReadOnly => Risk::ReadOnly,
@@ -989,7 +1024,24 @@ impl Caps {
     /// then usage (C5) and, for successful writes, verification (C9).
     /// `approved` means a person approved this call (a plan step's approval).
     /// `verify` is off when the caller verifies itself (the plan engine).
+    /// Run a tool. A read whose answer doesn't change in minutes (a web
+    /// search, a page, a mail or a file by its id) asked again by the same
+    /// person soon after gives the earlier answer (`recent_answer`).
     pub fn invoke(&self, name: &str, arguments: &str, ctx: CallContext, approved: bool, verify: bool) -> String {
+        let Some(ttl) = reuse_for(name) else { return self.invoke_now(name, arguments, ctx, approved, verify) };
+        let key = format!("{}\n{}\n{}", crate::acting::current(), name, normalized(arguments));
+        if let Some(hit) = recent_answer(&key, ttl) {
+            return hit;
+        }
+        let out = self.invoke_now(name, arguments, ctx, approved, verify);
+        // Only answers worth keeping (not an error to try again).
+        if !out.contains("\"error\"") {
+            keep_answer(key, &out);
+        }
+        out
+    }
+
+    fn invoke_now(&self, name: &str, arguments: &str, ctx: CallContext, approved: bool, verify: bool) -> String {
         let Some(c) = self.cap(name) else {
             return json!({ "error": format!("unknown tool {name}") }).to_string();
         };
@@ -1412,6 +1464,18 @@ mod tests {
         caps.set_agents(Arc::new(agents));
         caps.refresh();
         (rt, caps)
+    }
+
+    #[test]
+    fn a_stable_read_asked_again_soon_gives_the_same_answer() {
+        assert!(reuse_for("web_fetch").is_some() && reuse_for("mail_inbox").is_none() && reuse_for("task_list").is_none(), "only reads that don't change in minutes");
+        assert_eq!(normalized(r#"{ "url": "x", "a": 1 }"#), normalized(r#"{"a":1,"url":"x"}"#));
+        let key = format!("dana\nweb_fetch\n{}", normalized(r#"{"url":"https://example.org"}"#));
+        assert!(recent_answer(&key, Duration::from_secs(600)).is_none());
+        keep_answer(key.clone(), "the page");
+        assert_eq!(recent_answer(&key, Duration::from_secs(600)).as_deref(), Some("the page"));
+        assert!(recent_answer(&key.replacen("dana", "sam", 1), Duration::from_secs(600)).is_none(), "each person's own");
+        assert!(recent_answer(&key, Duration::from_secs(0)).is_none(), "only while it's fresh");
     }
 
     #[test]

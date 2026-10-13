@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.95.0.259",
+    "date": "2026-10-13",
+    "title": "Asked again, answered at once",
+    "improved": [
+      "Looking up the same thing again within a few minutes (a web search, a page, a mail, a file or a Teams chat) gives the answer lyra just had, at once, instead of fetching it again. It's each person's own, and only for what doesn't change in minutes."
+    ]
+  },
+  {
     "version": "0.94.1.258",
     "date": "2026-10-13",
     "title": "Lookups side by side",
