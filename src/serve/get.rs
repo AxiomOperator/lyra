@@ -126,21 +126,35 @@ pub(crate) fn get_page(
             let answer = match crate::settings::set(&arg["changes"]) {
                 Ok(changed) if changed.is_empty() => json!({ "ok": true, "changed": changed, "page": crate::settings::page() }),
                 Ok(changed) => {
-                    convs[0].app.reload();
-                    let (url, model, pricing, status) = (convs[0].app.base_url.clone(), convs[0].app.model.clone(), convs[0].app.pricing.clone(), convs[0].app.status.clone());
-                    for c in convs.iter_mut() {
-                        c.app.base_url = url.clone();
-                        c.app.model = model.clone();
-                        c.app.pricing = pricing.clone();
-                        c.app.status = status.clone();
-                        c.changed = true;
-                    }
+                    reload_all(convs, hub);
                     convs[0].app.log(Level::Agent, format!("settings changed from the app by {}: {}", who.user, changed.join(", ")));
                     let keys: Vec<String> = arg["changes"].as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default();
                     convs[0].app.note_settings_edit(&who.user, &keys);
                     json!({ "ok": true, "changed": changed, "page": crate::settings::page() })
                 }
                 Err(e) => json!({ "ok": false, "error": e }),
+            };
+            let _ = reply.send(answer);
+        }
+        // Settings → Check config: does config.toml read, and does each model
+        // server answer with its key (off this loop: it asks each server).
+        "config_check" => {
+            crate::acting::spawn(move || {
+                let _ = reply.send(crate::startup::config_check());
+            });
+        }
+        // Settings → Reload config: config.toml read again by every
+        // conversation (a file that doesn't read changes nothing).
+        "config_reload" => {
+            let answer = match crate::config::Config::load() {
+                Err(e) => json!({ "ok": false, "error": format!("config.toml doesn't read, so nothing changed: {e}") }),
+                Ok(_) => {
+                    reload_all(convs, hub);
+                    convs[0].app.log(Level::Agent, format!("config reloaded from the app by {}", who.name));
+                    crate::status::request();
+                    everyone = true;
+                    json!({ "ok": true, "text": format!("config reloaded: chat model {} at {}; the Status page checks everything again now", convs[0].app.model, convs[0].app.base_url) })
+                }
             };
             let _ = reply.send(answer);
         }
@@ -258,4 +272,21 @@ fn running_view(convs: &[Conv], hub: &Hub) -> Value {
         }));
     }
     json!(out)
+}
+
+/// config.toml read again: lyra's settings, then every conversation's model,
+/// prices and Status settings, and the speech servers devices use.
+fn reload_all(convs: &mut [Conv], hub: &Hub) {
+    convs[0].app.reload();
+    let (url, model, pricing, status) = (convs[0].app.base_url.clone(), convs[0].app.model.clone(), convs[0].app.pricing.clone(), convs[0].app.status.clone());
+    for c in convs.iter_mut() {
+        c.app.base_url = url.clone();
+        c.app.model = model.clone();
+        c.app.pricing = pricing.clone();
+        c.app.status = status.clone();
+        c.changed = true;
+    }
+    if let Ok(config) = crate::config::Config::load() {
+        hub.set_speech(config.speech.web());
+    }
 }

@@ -268,8 +268,8 @@ struct Shared {
     node_binary: std::path::PathBuf,
     public_url: String,
     entra: oidc::Entra,
-    /// `[speech]`: the speech servers devices' audio goes to.
-    pub(crate) speech: Speech,
+    /// `[speech]`: the speech servers devices' audio goes to (replaced when lyra's config is reloaded).
+    pub(crate) speech: std::sync::RwLock<Speech>,
     /// Microsoft sign-ins on their way, by state.
     logins: Mutex<HashMap<String, oidc::Pending>>,
     /// Finished sign-ins waiting for their browser: code → (device token, the sign-in's state, when).
@@ -302,7 +302,19 @@ fn vapid(dir: &Path) -> Result<Vapid, String> {
     Ok(v)
 }
 
+impl Shared {
+    /// The speech settings now.
+    pub(crate) fn speech(&self) -> Speech {
+        self.speech.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
 impl Hub {
+    /// New `[speech]` settings (lyra's config was reloaded).
+    pub fn set_speech(&self, speech: Speech) {
+        *self.shared.speech.write().unwrap_or_else(|e| e.into_inner()) = speech;
+    }
+
     /// Start serving on the given runtime. `dir` holds devices and keys
     /// (`~/.lyra/web`).
     pub fn start(rt: &tokio::runtime::Handle, settings: &Settings, dir: &Path, inbound: std::sync::mpsc::Sender<Inbound>) -> Result<Hub, String> {
@@ -342,7 +354,7 @@ impl Hub {
             },
             public_url: settings.public_url.trim_end_matches('/').to_string(),
             entra: settings.entra.clone(),
-            speech: settings.speech.clone(),
+            speech: std::sync::RwLock::new(settings.speech.clone()),
             logins: Mutex::new(HashMap::new()),
             handoffs: Mutex::new(HashMap::new()),
             tries: Mutex::new(HashMap::new()),

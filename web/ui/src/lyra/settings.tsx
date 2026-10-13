@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { Check, RotateCcw, X } from "lucide-react";
+import { Check, CircleCheck, CircleX, Loader2, RefreshCw, RotateCcw, Stethoscope, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Back, Failed, Page } from "./parts";
 import { SectionTabs } from "./profile";
@@ -280,6 +280,66 @@ function EmailServices() {
   );
 }
 
+type ConfigRow = { name: string; url: string; model: string; key: boolean; placeholder: boolean; ok: boolean; detail: string };
+
+/**
+ * config.toml edited by hand (a new model server, a key): check what lyra
+ * would read, each model server asked with its own key, then reload it into
+ * every conversation. A file that doesn't read changes nothing.
+ */
+function ConfigFile({ said }: { said: (n: { ok: boolean; text: string }) => void }) {
+  const { call } = useLyra();
+  const [busy, setBusy] = useState<"" | "check" | "reload">("");
+  const [check, setCheck] = useState<{ ok: boolean; error?: string; rows?: ConfigRow[] } | null>(null);
+  const run = async () => {
+    setBusy("check");
+    setCheck(await call<{ ok: boolean; error?: string; rows?: ConfigRow[] }>("config_check"));
+    setBusy("");
+  };
+  const reload = async () => {
+    setBusy("reload");
+    const r = await call<{ ok?: boolean; text?: string; error?: string }>("config_reload");
+    setBusy("");
+    said({ ok: !!r?.ok, text: r?.text ?? r?.error ?? "lyra didn't answer" });
+  };
+  return (
+    <Card className="gap-3 py-4">
+      <CardHeader className="px-4">
+        <CardTitle className="text-base">The config file</CardTitle>
+        <CardDescription>Edited config.toml by hand (a model server, a key)? Check it first: lyra reads it and asks each model server, with its own key. Then reload it into every conversation, without a restart.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 px-4 text-sm">
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" disabled={!!busy} onClick={() => void run()}>
+            {busy === "check" ? <Loader2 className="animate-spin" /> : <Stethoscope />} Check config
+          </Button>
+          <Button disabled={!!busy || check?.error !== undefined} onClick={() => void reload()} title={check?.error ? "config.toml doesn't read: fix it first" : undefined}>
+            {busy === "reload" ? <Loader2 className="animate-spin" /> : <RefreshCw />} Reload config
+          </Button>
+        </div>
+        {check?.error && <Failed error={check.error} />}
+        {check?.rows && (
+          <div className="divide-y divide-border rounded-md border">
+            {check.rows.map((r) => (
+              <div key={r.name} className="flex items-start gap-2 px-3 py-2">
+                {r.ok ? <CircleCheck className="mt-0.5 size-4 shrink-0 text-emerald-400" /> : <CircleX className="mt-0.5 size-4 shrink-0 text-red-400" />}
+                <div className="min-w-0">
+                  <div className="font-medium">
+                    {r.name} <span className="font-normal text-muted-foreground">· {r.model}</span>
+                  </div>
+                  <div className="break-all text-muted-foreground text-xs">{r.url}</div>
+                  <div className={cn("text-xs", r.ok ? "text-emerald-300" : "text-red-300")}>{r.detail}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {check?.rows && !check.ok && <p className="text-amber-300 text-xs">Something doesn't answer yet: reloading now would use it as it is.</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function SettingsPage({ onBack }: { onBack: () => void }) {
   const { call, ready } = useLyra();
   const [data, setData] = useState<SettingsData | null>(null);
@@ -350,6 +410,12 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
           </button>
         </div>
       )}
+      <ConfigFile
+        said={(n) => {
+          setNote(n);
+          if (n.ok) load();
+        }}
+      />
       {data && !data.error && (
       <SectionTabs sections={sections} current={sections.some((x) => x.id === tab) ? tab : "models"} pick={pick}>
       {tab === "email" && <EmailServices />}

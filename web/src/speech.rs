@@ -60,7 +60,7 @@ pub(crate) async fn info(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Re
     if let Err(r) = device(&s, &headers) {
         return *r;
     }
-    let sp = s.speech.clone();
+    let sp = s.speech();
     // Only what answers and has its model: otherwise the app uses the browser's own.
     let (stt, tts) = (sp.stt.clone(), sp.tts.clone());
     let ready = tokio::task::spawn_blocking(move || (stt.is_some_and(|t| has_model(&t.url, &t.model)), tts.is_some_and(|t| has_model(&t.url, &t.model)))).await.unwrap_or((false, false));
@@ -95,7 +95,7 @@ pub(crate) async fn transcribe(State(s): State<Arc<Shared>>, headers: HeaderMap,
     if let Err(r) = device(&s, &headers) {
         return *r;
     }
-    let Some(stt) = s.speech.stt.clone() else { return error(StatusCode::NOT_FOUND, "speech to text isn't set up on this server ([speech.stt])") };
+    let Some(stt) = s.speech().stt else { return error(StatusCode::NOT_FOUND, "speech to text isn't set up on this server ([speech.stt])") };
     if body.is_empty() {
         return error(StatusCode::BAD_REQUEST, "no audio");
     }
@@ -151,13 +151,13 @@ pub(crate) async fn say(State(s): State<Arc<Shared>>, headers: HeaderMap, Json(b
     if let Err(r) = device(&s, &headers) {
         return *r;
     }
-    let Some(tts) = s.speech.tts.clone() else { return error(StatusCode::NOT_FOUND, "text to speech isn't set up on this server ([speech.tts])") };
+    let Some(tts) = s.speech().tts else { return error(StatusCode::NOT_FOUND, "text to speech isn't set up on this server ([speech.tts])") };
     let text: String = b.text.trim().chars().take(MAX_TEXT).collect();
     if text.is_empty() {
         return error(StatusCode::BAD_REQUEST, "nothing to say");
     }
     let voice = b.voice.filter(|v| !v.trim().is_empty() && v.len() < 80).unwrap_or(tts.voice.clone());
-    let mut req = json!({ "model": tts.model, "input": text, "voice": voice, "response_format": tts.format, "stream": s.speech.stream });
+    let mut req = json!({ "model": tts.model, "input": text, "voice": voice, "response_format": tts.format, "stream": s.speech().stream });
     if let Some(speed) = tts.speed {
         req["speed"] = json!(speed);
     }
@@ -211,7 +211,7 @@ pub(crate) async fn voices(State(s): State<Arc<Shared>>, headers: HeaderMap) -> 
     if let Err(r) = device(&s, &headers) {
         return *r;
     }
-    let Some(tts) = s.speech.tts.clone() else { return error(StatusCode::NOT_FOUND, "text to speech isn't set up on this server ([speech.tts])") };
+    let Some(tts) = s.speech().tts else { return error(StatusCode::NOT_FOUND, "text to speech isn't set up on this server ([speech.tts])") };
     let got = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
         let url = format!("{}/audio/voices", tts.url.trim_end_matches('/'));
         let v: Value = crate::keys::auth(client(Duration::from_secs(10))?.get(&url), &url).send().map_err(|e| e.to_string())?.text().map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))?;
@@ -221,7 +221,7 @@ pub(crate) async fn voices(State(s): State<Arc<Shared>>, headers: HeaderMap) -> 
     })
     .await;
     match got {
-        Ok(Ok(v)) => Json(json!({ "voices": v, "voice": s.speech.tts.as_ref().map(|t| t.voice.clone()) })).into_response(),
+        Ok(Ok(v)) => Json(json!({ "voices": v, "voice": s.speech().tts.as_ref().map(|t| t.voice.clone()) })).into_response(),
         Ok(Err(e)) => error(StatusCode::BAD_GATEWAY, &e),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }

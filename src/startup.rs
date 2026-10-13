@@ -880,3 +880,76 @@ pub(crate) fn restore_memory(backup: &str) -> Result<String, String> {
     let kept = lyra_memory::restore(std::path::Path::new(backup), &path).map_err(|e| format!("{e:#}"))?;
     Ok(format!("restored memory from {backup}; the previous store is kept at {}", kept.display()))
 }
+
+/// Settings → Check config: config.toml read as a reload would, and each
+/// model server asked for its model list with its own key from the file (the
+/// key itself is never shown). Nothing is changed.
+pub(crate) fn config_check() -> Value {
+    let config = match Config::load() {
+        Ok(c) => c,
+        Err(e) => return json!({ "ok": false, "error": format!("config.toml doesn't read: {e}") }),
+    };
+    let k = |key: &str, secret: &str| config::key(key, secret);
+    let mut rows: Vec<(String, String, String, String)> = vec![("Chat model".into(), config.url.clone(), config.model.clone(), k(&config.api_key, &config.api_key_secret))];
+    for (name, f) in [("Fallback", &config.fallback_model), ("Second fallback", &config.second_fallback_model), ("Light model", &config.light_model)] {
+        if let Some(f) = f {
+            rows.push((name.into(), f.url.clone(), f.model.clone(), k(&f.api_key, &f.api_key_secret)));
+        }
+    }
+    for (name, e) in [("Embedding", &config.embedding), ("Reranker", &config.reranker)] {
+        if let Some(e) = e {
+            rows.push((name.into(), e.url.clone(), e.model.clone(), k(&e.api_key, &e.api_key_secret)));
+        }
+    }
+    if let Some(d) = &config.decide {
+        rows.push(("Decision model".into(), d.url.clone(), d.model.clone(), k(&d.api_key, &d.api_key_secret)));
+    }
+    if let Some(v) = &config.vision_model {
+        rows.push(("Vision model".into(), v.url.clone(), v.model.clone(), k(&v.api_key, &v.api_key_secret)));
+    }
+    let sp = &config.speech;
+    if sp.stt.enabled && !sp.stt.base_url.is_empty() {
+        rows.push(("Speech to text".into(), sp.stt.base_url.clone(), sp.stt.model.clone(), k(&sp.stt.api_key, &sp.stt.api_key_secret)));
+    }
+    if sp.tts.enabled && !sp.tts.base_url.is_empty() {
+        rows.push(("Text to speech".into(), sp.tts.base_url.clone(), sp.tts.model.clone(), k(&sp.tts.api_key, &sp.tts.api_key_secret)));
+    }
+    // Each asked at once (a server that's down shouldn't hold up the rest).
+    let checked: Vec<Value> = std::thread::scope(|s| {
+        let jobs: Vec<_> = rows.iter().map(|(name, url, model, key)| s.spawn(move || check_server(name, url, model, key))).collect();
+        jobs.into_iter().map(|j| j.join().unwrap_or_else(|_| json!({ "ok": false, "detail": "the check failed" }))).collect()
+    });
+    let ok = checked.iter().all(|c| c["ok"] == true);
+    json!({ "ok": ok, "reads": true, "rows": checked })
+}
+
+/// One model server's answer to its model list, with this key.
+fn check_server(name: &str, url: &str, model: &str, key: &str) -> Value {
+    let placeholder = key.starts_with("YOUR_") && key.ends_with("_KEY");
+    let keyed = if key.is_empty() { "no key" } else if placeholder { "the placeholder key" } else { "a key" };
+    let list = format!("{}/models", url.trim_end_matches('/'));
+    let answer = reqwest::blocking::Client::builder().connect_timeout(Duration::from_secs(4)).timeout(Duration::from_secs(10)).build().map_err(|e| e.to_string()).and_then(|c| {
+        let req = c.get(&list);
+        let req = if key.is_empty() { req } else { req.bearer_auth(key) };
+        req.send().map_err(|e| format!("can't reach it ({e})"))
+    });
+    let (ok, detail) = match answer {
+        Err(e) => (false, e),
+        Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED || r.status() == reqwest::StatusCode::FORBIDDEN => {
+            (false, format!("refused {keyed} ({}){}", r.status().as_u16(), if key.is_empty() || placeholder { ": it wants an api_key" } else { ": check the api_key" }))
+        }
+        // Some servers (a passthrough, a speech server) have no model list: it answered.
+        Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => (true, format!("answers, with {keyed} (no model list to check {model} against)")),
+        Ok(r) if !r.status().is_success() => (false, format!("answered {}", r.status())),
+        Ok(r) => {
+            let v: Value = r.json().unwrap_or(Value::Null);
+            let ids: Vec<String> = v["data"].as_array().or(v["models"].as_array()).into_iter().flatten().filter_map(|m| m["id"].as_str().or(m["name"].as_str()).map(str::to_string)).collect();
+            if ids.is_empty() || ids.iter().any(|i| i == model) {
+                (true, format!("answers, with {keyed}{}", if ids.is_empty() { String::new() } else { format!(", and has {model}") }))
+            } else {
+                (false, format!("answers, but doesn't list {model} (it has {})", ids.iter().take(6).cloned().collect::<Vec<_>>().join(", ")))
+            }
+        }
+    };
+    json!({ "name": name, "url": url, "model": model, "key": !key.is_empty(), "placeholder": placeholder, "ok": ok, "detail": detail })
+}

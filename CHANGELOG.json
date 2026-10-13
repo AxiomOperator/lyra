@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.90.0.251",
+    "date": "2026-10-12",
+    "title": "Reload the config from the app",
+    "new": [
+      "Settings has The config file for admins: Check config reads config.toml as a reload would and asks each model server, with its own key, whether it answers and has its model; Reload config then applies it to every conversation and the speech servers, without restarting lyra. A file that doesn't read is reported and nothing changes."
+    ],
+    "improved": [
+      "Saving on the Settings page now updates the speech servers too."
+    ]
+  },
+  {
     "version": "0.89.1.250",
     "date": "2026-10-12",
     "title": "The config check sends keys",

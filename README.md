@@ -62,6 +62,15 @@ backups), use `api_key_secret = "<name>"` and store it with `lyra secret <name>`
 `config.toml` holding a key should be readable by its owner only (`chmod 600`).
 `scripts/lyra-check-config` sends the keys too, and says when one is still a placeholder.
 
+**Reloading after editing by hand.** Settings → *The config file* (admins):
+- **Check config:** reads `config.toml` as a reload would, and asks each model server for its
+  model list with the file's own key. It shows each server as answering, refusing the key,
+  missing the model or unreachable. Nothing changes, and keys are never shown.
+- **Reload config:** reads it into every conversation and the speech servers, without a
+  restart. A file that doesn't read changes nothing.
+
+The TUI reloads with Ctrl-L.
+
 ### Embedding and reranker models
 
 Optional. The embedding model gives memories their vectors (meaning-based
