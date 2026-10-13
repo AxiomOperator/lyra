@@ -61,6 +61,7 @@ mod serve;
 mod search;
 mod secrets;
 mod sessions;
+mod shared;
 mod settings;
 mod stats;
 mod style;
@@ -143,6 +144,9 @@ struct Message {
     /// rendered from (re-rendered when a streaming reply grows).
     #[serde(skip)]
     rendered: Option<(usize, Vec<ratatui::text::Line<'static>>)>,
+    /// In a shared conversation: who said it (a user message), by name.
+    #[serde(skip)]
+    by: String,
 }
 
 impl Message {
@@ -160,7 +164,27 @@ impl Message {
             images: Vec::new(),
             run: None,
             rendered: None,
+            by: String::new(),
         }
+    }
+
+    /// What the model reads: in a shared conversation, with who said it.
+    fn said(&self) -> String {
+        if self.by.is_empty() { self.content.clone() } else { format!("{}: {}", self.by, self.content) }
+    }
+
+    /// The same message in another copy of a shared conversation (its run stays where it was made).
+    fn copy(&self) -> Self {
+        let mut m = Message::new(&self.role, self.content.clone());
+        m.tool_calls = self.tool_calls.clone();
+        m.tool_call_id = self.tool_call_id.clone();
+        m.reasoning = self.reasoning.clone();
+        m.memories = self.memories.clone();
+        m.skills = self.skills.clone();
+        m.agents = self.agents.clone();
+        m.images = self.images.clone();
+        m.by = self.by.clone();
+        m
     }
 
     /// Whether the model sees this message (info and error lines are UI-only).
@@ -574,6 +598,10 @@ struct App {
     /// The oldest turns as one note (how many history messages it stands
     /// for, and the note), once the conversation neared the model's context.
     compacted: Option<(usize, String)>,
+    /// A shared conversation: its thread (`shared.rs`), the others' copies kept the same as this one.
+    thread: Option<String>,
+    /// Who's sending the next message, by name (a shared conversation's messages say who).
+    speaker: String,
     /// Tools plan steps may never use (`[planning] forbidden_tools`).
     forbidden_tools: Vec<String>,
     /// A plan is being created or run in the background.
@@ -716,6 +744,8 @@ impl App {
             evolution_review_every: config.evolution.review.every_days(),
             session_started: chrono::Utc::now(),
             compacted: None,
+            thread: None,
+            speaker: String::new(),
             last_schedule_check: Instant::now(),
             forbidden_tools: config.planning.forbidden_tools.clone(),
             plan_busy: false,
@@ -2338,6 +2368,7 @@ impl App {
         s.chat_only = self.chat_only;
         s.summary = self.compacted.clone();
         s.effort = self.effort.map(|e| e.as_str().to_string());
+        s.thread = self.thread.clone();
         // Written off this thread (a few saves in one turn are one write).
         sessions::save_later(&dir, s);
     }
@@ -2350,6 +2381,8 @@ impl App {
         self.chat_only = s.chat_only;
         self.compacted = s.summary.clone();
         self.effort = s.effort.as_deref().and_then(turn::Effort::parse);
+        // Still in it? (Taken out of a shared conversation: their copy stays, on its own.)
+        self.thread = s.thread.clone().filter(|t| crate::shared::seat(t, &self.owner).is_some());
         self.messages = s.into_messages();
         self.agent_cards.clear();
         self.messages.push(Message::new("info", format!("resumed session {id} · {turns} turns · last active {when}")));
@@ -2370,6 +2403,7 @@ impl App {
         self.session_started = chrono::Utc::now();
         self.messages.clear();
         self.compacted = None;
+        self.thread = None;
         self.effort = None;
         self.agent_cards.clear();
         self.last_run = None;

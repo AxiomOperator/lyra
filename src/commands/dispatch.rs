@@ -143,6 +143,7 @@ impl App {
                 format!("this one: {}\n{}\n\nlyra -c continues the latest here · /resume <id> or lyra -r <id> resumes one", self.session_id, sessions::describe(&sessions::list_for(&d, &self.owner), 20))
             }),
             "/resume" => self.resume(arg),
+            "/share" | "/unshare" => self.share_command(name, arg),
             "/new" => self.new_session(),
             "/chat-only" => {
                 self.chat_only = match arg.trim() {
@@ -326,7 +327,7 @@ impl App {
 /// Commands the app's pages and buttons may run (each still checked by role).
 pub(crate) const PAGE_COMMANDS: &[&str] = &[
     "/memory", "/approve", "/reject", "/deprecate", "/goal", "/goals", "/model", "/backup", "/routine", "/routines", "/status", "/diagnose", "/coding",
-    "/briefing", "/tasks", "/task", "/project", "/projects", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami", "/usage", "/sessions", "/plan", "/recap", "/watches", "/feedback", "/settings", "/agent", "/sandbox", "/evolve",
+    "/briefing", "/tasks", "/task", "/project", "/projects", "/calendar", "/today", "/mail", "/notes", "/note", "/list", "/style", "/users", "/whoami", "/usage", "/sessions", "/share", "/unshare", "/plan", "/recap", "/watches", "/feedback", "/settings", "/agent", "/sandbox", "/evolve",
 ];
 
 /// Commands a member (not an admin) may use. Their own memories, goals,
@@ -334,7 +335,7 @@ pub(crate) const PAGE_COMMANDS: &[&str] = &[
 /// tools, coding, devices, backups, agents and skills' approval stay admins'.
 pub(crate) fn member_may(name: &str, arg: &str) -> bool {
     match name {
-        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" | "/feedback" | "/templates" | "/chat-only" | "/effort" | "/steps" | "/retry" | "/edit" | "/email" => true,
+        "/help" | "/skills" | "/history" | "/sessions" | "/resume" | "/new" | "/whoami" | "/usage" | "/recap" | "/watches" | "/watch" | "/feedback" | "/templates" | "/chat-only" | "/effort" | "/steps" | "/retry" | "/edit" | "/email" | "/share" | "/unshare" => true,
         // Their own skills (the commands check whose each one is).
         "/approve" | "/reject" | "/deprecate" => true,
         // Their own tasks and projects, routines and goals.

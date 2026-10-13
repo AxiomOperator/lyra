@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.97.0.261",
+    "date": "2026-10-13",
+    "title": "Shared conversations",
+    "new": [
+      "Invite a coworker into a conversation: Share at the top of the chat (or /share and their name). They get a notification, the conversation shows up in their own list, and from then on you both see each message and reply as it streams in. Either of you can add to it.",
+      "Each message runs with its sender's own rights and accounts: what you ask uses your mail, files and tasks, what they ask uses theirs. Neither of you can change or re-ask the other's messages.",
+      "Messages in a shared conversation say who sent them, and the person who shared it can take someone out again. Anyone can leave, and their copy stays theirs.",
+      "If you're not looking when the other person gets an answer, you get a notification that opens the conversation."
+    ]
+  },
+  {
     "version": "0.96.0.260",
     "date": "2026-10-13",
     "title": "Automations: when this happens, do that",

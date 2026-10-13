@@ -49,6 +49,7 @@ fn web_message(app: &App, m: &Message) -> Value {
         "memory_notes": m.memories.iter().filter_map(|id| app.memory_texts.get(id).map(|t| json!({ "id": id, "text": t }))).collect::<Vec<_>>(),
         "skills": m.skills,
         "agents": m.agents,
+        "by": (!m.by.is_empty()).then_some(&m.by),
         // A reply that can be rated (👍 / 👎), and how its person rated it.
         "rateable": m.run.is_some(),
         "rated": m.run.as_ref().and_then(|r| r.verdict.as_ref()).filter(|v| v.strength == crate::outcomes::Strength::Rated).map(|v| v.word()),
@@ -196,6 +197,9 @@ fn status(app: &App, machines: &[String]) -> Value {
         "phase": crate::ui::phase_word(app).0,
         "phase_since": crate::ui::phase_word(app).1.then(|| app.phase_at.timestamp_millis()),
         "waiting": app.waiting,
+        "shared_with": app.thread.as_deref().map(crate::shared::names).filter(|n| n.len() > 1),
+        "shared_host": app.thread.as_deref().and_then(crate::shared::get).is_some_and(|t| t.host == app.owner),
+        "me": app.thread.as_ref().map(|_| crate::tasks::name_of(&app.owner)),
         "can_continue": app.can_continue && !app.waiting,
         // Keep going (after an error, with work done), Try again (nothing done), Continue (the limit).
         "continue_kind": match (app.continue_after_error, app.done_so_far().is_some()) {
@@ -460,12 +464,15 @@ struct Conv {
     routine: Option<(crate::routines::Routine, Instant)>,
     /// A diagnosis running here (its key).
     diagnosis: Option<String>,
+    /// A shared conversation: what it showed when last made the same as the others' copies.
+    shared: (usize, usize, usize, bool),
 }
 
 impl Conv {
     fn new(app: App) -> Conv {
         let printed = app.logged;
-        Conv { app, mirror: Mirror::default(), printed, changed: true, last_status: Instant::now(), quiet_since: Instant::now(), routine: None, diagnosis: None }
+        let shared = app.shared_mark();
+        Conv { app, mirror: Mirror::default(), printed, changed: true, last_status: Instant::now(), quiet_since: Instant::now(), routine: None, diagnosis: None, shared }
     }
 }
 
@@ -519,8 +526,87 @@ fn find_conv(convs: &mut Vec<Conv>, session: &str, who: &Who) -> Option<usize> {
     }
     let mut app = convs[0].app.fork_for(who);
     app.resume_session(saved);
+    catch_up(&mut app, convs);
     convs.push(Conv::new(app));
     Some(convs.len() - 1)
+}
+
+/// A shared conversation opened: it starts as the freshest copy (another
+/// person's open one, else the newest saved one).
+fn catch_up(app: &mut App, convs: &[Conv]) {
+    let Some(thread) = app.thread.clone() else { return };
+    if let Some(c) = convs.iter().find(|c| c.app.thread.as_deref() == Some(thread.as_str()) && c.app.owner != app.owner) {
+        let from: Vec<Message> = c.app.messages.iter().map(Message::copy).collect();
+        app.take_shared(&from);
+        return;
+    }
+    let Some(dir) = crate::sessions::dir() else { return };
+    let mine = crate::sessions::find_for(&dir, &app.session_id, &app.owner).map(|s| s.updated).ok();
+    let newest = crate::shared::others(&thread, &app.owner)
+        .into_iter()
+        .filter_map(|s| crate::sessions::find_for(&dir, &s.session, &s.user).ok())
+        .filter(|s| mine.is_none_or(|m| s.updated > m))
+        .max_by_key(|s| s.updated);
+    if let Some(s) = newest {
+        let from = s.into_messages();
+        app.take_shared(&from);
+    }
+}
+
+/// Shared conversations: a copy that changed (a message, a reply streaming
+/// in) makes the others' open copies the same; when a reply is done, they're
+/// saved, and anyone in it who isn't looking hears about it.
+fn sync_shared(convs: &mut [Conv], hub: &Hub) {
+    for i in 0..convs.len() {
+        let Some(thread) = convs[i].app.thread.clone() else { continue };
+        let mark = convs[i].app.shared_mark();
+        if mark == convs[i].shared {
+            continue;
+        }
+        let finished = convs[i].shared.3 && !mark.3;
+        convs[i].shared = mark;
+        let from: Vec<Message> = convs[i].app.messages.iter().map(Message::copy).collect();
+        let (owner, done) = (convs[i].app.owner.clone(), !convs[i].app.waiting);
+        let mut open = vec![owner.clone()];
+        for (j, c) in convs.iter_mut().enumerate() {
+            if j == i || c.app.thread.as_deref() != Some(thread.as_str()) || c.app.owner == owner {
+                continue;
+            }
+            open.push(c.app.owner.clone());
+            // Its own reply running: it's the one to follow.
+            if c.app.waiting {
+                continue;
+            }
+            c.app.take_shared(&from);
+            c.shared = c.app.shared_mark();
+            c.changed = true;
+            if done {
+                c.app.save_session();
+            }
+        }
+        if finished {
+            let asked = from.iter().rev().find(|m| m.role == "user").map(|m| if m.by.is_empty() { crate::tasks::name_of(&owner) } else { m.by.clone() }).unwrap_or_default();
+            let reply = from.iter().rev().find(|m| m.role == "assistant").map(|m| preview(&m.content)).unwrap_or_default();
+            for seat in crate::shared::others(&thread, &owner).into_iter().filter(|s| !open.contains(&s.user)) {
+                hub.notify(Notification {
+                    title: format!("{asked} asked in your shared conversation"),
+                    body: reply.clone(),
+                    tag: format!("shared-{thread}"),
+                    approval: None,
+                    url: Some(format!("/?open={}", seat.session)),
+                    actions: vec![],
+                    reference: None,
+                    to: To::User(seat.user),
+                });
+            }
+        }
+    }
+}
+
+/// Someone else in this shared conversation is being answered: (their name) — one reply at a time.
+fn shared_busy(convs: &[Conv], i: usize) -> Option<String> {
+    let thread = convs[i].app.thread.as_deref()?;
+    convs.iter().enumerate().find(|(j, c)| *j != i && c.app.thread.as_deref() == Some(thread) && c.app.waiting).map(|(_, c)| crate::tasks::name_of(&c.app.owner))
 }
 
 /// The conversation for `session`, else the user's own default: the primary

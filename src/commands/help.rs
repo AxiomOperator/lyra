@@ -29,6 +29,8 @@ pub(crate) const COMMANDS: &str = "\
 /devices remove <name>       unpair a device or machine
 /sessions                    saved conversations (lyra -c continues the latest)
 /sessions search <words>     find a conversation by what was said in it
+/share [<person>]            invite someone into this conversation: both see it as it goes and can add (each message runs with its sender's rights)
+/unshare <person>|me         take someone out of a shared conversation, or leave one
 /routine [list]              scheduled things to ask lyra; runs tell you only when something needs you
 /routine new <name> | <schedule, or when mail from …> | <what to do> [| notify problems|always|never] [| changes] [| email]
 /routine run|pause|resume|delete|show <name> · /routine edit <name> schedule|prompt|notify|changes|email <value>

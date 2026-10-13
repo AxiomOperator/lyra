@@ -317,6 +317,8 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         for c in convs.iter_mut() {
             conversation_events(c, hub, notify, many, &routine_tx, &mut finishing, &mut diagnosed);
         }
+        // Shared conversations: each person's copy the same as it goes.
+        sync_shared(&mut convs, hub);
         // Finished write-ups: logged and told.
         for key in diagnosed {
             if let Some(d) = crate::diagnose::all().into_iter().find(|d| d.key == key) {
@@ -987,14 +989,21 @@ fn deliver(convs: &mut Vec<Conv>, hub: &Hub, m: Ready) {
             }
         }
     } else {
+        let busy_other = if text.starts_with('/') { None } else { shared_busy(convs, i) };
         let c = &mut convs[i];
         if crate::serve::stopping() && !text.starts_with('/') {
             c.app.messages.push(Message::new("info", "lyra is restarting in a moment: send it again shortly.".into()));
         } else if c.app.waiting && !text.starts_with('/') && c.app.approvals.is_empty() {
             c.app.messages.push(Message::new("info", "lyra is still answering here — send it again when the reply is done (or start a new conversation)".into()));
+        } else if let Some(other) = busy_other {
+            c.app.messages.push(Message::new("info", format!("lyra is answering {other} in this shared conversation: send yours when that reply is done")));
         } else {
             c.app.log(Level::Info, format!("from {device}: {}", crate::shown(&text).chars().take(80).collect::<String>()));
             c.app.input = text;
+            // A shared conversation's messages say who sent them.
+            if c.app.thread.is_some() {
+                c.app.speaker = who.name.clone();
+            }
             c.app.attach_images = images;
             c.app.attach_looks = looks;
             c.app.send();

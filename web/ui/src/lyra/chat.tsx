@@ -153,6 +153,8 @@ function UserMessage({ m, editable }: { m: ChatMessage; editable?: boolean }) {
   const { text, files } = splitAttached(m.content);
   return (
     <Message from="user">
+      {/* A shared conversation: who said it. */}
+      {m.by && <span className="-mb-1 self-end text-muted-foreground text-xs">{m.by}</span>}
       <SentAttachments files={files} />
       {editing ? (
         <EditLast text={text} onDone={() => setEditing(false)} />
@@ -760,6 +762,8 @@ export function ChatPage() {
     return set;
   }, [folds]);
   const lastUser = messages.map((m) => m.role).lastIndexOf("user");
+  // A shared conversation: only your own last message is yours to change or ask again (theirs would run with your rights).
+  const mine = lastUser < 0 || !messages[lastUser].by || messages[lastUser].by === status.me;
   const lastAnswer = (() => {
     for (let i = messages.length - 1; i > lastUser; i--) if (messages[i].role === "assistant" && messages[i].content.trim()) return i;
     return -1;
@@ -794,8 +798,8 @@ export function ChatPage() {
                 model={status.model}
                 turn={turns.get(j)}
                 id={`${status.session ?? ""}-${j}`}
-                editable={idle && j === lastUser}
-                retry={idle && j === lastAnswer}
+                editable={idle && mine && j === lastUser}
+                retry={idle && mine && j === lastAnswer}
                 index={j}
               />
             );

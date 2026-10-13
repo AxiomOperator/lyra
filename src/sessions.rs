@@ -29,6 +29,9 @@ pub struct SavedMessage {
     /// conversation can still be rated and isn't judged twice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<crate::outcomes::RunRef>,
+    /// In a shared conversation: who said it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub by: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -57,6 +60,9 @@ pub struct Session {
     /// "high"; none: the model's own default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// A shared conversation's thread (`shared.rs`): each person has their own copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
     pub messages: Vec<SavedMessage>,
 }
 
@@ -93,6 +99,7 @@ impl Session {
             chat_only: false,
             summary: None,
             effort: None,
+            thread: None,
             messages: messages
                 .iter()
                 .map(|m| SavedMessage {
@@ -105,6 +112,7 @@ impl Session {
                     skills: m.skills.clone(),
                     agents: m.agents.clone(),
                     run: m.run.clone(),
+                    by: m.by.clone(),
                 })
                 .collect(),
         }
@@ -122,6 +130,7 @@ impl Session {
                 m.skills = s.skills;
                 m.agents = s.agents;
                 m.run = s.run;
+                m.by = s.by;
                 m
             })
             .collect()
@@ -419,9 +428,10 @@ mod tests {
                 skills: vec![],
                 agents: vec![],
                 run: None,
+                by: String::new(),
             })
             .collect();
-        Session { id: id.into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: lines[0].1.into(), owner: owner(), chat_only: false, summary: None, effort: None, messages }
+        Session { id: id.into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: lines[0].1.into(), owner: owner(), chat_only: false, summary: None, effort: None, thread: None, messages }
     }
 
     #[test]
@@ -586,8 +596,8 @@ mod keep_tests {
     fn pins_folders_and_archive_are_kept_apart_and_only_for_the_owner() {
         let dir = std::env::temp_dir().join(format!("lyra-sessions-meta-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut s = Session { id: "20261008-090000-abc123".into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: "Firewall rules".into(), owner: "dana".into(), chat_only: false, summary: None, effort: None, messages: vec![] };
-        s.messages.push(SavedMessage { role: "user".into(), content: "Firewall rules".into(), tool_calls: vec![], tool_call_id: None, reasoning: String::new(), memories: vec![], skills: vec![], agents: vec![], run: None });
+        let mut s = Session { id: "20261008-090000-abc123".into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: "Firewall rules".into(), owner: "dana".into(), chat_only: false, summary: None, effort: None, thread: None, messages: vec![] };
+        s.messages.push(SavedMessage { role: "user".into(), content: "Firewall rules".into(), tool_calls: vec![], tool_call_id: None, reasoning: String::new(), memories: vec![], skills: vec![], agents: vec![], run: None, by: String::new() });
         save(&dir, &s).unwrap();
         assert!(keep_command(&dir, "dana", "folder abc123 Network").unwrap().contains("moved to Network"));
         keep_command(&dir, "dana", "pin abc123").unwrap();

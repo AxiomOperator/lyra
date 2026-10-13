@@ -225,7 +225,9 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
             "approval" => ("approval", Color::Yellow),
             _ => ("error", Color::Red),
         };
-        lines.push(Line::from(label.bold().fg(color)));
+        // A shared conversation's messages say who sent them.
+        let label = if m.role == "user" && !m.by.is_empty() { m.by.as_str() } else { label };
+        lines.push(Line::from(label.to_string().bold().fg(color)));
         let reasoning = m.reasoning.trim();
         if !reasoning.is_empty() {
             let thinking = dim.italic();

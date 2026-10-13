@@ -73,7 +73,8 @@ import { SearchBox, SearchHits, useConversationSearch } from "./lyra/search";
 import { APP_VERSION, LyraProvider, useData, useLyra, usePhase } from "./lyra/store";
 import type { Session } from "./lyra/types";
 import { loadToken, saveToken, takeShared } from "./lyra/token";
-import { takeIntent } from "./lyra/intent";
+import { takeIntent, takeOpen } from "./lyra/intent";
+import { ShareButton } from "./lyra/share";
 
 // Pages other than the chat load when first opened, so a phone's first load
 // is only the chat (D-5). Each module becomes its own chunk.
@@ -523,7 +524,7 @@ function Shell() {
     if (asked) {
       history.replaceState(null, "", "/");
       go(asked);
-    } else if (location.search.includes("do=")) {
+    } else if (location.search.includes("do=") || location.search.includes("open=")) {
       history.replaceState(null, "", "/");
     }
     const onMessage = (e: MessageEvent) => go(e.data?.page ?? null);
@@ -536,6 +537,23 @@ function Shell() {
       say("/new");
       setTab("chat");
     }
+  }, [ready, say]);
+  // A conversation someone shared (its notification): opened in the chat.
+  useEffect(() => {
+    if (!ready) return;
+    const id = takeOpen();
+    if (id) {
+      say(`/resume ${id}`);
+      setTab("chat");
+    }
+    const onMessage = (e: MessageEvent) => {
+      if (typeof e.data?.open === "string") {
+        say(`/resume ${e.data.open}`);
+        setTab("chat");
+      }
+    };
+    navigator.serviceWorker?.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker?.removeEventListener("message", onMessage);
   }, [ready, say]);
   const pairing = status.pairing?.length ?? 0;
   const updates = (status.machines_detail ?? []).filter((m) => m.update_available).length;
@@ -623,6 +641,7 @@ function Shell() {
               <span className="hidden text-xs md:inline">Search</span>
               <kbd className="hidden rounded border px-1 font-mono text-[10px] md:inline">Ctrl K</kbd>
             </Button>
+            {tab === "chat" && ready && <ShareButton />}
             {searching && (
               <Suspense fallback={null}>
                 <EverythingSearch open={searching} setOpen={setSearching} go={(p: string) => setTab(p as Tab)} />

@@ -71,6 +71,11 @@ impl App {
         self.handled_by.clear();
         let mut user = Message::new("user", content.clone());
         user.images = std::mem::take(&mut self.attach_images);
+        // Shared: the others see (and the model reads) who said it.
+        let speaker = std::mem::take(&mut self.speaker);
+        if self.thread.is_some() {
+            user.by = if speaker.is_empty() { crate::tasks::name_of(&self.owner) } else { speaker };
+        }
         self.messages.push(user);
         self.applied_skills.clear();
         self.applied_skills_tokens = 0;
@@ -104,13 +109,16 @@ impl App {
             .chain(self.messages.iter().filter(|m| m.is_history()).skip(already))
             .map(|m| {
                 let mut v = serde_json::to_value(m).expect("message serializes");
+                if !m.by.is_empty() {
+                    v["content"] = json!(m.said());
+                }
                 if self.vision && !m.images.is_empty() && !recent.contains(&(m as *const Message)) {
-                    v["content"] = json!(format!("{}\n\n(with {} picture{} sent earlier in the conversation)", m.content, m.images.len(), if m.images.len() == 1 { "" } else { "s" }));
+                    v["content"] = json!(format!("{}\n\n(with {} picture{} sent earlier in the conversation)", m.said(), m.images.len(), if m.images.len() == 1 { "" } else { "s" }));
                     return v;
                 }
                 // A model that can see gets the images as parts of the message.
                 if self.vision && !m.images.is_empty() {
-                    let mut parts = vec![json!({ "type": "text", "text": m.content })];
+                    let mut parts = vec![json!({ "type": "text", "text": m.said() })];
                     parts.extend(m.images.iter().map(|url| json!({ "type": "image_url", "image_url": { "url": url } })));
                     v["content"] = Value::Array(parts);
                 }
@@ -288,6 +296,13 @@ impl App {
             self.messages.push(Message::new("info", "Nothing to send again yet.".into()));
             return;
         };
+        // Shared: someone else's message isn't sent again as you (it would run with your rights).
+        let speaker = std::mem::take(&mut self.speaker);
+        let me = if speaker.is_empty() { crate::tasks::name_of(&self.owner) } else { speaker };
+        if self.thread.is_some() && !self.messages[i].by.is_empty() && self.messages[i].by != me {
+            self.messages.push(Message::new("info", format!("That was {}'s message: only they can change it or ask it again.", self.messages[i].by)));
+            return;
+        }
         let other = match which {
             "" | "main" => None,
             "other" | "fallback" => {

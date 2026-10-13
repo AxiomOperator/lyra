@@ -11,6 +11,8 @@ export interface ToolCall {
 export interface ChatMessage {
   role: Role;
   content: string;
+  /** In a shared conversation: who said it (a user message), by name. */
+  by?: string;
   reasoning: string;
   tools: string[];
   calls: ToolCall[];
@@ -89,6 +91,11 @@ export interface Health {
 }
 
 export interface Status {
+  /** A shared conversation: everyone in it, by name, and whether this person shared it. */
+  shared_with?: string[] | null;
+  shared_host?: boolean;
+  /** In a shared conversation: this person's name, as their messages say it. */
+  me?: string | null;
   /** Bug reports and feature requests with news for this person. */
   feedback_news?: number;
   /** Moves whenever any feedback changes (the page looks again). */
