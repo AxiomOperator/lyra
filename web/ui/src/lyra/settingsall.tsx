@@ -132,7 +132,16 @@ export function EverythingTab({ said }: { said: (n: { ok: boolean; text: string 
   const { call } = useLyra();
   const [data, setData] = useState<AllData | null>(null);
   const [edits, setEdits] = useState<Record<string, Json>>({});
-  const [q, setQ] = useState("");
+  // Opened from Ctrl-K ("settings fallback"): searched for it.
+  const [q, setQ] = useState(() => {
+    try {
+      const find = sessionStorage.getItem("lyra-settings-find") ?? "";
+      sessionStorage.removeItem("lyra-settings-find");
+      return find;
+    } catch {
+      return "";
+    }
+  });
   const [open, setOpen] = useState<string[]>([""]);
   const [asking, setAsking] = useState<AnyField[] | null>(null);
   const [busy, setBusy] = useState(false);

@@ -644,7 +644,7 @@ function Shell() {
             {tab === "chat" && ready && <ShareButton />}
             {searching && (
               <Suspense fallback={null}>
-                <EverythingSearch open={searching} setOpen={setSearching} go={(p: string) => setTab(p as Tab)} />
+                <EverythingSearch open={searching} setOpen={setSearching} go={(p: string) => setTab(p as Tab)} pages={[...tabs, ...more].map((t) => ({ id: t.id, label: t.label }))} />
               </Suspense>
             )}
             {ready && (

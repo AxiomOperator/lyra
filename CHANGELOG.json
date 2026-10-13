@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.100.0.264",
+    "date": "2026-10-13",
+    "title": "Ctrl-K does things",
+    "new": [
+      "Ctrl-K (⌘K) now does things as well as finding them. Type “task call the vendor friday 3pm” and Enter adds it, dates and reminder read from what you typed, and the box stays open for the next one.",
+      "Also from Ctrl-K: a new conversation, Start Talk, “settings fallback” (opens Settings → Everything already searched for it), “run …” to run one of your routines now, any page by name, or “Ask lyra” with what you typed."
+    ]
+  },
+  {
     "version": "0.99.0.263",
     "date": "2026-10-13",
     "title": "Branching conversations",
