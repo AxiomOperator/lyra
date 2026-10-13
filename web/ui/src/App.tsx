@@ -23,6 +23,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "@/lib/utils";
 import {
   Activity,
+  PanelRight,
   CalendarDays,
   ChevronDown,
   UserRound,
@@ -75,6 +76,7 @@ import type { Session } from "./lyra/types";
 import { loadToken, saveToken, takeShared } from "./lyra/token";
 import { takeIntent, takeOpen } from "./lyra/intent";
 import { ShareButton } from "./lyra/share";
+import { setBeside } from "./lyra/beside";
 
 // Pages other than the chat load when first opened, so a phone's first load
 // is only the chat (D-5). Each module becomes its own chunk.
@@ -153,6 +155,8 @@ type Tab = "chat" | "status" | "machines" | "devices" | "activity" | "activity_a
 
 /** Pages reached from More on a phone, and listed in the sidebar on a wide screen. */
 type Manage = "talk" | "today" | "agents" | "proposals" | "health" | "whatsnew" | "feedback" | "qa" | "tasks" | "notes" | "projects" | "routines" | "coding" | "memory" | "skills" | "goals" | "model" | "usage" | "users" | "settings" | "meetings" | "me" | "running" | "profile";
+/** Pages the chat can stay open beside (a wide screen): it knows what they show. */
+const BESIDE: string[] = ["tasks", "notes", "meetings", "today", "projects"];
 const manage: Manage[] = ["talk", "today", "agents", "proposals", "health", "me", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "coding", "memory", "skills", "goals", "model", "usage", "users", "settings", "meetings", "running", "profile"];
 /** What a member (not an admin) has: their chats, day, tasks, activity, skills (Status is admins'). */
 const forMembers: string[] = ["chat", "talk", "today", "activity", "more", "skills", "whatsnew", "feedback", "qa", "tasks", "notes", "projects", "routines", "goals", "memory", "usage", "meetings", "me", "profile"];
@@ -503,6 +507,32 @@ function Shell() {
   const [tab, setTab] = useState<Tab>("chat");
   // One search for everything: Ctrl-K / ⌘K, or the header's search button.
   const [searching, setSearching] = useState(false);
+  // The chat beside a page (a wide screen): kept open, and it knows what the page shows.
+  const [beside, setBesideOn] = useState(() => {
+    try {
+      return localStorage.getItem("lyra-beside") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [wide, setWide] = useState(() => window.matchMedia("(min-width: 1280px)").matches);
+  useEffect(() => {
+    const m = window.matchMedia("(min-width: 1280px)");
+    const on = () => setWide(m.matches);
+    m.addEventListener("change", on);
+    return () => m.removeEventListener("change", on);
+  }, []);
+  const besideFits = wide && BESIDE.includes(tab);
+  const showBeside = beside && besideFits;
+  useEffect(() => setBeside(showBeside), [showBeside]);
+  const toggleBeside = () => {
+    setBesideOn(!beside);
+    try {
+      localStorage.setItem("lyra-beside", beside ? "0" : "1");
+    } catch {
+      // just not remembered
+    }
+  };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
@@ -642,6 +672,12 @@ function Shell() {
               <kbd className="hidden rounded border px-1 font-mono text-[10px] md:inline">Ctrl K</kbd>
             </Button>
             {tab === "chat" && ready && <ShareButton />}
+            {besideFits && (
+              <Button variant="ghost" size="sm" className={cn("gap-1.5", beside ? "text-teal-300" : "text-muted-foreground")} onClick={toggleBeside} aria-label={beside ? "Close the chat beside" : "Chat beside this page"} aria-pressed={beside}>
+                <PanelRight className="size-4" />
+                <span className="hidden text-xs md:inline">Chat beside</span>
+              </Button>
+            )}
             {searching && (
               <Suspense fallback={null}>
                 <EverythingSearch open={searching} setOpen={setSearching} go={(p: string) => setTab(p as Tab)} pages={[...tabs, ...more].map((t) => ({ id: t.id, label: t.label }))} />
@@ -684,7 +720,8 @@ function Shell() {
           </div>
         )}
 
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <Suspense fallback={<Loading />}>
           {tab === "chat" && <ChatPage />}
           {tab === "talk" && <TalkPage />}
@@ -718,6 +755,13 @@ function Shell() {
           {tab === "me" && <AboutMePage onBack={toMore} onProfile={() => setTab("profile")} />}
           {tab === "profile" && <ProfilePage onBack={toMore} toAboutMe={() => setTab("me")} />}
           </Suspense>
+        </div>
+        {/* The chat beside the page: what you ask here knows what the page shows. */}
+        {showBeside && (
+          <aside className="flex min-h-0 w-[min(440px,36vw)] shrink-0 flex-col border-l" aria-label="Chat beside the page">
+            <ChatPage />
+          </aside>
+        )}
         </div>
 
       </SidebarInset>

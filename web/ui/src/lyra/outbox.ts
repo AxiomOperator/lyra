@@ -19,6 +19,8 @@ export interface Queued {
   gen?: number;
   /** How often the conversation had this text from the user when it was sent. */
   seen?: number;
+  /** Sent from the chat beside a page: what the page showed (`beside.ts`). */
+  looking?: string;
 }
 
 const OUTBOX = "lyra-outbox";
@@ -52,8 +54,8 @@ export function saveOutbox(list: Queued[]) {
   write(OUTBOX, list.length ? list : null);
 }
 
-export function newQueued(session: string, text: string): Queued {
-  return { id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, session, text, at: Date.now() };
+export function newQueued(session: string, text: string, looking?: string): Queued {
+  return { id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, session, text, at: Date.now(), ...(looking ? { looking } : {}) };
 }
 
 /** How many of the user's messages in a conversation say exactly this. */

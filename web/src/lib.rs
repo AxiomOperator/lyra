@@ -65,7 +65,8 @@ impl Default for Settings {
 pub enum Inbound {
     /// A chat message or a /command, for the conversation the connection
     /// shows (`conn` can be moved to another one: `/new`, `/resume`).
-    Send { text: String, device: String, who: Who, session: String, conn: u64, files: Vec<String> },
+    /// `looking`: what the person has open beside the chat (a page's tasks, a note), for this message.
+    Send { text: String, device: String, who: Who, session: String, conn: u64, files: Vec<String>, looking: String },
     /// Stop the reply being written in that conversation.
     Stop { device: String, who: Who, session: String },
     /// An answer to an approval (`y`, `n`, `a`).
@@ -1512,8 +1513,9 @@ async fn connection(s: Arc<Shared>, d: Device, mut who: Who, session: String, mu
                     "send" => {
                         let text = v["text"].as_str().unwrap_or("").trim().to_string();
                         let files: Vec<String> = v["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(str::to_string)).take(10).collect();
+                        let looking: String = v["looking"].as_str().unwrap_or("").chars().take(12_000).collect();
                         if !text.is_empty() || !files.is_empty() {
-                            let _ = s.inbound.send(Inbound::Send { text, device: d.name.clone(), who: who.clone(), session: session.clone(), conn, files });
+                            let _ = s.inbound.send(Inbound::Send { text, device: d.name.clone(), who: who.clone(), session: session.clone(), conn, files, looking });
                         }
                     }
                     "stop" => {

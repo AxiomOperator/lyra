@@ -19,6 +19,7 @@ import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "
 import { loadDraft, saveDraft, type Queued } from "./outbox";
 import { TemplatesButton } from "./templates";
 import { parseJson } from "./json";
+import { lookingNow } from "./beside";
 import { useLyra, useMessages } from "./store";
 import type { Approval, ChatAsk, ChatMessage, PairRequest, Fork } from "./types";
 import { AskCard, ChatOnlyButton, EditButton, EffortButton, EditLast, FoldedTries, RetryButtons, foldFailures } from "./chat-asks";
@@ -550,7 +551,7 @@ function Composer() {
       }
       setBusy("");
     }
-    if (send({ type: "send", text: t, files: ids })) {
+    if (send({ type: "send", text: t, files: ids, ...(lookingNow() ? { looking: lookingNow() } : {}) })) {
       setText("");
       saveDraft(session, "");
       setFiles([]);

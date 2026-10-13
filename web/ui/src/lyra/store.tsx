@@ -8,6 +8,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useReducer,
 import { loadServerSpeech } from "./speech";
 import { answer as answerFolder, folderStates, folderUser, onFoldersChanged, setFolderUser } from "./folders";
 import { forgetAll, loadLast, loadOutbox, newQueued, saveLast, saveOutbox, timesSaid, type Queued } from "./outbox";
+import { lookingNow } from "./beside";
 import { saveToken } from "./token";
 import type { ChatMessage, Command, Me, Status, ThisDevice } from "./types";
 
@@ -347,7 +348,7 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
           // a new conversation: the server's
         }
       }
-      changeOutbox((list) => [...list, newQueued(s, text)]);
+      changeOutbox((list) => [...list, newQueued(s, text, lookingNow())]);
     },
     [session, changeOutbox],
   );
@@ -384,7 +385,7 @@ export function LyraProvider({ token, onUnpaired, children }: { token: string; o
       return;
     }
     if (!connected || (state.status.waiting && !approvalsWaiting)) return;
-    if (send({ type: "send", text: first.text })) {
+    if (send({ type: "send", text: first.text, ...(first.looking ? { looking: first.looking } : {}) })) {
       const at = Date.now();
       changeOutbox((list) => list.map((x) => (x.id === first.id ? { ...x, session, sentAt: at, gen: gen.current, seen: said } : x)));
     }

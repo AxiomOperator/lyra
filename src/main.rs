@@ -605,6 +605,8 @@ struct App {
     speaker: String,
     /// Earlier messages changed and sent again: the other versions from each (`branches.rs`).
     forks: Vec<branches::Fork>,
+    /// What the person has open beside the chat (the app's page: its tasks, a note), for the next message.
+    looking: String,
     /// Tools plan steps may never use (`[planning] forbidden_tools`).
     forbidden_tools: Vec<String>,
     /// A plan is being created or run in the background.
@@ -750,6 +752,7 @@ impl App {
             thread: None,
             speaker: String::new(),
             forks: Vec::new(),
+            looking: String::new(),
             last_schedule_check: Instant::now(),
             forbidden_tools: config.planning.forbidden_tools.clone(),
             plan_busy: false,

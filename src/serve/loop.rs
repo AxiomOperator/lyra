@@ -123,10 +123,10 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
         let mut next = inbound.recv_timeout(Duration::from_millis(if busy { 40 } else { REST_MS })).ok();
         while let Some(msg) = next.take() {
             match msg {
-                Inbound::Send { text, device, who, session, conn, files } => {
+                Inbound::Send { text, device, who, session, conn, files, looking } => {
                     sync_role(&mut convs, &who);
                     if files.is_empty() {
-                        deliver(&mut convs, hub, Ready { text, device, who, session, conn, images: Vec::new(), looks: Vec::new() });
+                        deliver(&mut convs, hub, Ready { text, device, who, session, conn, images: Vec::new(), looks: Vec::new(), looking });
                     } else {
                         // Attached files are read (PDF text, pictures) off the loop (I-7);
                         // the message comes back here to be sent, in the order it was written.
@@ -135,7 +135,7 @@ pub fn run(primary: App, hub: &Hub, inbound: std::sync::mpsc::Receiver<Inbound>,
                         crate::acting::spawn(move || {
                             let (about, images, looks) = attachments(&hub, &files, vision, &who);
                             let text = format!("{text}{about}").trim().to_string();
-                            let _ = tx.send(Ready { text, device, who, session, conn, images, looks });
+                            let _ = tx.send(Ready { text, device, who, session, conn, images, looks, looking });
                         });
                     }
                 }
@@ -961,13 +961,15 @@ pub(crate) struct Ready {
     conn: u64,
     images: Vec<String>,
     looks: Vec<(String, String, std::path::PathBuf)>,
+    /// What they have open beside the chat (a page), for this message only.
+    looking: String,
 }
 
 /// Send a device's message: `/new`, `/resume`, or into its conversation. The
 /// attached pictures go with it only when it's sent as a message (never left
 /// behind for the next one, after a command or while lyra is busy).
 fn deliver(convs: &mut Vec<Conv>, hub: &Hub, m: Ready) {
-    let Ready { text, device, who, session, conn, images, looks } = m;
+    let Ready { text, device, who, session, conn, images, looks, looking } = m;
     let i = conv_for(convs, &session, &who);
     // A new conversation, or another one, for this device only.
     if text == "/new" {
@@ -999,6 +1001,7 @@ fn deliver(convs: &mut Vec<Conv>, hub: &Hub, m: Ready) {
             c.app.messages.push(Message::new("info", format!("lyra is answering {other} in this shared conversation: send yours when that reply is done")));
         } else {
             c.app.log(Level::Info, format!("from {device}: {}", crate::shown(&text).chars().take(80).collect::<String>()));
+            let text_is_command = text.starts_with('/');
             c.app.input = text;
             // A shared conversation's messages say who sent them.
             if c.app.thread.is_some() {
@@ -1006,10 +1009,12 @@ fn deliver(convs: &mut Vec<Conv>, hub: &Hub, m: Ready) {
             }
             c.app.attach_images = images;
             c.app.attach_looks = looks;
+            c.app.looking = if text_is_command { String::new() } else { looking };
             c.app.send();
             // A command or an approval's answer doesn't take them: they don't wait for the next message.
             c.app.attach_images.clear();
             c.app.attach_looks.clear();
+            c.app.looking.clear();
         }
         c.changed = true;
     }

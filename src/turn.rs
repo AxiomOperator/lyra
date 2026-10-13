@@ -162,6 +162,8 @@ impl App {
         // What lyra said last, so "yes, do it" reads as the go-ahead it is.
         let last_reply: String = self.messages.iter().rev().skip(1).find(|m| m.role == "assistant").map(|m| m.content.chars().take(400).collect()).unwrap_or_default();
         let looks = std::mem::take(&mut self.attach_looks);
+        // The page open beside the chat: "these" in their message means what's on it.
+        let looking = std::mem::take(&mut self.looking);
         // The tools the turn before used (an avoid note on one may apply now).
         let before_user = self.messages.len().saturating_sub(1);
         let prior_start = self.messages[..before_user].iter().rposition(|m| m.role == "user").unwrap_or(0);
@@ -215,6 +217,9 @@ impl App {
             }
             if let Some(section) = &goals_section {
                 add_to_turn(&mut history, section);
+            }
+            if !looking.trim().is_empty() {
+                add_to_turn(&mut history, &format!("{LOOKING}\n{}", looking.trim()));
             }
             if let Some(section) = &style_section {
                 add_to_system(&mut history, section);
@@ -469,6 +474,9 @@ fn turn_notes(mut scratch: Vec<Value>) -> Vec<String> {
 }
 
 /// Where a message's notes wait until the request goes out.
+/// The page open beside the chat, with its ids: what "these", "this" or "here" mean.
+const LOOKING: &str = "The person has this open in the app beside the chat as they ask (what's on their screen, with ids to act on). When they say \"these\", \"this\", \"here\" or \"them\", they mean what's on it:";
+
 const TURN_CONTEXT: &str = "_lyra_context";
 
 /// Put this turn's notes in front of the latest user message, marked as

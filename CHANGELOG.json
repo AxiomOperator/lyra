@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.101.0.265",
+    "date": "2026-10-13",
+    "title": "Chat beside a page",
+    "new": [
+      "On a wide screen, Chat beside (top right) keeps the chat open next to Tasks, Notes, Meetings, Today or Projects.",
+      "What you ask there knows what the page shows: on Tasks, \"turn these into a checklist\" or \"move the overdue ones to Friday\" works on the tasks on screen. On Notes it's the note you have open, on Meetings the meeting."
+    ]
+  },
+  {
     "version": "0.100.0.264",
     "date": "2026-10-13",
     "title": "Ctrl-K does things",

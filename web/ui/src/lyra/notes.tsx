@@ -14,6 +14,7 @@ import { Editor } from "./documents";
 import { takeIntent } from "./intent";
 import { Back, Failed, Page, useAction, useConfirm } from "./parts";
 import { useData, useLyra } from "./store";
+import { useLooking } from "./beside";
 
 interface NoteView {
   /** A document (started as one, or switched), a list (checklist lines) or a note. */
@@ -45,6 +46,12 @@ export function NotesPage({ onBack }: { onBack: () => void }) {
   // Opened from the Quick note shortcut: straight into the box.
   const [addFocus] = useState(() => takeIntent("add"));
   const notes = Array.isArray(data) ? data : [];
+  // Beside the chat: the note open (all of it), else which notes there are.
+  const opened = notes.find((x) => x.slug === open);
+  useLooking(
+    opened ? `Notes page: the note “${opened.title}” open (note ${opened.slug})` : "Notes page: their notes",
+    opened ? opened.text.slice(0, 10000) : notes.slice(0, 60).map((x) => `- ${x.title} (note ${x.slug}, ${x.kind})`).join("\n") || "no notes yet",
+  );
   // "groceries: milk, eggs" adds to a list; "title: text" notes; plain text is a dated note.
   const add = async (e: FormEvent) => {
     e.preventDefault();

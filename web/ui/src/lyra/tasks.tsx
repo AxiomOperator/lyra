@@ -18,6 +18,7 @@ import { InboxCard, TodayCard } from "./calendar";
 import { takeIntent } from "./intent";
 import { Back, Failed, Page, useAction } from "./parts";
 import { ago } from "./push";
+import { useLooking } from "./beside";
 import { useLyra } from "./store";
 import type { ProjectBrief, TaskBrief, TaskFull } from "./types";
 
@@ -541,6 +542,11 @@ export function TasksPage({ onBack }: { onBack: () => void }) {
   };
   const t = today();
   const tasks = view?.tasks ?? [];
+  // Beside the chat: "these" are the tasks on screen.
+  useLooking(
+    "Tasks page: their open tasks",
+    tasks.slice(0, 80).map((x) => `- ${x.title} (task id ${x.id}${x.due ? `, due ${x.due}` : ""}, ${x.status}${x.where ? `, ${x.where}` : ""})`).join("\n") || "no open tasks",
+  );
   const projects = view?.projects ?? [];
   const groups: { name: string; items: TaskBrief[] }[] = [
     { name: "Overdue", items: tasks.filter((x) => x.due && x.due < t) },

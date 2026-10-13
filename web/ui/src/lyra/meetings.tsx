@@ -13,6 +13,7 @@ import { ArrowLeft, Check, ClipboardList, ExternalLink, Mail, Plus, Sparkles, Us
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { Back, Failed, Page } from "./parts";
+import { useLooking } from "./beside";
 import { useLyra } from "./store";
 
 type State = "before" | "during" | "after";
@@ -279,6 +280,12 @@ export function MeetingsPage({ onBack }: { onBack: () => void }) {
     if (ready) load();
   }, [ready, load]);
   const rows = data?.meetings ?? [];
+  // Beside the chat: the meeting open, and the others on the page.
+  const shownRow = rows.find((r) => r.id === open);
+  useLooking(
+    shownRow ? `Meetings page: the meeting “${shownRow.subject}” open (${shownRow.when}, meeting id ${shownRow.id})` : "Meetings page: their meetings",
+    rows.slice(0, 30).map((r) => `- ${r.subject} (${r.when}, ${r.people} people, meeting id ${r.id}${r.notes ? ", has notes" : ""}${r.followup ? ", has follow-ups" : ""})`).join("\n") || "no meetings",
+  );
   // The one happening now, else the next one, opens first on a wide screen.
   useEffect(() => {
     if (open || !rows.length || window.innerWidth < 1024) return;
