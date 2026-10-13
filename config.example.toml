@@ -74,6 +74,7 @@ currency = "$"
 #                                # checks) while the main model is up; if it fails, the
 #                                # main model does them
 # input_cost_per_mtok = 0.0      # its own prices, for AI usage
+# cached_input_cost_per_mtok = 0.0   # prompt tokens served from cache; defaults to its input price
 # output_cost_per_mtok = 0.0
 
 # A second fallback: answers when the fallback can't be reached either. The
@@ -85,6 +86,7 @@ currency = "$"
 # model = "gemma4-v2-Q8_0.gguf"
 # background = true
 # input_cost_per_mtok = 0.0
+# cached_input_cost_per_mtok = 0.0
 # output_cost_per_mtok = 0.0
 
 # Memory (see README): facts, episodes and working memory, with automatic

@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.91.2.254",
+    "date": "2026-10-12",
+    "title": "Fallback prices in the example config",
+    "fixed": [
+      "The example config (and so the Everything tab and the config check) now lists the cached-input price for the fallback models; a fallback with one was wrongly flagged as having a setting lyra doesn't read."
+    ]
+  },
+  {
     "version": "0.91.1.253",
     "date": "2026-10-12",
     "title": "Check config and gateway passthroughs",
