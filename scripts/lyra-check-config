@@ -144,10 +144,40 @@ def compare(have, want, at=""):
 
 # ---- the network
 
+# Model servers' keys (base URL -> key), as lyra sends them: Authorization: Bearer.
+KEYS = []
+
+
+def keys_from(cfg, home):
+    """Each model section's key (api_key, or api_key_secret naming a token in secrets.toml)."""
+    try:
+        secrets = tomllib.loads((home / "config" / "secrets.toml").read_text())
+    except (OSError, ValueError):
+        secrets = {}
+    sections = [cfg] + [cfg.get(k) or {} for k in ("fallback_model", "second_fallback_model", "light_model", "embedding", "reranker", "decide", "vision_model")]
+    speech = cfg.get("speech") or {}
+    sections += [speech.get("stt") or {}, speech.get("tts") or {}]
+    out = []
+    for sec in sections:
+        url = sec.get("url") or sec.get("base_url") or ""
+        key = (sec.get("api_key") or "").strip()
+        if not key and sec.get("api_key_secret"):
+            key = ((secrets.get(sec["api_key_secret"]) or {}).get("token") or "").strip()
+        if url and key:
+            if key.startswith("YOUR_") and key.endswith("_KEY"):
+                warn(f"{url}: api_key is still the placeholder {key}")
+            out.append((base(url), key))
+    return sorted(out, key=lambda x: -len(x[0]))
+
+
 def request(url, body=None, timeout=15, headers=None):
     """(status, parsed JSON or text). Raises on no connection."""
     data = json.dumps(body).encode() if body is not None else None
     h = {"Content-Type": "application/json"} if data else {}
+    for b, k in KEYS:
+        if url == b or url.startswith(b + "/") or url.startswith(b + "?"):
+            h["Authorization"] = f"Bearer {k}"
+            break
     h.update(headers or {})
     req = urllib.request.Request(url, data=data, headers=h, method="POST" if data else "GET")
     try:
@@ -396,6 +426,7 @@ def main():
         print("\n(models and services not checked: --offline)")
     else:
         section("Models and services")
+        KEYS[:] = keys_from(cfg, home)
         check_chat(cfg)
         for name, check in (("embedding", check_embedding), ("reranker", check_reranker), ("decide", check_decide), ("vision_model", check_vision)):
             e = endpoints.get(name)

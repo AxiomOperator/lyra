@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.89.1.250",
+    "date": "2026-10-12",
+    "title": "The config check sends keys",
+    "fixed": [
+      "The config check script now sends each model server's key, as lyra does, and says when a key is still a placeholder; before, a server that wants a key always looked broken there."
+    ]
+  },
+  {
     "version": "0.89.0.249",
     "date": "2026-10-12",
     "title": "Keys for model servers",

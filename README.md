@@ -52,6 +52,16 @@ currency = "$"
 ```
 `LYRA_URL` / `LYRA_MODEL` env vars override the file. See `config.example.toml`.
 
+**Keys for model servers.** A server that wants a key (a gateway like Syntra) gets one with
+`api_key` in its section: the chat model (top level), `[fallback_model]`,
+`[second_fallback_model]`, `[light_model]`, `[embedding]`, `[reranker]`, `[decide]`,
+`[vision_model]`, `[speech.stt]` and `[speech.tts]`. lyra sends it as
+`Authorization: Bearer <key>`, only to that server. Without a key nothing is sent, so
+servers that don't ask for one work as before. To keep the key out of `config.toml` (and its
+backups), use `api_key_secret = "<name>"` and store it with `lyra secret <name>`. A
+`config.toml` holding a key should be readable by its owner only (`chmod 600`).
+`scripts/lyra-check-config` sends the keys too, and says when one is still a placeholder.
+
 ### Embedding and reranker models
 
 Optional. The embedding model gives memories their vectors (meaning-based
