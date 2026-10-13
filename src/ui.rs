@@ -197,7 +197,8 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
             m.rendered = Some((m.content.len(), crate::markdown::render(&m.content, Style::default())));
         }
     }
-    for m in &app.messages {
+    let forks = app.fork_view();
+    for (i, m) in app.messages.iter().enumerate() {
         // The browser's page: a picture, for the app; here, a note that there is one.
         if m.role == "picture" {
             lines.push(Line::styled("  ↳ [a picture of the browser's page: shown in the app]", dim));
@@ -227,7 +228,12 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         };
         // A shared conversation's messages say who sent them.
         let label = if m.role == "user" && !m.by.is_empty() { m.by.as_str() } else { label };
-        lines.push(Line::from(label.to_string().bold().fg(color)));
+        // Other versions from this message (/version <n> <k> shows one).
+        let label = match forks.iter().find(|f| f.0 == i) {
+            Some((_, n, current)) => format!("{label} · version {}/{n} (/version {i} <k>)", current + 1),
+            None => label.to_string(),
+        };
+        lines.push(Line::from(label.bold().fg(color)));
         let reasoning = m.reasoning.trim();
         if !reasoning.is_empty() {
             let thinking = dim.italic();

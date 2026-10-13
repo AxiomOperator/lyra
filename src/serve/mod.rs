@@ -200,6 +200,8 @@ fn status(app: &App, machines: &[String]) -> Value {
         "shared_with": app.thread.as_deref().map(crate::shared::names).filter(|n| n.len() > 1),
         "shared_host": app.thread.as_deref().and_then(crate::shared::get).is_some_and(|t| t.host == app.owner),
         "me": app.thread.as_ref().map(|_| crate::tasks::name_of(&app.owner)),
+        // Messages with other versions: where, how many, which is shown (from 0).
+        "forks": app.fork_view().into_iter().map(|(at, n, current)| json!({ "at": at, "n": n, "current": current })).collect::<Vec<_>>(),
         "can_continue": app.can_continue && !app.waiting,
         // Keep going (after an error, with work done), Try again (nothing done), Continue (the limit).
         "continue_kind": match (app.continue_after_error, app.done_so_far().is_some()) {

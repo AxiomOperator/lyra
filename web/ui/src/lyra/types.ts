@@ -90,7 +90,15 @@ export interface Health {
   summary: string;
 }
 
+/** A message with other versions: where (its index), how many, which is shown (from 0). */
+export interface Fork {
+  at: number;
+  n: number;
+  current: number;
+}
+
 export interface Status {
+  forks?: Fork[];
   /** A shared conversation: everyone in it, by name, and whether this person shared it. */
   shared_with?: string[] | null;
   shared_host?: boolean;

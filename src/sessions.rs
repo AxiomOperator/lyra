@@ -63,6 +63,9 @@ pub struct Session {
     /// A shared conversation's thread (`shared.rs`): each person has their own copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread: Option<String>,
+    /// Earlier messages changed and sent again: the other versions from there on (`branches.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forks: Vec<crate::branches::SavedFork>,
     pub messages: Vec<SavedMessage>,
 }
 
@@ -86,6 +89,36 @@ fn cwd() -> String {
     std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default()
 }
 
+/// A message as it's kept.
+pub fn saved(m: &Message) -> SavedMessage {
+    SavedMessage {
+        role: m.role.clone(),
+        content: m.content.clone(),
+        tool_calls: m.tool_calls.clone(),
+        tool_call_id: m.tool_call_id.clone(),
+        reasoning: m.reasoning.clone(),
+        memories: m.memories.clone(),
+        skills: m.skills.clone(),
+        agents: m.agents.clone(),
+        run: m.run.clone(),
+        by: m.by.clone(),
+    }
+}
+
+/// A kept message, as the app has it.
+pub fn restored(s: SavedMessage) -> Message {
+    let mut m = Message::new(&s.role, s.content);
+    m.tool_calls = s.tool_calls;
+    m.tool_call_id = s.tool_call_id;
+    m.reasoning = s.reasoning;
+    m.memories = s.memories;
+    m.skills = s.skills;
+    m.agents = s.agents;
+    m.run = s.run;
+    m.by = s.by;
+    m
+}
+
 impl Session {
     pub fn from_messages(id: &str, started: DateTime<Utc>, messages: &[Message]) -> Self {
         let title = messages.iter().find(|m| m.role == "user").map(|m| m.content.lines().next().unwrap_or("").chars().take(80).collect()).unwrap_or_default();
@@ -100,40 +133,13 @@ impl Session {
             summary: None,
             effort: None,
             thread: None,
-            messages: messages
-                .iter()
-                .map(|m| SavedMessage {
-                    role: m.role.clone(),
-                    content: m.content.clone(),
-                    tool_calls: m.tool_calls.clone(),
-                    tool_call_id: m.tool_call_id.clone(),
-                    reasoning: m.reasoning.clone(),
-                    memories: m.memories.clone(),
-                    skills: m.skills.clone(),
-                    agents: m.agents.clone(),
-                    run: m.run.clone(),
-                    by: m.by.clone(),
-                })
-                .collect(),
+            forks: Vec::new(),
+            messages: messages.iter().map(saved).collect(),
         }
     }
 
     pub fn into_messages(self) -> Vec<Message> {
-        self.messages
-            .into_iter()
-            .map(|s| {
-                let mut m = Message::new(&s.role, s.content);
-                m.tool_calls = s.tool_calls;
-                m.tool_call_id = s.tool_call_id;
-                m.reasoning = s.reasoning;
-                m.memories = s.memories;
-                m.skills = s.skills;
-                m.agents = s.agents;
-                m.run = s.run;
-                m.by = s.by;
-                m
-            })
-            .collect()
+        self.messages.into_iter().map(restored).collect()
     }
 
     pub fn user_turns(&self) -> usize {
@@ -431,7 +437,7 @@ mod tests {
                 by: String::new(),
             })
             .collect();
-        Session { id: id.into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: lines[0].1.into(), owner: owner(), chat_only: false, summary: None, effort: None, thread: None, messages }
+        Session { id: id.into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: lines[0].1.into(), owner: owner(), chat_only: false, summary: None, effort: None, thread: None, forks: vec![], messages }
     }
 
     #[test]
@@ -596,7 +602,7 @@ mod keep_tests {
     fn pins_folders_and_archive_are_kept_apart_and_only_for_the_owner() {
         let dir = std::env::temp_dir().join(format!("lyra-sessions-meta-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut s = Session { id: "20261008-090000-abc123".into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: "Firewall rules".into(), owner: "dana".into(), chat_only: false, summary: None, effort: None, thread: None, messages: vec![] };
+        let mut s = Session { id: "20261008-090000-abc123".into(), started: Utc::now(), updated: Utc::now(), cwd: String::new(), title: "Firewall rules".into(), owner: "dana".into(), chat_only: false, summary: None, effort: None, thread: None, forks: vec![], messages: vec![] };
         s.messages.push(SavedMessage { role: "user".into(), content: "Firewall rules".into(), tool_calls: vec![], tool_call_id: None, reasoning: String::new(), memories: vec![], skills: vec![], agents: vec![], run: None, by: String::new() });
         save(&dir, &s).unwrap();
         assert!(keep_command(&dir, "dana", "folder abc123 Network").unwrap().contains("moved to Network"));

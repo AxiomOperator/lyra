@@ -276,12 +276,12 @@ export function EffortButton() {
   );
 }
 
-/** Your last message, changed and sent again: lyra's answer to it is replaced. */
-export function EditLast({ text, onDone }: { text: string; onDone: () => void }) {
+/** Your message, changed and sent again: the conversation goes on from it another way (the way it went is kept as a version). */
+export function EditLast({ text, index, last, onDone }: { text: string; index: number; last: boolean; onDone: () => void }) {
   const { say } = useLyra();
   const [value, setValue] = useState(text);
   const send = () => {
-    if (value.trim() && value.trim() !== text.trim() && say(`/edit ${value.trim()}`)) onDone();
+    if (value.trim() && value.trim() !== text.trim() && say(last ? `/edit ${value.trim()}` : `/branch ${index} ${value.trim()}`)) onDone();
   };
   return (
     <div className="w-full max-w-[80%] space-y-2 self-end">
@@ -310,7 +310,7 @@ export function EditLast({ text, onDone }: { text: string; onDone: () => void })
   );
 }
 
-/** Under your last message: change it. */
+/** Under your message: change it. */
 export function EditButton({ onEdit }: { onEdit: () => void }) {
   return (
     <button type="button" onClick={onEdit} className="inline-flex items-center gap-1 self-end text-muted-foreground text-xs hover:text-foreground" aria-label="Edit your message">

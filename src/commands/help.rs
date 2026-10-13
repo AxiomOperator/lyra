@@ -17,7 +17,9 @@ pub(crate) const COMMANDS: &str = "\
 /stop                        stop the reply being written (also Ctrl-X)
 /new                         start a new conversation (this one is saved)
 /retry [other]               send your last message again (other: the other model answers); its reply is replaced
-/edit <text>                 change your last message and send it again; its reply is replaced
+/edit <text>                 change your last message and send it again; the earlier version is kept
+/branch <n> <text>           change an earlier message (number n) and go on from it another way; the way it went is kept
+/version <n> <k>             show version k of the conversation from message n
 /email [test | via lyra|outlook|auto | briefing|recap on|off]  email from lyra, to you only
 /chat-only [on|off]          just talk in this conversation: no tools (nothing looked up, sent or changed)
 /effort [default|off|low|medium|high]  how hard the model thinks in this conversation

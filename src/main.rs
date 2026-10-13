@@ -11,6 +11,7 @@ mod mailout;
 mod agents;
 mod board;
 mod backup;
+mod branches;
 mod briefing;
 mod calendar;
 mod caps;
@@ -602,6 +603,8 @@ struct App {
     thread: Option<String>,
     /// Who's sending the next message, by name (a shared conversation's messages say who).
     speaker: String,
+    /// Earlier messages changed and sent again: the other versions from each (`branches.rs`).
+    forks: Vec<branches::Fork>,
     /// Tools plan steps may never use (`[planning] forbidden_tools`).
     forbidden_tools: Vec<String>,
     /// A plan is being created or run in the background.
@@ -746,6 +749,7 @@ impl App {
             compacted: None,
             thread: None,
             speaker: String::new(),
+            forks: Vec::new(),
             last_schedule_check: Instant::now(),
             forbidden_tools: config.planning.forbidden_tools.clone(),
             plan_busy: false,
@@ -2369,6 +2373,7 @@ impl App {
         s.summary = self.compacted.clone();
         s.effort = self.effort.map(|e| e.as_str().to_string());
         s.thread = self.thread.clone();
+        s.forks = branches::save(&self.forks);
         // Written off this thread (a few saves in one turn are one write).
         sessions::save_later(&dir, s);
     }
@@ -2383,6 +2388,8 @@ impl App {
         self.effort = s.effort.as_deref().and_then(turn::Effort::parse);
         // Still in it? (Taken out of a shared conversation: their copy stays, on its own.)
         self.thread = s.thread.clone().filter(|t| crate::shared::seat(t, &self.owner).is_some());
+        let mut s = s;
+        self.forks = branches::restore(std::mem::take(&mut s.forks));
         self.messages = s.into_messages();
         self.agent_cards.clear();
         self.messages.push(Message::new("info", format!("resumed session {id} · {turns} turns · last active {when}")));
@@ -2404,6 +2411,7 @@ impl App {
         self.messages.clear();
         self.compacted = None;
         self.thread = None;
+        self.forks.clear();
         self.effort = None;
         self.agent_cards.clear();
         self.last_run = None;

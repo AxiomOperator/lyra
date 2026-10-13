@@ -40,6 +40,20 @@ impl App {
             self.log(Level::Info, format!("voice conversation: {}", if self.voice { "on" } else { "off" }));
             return;
         }
+        // Another version from an earlier message, or another one shown (no echo: it changes the conversation itself).
+        if let Some(rest) = content.strip_prefix("/branch ").or(content.strip_prefix("/version ")) {
+            self.input.clear();
+            let (at, arg) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+            let done = match at.parse::<usize>() {
+                Err(_) => Err("which message? (its number)".to_string()),
+                Ok(at) if content.starts_with("/branch") => self.branch(at, arg),
+                Ok(at) => arg.trim().parse::<usize>().map_err(|_| "which version? (a number)".to_string()).and_then(|n| self.show_version(at, n)),
+            };
+            if let Err(e) = done {
+                self.messages.push(Message::new("info", format!("> {}\n{e}", content.split_whitespace().take(2).collect::<Vec<_>>().join(" "))));
+            }
+            return;
+        }
         if content.is_empty() || self.waiting {
             return;
         }
@@ -321,6 +335,25 @@ impl App {
         if let Some(id) = self.last_run.as_ref().map(|r| r.id) {
             let why = if edit.is_some() { "they changed their message and sent it again" } else { "they asked for the reply again" };
             self.apply_verdict(id, crate::outcomes::Verdict::new(lyra_learning::SkillOutcome::Failure, crate::outcomes::Strength::Signal, why));
+        }
+        // Changed (not shared): the way it went is kept as a version.
+        if edit.is_some() && self.thread.is_none() {
+            let (original, images) = (self.messages[i].content.clone(), self.messages[i].images.clone());
+            let text = edit.unwrap_or_default();
+            let text = match original.find("\n\n**Attached: ") {
+                Some(at) => format!("{text}{}", &original[at..]),
+                None => text,
+            };
+            crate::branches::part(&mut self.messages, &mut self.forks, i);
+            self.touched = Some(i);
+            self.can_continue = false;
+            self.last_run = None;
+            self.log(Level::Info, "sending the changed message (the earlier version is kept)".to_string());
+            self.input = text;
+            self.attach_images = images;
+            self.send();
+            self.attach_images.clear();
+            return;
         }
         let original = std::mem::take(&mut self.messages[i].content);
         let images = std::mem::take(&mut self.messages[i].images);

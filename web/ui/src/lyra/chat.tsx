@@ -20,7 +20,7 @@ import { loadDraft, saveDraft, type Queued } from "./outbox";
 import { TemplatesButton } from "./templates";
 import { parseJson } from "./json";
 import { useLyra, useMessages } from "./store";
-import type { Approval, ChatAsk, ChatMessage, PairRequest } from "./types";
+import type { Approval, ChatAsk, ChatMessage, PairRequest, Fork } from "./types";
 import { AskCard, ChatOnlyButton, EditButton, EffortButton, EditLast, FoldedTries, RetryButtons, foldFailures } from "./chat-asks";
 import { BoardCard, ComposerModel, PlanCard, ToolFileContent, ToolFileTree, ToolTerminal, type BoardView, type PlanView } from "./chat-parts2";
 import { HandsFreeBar, HandsFreeButton, useHandsFreeOn } from "./handsfree";
@@ -147,9 +147,10 @@ function Footer({ m, max, model, id, retry, index }: { m: ChatMessage; max: numb
   );
 }
 
-/** Your message; the last one can be changed and sent again. */
-function UserMessage({ m, editable }: { m: ChatMessage; editable?: boolean }) {
+/** Your message: changed and sent again, the conversation takes another path from it (the earlier one kept as a version). */
+function UserMessage({ m, editable, index, last, fork }: { m: ChatMessage; editable?: boolean; index: number; last?: boolean; fork?: Fork }) {
   const [editing, setEditing] = useState(false);
+  const { say, status } = useLyra();
   const { text, files } = splitAttached(m.content);
   return (
     <Message from="user">
@@ -157,11 +158,26 @@ function UserMessage({ m, editable }: { m: ChatMessage; editable?: boolean }) {
       {m.by && <span className="-mb-1 self-end text-muted-foreground text-xs">{m.by}</span>}
       <SentAttachments files={files} />
       {editing ? (
-        <EditLast text={text} onDone={() => setEditing(false)} />
+        <EditLast text={text} index={index} last={!!last} onDone={() => setEditing(false)} />
       ) : (
         text.trim() && <MessageContent className="whitespace-pre-wrap group-[.is-user]:bg-primary/15 group-[.is-user]:ring-1 group-[.is-user]:ring-primary/25">{text}</MessageContent>
       )}
-      {editable && !editing && text.trim() && <EditButton onEdit={() => setEditing(true)} />}
+      <div className="flex items-center justify-end gap-3 self-end">
+        {fork && !editing && (
+          <span className="inline-flex items-center gap-1 text-muted-foreground text-xs" title="Other versions from this message">
+            <button type="button" disabled={!!status.waiting || fork.current === 0} onClick={() => say(`/version ${index} ${fork.current}`)} className="px-1 hover:text-foreground disabled:opacity-40" aria-label="The version before">
+              ‹
+            </button>
+            <span className="tabular-nums">
+              {fork.current + 1}/{fork.n}
+            </span>
+            <button type="button" disabled={!!status.waiting || fork.current === fork.n - 1} onClick={() => say(`/version ${index} ${fork.current + 2}`)} className="px-1 hover:text-foreground disabled:opacity-40" aria-label="The version after">
+              ›
+            </button>
+          </span>
+        )}
+        {editable && !editing && text.trim() && <EditButton onEdit={() => setEditing(true)} />}
+      </div>
     </Message>
   );
 }
@@ -188,6 +204,9 @@ const MessageView = memo(MessageViewInner, (a, b) =>
   a.model === b.model &&
   a.id === b.id &&
   a.editable === b.editable &&
+  a.last === b.last &&
+  a.fork?.n === b.fork?.n &&
+  a.fork?.current === b.fork?.current &&
   a.retry === b.retry &&
   a.index === b.index &&
   a.asking?.callId === b.asking?.callId &&
@@ -200,7 +219,7 @@ function sameTurn(a?: ChatMessage[], b?: ChatMessage[]) {
   return a === b || (!!a && !!b && a.length === b.length && a.every((m, i) => m === b[i]));
 }
 
-function MessageViewInner({ m, results, streaming, asking, asks, max, model, turn, id, editable, retry, index }: { m: ChatMessage; results: Map<string, string>; streaming: boolean; asking: Asking; asks: ChatAsk[]; max: number; model?: string; turn?: ChatMessage[]; id: string; editable?: boolean; retry?: boolean; index: number }) {
+function MessageViewInner({ m, results, streaming, asking, asks, max, model, turn, id, editable, retry, index, last, fork }: { m: ChatMessage; results: Map<string, string>; streaming: boolean; asking: Asking; asks: ChatAsk[]; max: number; model?: string; turn?: ChatMessage[]; id: string; editable?: boolean; retry?: boolean; index: number; last?: boolean; fork?: Fork }) {
   const { status } = useLyra();
   // A call, and the approval (or question) it waits for when it's this one.
   const call = (c: ChatMessage["calls"][number]) => {
@@ -215,7 +234,7 @@ function MessageViewInner({ m, results, streaming, asking, asks, max, model, tur
   };
   switch (m.role) {
     case "user":
-      return <UserMessage m={m} editable={editable} />;
+      return <UserMessage m={m} editable={editable} index={index} last={last} fork={fork} />;
     case "assistant":
       return (
         <Message from="assistant">
@@ -764,6 +783,9 @@ export function ChatPage() {
   const lastUser = messages.map((m) => m.role).lastIndexOf("user");
   // A shared conversation: only your own last message is yours to change or ask again (theirs would run with your rights).
   const mine = lastUser < 0 || !messages[lastUser].by || messages[lastUser].by === status.me;
+  // Any earlier message of yours can take the conversation another way (not a shared one: it goes one way).
+  const branchable = !status.waiting && !status.shared_with?.length;
+  const forks = useMemo(() => new Map((status.forks ?? []).map((f) => [f.at, f])), [status.forks]);
   const lastAnswer = (() => {
     for (let i = messages.length - 1; i > lastUser; i--) if (messages[i].role === "assistant" && messages[i].content.trim()) return i;
     return -1;
@@ -798,9 +820,11 @@ export function ChatPage() {
                 model={status.model}
                 turn={turns.get(j)}
                 id={`${status.session ?? ""}-${j}`}
-                editable={idle && mine && j === lastUser}
+                editable={j === lastUser ? idle && mine : branchable && messages[j].role === "user"}
                 retry={idle && mine && j === lastAnswer}
                 index={j}
+                last={j === lastUser}
+                fork={forks.get(j)}
               />
             );
             const fold = folds.get(i);

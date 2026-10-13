@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.99.0.263",
+    "date": "2026-10-13",
+    "title": "Branching conversations",
+    "new": [
+      "Edit any of your earlier messages, not just the last one: the conversation goes on from there another way, and the way it went before is kept.",
+      "A message with more than one version shows ‹ 1/2 ›: switch between them to see each path (and what was said after it), and carry on from whichever you're looking at. Versions are saved with the conversation."
+    ],
+    "improved": [
+      "Changing your last message keeps the earlier version too, instead of replacing it."
+    ]
+  },
+  {
     "version": "0.98.0.262",
     "date": "2026-10-13",
     "title": "Tables you can keep",
