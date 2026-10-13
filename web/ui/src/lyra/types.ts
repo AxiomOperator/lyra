@@ -1,5 +1,14 @@
 // What `lyra serve` sends (see src/serve.rs on the Rust side).
 
+// Types made from lyra's own Rust types (ts-rs, written by `cargo test`): one source for both.
+import type { Briefing } from "./gen/Briefing";
+import type { BriefingItem } from "./gen/BriefingItem";
+import type { BriefingLevel } from "./gen/BriefingLevel";
+import type { BriefingSection } from "./gen/BriefingSection";
+import type { Diagnosis } from "./gen/Diagnosis";
+import type { RoutineRun } from "./gen/RoutineRun";
+export type { Briefing, BriefingItem, BriefingLevel, BriefingSection, Diagnosis, RoutineRun };
+
 export type Role = "user" | "assistant" | "tool" | "agent_tool" | "info" | "error" | "agent" | "approval" | "picture" | "suggest";
 
 export interface ToolCall {
@@ -330,23 +339,6 @@ export interface RulesData {
   error?: string;
 }
 
-export interface RoutineRun {
-  at: string;
-  seconds: number;
-  needs_user: boolean;
-  outcome: string;
-  summary: string;
-  session: string;
-  decided_by: string;
-  /** How it was emailed, or "not emailed: why". */
-  emailed?: string;
-  /** What it took: model calls, tokens, cost. */
-  calls?: number;
-  tokens_in?: number;
-  tokens_out?: number;
-  cost?: number;
-}
-
 export interface Routine {
   name: string;
   schedule: string;
@@ -394,36 +386,6 @@ export interface StatusBoard {
   rows: StatusRow[];
   /** Models an admin marked known down: lyra stops trying them. */
   known_down?: Record<string, { by: string; at: string; note: string; text: string }>;
-}
-
-export interface Diagnosis {
-  key: string;
-  machine: string;
-  problem: string;
-  state: "queued" | "running" | "done" | "failed";
-  summary: string;
-  session: string;
-  at: string;
-  resolved: boolean;
-}
-
-/** The daily briefing (lyra serve, `[briefing]`). */
-export type BriefingLevel = "attention" | "note" | "ok";
-
-export interface BriefingItem {
-  level: BriefingLevel;
-  text: string;
-  /** The page it's about: machines, status, routines, coding, goals. */
-  link: string;
-}
-
-export interface Briefing {
-  at: string;
-  since: string;
-  headline: string;
-  attention: number;
-  takeaway?: string | null;
-  sections: { name: string; items: BriefingItem[] }[];
 }
 
 /** One of lyra's own tasks, as lists show it. */

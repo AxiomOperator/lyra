@@ -51,6 +51,7 @@ pub fn settings() -> Settings {
 /// How much an item matters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "BriefingLevel"))]
 pub enum Level {
     Attention,
     Note,
@@ -58,6 +59,7 @@ pub enum Level {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "BriefingItem"))]
 pub struct Item {
     pub level: Level,
     pub text: String,
@@ -66,12 +68,14 @@ pub struct Item {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "BriefingSection"))]
 pub struct Section {
     pub name: String,
     pub items: Vec<Item>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct Briefing {
     pub at: DateTime<Utc>,
     /// The window it covers starts here.

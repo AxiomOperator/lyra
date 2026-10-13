@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.101.0.267",
+    "date": "2026-10-13",
+    "title": "One source for the app's types",
+    "improved": [
+      "The app's routine runs, problem write-ups and daily briefing now take their shape straight from lyra's own, so a change on one side can't quietly break the other."
+    ]
+  },
+  {
     "version": "0.101.0.266",
     "date": "2026-10-13",
     "title": "Tidier insides",

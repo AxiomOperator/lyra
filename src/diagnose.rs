@@ -29,6 +29,7 @@ impl Default for Settings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 pub struct Diagnosis {
     /// What it's about: "desktop:unit:nginx.service", "status:embedding".
     pub key: String,
@@ -37,6 +38,7 @@ pub struct Diagnosis {
     /// The problem as it was reported.
     pub problem: String,
     /// "queued", "running", "done" or "failed".
+    #[cfg_attr(test, ts(type = "\"queued\" | \"running\" | \"done\" | \"failed\""))]
     pub state: String,
     /// The write-up: what's wrong, the likely cause, the fix.
     pub summary: String,

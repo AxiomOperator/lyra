@@ -72,6 +72,7 @@ fn yes() -> bool {
 
 /// One run of a routine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export, rename = "RoutineRun"))]
 pub struct Run {
     pub at: DateTime<Utc>,
     pub seconds: u64,

@@ -62,6 +62,10 @@ cargo clippy --all-targets --workspace   # must be warning-free
 cargo test --workspace
 ```
 
+`cargo test` also writes the app's types made from lyra's Rust ones (`ts-rs`, test-only:
+`#[cfg_attr(test, derive(ts_rs::TS), ts(export))]`) to `web/ui/src/lyra/gen/`; `types.ts`
+re-exports them. After changing such a type, commit `gen/` and rebuild the app.
+
 ## Rules
 
 1. **Commit and push after every completed feature or fix.** Once the checks pass, commit

@@ -2,3 +2,7 @@
 # libc, so the system gcc compiles it (no musl-gcc needed).
 [env]
 CC_x86_64_unknown_linux_musl = "gcc"
+# The app's types made from lyra's own (ts-rs, written by `cargo test`): to
+# web/ui/src/lyra/gen/, with 64-bit numbers as plain numbers.
+TS_RS_EXPORT_DIR = { value = "web/ui/src/lyra/gen", relative = true }
+TS_RS_LARGE_INT = "number"
