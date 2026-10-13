@@ -25,6 +25,12 @@ pub struct Settings {
     pub url: String,
     #[serde(default = "default_model")]
     pub model: String,
+    /// A key for its server (sent as `Authorization: Bearer …`); none: nothing is sent.
+    #[serde(default)]
+    pub api_key: String,
+    /// Or the name of a token in config/secrets.toml holding it (kept out of backups).
+    #[serde(default)]
+    pub api_key_secret: String,
     /// Answers below this probability go to the chat model instead.
     #[serde(default = "default_min_confidence")]
     pub min_confidence: f32,
@@ -296,12 +302,8 @@ fn call(s: &Settings, state: &str, questions: &[(String, Question)]) -> Result<H
     let body = json!({ "model": s.model, "state": state, "questions": qs });
     let url = format!("{}/systemone", s.url.trim_end_matches('/'));
     let started = Instant::now();
-    let resp = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|e| e.to_string())?
-        .post(&url)
+    let client = reqwest::blocking::Client::builder().connect_timeout(Duration::from_secs(3)).timeout(Duration::from_secs(15)).build().map_err(|e| e.to_string())?;
+    let resp = lyra_web::keys::auth(client.post(&url), &url)
         .json(&body)
         .send()
         .map_err(|e| e.to_string())?;
@@ -354,7 +356,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn settings(url: &str) -> Settings {
-        Settings { url: url.into(), model: "clef-flash".into(), min_confidence: 0.75, max_state_chars: 1000, price: Default::default() }
+        Settings { url: url.into(), model: "clef-flash".into(), min_confidence: 0.75, max_state_chars: 1000, price: Default::default(), api_key: String::new(), api_key_secret: String::new() }
     }
 
     #[test]

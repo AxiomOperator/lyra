@@ -1076,7 +1076,7 @@ pub(crate) fn stream(url: &str, body: &Value, tx: &Sender<StreamEvent>, cancel: 
     let (lines_tx, lines) = std::sync::mpsc::channel::<Result<String, String>>();
     let (url, body) = (url.to_string(), body.clone());
     crate::acting::spawn(move || {
-        let resp = match client.post(&url).json(&body).send() {
+        let resp = match lyra_web::keys::auth(client.post(&url), &url).json(&body).send() {
             Ok(r) => r,
             Err(e) => return drop(lines_tx.send(Err(format!("{UNREACHED}{e}")))),
         };

@@ -106,8 +106,8 @@ pub(crate) async fn transcribe(State(s): State<Arc<Shared>>, headers: HeaderMap,
         if let Some(l) = stt.language.clone().filter(|l| !l.is_empty()) {
             form = form.text("language", l);
         }
-        let resp = client(Duration::from_secs(120))?
-            .post(format!("{}/audio/transcriptions", stt.url.trim_end_matches('/')))
+        let url = format!("{}/audio/transcriptions", stt.url.trim_end_matches('/'));
+        let resp = crate::keys::auth(client(Duration::from_secs(120))?.post(&url), &url)
             .multipart(form)
             .send()
             .map_err(|e| format!("the speech-to-text server didn't answer: {e}"))?;
@@ -167,7 +167,7 @@ pub(crate) async fn say(State(s): State<Arc<Shared>>, headers: HeaderMap, Json(b
     let (first_tx, first_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     let url = format!("{}/audio/speech", tts.url.trim_end_matches('/'));
     tokio::task::spawn_blocking(move || {
-        let resp = client(Duration::from_secs(300)).and_then(|c| c.post(&url).header(reqwest::header::CONTENT_TYPE, "application/json").body(req.to_string()).send().map_err(|e| format!("the text-to-speech server didn't answer: {e}")));
+        let resp = client(Duration::from_secs(300)).and_then(|c| crate::keys::auth(c.post(&url), &url).header(reqwest::header::CONTENT_TYPE, "application/json").body(req.to_string()).send().map_err(|e| format!("the text-to-speech server didn't answer: {e}")));
         let mut resp = match resp {
             Ok(r) if r.status().is_success() => r,
             Ok(r) => {
@@ -213,7 +213,8 @@ pub(crate) async fn voices(State(s): State<Arc<Shared>>, headers: HeaderMap) -> 
     }
     let Some(tts) = s.speech.tts.clone() else { return error(StatusCode::NOT_FOUND, "text to speech isn't set up on this server ([speech.tts])") };
     let got = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
-        let v: Value = client(Duration::from_secs(10))?.get(format!("{}/audio/voices", tts.url.trim_end_matches('/'))).send().map_err(|e| e.to_string())?.text().map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))?;
+        let url = format!("{}/audio/voices", tts.url.trim_end_matches('/'));
+        let v: Value = crate::keys::auth(client(Duration::from_secs(10))?.get(&url), &url).send().map_err(|e| e.to_string())?.text().map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))?;
         // Kokoro: {"voices": [{"id": …}]} or ["af_heart", …].
         let list = v.get("voices").cloned().unwrap_or(v);
         Ok(list.as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string).or_else(|| x["id"].as_str().map(str::to_string))).collect())
@@ -230,7 +231,8 @@ pub(crate) async fn voices(State(s): State<Arc<Shared>>, headers: HeaderMap) -> 
 /// any models (some don't) counts as having it.
 fn has_model(url: &str, model: &str) -> bool {
     let Ok(c) = client(Duration::from_secs(4)) else { return false };
-    let Ok(r) = c.get(format!("{}/models", url.trim_end_matches('/'))).send() else { return false };
+    let list = format!("{}/models", url.trim_end_matches('/'));
+    let Ok(r) = crate::keys::auth(c.get(&list), &list).send() else { return false };
     if r.status() == reqwest::StatusCode::NOT_FOUND {
         return true;
     }

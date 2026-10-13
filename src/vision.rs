@@ -20,6 +20,12 @@ pub struct Settings {
     /// Most scanned pages looked at in one read.
     #[serde(default = "default_pages")]
     pub max_pages: usize,
+    /// A key for its server (sent as `Authorization: Bearer …`); none: nothing is sent.
+    #[serde(default)]
+    pub api_key: String,
+    /// Or the name of a token in config/secrets.toml holding it (kept out of backups).
+    #[serde(default)]
+    pub api_key_secret: String,
     /// Its prices (`input_cost_per_mtok` …), for AI usage.
     #[serde(flatten, default)]
     pub price: crate::usage::Price,
@@ -97,12 +103,9 @@ pub fn look(images: &[(&str, &[u8])], question: Option<&str>) -> Result<String, 
     }));
     let body = json!({ "model": s.model, "messages": [{ "role": "user", "content": parts }], "temperature": 0.1, "max_tokens": 4096 });
     let started = std::time::Instant::now();
-    let resp = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(300))
-        .build()
-        .map_err(|e| e.to_string())?
-        .post(format!("{}/chat/completions", s.url.trim_end_matches('/')))
+    let url = format!("{}/chat/completions", s.url.trim_end_matches('/'));
+    let client = reqwest::blocking::Client::builder().connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(300)).build().map_err(|e| e.to_string())?;
+    let resp = lyra_web::keys::auth(client.post(&url), &url)
         .json(&body)
         .send()
         .map_err(|e| format!("the vision model: {e}"))?;

@@ -1,6 +1,8 @@
 # Copy to ~/.lyra/config/config.toml
 url = "http://localhost:11434/v1"   # any OpenAI-compatible endpoint
 model = "llama3.2"
+# api_key = ""          # a key for its server, sent as Authorization: Bearer (empty or left out: none)
+# api_key_secret = ""   # or the name of a token in config/secrets.toml holding it (kept out of backups)
 # vision = false   # true if the model reads images: photos sent from the app go to it
 
 # lyra's internal JSON calls (planning, verification, memory capture, skill
@@ -23,11 +25,13 @@ currency = "$"
 # checks they respond at startup and on Ctrl-L; their calls count in AI usage.
 # [embedding]
 # url = "http://localhost:8082/v1"
+# api_key = ""          # its server's key, if it wants one (or api_key_secret = "<name in secrets.toml>")
 # model = "embedding"
 # input_cost_per_mtok = 0.0      # its own prices, for AI usage (like the chat model's)
 #
 # [reranker]
 # url = "http://localhost:8081/v1"
+# api_key = ""          # its server's key, if it wants one (or api_key_secret = "<name in secrets.toml>")
 # model = "reranker"
 # input_cost_per_mtok = 0.0
 
@@ -36,6 +40,7 @@ currency = "$"
 # out and the chat model answers those questions, as before.
 # [decide]
 # url = "http://localhost:8091/v1"
+# api_key = ""          # its server's key, if it wants one (or api_key_secret = "<name in secrets.toml>")
 # model = "clef-flash"
 # min_confidence = 0.75
 # max_state_chars = 1000   # raise with llama-server's -b/-ub (e.g. 20000 for -ub 8192)
@@ -49,6 +54,7 @@ currency = "$"
 # server or port: [decide] needs clef-flash where it points.
 # [vision_model]
 # url = "http://localhost:8090/v1"
+# api_key = ""          # its server's key, if it wants one (or api_key_secret = "<name in secrets.toml>")
 # model = "gemma-4-31b-it-q8_0"
 # max_pages = 6            # most scanned pages looked at in one read
 # input_cost_per_mtok = 0.0      # its own prices, for AI usage
@@ -61,6 +67,7 @@ currency = "$"
 # so. After a failure the main model is skipped for two minutes, then tried again.
 # [fallback_model]
 # url = "http://gpu2:8080/v1"
+# api_key = ""          # its server's key, if it wants one (or api_key_secret = "<name in secrets.toml>")
 # model = "gemma4-v2-Q8_0.gguf"
 # background = true              # also do lyra's small background jobs (memory capture,
 #                                # skill reviews, mail triage, briefing notes, routine
@@ -74,6 +81,7 @@ currency = "$"
 # with background = true (so this one can take them while the first doesn't).
 # [second_fallback_model]
 # url = "http://gpu3:8080/v1"
+# api_key = ""          # its server's key, if it wants one (or api_key_secret = "<name in secrets.toml>")
 # model = "gemma4-v2-Q8_0.gguf"
 # background = true
 # input_cost_per_mtok = 0.0
@@ -229,6 +237,7 @@ currency = "$"
 # Without one, that work waits while a reply is being written.
 # [light_model]
 # url = "http://gpu3:8080/v1"
+# api_key = ""          # its server's key, if it wants one (or api_key_secret = "<name in secrets.toml>")
 # model = "qwen3-4b"
 
 # Voice on your own servers (see README): speech to text with a Whisper server
@@ -239,6 +248,7 @@ currency = "$"
 # enabled = true
 # provider = "openai-compatible"
 # base_url = "http://172.16.0.14:8006/v1"     # its /audio/transcriptions
+# api_key = ""          # its server's key, if it wants one (or api_key_secret = "<name in secrets.toml>")
 # model = "Systran/faster-whisper-large-v3"
 # language = "en"
 #
@@ -246,6 +256,7 @@ currency = "$"
 # enabled = true
 # provider = "openai-compatible"
 # base_url = "http://172.16.0.14:8880/v1"     # its /audio/speech
+# api_key = ""          # its server's key, if it wants one (or api_key_secret = "<name in secrets.toml>")
 # model = "kokoro"
 # voice = "af_heart"
 # response_format = "mp3"

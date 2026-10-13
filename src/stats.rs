@@ -34,7 +34,7 @@ pub fn learn_context_window(url: &str) {
     let base = url.trim_end_matches('/').to_string();
     crate::acting::spawn(move || {
         let get = |u: &str| -> Option<serde_json::Value> {
-            reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(10)).build().ok()?.get(u).send().ok()?.json().ok()
+            lyra_web::keys::auth(reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(10)).build().ok()?.get(u), u).send().ok()?.json().ok()
         };
         let models = get(&format!("{base}/models"));
         let n = models

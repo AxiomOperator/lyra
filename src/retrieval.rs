@@ -15,6 +15,12 @@ pub struct Endpoint {
     /// The embedding model's vector size; asked of the model when not set.
     #[serde(default)]
     pub dimensions: Option<usize>,
+    /// A key for its server (sent as `Authorization: Bearer …`); none: nothing is sent.
+    #[serde(default)]
+    pub api_key: String,
+    /// Or the name of a token in config/secrets.toml holding it (kept out of backups).
+    #[serde(default)]
+    pub api_key_secret: String,
     /// Its prices (`input_cost_per_mtok` …), for AI usage.
     #[serde(flatten, default)]
     pub price: crate::usage::Price,
@@ -29,7 +35,7 @@ impl Endpoint {
             .build()
             .map_err(|e| e.to_string())?;
         let started = std::time::Instant::now();
-        let resp = client.post(&url).json(&body).send().map_err(|e| e.to_string())?;
+        let resp = lyra_web::keys::auth(client.post(&url), &url).json(&body).send().map_err(|e| e.to_string())?;
         let status = resp.status();
         if !status.is_success() {
             return Err(format!("{url}: {status}: {}", resp.text().unwrap_or_default()));
@@ -272,13 +278,30 @@ mod tests {
         // The fake server answers one request: the second embedding of the
         // same query must come from the cache.
         let (url, served) = crate::decide::tests::fake(serde_json::json!({ "data": [{ "index": 0, "embedding": [0.25, 0.5] }], "usage": { "prompt_tokens": 3 } }));
-        let ep = Endpoint { url, model: "embed-test".into(), dimensions: None, price: Default::default() };
+        let ep = Endpoint { url, model: "embed-test".into(), dimensions: None, price: Default::default(), api_key: String::new(), api_key_secret: String::new() };
         let first = embed(&ep, &["where is the printer?"]).unwrap();
         served.join().unwrap();
         let again = embed(&ep, &["where is the printer?"]).unwrap();
         assert_eq!(first.vectors, again.vectors);
         assert_eq!(again.tokens, 0, "nothing was asked of the server");
         assert!(embed(&ep, &["something else"]).is_err(), "another query still goes to the server");
+    }
+
+    #[test]
+    fn a_key_is_sent_when_the_config_has_one_and_not_otherwise() {
+        let reply = serde_json::json!({ "data": [{ "index": 0, "embedding": [0.5] }] });
+        // As the Syntra config gives it: a key on [embedding].
+        let (url, served) = crate::decide::tests::fake(reply.clone());
+        let config: crate::config::Config = toml::from_str(&format!("[embedding]\nurl = \"{url}\"\napi_key = \"sk-test-1\"\nmodel = \"embedding\"\n")).unwrap();
+        lyra_web::keys::set_all(config.model_keys());
+        embed(config.embedding.as_ref().unwrap(), &["with a key, query 1"]).unwrap();
+        assert!(served.join().unwrap().to_lowercase().contains("authorization: bearer sk-test-1"));
+        // No key (or an empty one): no Authorization header at all.
+        let (url, served) = crate::decide::tests::fake(reply);
+        let config: crate::config::Config = toml::from_str(&format!("[embedding]\nurl = \"{url}\"\napi_key = \"\"\nmodel = \"embedding\"\n")).unwrap();
+        lyra_web::keys::set_all(config.model_keys());
+        embed(config.embedding.as_ref().unwrap(), &["without a key, query 2"]).unwrap();
+        assert!(!served.join().unwrap().to_lowercase().contains("authorization"));
     }
 
     #[test]

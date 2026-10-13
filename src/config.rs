@@ -9,6 +9,10 @@ use crate::retrieval::Endpoint;
 pub struct Config {
     pub url: String,
     pub model: String,
+    /// A key for the chat model's server (sent as `Authorization: Bearer …`); none: nothing is sent.
+    pub api_key: String,
+    /// Or the name of a token in config/secrets.toml holding it (kept out of backups).
+    pub api_key_secret: String,
     /// The model can see images (attached photos go to it as images).
     pub vision: bool,
     /// Price per million prompt tokens (0 for a free local model).
@@ -342,6 +346,8 @@ impl Default for Config {
         Self {
             url: "http://localhost:11434/v1".into(),
             model: "llama3.2".into(),
+            api_key: String::new(),
+            api_key_secret: String::new(),
             vision: false,
             input_cost_per_mtok: 0.0,
             cached_input_cost_per_mtok: None,
@@ -617,6 +623,9 @@ pub struct SttConfig {
     /// `openai-compatible` (the only kind for now).
     pub provider: String,
     pub base_url: String,
+    /// A key for its server (or `api_key_secret`: a token's name in secrets.toml); none: nothing is sent.
+    pub api_key: String,
+    pub api_key_secret: String,
     pub model: String,
     pub language: Option<String>,
 }
@@ -627,6 +636,9 @@ pub struct TtsConfig {
     pub enabled: bool,
     pub provider: String,
     pub base_url: String,
+    /// A key for its server (or `api_key_secret`); none: nothing is sent.
+    pub api_key: String,
+    pub api_key_secret: String,
     pub model: String,
     pub voice: String,
     /// `mp3` (the default), `opus`, `wav`…
@@ -648,6 +660,36 @@ pub struct ConversationConfig {
 impl Default for ConversationConfig {
     fn default() -> Self {
         Self { vad_enabled: true, allow_interruptions: true, stream_audio: true }
+    }
+}
+
+/// A key given in the config, or else the secret it names (empty: none).
+pub fn key(api_key: &str, api_key_secret: &str) -> String {
+    if !api_key.trim().is_empty() {
+        return api_key.trim().to_string();
+    }
+    if api_key_secret.trim().is_empty() { String::new() } else { crate::secrets::token(api_key_secret.trim()).unwrap_or_default() }
+}
+
+impl Config {
+    /// Every model server's address and its key (for `lyra_web::keys`).
+    pub fn model_keys(&self) -> Vec<(String, String)> {
+        let mut out = vec![(self.url.clone(), key(&self.api_key, &self.api_key_secret))];
+        for f in [&self.fallback_model, &self.second_fallback_model, &self.light_model].into_iter().flatten() {
+            out.push((f.url.clone(), key(&f.api_key, &f.api_key_secret)));
+        }
+        for e in [&self.embedding, &self.reranker].into_iter().flatten() {
+            out.push((e.url.clone(), key(&e.api_key, &e.api_key_secret)));
+        }
+        if let Some(d) = &self.decide {
+            out.push((d.url.clone(), key(&d.api_key, &d.api_key_secret)));
+        }
+        if let Some(v) = &self.vision_model {
+            out.push((v.url.clone(), key(&v.api_key, &v.api_key_secret)));
+        }
+        out.push((self.speech.stt.base_url.clone(), key(&self.speech.stt.api_key, &self.speech.stt.api_key_secret)));
+        out.push((self.speech.tts.base_url.clone(), key(&self.speech.tts.api_key, &self.speech.tts.api_key_secret)));
+        out
     }
 }
 

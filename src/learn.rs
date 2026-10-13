@@ -659,7 +659,7 @@ fn call(
     }
     let started = std::time::Instant::now();
     let send = |url: &str, body: &Value| -> Result<Value, String> {
-        let resp = client.post(url).json(body).send().map_err(|e| e.to_string())?;
+        let resp = lyra_web::keys::auth(client.post(url), url).json(body).send().map_err(|e| e.to_string())?;
         let status = resp.status();
         if !status.is_success() {
             return Err(format!("{status}: {}", resp.text().unwrap_or_default().chars().take(500).collect::<String>()));

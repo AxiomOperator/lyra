@@ -6,6 +6,7 @@
 
 pub mod devices;
 pub mod jsonfile;
+pub mod keys;
 pub mod oidc;
 pub mod users;
 pub mod uploads;

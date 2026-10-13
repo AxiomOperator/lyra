@@ -2103,7 +2103,7 @@ mod tests {
         let var = |k: &str| std::env::var(k).ok();
         let (Some(url), Some(model), Some(judge_url), Some(judge)) = (var("LYRA_LIVE_URL"), var("LYRA_LIVE_MODEL"), var("LYRA_LIVE_JUDGE_URL"), var("LYRA_LIVE_JUDGE_MODEL")) else { return };
         crate::learn::configure(crate::learn::Structured { max_tokens: 2048, thinking: false });
-        crate::fallback::configure(Some(crate::fallback::Settings { url: judge_url, model: judge.clone(), background: false, price: Default::default() }), None);
+        crate::fallback::configure(Some(crate::fallback::Settings { url: judge_url, model: judge.clone(), background: false, api_key: String::new(), api_key_secret: String::new(), price: Default::default() }), None);
         crate::config::with_test_home(|home| {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let manager = EvolutionManager::open(home, rt.handle().clone(), Default::default()).unwrap();

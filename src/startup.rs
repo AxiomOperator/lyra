@@ -72,6 +72,8 @@ pub(crate) fn configure(config: &Config) {
     planner::configure(config.planner.clone());
     usage::configure(prices(config));
     vision::configure(config.vision_model.clone());
+    // Model servers' keys (sent only to the server each belongs to).
+    lyra_web::keys::set_all(config.model_keys());
     fallback::configure(config.fallback_model.clone(), config.second_fallback_model.clone());
     fallback::configure_light(config.light_model.clone());
     crate::websearch::configure(config.search.clone());
@@ -286,6 +288,8 @@ pub(crate) fn main() {
     };
     // Memory is async (sqlx); a small runtime lets lyra's threads call into it.
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    // Keys first: opening memory asks the embedding server already.
+    lyra_web::keys::set_all(config.model_keys());
     let (tools, memory_status, memory_notes) = open_memory(&config, runtime.handle());
     let (learning, learning_status) = open_learning(&config, runtime.handle());
     let (engine, planning_status) = open_planning(&config, runtime.handle());
@@ -856,11 +860,8 @@ pub(crate) fn open_capabilities(
 /// The models an OpenAI-compatible endpoint offers (`GET /models`).
 pub fn models(base_url: &str) -> Result<Vec<String>, String> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let body: Value = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|e| e.to_string())?
-        .get(&url)
+    let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(5)).build().map_err(|e| e.to_string())?;
+    let body: Value = lyra_web::keys::auth(client.get(&url), &url)
         .send()
         .and_then(|r| r.error_for_status())
         .and_then(|r| r.json())

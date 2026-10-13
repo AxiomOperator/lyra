@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.89.0.249",
+    "date": "2026-10-12",
+    "title": "Keys for model servers",
+    "new": [
+      "Model servers that want a key can have one: add api_key to the chat model, a fallback, the light model, embedding, reranker, decision, vision or speech section (or api_key_secret, naming a token in secrets.toml, which stays out of backups). lyra sends it as Authorization: Bearer, only to that server. Without a key nothing is sent, so servers that don't ask for one work as before."
+    ]
+  },
+  {
     "version": "0.88.0.248",
     "date": "2026-10-12",
     "title": "Activity for everyone",

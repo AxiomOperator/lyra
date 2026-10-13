@@ -129,7 +129,8 @@ fn listed(model: &str, offered: &[String]) -> (State, String) {
 /// A speech server's models (`GET /models`).
 fn speech_models(url: &str) -> Result<Vec<String>, String> {
     let c = reqwest::blocking::Client::builder().connect_timeout(std::time::Duration::from_secs(4)).timeout(std::time::Duration::from_secs(10)).build().map_err(|e| e.to_string())?;
-    let r = c.get(format!("{}/models", url.trim_end_matches('/'))).send().map_err(|e| e.to_string())?;
+    let list = format!("{}/models", url.trim_end_matches('/'));
+    let r = lyra_web::keys::auth(c.get(&list), &list).send().map_err(|e| e.to_string())?;
     if !r.status().is_success() {
         return Err(format!("{}", r.status()));
     }

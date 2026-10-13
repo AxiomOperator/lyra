@@ -26,6 +26,12 @@ pub struct Settings {
     /// Also does lyra's small background jobs while the main model is up.
     #[serde(default)]
     pub background: bool,
+    /// A key for its server (sent as `Authorization: Bearer …`); none: nothing is sent.
+    #[serde(default)]
+    pub api_key: String,
+    /// Or the name of a token in config/secrets.toml holding it (kept out of backups).
+    #[serde(default)]
+    pub api_key_secret: String,
     /// Its prices (`input_cost_per_mtok` …), for AI usage.
     #[serde(flatten, default)]
     pub price: crate::usage::Price,
@@ -262,7 +268,7 @@ mod tests {
     static LOCK: Mutex<()> = Mutex::new(());
 
     fn fb(url: &str, model: &str, background: bool) -> Option<Settings> {
-        Some(Settings { url: url.into(), model: model.into(), background, price: Default::default() })
+        Some(Settings { url: url.into(), model: model.into(), background, price: Default::default(), api_key: String::new(), api_key_secret: String::new() })
     }
 
     #[test]
