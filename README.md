@@ -62,6 +62,25 @@ backups), use `api_key_secret = "<name>"` and store it with `lyra secret <name>`
 `config.toml` holding a key should be readable by its owner only (`chmod 600`).
 `scripts/lyra-check-config` sends the keys too, and says when one is still a placeholder.
 
+**The Settings page** (admins) has every setting in `config.toml`:
+- **The common ones first** (models, replies, working hours, briefing, notifications), with
+  plain labels.
+- **Everything:** every section and key, from `config.example.toml`, with its comment as help
+  and an editor for its type. *Reset* takes a setting out of the file (lyra's default applies
+  again). Keys show only as set or not set; type a new one to replace it.
+- **Edited in the file only:** what decides what runs on the server without asking (MCP and
+  OpenAPI providers, the capabilities policy, `[system]`'s shell and allow/write/deny/SSH
+  lists, which the Machines page's Rules change, `coding.allow_push`, `sandbox.allow_lan`).
+  These are shown, locked.
+- **Asks first:** what could lock you out or move data (`[web]`, sign-in, the memory store,
+  the backup folder, the embedding model).
+- **History:** before every change lyra makes to `config.toml` (this page, `/settings`, a
+  restore), the file as it was is kept in `config/history/` (owner-only: it may hold keys),
+  with who changed which settings. An edit by hand is noticed at the next reload or save and
+  kept as its own version. Each version shows its diff, or from then to now (keys masked as
+  ••••••). *Put back* restores the file as it was before a change (kept as a version too) and
+  reloads.
+
 **Reloading after editing by hand.** Settings → *The config file* (admins):
 - **Check config:** reads `config.toml` as a reload would, and asks each model server for its
   model list with the file's own key. It shows each server as answering, refusing the key,

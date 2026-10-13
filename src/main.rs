@@ -21,6 +21,8 @@ mod startup;
 mod store;
 mod turn;
 mod config;
+mod config_history;
+mod config_schema;
 mod connect;
 mod context;
 mod decide;

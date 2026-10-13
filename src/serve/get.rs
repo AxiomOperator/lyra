@@ -123,7 +123,8 @@ pub(crate) fn get_page(
         // The Settings page's Save: written to config.toml, then every
         // conversation picks it up (the model and prices are each one's own).
         "settings_set" => {
-            let answer = match crate::settings::set(&arg["changes"]) {
+            let confirmed: Vec<String> = arg["confirmed"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
+            let answer = match crate::settings::set_confirmed(&arg["changes"], &confirmed) {
                 Ok(changed) if changed.is_empty() => json!({ "ok": true, "changed": changed, "page": crate::settings::page() }),
                 Ok(changed) => {
                     reload_all(convs, hub);
@@ -131,6 +132,42 @@ pub(crate) fn get_page(
                     let keys: Vec<String> = arg["changes"].as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default();
                     convs[0].app.note_settings_edit(&who.user, &keys);
                     json!({ "ok": true, "changed": changed, "page": crate::settings::page() })
+                }
+                Err(e) => json!({ "ok": false, "error": e }),
+            };
+            let _ = reply.send(answer);
+        }
+        // Settings → Everything: every setting there is, with its value now (keys hidden).
+        "settings_all" => {
+            let path = crate::config::path();
+            let text = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+            let mut v = crate::config_schema::page(&text);
+            v["path"] = json!(path.map(|p| crate::context::show(&p)));
+            let _ = reply.send(v);
+        }
+        // Settings → History: config.toml's versions (an edit by hand since the last is kept first).
+        "config_history" => {
+            let answer = match crate::config::path() {
+                Some(p) => {
+                    crate::config_history::notice_hand_edit_at(&p);
+                    json!({ "versions": crate::config_history::page_at(&p) })
+                }
+                None => json!({ "error": "no home directory" }),
+            };
+            let _ = reply.send(answer);
+        }
+        "config_diff" => {
+            let answer = crate::config::path().ok_or("no home directory".to_string()).and_then(|p| crate::config_history::diff_at(&p, arg["id"].as_str().unwrap_or(""), arg["against_now"] == true));
+            let _ = reply.send(answer.unwrap_or_else(|e| json!({ "error": e })));
+        }
+        // Put config.toml back as it was before a change (kept as a version too), and reload.
+        "config_restore" => {
+            let answer = match crate::config::path().ok_or("no home directory".to_string()).and_then(|p| crate::acting::run(&who.user, || crate::config_history::restore_at(&p, arg["id"].as_str().unwrap_or(""), &who.user))) {
+                Ok(e) => {
+                    reload_all(convs, hub);
+                    convs[0].app.log(Level::Agent, format!("config.toml {} by {} (from the app)", e.how, who.name));
+                    everyone = true;
+                    json!({ "ok": true, "text": format!("config.toml {}, and reloaded", e.how) })
                 }
                 Err(e) => json!({ "ok": false, "error": e }),
             };
@@ -149,6 +186,10 @@ pub(crate) fn get_page(
             let answer = match crate::config::Config::load() {
                 Err(e) => json!({ "ok": false, "error": format!("config.toml doesn't read, so nothing changed: {e}") }),
                 Ok(_) => {
+                    // Edited by hand since lyra last wrote it: that's a version in History.
+                    if let Some(p) = crate::config::path() {
+                        crate::config_history::notice_hand_edit_at(&p);
+                    }
                     reload_all(convs, hub);
                     convs[0].app.log(Level::Agent, format!("config reloaded from the app by {}", who.name));
                     crate::status::request();

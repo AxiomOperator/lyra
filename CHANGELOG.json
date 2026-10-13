@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.91.0.252",
+    "date": "2026-10-12",
+    "title": "Every setting in the app, with its history",
+    "new": [
+      "Settings → Everything has every setting lyra has, each with its help and an editor for its type: find one, change it, or reset it to lyra's default. Keys show only as set or not (type a new one to replace it). Settings that decide what runs on the server without asking stay in config.toml and show locked; the ones that could lock you out ask first.",
+      "Settings → History: before every change lyra makes to config.toml, the file as it was is kept, with who changed which settings. A change made by hand is kept too. See each version's diff, or from then to now, and put the file back as it was before any change."
+    ]
+  },
+  {
     "version": "0.90.0.251",
     "date": "2026-10-12",
     "title": "Reload the config from the app",

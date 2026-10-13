@@ -487,6 +487,15 @@ pub fn update(edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), Strin
 }
 
 pub fn update_file(path: &std::path::Path, edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), String>) -> Result<(), String> {
+    update_file_how(path, "changed in lyra", edit)
+}
+
+/// `update_file`, saying how it was changed (for its History): the file as
+/// it was is kept first (`config_history`), and an edit by hand since the
+/// last change is kept as its own version.
+pub fn update_file_how(path: &std::path::Path, how: &str, edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), String>) -> Result<(), String> {
+    crate::config_history::notice_hand_edit_at(path);
+    let mut seen: Option<(String, String)> = None;
     // Under the file's lock (two changes at once can't lose each other),
     // atomically, its permissions kept (it may hold keys).
     crate::store::update_text(path, |text| {
@@ -495,8 +504,13 @@ pub fn update_file(path: &std::path::Path, edit: impl FnOnce(&mut toml_edit::Doc
         let out = doc.to_string();
         // Never write something lyra couldn't read back.
         toml::from_str::<Config>(&out).map_err(|e| format!("the change would break {}: {e}", path.display()))?;
+        seen = Some((text, out.clone()));
         Ok(out)
-    })
+    })?;
+    if let Some((before, after)) = seen {
+        crate::config_history::record_at(path, &before, &after, &crate::acting::current(), how)?;
+    }
+    Ok(())
 }
 
 /// A list of strings as a TOML array.

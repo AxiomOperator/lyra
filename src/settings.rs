@@ -3,7 +3,9 @@
 //! notifications. One list (`FIELDS`) says what each is, how it's checked and
 //! where it lives in config.toml; a change is written with `config::update`
 //! (comments and everything else kept, never a file lyra can't read back) and
-//! lyra reloads. Everything else stays in config.toml (see config.example.toml).
+//! lyra reloads. Every other setting is on the Everything tab
+//! (`config_schema`, from config.example.toml), and each save is kept as a
+//! version first (`config_history`).
 
 use serde_json::{Value, json};
 
@@ -70,7 +72,7 @@ pub struct Group {
 }
 
 pub const GROUPS: &[Group] = &[
-    Group { id: "models", title: "Models", help: "The chat model and the helper models lyra calls. Embedding and reranker models stay in config.toml (changing them means re-embedding memory)." },
+    Group { id: "models", title: "Models", help: "The chat model and the helper models lyra calls. Embedding, reranker and every model's key are under Everything." },
     Group { id: "replies", title: "Replies", help: "How far lyra goes in one reply before it stops and asks to continue. A person can have their own limit (Users)." },
     Group { id: "hours", title: "Working hours", help: "Your working day: Plan my day puts focus blocks inside it, and the recap comes at its end." },
     Group { id: "briefing", title: "Briefing and recap", help: "The morning briefing and the end-of-day recap." },
@@ -261,17 +263,53 @@ fn same(a: &Value, b: &Value) -> bool {
 /// checked first, and nothing is written unless all of them are fine. The
 /// labels of what changed come back (empty: nothing to do).
 pub fn set(changes: &Value) -> Result<Vec<String>, String> {
-    set_in(&crate::config::path().ok_or("no home directory")?, changes)
+    set_confirmed(changes, &[])
 }
 
-fn set_in(path: &std::path::Path, changes: &Value) -> Result<Vec<String>, String> {
+/// `set`, with the careful settings (`config_schema::careful`) the person
+/// confirmed on the page.
+pub fn set_confirmed(changes: &Value, confirmed: &[String]) -> Result<Vec<String>, String> {
+    set_in(&crate::config::path().ok_or("no home directory")?, changes, confirmed)
+}
+
+fn set_in(path: &std::path::Path, changes: &Value, confirmed: &[String]) -> Result<Vec<String>, String> {
     let changes = changes.as_object().ok_or("no changes")?;
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let now: Config = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let file: toml::Table = toml::from_str(&text).unwrap_or_default();
     let behavior = behavior_at(path);
     let mut writes: Vec<(&Field, toml_edit::Item)> = Vec::new();
+    // Any other setting (the Everything tab): its path, and its new value (none: back to lyra's default).
+    let mut others: Vec<(String, Option<toml_edit::Item>)> = Vec::new();
     for (key, value) in changes {
-        let f = field(key).ok_or_else(|| format!("{key} isn't a setting the app changes (it's in config.toml)"))?;
+        let Some(f) = field(key) else {
+            let f = crate::config_schema::field(key).ok_or_else(|| format!("{key} isn't one of lyra's settings"))?;
+            if let Some(why) = crate::config_schema::file_only(key) {
+                return Err(format!("{key}: {why}"));
+            }
+            if let Some(why) = crate::config_schema::careful(key)
+                && !confirmed.iter().any(|c| c == key)
+            {
+                return Err(format!("{key} needs confirming first: {why}"));
+            }
+            let current = crate::config_schema::get(&file, key);
+            if value.is_null() {
+                if current.is_some() {
+                    others.push((key.clone(), None));
+                }
+                continue;
+            }
+            // A key left empty on the page: kept as it is (Clear removes it).
+            if crate::config_schema::secret(key) && value.as_str().is_some_and(|s| s.trim().is_empty()) {
+                continue;
+            }
+            let item = crate::config_schema::item(key, f.kind, value)?;
+            let new: Option<toml::Value> = toml::from_str::<toml::Table>(&format!("v = {}", item.to_string().trim())).ok().and_then(|t| t.get("v").cloned());
+            if new.as_ref() != current {
+                others.push((key.clone(), Some(item)));
+            }
+            continue;
+        };
         // An optional model left empty and not set up yet: nothing to do.
         let optional = f.key.starts_with("vision_model.") || f.key.starts_with("decide.") || f.key.starts_with("fallback_model.") || f.key.starts_with("second_fallback_model.");
         if optional && value.as_str().is_some_and(|t| t.trim().is_empty()) {
@@ -306,18 +344,36 @@ fn set_in(path: &std::path::Path, changes: &Value) -> Result<Vec<String>, String
             return Err(format!("give the {label} model's server and its name together"));
         }
     }
-    if writes.is_empty() {
+    if writes.is_empty() && others.is_empty() {
         return Ok(Vec::new());
     }
-    let labels = writes.iter().map(|(f, _)| f.label.to_string()).collect();
+    let labels = writes.iter().map(|(f, _)| f.label.to_string()).chain(others.iter().map(|(k, _)| k.clone())).collect();
     let (behavior_writes, writes): (Vec<_>, Vec<_>) = writes.into_iter().partition(|(f, _)| f.key.starts_with("behavior."));
     if !behavior_writes.is_empty() {
         write_behavior(&behavior_path(path), behavior_writes)?;
     }
-    if writes.is_empty() {
+    if writes.is_empty() && others.is_empty() {
         return Ok(labels);
     }
-    crate::config::update_file(path, |doc| {
+    crate::config::update_file_how(path, "Settings", |doc| {
+        for (key, item) in others {
+            let mut parts: Vec<&str> = key.split('.').collect();
+            let last = parts.pop().unwrap_or_default();
+            let mut t = doc.as_table_mut();
+            for p in parts {
+                let next = t.entry(p).or_insert(toml_edit::table());
+                if let Some(inline) = next.as_inline_table().cloned() {
+                    *next = toml_edit::Item::Table(inline.into_table());
+                }
+                t = next.as_table_mut().ok_or_else(|| format!("[{p}] in config.toml isn't a table"))?;
+            }
+            match item {
+                Some(item) => put(t, last, item),
+                None => {
+                    t.remove(last);
+                }
+            }
+        }
         for (f, item) in writes {
             match f.key.split_once('.') {
                 Some((section, key)) => {
@@ -419,9 +475,32 @@ mod tests {
     }
 
     #[test]
+    fn any_setting_is_checked_written_and_kept_as_a_version() {
+        let (dir, path) = file("url = \"http://x/v1\"\nmodel = \"a\"\n[embedding]\nurl = \"http://e/v1\"\napi_key = \"sk-keep\"\nmodel = \"e\"\n[memory]\nenabled = true   # mine\n");
+        // A nested one, made where it wasn't; a number checked; a key left alone when empty.
+        let changed = set_in(&path, &json!({ "memory.context.max_tokens": "900", "embedding.api_key": "", "backup.keep": 9 }), &[]).unwrap();
+        assert_eq!(changed.len(), 2, "{changed:?}");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("max_tokens = 900") && text.contains("keep = 9") && text.contains("sk-keep") && text.contains("# mine"), "{text}");
+        assert!(set_in(&path, &json!({ "backup.keep": "lots" }), &[]).unwrap_err().contains("whole number"));
+        // Back to lyra's default: taken out of the file.
+        set_in(&path, &json!({ "backup.keep": null }), &[]).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("keep = 9"));
+        // What decides what runs on the server stays in the file; the careful ones are confirmed.
+        assert!(set_in(&path, &json!({ "system.allow_commands": ["rm"] }), &[]).unwrap_err().contains("Machines page"));
+        assert!(set_in(&path, &json!({ "web.public_url": "https://l.example" }), &["web.public_url".into()]).is_ok());
+        assert!(set_in(&path, &json!({ "not.a_setting": 1 }), &[]).unwrap_err().contains("isn't one of lyra's settings"));
+        // Each change was kept first: a version per save, with what changed.
+        let versions = crate::config_history::list_at(&path);
+        assert_eq!(versions.len(), 3, "{versions:?}");
+        assert!(versions[0].keys.contains(&"memory.context.max_tokens".to_string()) && versions[0].how == "Settings");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn changes_are_checked_then_written_keeping_comments() {
         let (dir, path) = file("# my endpoint\nurl = \"http://x/v1\"\nmodel = \"a\"   # the usual one\n\n[planner]\n# my day\nday_end = \"16:30\"\n");
-        let changed = set_in(&path, &json!({ "planner.day_end": "5pm", "model": "b", "recap.notify": false, "status.mute": "web search, PMI" })).unwrap();
+        let changed = set_in(&path, &json!({ "planner.day_end": "5pm", "model": "b", "recap.notify": false, "status.mute": "web search, PMI" }), &[]).unwrap();
         assert_eq!(changed.len(), 4, "{changed:?}");
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# my endpoint") && text.contains("# my day") && text.contains("# the usual one"), "{text}");
@@ -429,25 +508,25 @@ mod tests {
         assert_eq!((c.planner.day_end.as_str(), c.model.as_str(), c.recap.notify), ("17:00", "b", false));
         assert_eq!(c.status.mute, vec!["web search".to_string(), "PMI".to_string()]);
         // The same again: nothing to write.
-        assert!(set_in(&path, &json!({ "planner.day_end": "17:00", "model": "b" })).unwrap().is_empty());
+        assert!(set_in(&path, &json!({ "planner.day_end": "17:00", "model": "b" }), &[]).unwrap().is_empty());
         // One bad value: nothing is written.
         let before = std::fs::read_to_string(&path).unwrap();
-        assert!(set_in(&path, &json!({ "planner.day_start": "8:00", "health.disk_percent": 120 })).unwrap_err().contains("between 50 and 100"));
-        assert!(set_in(&path, &json!({ "planner.day_start": "breakfast" })).is_err());
-        assert!(set_in(&path, &json!({ "url": "gpu:8080" })).is_err());
-        assert!(set_in(&path, &json!({ "briefing.schedule": "whenever" })).is_err());
-        assert!(set_in(&path, &json!({ "web.listen": "0.0.0.0:1" })).unwrap_err().contains("isn't a setting"));
+        assert!(set_in(&path, &json!({ "planner.day_start": "8:00", "health.disk_percent": 120 }), &[]).unwrap_err().contains("between 50 and 100"));
+        assert!(set_in(&path, &json!({ "planner.day_start": "breakfast" }), &[]).is_err());
+        assert!(set_in(&path, &json!({ "url": "gpu:8080" }), &[]).is_err());
+        assert!(set_in(&path, &json!({ "briefing.schedule": "whenever" }), &[]).is_err());
+        assert!(set_in(&path, &json!({ "web.listen": "0.0.0.0:1" }), &[]).unwrap_err().contains("needs confirming"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
         // A helper model needs its server and name together; empty and not set up is fine.
-        assert!(set_in(&path, &json!({ "vision_model.url": "http://gpu:8090/v1" })).unwrap_err().contains("together"));
-        assert!(set_in(&path, &json!({ "vision_model.url": "", "vision_model.model": "" })).unwrap().is_empty());
-        assert_eq!(set_in(&path, &json!({ "vision_model.url": "http://gpu:8090/v1", "vision_model.model": "qwen-vl" })).unwrap().len(), 2);
+        assert!(set_in(&path, &json!({ "vision_model.url": "http://gpu:8090/v1" }), &[]).unwrap_err().contains("together"));
+        assert!(set_in(&path, &json!({ "vision_model.url": "", "vision_model.model": "" }), &[]).unwrap().is_empty());
+        assert_eq!(set_in(&path, &json!({ "vision_model.url": "http://gpu:8090/v1", "vision_model.model": "qwen-vl" }), &[]).unwrap().len(), 2);
         let c: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(c.vision_model.unwrap().model, "qwen-vl");
         // The tool-call limit goes to behavior.toml (its comments kept), within 1–64.
         std::fs::write(dir.join("behavior.toml"), "# tuned by evolution\nguidelines = [\"Be brief.\"]\nmax_tool_rounds = 8\n").unwrap();
-        assert!(set_in(&path, &json!({ "behavior.max_tool_rounds": 65 })).is_err());
-        assert_eq!(set_in(&path, &json!({ "behavior.max_tool_rounds": 40, "planner.days": "mon tue" })).unwrap().len(), 2);
+        assert!(set_in(&path, &json!({ "behavior.max_tool_rounds": 65 }), &[]).is_err());
+        assert_eq!(set_in(&path, &json!({ "behavior.max_tool_rounds": 40, "planner.days": "mon tue" }), &[]).unwrap().len(), 2);
         let b = std::fs::read_to_string(dir.join("behavior.toml")).unwrap();
         assert!(b.contains("# tuned by evolution") && b.contains("Be brief.") && b.contains("max_tool_rounds = 40"), "{b}");
         let _ = std::fs::remove_dir_all(&dir);

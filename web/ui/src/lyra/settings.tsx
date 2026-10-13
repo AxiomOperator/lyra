@@ -11,6 +11,7 @@ import { Check, CircleCheck, CircleX, Loader2, RefreshCw, RotateCcw, Stethoscope
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Back, Failed, Page } from "./parts";
 import { SectionTabs } from "./profile";
+import { EverythingTab, HistoryTab } from "./settingsall";
 import { useLyra } from "./store";
 
 type Value = string | number | boolean | string[];
@@ -371,7 +372,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
       // just not remembered
     }
   };
-  const sections = [...(data?.groups ?? []).map((g) => ({ id: g.id, label: changedIn(g.id) ? `${g.title} •` : g.title })), { id: "email", label: "Email services" }];
+  const sections = [...(data?.groups ?? []).map((g) => ({ id: g.id, label: changedIn(g.id) ? `${g.title} •` : g.title })), { id: "all", label: "Everything" }, { id: "email", label: "Email services" }, { id: "history", label: "History" }];
   function changedIn(group: string) {
     return (data?.groups ?? []).find((g) => g.id === group)?.fields.some((f) => edits[f.key] !== undefined && !same(edits[f.key], f.value)) ?? false;
   }
@@ -400,7 +401,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   };
 
   return (
-    <Page title="Settings" description="The ones people change most. lyra checks each value, saves config.toml (keeping its comments) and applies it at once." action={<Back onBack={onBack} />}>
+    <Page title="Settings" description="Every setting in config.toml: the common ones first, all of them under Everything. lyra checks each value, keeps the file as it was (History), saves it with its comments, and applies it at once." action={<Back onBack={onBack} />}>
       {data?.error && <Failed error={data.error} />}
       {note && (
         <div className={cn("flex items-start justify-between gap-2 rounded-md border px-3 py-2 text-sm", note.ok ? "border-teal-700/60 bg-teal-950/30 text-teal-100" : "border-red-800/60 bg-red-950/30 text-red-200")}>
@@ -419,6 +420,8 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
       {data && !data.error && (
       <SectionTabs sections={sections} current={sections.some((x) => x.id === tab) ? tab : "models"} pick={pick}>
       {tab === "email" && <EmailServices />}
+      {tab === "all" && <EverythingTab said={(n) => (setNote(n), load())} />}
+      {tab === "history" && <HistoryTab said={(n) => (setNote(n), load())} />}
       {(data?.groups ?? []).filter((g) => g.id === tab || (!sections.some((x) => x.id === tab) && g.id === "models")).map((g) => (
         <Card key={g.id} className="gap-3 py-4">
           <CardHeader className="px-4">
