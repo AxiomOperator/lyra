@@ -594,6 +594,16 @@ fn room() -> usize {
     tokens * 7 / 2 * 6 / 10
 }
 
+/// A call that can run alongside others in its round: it only reads, needs
+/// no Allow, has nothing missing to ask for, and isn't lyra's own machinery
+/// or the browser (one page, step by step).
+pub(crate) fn parallel_safe(caps: &Caps, name: &str, arguments: &str) -> bool {
+    if matches!(name, "delegate" | "agent_huddle" | "agent_swarm") || name == caps::SEARCH_TOOL || crate::board::TOOLS.contains(&name) || name.starts_with("browser_") {
+        return false;
+    }
+    caps.risk_level(name) == Some(lyra_capabilities::RiskLevel::ReadOnly) && caps.approval(name, arguments).is_none() && caps.problem(name, arguments).is_none()
+}
+
 /// Pictures are sent again with this many of the latest exchanges; older ones are mentioned.
 const PICTURE_TURNS: usize = 2;
 
@@ -935,21 +945,22 @@ pub(crate) fn converse(
                 ready.insert(c.id.clone(), instead);
             }
         }
-        let side_by_side: Vec<&ToolCall> = round.tool_calls.iter().filter(|c| matches!(c.function.name.as_str(), "web_search" | "web_fetch") && !skipped.contains(&c.id) && !ready.contains_key(&c.id)).collect();
+        // Every call that only reads and needs no Allow runs side by side
+        // (mail, calendar, tasks, notes, memory, files, the web …); what keeps
+        // state between steps (the browser) or is lyra's own (delegation, the
+        // board, the search for tools) goes in order below.
+        let side_by_side: Vec<&ToolCall> = round.tool_calls.iter().filter(|c| !skipped.contains(&c.id) && !ready.contains_key(&c.id) && parallel_safe(caps, &c.function.name, &c.function.arguments)).collect();
         if side_by_side.len() > 1 && !stopped(cancel) {
-            let (user, job) = (crate::acting::current(), crate::usage::job());
+            let _ = tx.send(StreamEvent::Log(format!("{} lookups side by side: {}", side_by_side.len(), side_by_side.iter().map(|c| c.function.name.as_str()).collect::<Vec<_>>().join(", "))));
             std::thread::scope(|s| {
                 let handles: Vec<_> = side_by_side
                     .iter()
                     .map(|c| {
-                        let (user, job) = (user.clone(), job.clone());
-                        s.spawn(move || {
-                            crate::acting::run(&user, || {
-                                crate::usage::set_job(job);
-                                crate::websearch::set_conversation_size(size);
-                                let ctx = CallContext { member, read_scopes: scopes, write_scopes: scopes, ..CallContext::new(Some(run), &c.id) };
-                                (c.id.clone(), caps.invoke(&c.function.name, &c.function.arguments, ctx, false, true))
-                            })
+                        // The person, the conversation and "part of a reply" (its light steps don't wait) go along.
+                        crate::acting::scoped(s, move || {
+                            crate::websearch::set_conversation_size(size);
+                            let ctx = CallContext { member, read_scopes: scopes, write_scopes: scopes, ..CallContext::new(Some(run), &c.id) };
+                            (c.id.clone(), caps.invoke(&c.function.name, &c.function.arguments, ctx, false, true))
                         })
                     })
                     .collect();

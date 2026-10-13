@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.94.1.258",
+    "date": "2026-10-13",
+    "title": "Lookups side by side",
+    "improved": [
+      "When lyra looks several things up in one step (mail, calendar, tasks, notes, memories, files, the web), it does them all at once instead of one after another, so replies that gather a lot come back sooner."
+    ],
+    "fixed": [
+      "A page read alongside others no longer waits for the reply it's part of before summarizing (it could wait up to 45 seconds)."
+    ]
+  },
+  {
     "version": "0.94.0.257",
     "date": "2026-10-12",
     "title": "Code changes that prove themselves",

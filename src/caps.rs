@@ -1415,6 +1415,18 @@ mod tests {
     }
 
     #[test]
+    fn only_reads_that_need_nothing_run_side_by_side() {
+        let (_rt, caps) = caps();
+        let side = |name: &str, args: &str| crate::turn::parallel_safe(&caps, name, args);
+        assert!(side("memory_recall", r#"{"query":"printer"}"#), "a lookup");
+        assert!(side("task_list", "{}"));
+        assert!(!side("memory_remember", r#"{"content":"x"}"#), "a change goes in order");
+        assert!(!side("memory_recall", "{not json"), "something wrong with it: handled in order");
+        assert!(!side(SEARCH_TOOL, r#"{"query":"x"}"#), "lyra's own");
+        assert!(!side("delegate", r#"{"agent":"researcher","task":"x"}"#));
+    }
+
+    #[test]
     fn a_call_missing_what_it_needs_is_refused_before_anyone_is_asked() {
         let (_rt, caps) = caps();
         let p = caps.problem("memory_remember", "{}").unwrap();
